@@ -48,7 +48,7 @@ class DataProvider:
                 FROM macro_data
                 WHERE series_id = ANY(:symbols)
                   AND observation_date >= :start AND observation_date <= :end
-                ORDER BY observation_date, release_date DESC
+                ORDER BY observation_date, series_id, release_date DESC
             """)
             df = pd.read_sql(query, self.engine, params={
                 "symbols": fred_symbols, "start": start.date(), "end": end.date(),
