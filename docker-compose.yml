@@ -238,6 +238,7 @@ services:
     container_name: curlit-airflow-webserver
     restart: unless-stopped
     networks: [observability]
+    command: airflow webserver
     ports:
       - "127.0.0.1:8080:8080"
     environment:
@@ -247,11 +248,12 @@ services:
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
       AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW_SECRET_KEY:-change-me-to-random}
       PYTHONPATH: /opt/curlit/src:/opt/curlit
-      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-fx}:${POSTGRES_PASSWORD:-changeme}@host.docker.internal:5432/${POSTGRES_DB:-fx}
-      POSTGRES_HOST: host.docker.internal
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-fx}:${POSTGRES_PASSWORD:-changeme}@postgres:5432/${POSTGRES_DB:-fx}
+      POSTGRES_HOST: postgres
       POSTGRES_DB: ${POSTGRES_DB:-fx}
       POSTGRES_USER: ${POSTGRES_USER:-fx}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      FRED_API_KEY: ${FRED_API_KEY}
     volumes:
       - ./airflow/dags:/opt/airflow/dags:ro
       - ./src:/opt/curlit/src:ro
@@ -270,17 +272,19 @@ services:
     container_name: curlit-airflow-scheduler
     restart: unless-stopped
     networks: [observability]
+    command: airflow scheduler
     environment:
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:${AIRFLOW_DB_PASSWORD:-airflow}@airflow-db:5432/airflow
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
       AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
       PYTHONPATH: /opt/curlit/src:/opt/curlit
-      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-fx}:${POSTGRES_PASSWORD:-changeme}@host.docker.internal:5432/${POSTGRES_DB:-fx}
-      POSTGRES_HOST: host.docker.internal
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-fx}:${POSTGRES_PASSWORD:-changeme}@postgres:5432/${POSTGRES_DB:-fx}
+      POSTGRES_HOST: postgres
       POSTGRES_DB: ${POSTGRES_DB:-fx}
       POSTGRES_USER: ${POSTGRES_USER:-fx}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      FRED_API_KEY: ${FRED_API_KEY}
     volumes:
       - ./airflow/dags:/opt/airflow/dags:ro
       - ./src:/opt/curlit/src:ro
