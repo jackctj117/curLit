@@ -33,7 +33,7 @@ groups:
           description: "{{ $value }} symbols have mismatched positions. Halt new trades and investigate."
 
       - alert: LiveEngineDown
-        expr: up{service="live_engine"} == 0
+        expr: (time() - fx_service_last_heartbeat_timestamp{service="live_engine"}) > 300
         for: 5m
         labels:
           severity: critical

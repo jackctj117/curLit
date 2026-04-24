@@ -6,7 +6,7 @@ import time
 from datetime import datetime, timezone
 
 from src.monitoring.logging_setup import LogContext
-from src.monitoring.metrics import start_metrics_server
+from src.monitoring.metrics import start_metrics_server, HeartbeatTracker
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +23,8 @@ class LiveEngine:
     async def run(self) -> None:
         self.running = True
         start_metrics_server(port=8099)
+        self._heartbeat = HeartbeatTracker("live_engine", interval_sec=30)
+        self._heartbeat.start()
         logger.info("Live engine starting")
         await asyncio.gather(
             self._price_stream_task(),
