@@ -22,14 +22,23 @@ class LiveEngine:
 
     async def run(self) -> None:
         self.running = True
-        start_metrics_server(port=8090)
+        start_metrics_server(port=8099)
         logger.info("Live engine starting")
         await asyncio.gather(
             self._price_stream_task(),
             self._signal_generation_task(),
             self._reconciliation_task(),
             self._health_check_task(),
+            self._web_server_task(),
         )
+
+    async def _web_server_task(self) -> None:
+        import uvicorn
+        from src.web.api import app, set_runtime
+        set_runtime(self.broker, self.oms, self.strategies)
+        config = uvicorn.Config(app, host="127.0.0.1", port=8200, log_level="warning")
+        server = uvicorn.Server(config)
+        await server.serve()
 
     async def _price_stream_task(self) -> None:
         symbols = list(set(s for s in self.strategies for s in s.symbols))

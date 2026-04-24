@@ -20,7 +20,7 @@ HEARTBEAT_MAX_AGE_SEC = 120
 
 def check_engine_heartbeat() -> float | None:
     try:
-        r = httpx.get("http://localhost:8090/metrics", timeout=5)
+        r = httpx.get("http://localhost:8099/metrics", timeout=5)
         r.raise_for_status()
         for line in r.text.split("\n"):
             if 'fx_service_last_heartbeat_timestamp{service="live_engine"}' in line:
