@@ -23,7 +23,7 @@ class RateDiffMRConfig:
     max_holding_days: int = 30
     volatility_target: float = 0.10
     max_position_pct: float = 0.20
-    min_r_squared: float = 0.25
+    min_r_squared: float = 0.10
     signal_interval_seconds: int = 3600
     id: str = "eurusd_rate_diff_mr"
 
