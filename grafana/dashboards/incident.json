@@ -1,0 +1,10 @@
+{
+  "title": "curLit — Incident",
+  "tags": ["curlit", "incident"],
+  "timezone": "utc",
+  "schemaVersion": 38,
+  "panels": [],
+  "templating": {
+    "list": []
+  }
+}

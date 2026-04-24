@@ -1,0 +1,11 @@
+{
+  "title": "curLit — Glance",
+  "tags": ["curlit", "live"],
+  "timezone": "utc",
+  "schemaVersion": 38,
+  "refresh": "15s",
+  "panels": [],
+  "templating": {
+    "list": []
+  }
+}

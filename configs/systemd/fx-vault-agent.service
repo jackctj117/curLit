@@ -1,0 +1,19 @@
+# curLit — vault agent (user service)
+# Install: cp to ~/.config/systemd/user/fx-vault-agent.service
+# Enable: systemctl --user daemon-reload
+
+[Unit]
+Description=curLit Vault Agent — encrypted credential server
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/fx-system
+Environment="PYTHONPATH=/opt/fx-system"
+EnvironmentFile=/opt/fx-system/.env
+ExecStart=/opt/fx-system/venv/bin/python -m src.security.vault_agent
+Restart=no
+StandardInput=tty
+
+[Install]
+WantedBy=default.target

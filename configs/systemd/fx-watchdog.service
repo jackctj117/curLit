@@ -1,0 +1,39 @@
+# curLit — watchdog service
+# Copy to /etc/systemd/system/fx-watchdog.service
+# Enable: systemctl enable fx-watchdog
+
+[Unit]
+Description=curLit Watchdog — engine health monitor and auto-restart
+After=network-online.target fx-live-engine.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=fx
+Group=fx
+WorkingDirectory=/opt/fx-system
+Environment="PYTHONPATH=/opt/fx-system"
+Environment="FX_ENV=production"
+EnvironmentFile=/opt/fx-system/.env
+
+ExecStart=/opt/fx-system/venv/bin/python -m src.ops.watchdog
+
+Restart=on-failure
+RestartSec=30s
+StartLimitInterval=300
+StartLimitBurst=3
+
+LimitNOFILE=65536
+MemoryMax=512M
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=fx-watchdog
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/opt/fx-system/logs
+
+[Install]
+WantedBy=multi-user.target

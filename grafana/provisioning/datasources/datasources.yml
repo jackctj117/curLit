@@ -1,0 +1,24 @@
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+
+  - name: Loki
+    type: loki
+    access: proxy
+    url: http://loki:3100
+
+  - name: Postgres
+    type: postgres
+    url: postgres:5432
+    database: ${POSTGRES_DB:-fx}
+    user: ${POSTGRES_USER:-fx}
+    secureJsonData:
+      password: ${POSTGRES_PASSWORD:-changeme}
+    jsonData:
+      sslmode: disable
+      postgresVersion: 1500

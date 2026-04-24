@@ -1,0 +1,176 @@
+groups:
+  - name: critical_trading
+    interval: 15s
+    rules:
+      - alert: KillSwitchTriggered
+        expr: increase(fx_kill_switch_triggered_total[5m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+          category: risk
+        annotations:
+          summary: "Kill switch '{{ $labels.switch_name }}' triggered"
+          description: "Action: {{ $labels.action }}. Review positions and logs immediately."
+
+      - alert: DrawdownExceeds15Pct
+        expr: fx_portfolio_drawdown_pct < -0.15
+        for: 5m
+        labels:
+          severity: critical
+          category: risk
+        annotations:
+          summary: "Portfolio drawdown is {{ $value | humanizePercentage }}"
+          description: "Drawdown threshold breached. Review strategy performance."
+
+      - alert: ReconciliationMismatch
+        expr: fx_reconciliation_mismatches > 0
+        for: 10m
+        labels:
+          severity: critical
+          category: integrity
+        annotations:
+          summary: "Position mismatch between internal state and broker"
+          description: "{{ $value }} symbols have mismatched positions. Halt new trades and investigate."
+
+      - alert: LiveEngineDown
+        expr: up{service="live_engine"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          category: availability
+        annotations:
+          summary: "Live engine is down"
+          description: "The main trading engine has been down for over 2 minutes."
+
+      - alert: PriceStreamDisconnected
+        expr: fx_price_stream_connected == 0
+        for: 1m
+        labels:
+          severity: critical
+          category: availability
+        annotations:
+          summary: "Price stream disconnected from {{ $labels.broker }}"
+          description: "No price updates received. Existing positions unmanaged."
+
+      - alert: OrderRejectRateHigh
+        expr: |
+          (
+            sum(rate(fx_orders_rejected_total[5m]))
+            /
+            (sum(rate(fx_orders_placed_total[5m])) + 0.0001)
+          ) > 0.2
+        for: 5m
+        labels:
+          severity: critical
+          category: execution
+        annotations:
+          summary: "Order reject rate above 20%"
+          description: "{{ $value | humanizePercentage }} of orders being rejected. Check broker connection and risk limits."
+
+  - name: warning_trading
+    interval: 30s
+    rules:
+      - alert: DrawdownExceeds10Pct
+        expr: fx_portfolio_drawdown_pct < -0.10
+        for: 10m
+        labels:
+          severity: warning
+          category: risk
+        annotations:
+          summary: "Portfolio drawdown is {{ $value | humanizePercentage }}"
+
+      - alert: DailyLossExceeds2Pct
+        expr: sum(fx_daily_pnl_usd) / fx_account_equity_usd < -0.02
+        for: 5m
+        labels:
+          severity: warning
+          category: risk
+        annotations:
+          summary: "Daily loss exceeds 2% of equity"
+
+      - alert: ModelR2Degraded
+        expr: fx_model_r_squared < 0.20
+        for: 30m
+        labels:
+          severity: warning
+          category: model
+        annotations:
+          summary: "Model R² for {{ $labels.strategy_id }} is {{ $value }}"
+          description: "Model quality has degraded. Strategy may be sitting out or producing bad signals."
+
+      - alert: DataFreshnessStale
+        expr: time() - fx_price_stream_last_tick_timestamp > 300
+        for: 2m
+        labels:
+          severity: warning
+          category: data
+        annotations:
+          summary: "No price updates for {{ $labels.symbol }} in 5+ minutes"
+
+      - alert: HighSlippage
+        expr: histogram_quantile(0.9, sum(rate(fx_slippage_bps_bucket[15m])) by (pair, le)) > 3
+        for: 10m
+        labels:
+          severity: warning
+          category: execution
+        annotations:
+          summary: "P90 slippage on {{ $labels.pair }} exceeds 3 bps"
+
+      - alert: SpreadWidening
+        expr: fx_price_bid_ask_spread_bps > 5
+        for: 5m
+        labels:
+          severity: warning
+          category: market
+        annotations:
+          summary: "Spread on {{ $labels.symbol }} is {{ $value }} bps"
+          description: "Likely low liquidity or news event. Consider pausing aggressive orders."
+
+      - alert: CorrelationRegimeStressed
+        expr: fx_correlation_regime >= 1
+        for: 15m
+        labels:
+          severity: warning
+          category: risk
+        annotations:
+          summary: "Portfolio correlation regime is stressed"
+          description: "Strategy correlations have elevated. Sizing will be reduced automatically."
+
+  - name: infra
+    interval: 30s
+    rules:
+      - alert: HighCPU
+        expr: 100 - (avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 85
+        for: 10m
+        labels:
+          severity: warning
+          category: infra
+        annotations:
+          summary: "CPU usage above 85% for 10 minutes"
+
+      - alert: HighMemory
+        expr: (node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / node_memory_MemTotal_bytes * 100 > 90
+        for: 10m
+        labels:
+          severity: warning
+          category: infra
+        annotations:
+          summary: "Memory usage above 90%"
+
+      - alert: DiskSpaceLow
+        expr: (node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"}) * 100 < 15
+        for: 15m
+        labels:
+          severity: warning
+          category: infra
+        annotations:
+          summary: "Less than 15% disk space remaining"
+
+      - alert: DatabaseConnectionSaturation
+        expr: sum(pg_stat_activity_count) by (state) / on() pg_settings_max_connections > 0.8
+        for: 5m
+        labels:
+          severity: warning
+          category: infra
+        annotations:
+          summary: "Postgres connection pool > 80% full"

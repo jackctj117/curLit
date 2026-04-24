@@ -1,0 +1,26 @@
+# KillSwitchTriggered
+
+## Severity: CRITICAL
+
+## What it means
+A kill switch has fired — an automated risk rule was violated. Positions may have been flattened or trading halted.
+
+## Immediate actions
+1. Open incident dashboard: http://localhost:3000/d/fx-incident
+2. Identify which switch fired from alert details
+3. Check current positions match kill switch action
+4. Review logs: `{service="live_engine"} |~ "kill|trigger|halt"` in Loki
+
+## Common causes
+- **drawdown_limit**: Portfolio drew down past threshold
+- **reconciliation_failure**: Internal vs broker positions mismatched
+- **vix_spike**: Risk-off regime triggered
+
+## Resolution
+1. Confirm root cause
+2. If data/position issue: fix reconciliation, verify clean state
+3. If legitimate market event: review whether strategy exposure should remain reduced
+4. Reset via web UI: POST /api/system/resume
+
+## Escalation
+If unsure, LEAVE THINGS HALTED. Do not resume trading to "fix" a problem.

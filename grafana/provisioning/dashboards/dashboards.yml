@@ -1,0 +1,12 @@
+apiVersion: 1
+
+providers:
+  - name: "curLit Dashboards"
+    orgId: 1
+    folder: "curLit"
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 60
+    allowUiUpdates: false
+    options:
+      path: /var/lib/grafana/dashboards

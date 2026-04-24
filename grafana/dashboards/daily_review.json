@@ -1,0 +1,10 @@
+{
+  "title": "curLit — Daily Review",
+  "tags": ["curlit", "review"],
+  "timezone": "utc",
+  "schemaVersion": 38,
+  "panels": [],
+  "templating": {
+    "list": []
+  }
+}

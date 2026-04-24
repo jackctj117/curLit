@@ -1,0 +1,33 @@
+name: Security Scan
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "0 0 * * 0"  # Weekly Sunday
+
+jobs:
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: pip install pip-audit bandit
+      - name: Install project
+        run: pip install -e .
+      - name: pip-audit
+        run: pip-audit
+      - name: bandit
+        run: bandit -r src/ -ll -f json --exit-zero
+      - name: secret scanning
+        run: |
+          if grep -rE "(AKIA|sk-[a-zA-Z0-9]{32}|ghp_[a-zA-Z0-9]{36})" src/ --include="*.py"; then
+            echo "WARNING: possible secrets found in source"
+          else
+            echo "No secrets detected"
+          fi

@@ -1,5 +1,72 @@
+# Secrets & environment
+.env
+*.pem
+*.key
+credentials*.json
+service-account*.json
 
 # Beads / Dolt files (added by bd init)
 .dolt/
 *.db
 .beads-credential-key
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+*.so
+build/
+dist/
+venv/
+.venv/
+env/
+.envrc
+
+# Testing
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.mypy_cache/
+.ruff_cache/
+.dmypy.json
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Project data directories (content, not structure)
+data/raw/*
+data/processed/*
+data/vintage/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+!data/vintage/.gitkeep
+
+# Models (artifacts)
+models/**/pytorch_model*.bin
+models/**/*.safetensors
+models/**/*.h5
+models/**/optimizer.pt
+models/**/scheduler.pt
+!models/cb-sentiment-v1/.gitkeep
+
+# Logs
+logs/
+*.log
+
+# Docker
+docker-compose.override.yml
+
+# Airflow
+airflow/logs/
+airflow/plugins/
+
+# OS
+Thumbs.db

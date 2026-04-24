@@ -2,6 +2,6 @@
   "database": "dolt",
   "backend": "dolt",
   "dolt_mode": "embedded",
-  "dolt_database": "curLit",
-  "project_id": "43c65f60-e122-4afc-9eb1-455aac0a8c05"
+  "dolt_database": "CL",
+  "project_id": "46436e30-6bd3-4e74-aad1-16871474acf3"
 }

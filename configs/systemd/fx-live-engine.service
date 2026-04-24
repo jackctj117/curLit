@@ -1,0 +1,41 @@
+# curLit — live trading engine
+# Copy to /etc/systemd/system/fx-live-engine.service
+# Enable: systemctl enable fx-live-engine
+
+[Unit]
+Description=curLit FX Live Trading Engine
+After=network-online.target postgresql.service
+Wants=network-online.target
+Requires=postgresql.service
+
+[Service]
+Type=simple
+User=fx
+Group=fx
+WorkingDirectory=/opt/fx-system
+Environment="PYTHONPATH=/opt/fx-system"
+Environment="FX_ENV=production"
+EnvironmentFile=/opt/fx-system/.env
+
+ExecStart=/opt/fx-system/venv/bin/python -m src.runtime.run_engine
+ExecStop=/bin/kill -SIGTERM $MAINPID
+
+Restart=on-failure
+RestartSec=15s
+StartLimitInterval=300
+StartLimitBurst=5
+
+LimitNOFILE=65536
+MemoryMax=8G
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=fx-live-engine
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/opt/fx-system/logs /opt/fx-system/data
+
+[Install]
+WantedBy=multi-user.target
