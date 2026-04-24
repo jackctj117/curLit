@@ -76,7 +76,6 @@ def build_strategies(config: dict, broker, oms) -> list:
 async def run_engine(practice: bool) -> None:
     log_dir = Path(os.environ.get("FX_LOG_DIR", "logs"))
     setup_logging("live_engine", log_dir)
-    start_metrics_server(port=8000)
 
     config = load_config(CONFIG_PATH)
     broker = build_broker(practice)

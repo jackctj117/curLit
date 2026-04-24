@@ -28,7 +28,7 @@ scrape_configs:
 
   - job_name: "fx_live_engine"
     static_configs:
-      - targets: ["host.docker.internal:8000"]
+      - targets: ["host.docker.internal:8090"]
         labels:
           service: live_engine
 

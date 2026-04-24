@@ -22,7 +22,7 @@ class LiveEngine:
 
     async def run(self) -> None:
         self.running = True
-        start_metrics_server(port=8001)
+        start_metrics_server(port=8090)
         logger.info("Live engine starting")
         await asyncio.gather(
             self._price_stream_task(),
