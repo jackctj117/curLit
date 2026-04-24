@@ -35,9 +35,9 @@ class DataProvider:
             pass
 
         # Fallback: macro_data for FRED symbols (US_2Y, DE_2Y, etc.)
-        fred_map = {"US_2Y": "DGS2", "DE_2Y": "IRLTLT01DEM156N",
-                     "US_10Y": "DGS10", "EURUSD": "DEXUSEU",
-                     "US_FEDFUNDS": "DFF"}
+        fred_map = {"US_2Y": "DGS2", "US_10Y": "DGS10",
+                     "DE_2Y": "IRLTLT01DEM156N", "DE_10Y": "IRLTLT01DEM156N",
+                     "EURUSD": "DEXUSEU", "US_FEDFUNDS": "DFF"}
         fred_symbols = [fred_map[s] for s in symbols if s in fred_map]
         if not fred_symbols:
             return None

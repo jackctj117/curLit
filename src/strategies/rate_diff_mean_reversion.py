@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class RateDiffMRConfig:
     pair: str = "EURUSD"
-    rate_spread_series: str = "US2Y_MINUS_DE2Y"
+    rate_spread_series: str = "US10Y_MINUS_DE10Y"
     lookback_days: int = 252
     entry_z_threshold: float = 1.5
     exit_z_threshold: float = 0.3
@@ -59,14 +59,14 @@ class RateDiffMRStrategy:
             return
         try:
             df = self.data.get_aligned_series(
-                [self.config.pair, "US_2Y", "DE_2Y"],
+                [self.config.pair, "US_10Y", "DE_10Y"],
                 now - timedelta(days=self.config.lookback_days * 2), now,
             )
             if df is None or len(df) < 100:
                 return
             import statsmodels.api as sm
             df = df.dropna().tail(self.config.lookback_days)
-            df["spread"] = df.get("US_2Y", 0) - df.get("DE_2Y", 0)
+            df["spread"] = df.get("US_10Y", 0) - df.get("DE_10Y", 0)
             X = sm.add_constant(df[["spread"]])
             y = df[self.config.pair]
             ols = sm.OLS(y, X).fit()
@@ -146,11 +146,11 @@ class RateDiffMRStrategy:
         if self.data:
             try:
                 spread_data = self.data.get_aligned_series(
-                    ["US_2Y", "DE_2Y"],
+                    ["US_10Y", "DE_10Y"],
                     datetime.now(timezone.utc) - timedelta(days=5), datetime.now(timezone.utc),
                 )
                 if spread_data is not None and len(spread_data) > 0:
-                    current_spread = float(spread_data["US_2Y"].iloc[-1] - spread_data["DE_2Y"].iloc[-1])
+                    current_spread = float(spread_data["US_10Y"].iloc[-1] - spread_data["DE_10Y"].iloc[-1])
             except Exception:
                 pass
 

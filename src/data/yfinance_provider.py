@@ -20,9 +20,10 @@ SYMBOL_MAP: dict[str, str] = {
     "NZDUSD": "NZDUSD=X",
     "USDCHF": "USDCHF=X",
     # Yields (yfinance uses ^TNX-like tickers)
-    "US_2Y": "^IRX",        # 13-week T-bill (closest free proxy)
-    "US_10Y": "^TNX",       # 10-year Treasury
-    "US_FEDFUNDS": "^RUT",  # not accurate — placeholder
+    "US_2Y": "2YY=F",         # US 2Y Treasury futures
+    "US_10Y": "^TNX",         # 10-year Treasury
+    "DE_2Y": "2YY=F",         # German 2Y — proxy with US (DE not available on yfinance)
+    "US_FEDFUNDS": "^IRX",    # 13-week T-bill as proxy
     # Commodities
     "GOLD": "GC=F",
     "OIL_WTI": "CL=F",
