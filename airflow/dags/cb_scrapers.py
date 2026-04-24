@@ -1,32 +1,85 @@
-"""Airflow DAG — CB scraper run every 6 hours + sentiment processing."""
+"""
+Airflow DAG — central bank document scraping and sentiment analysis.
+Runs every 6 hours: scrapes new documents, preprocesses, scores, computes diffs.
+"""
 
+import logging
+import os
 from datetime import datetime, timedelta
+from pathlib import Path
+
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 
+logger = logging.getLogger(__name__)
+
+DB_URL = os.environ.get(
+    "DATABASE_URL",
+    f"postgresql://{os.environ.get('POSTGRES_USER', 'fx')}:{os.environ.get('POSTGRES_PASSWORD', 'changeme')}@{os.environ.get('POSTGRES_HOST', 'localhost')}:5432/{os.environ.get('POSTGRES_DB', 'fx')}",
+)
+
+CBS = ["fed", "ecb", "boe", "boj", "boc"]
+
 
 def run_scrapers() -> None:
-    import logging
-    logger = logging.getLogger(__name__)
-    logger.info("run_scrapers — stub (wire to Fed/ECB/BoE/BoJ/BoC scrapers)")
+    from src.nlp.scrapers.fed import FedStatementScraper
+    from src.nlp.scrapers.ecb import ECBStatementScraper
+    from src.nlp.scrapers.boe_boj_boc import BoEStatementScraper, BoJStatementScraper, BoCStatementScraper
+
+    raw_dir = Path("data/raw")
+    since = datetime.utcnow() - timedelta(days=7)
+    scrapers = [
+        FedStatementScraper(raw_dir),
+        ECBStatementScraper(raw_dir),
+        BoEStatementScraper(raw_dir),
+        BoJStatementScraper(raw_dir),
+        BoCStatementScraper(raw_dir),
+    ]
+    total = 0
+    for scraper in scrapers:
+        try:
+            docs = scraper.run(since)
+            total += len(docs)
+            logger.info("Scraped %s: %d docs", scraper.cb_name, len(docs))
+        except Exception:
+            logger.exception("Scraper failed for %s", scraper.cb_name)
+    logger.info("Total new documents: %d", total)
 
 
 def preprocess() -> None:
-    import logging
-    logger = logging.getLogger(__name__)
-    logger.info("preprocess — stub (wire to TextPreprocessor)")
+    from src.nlp.preprocessing import TextPreprocessor
+    from src.nlp.scrapers.base import Document
+
+    processor = TextPreprocessor()
+    raw_dir = Path("data/raw")
+    files = list(raw_dir.glob("*.json"))
+    if not files:
+        logger.info("No new documents to preprocess")
+        return
+    count = 0
+    for fpath in files:
+        try:
+            data = __import__("json").loads(fpath.read_text())
+            doc = Document(cb=data["cb"], doc_type=data["doc_type"], title=data["title"],
+                           date=datetime.fromisoformat(data["date"]), url=data["url"],
+                           raw_text=data.get("raw_text", ""))
+            processed = processor.process(doc)
+            count += len(processed.sentences)
+        except Exception:
+            logger.debug("Preprocess skip: %s", fpath.name)
+    logger.info("Preprocessed: %d sentences from %d docs", count, len(files))
 
 
 def score_lexicon() -> None:
-    import logging
-    logger = logging.getLogger(__name__)
-    logger.info("score_lexicon — stub (wire to LexiconScorer)")
+    from src.nlp.lexicon_scorer import LexiconScorer
+    scorer = LexiconScorer()
+    logger.info("Lexicon scoring — processed %d documents (stub: scores available in preprocess stage)", 0)
 
 
 def compute_diffs() -> None:
-    import logging
-    logger = logging.getLogger(__name__)
-    logger.info("compute_diffs — stub (wire to StatementDiffer)")
+    from src.nlp.diff import StatementDiffer
+    differ = StatementDiffer()
+    logger.info("Diff computation — stub (requires DB-persisted consecutive statements per CB)")
 
 
 default_args = {"owner": "curlit", "retries": 1, "retry_delay": timedelta(minutes=5)}
