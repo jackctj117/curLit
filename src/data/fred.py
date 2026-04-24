@@ -65,8 +65,12 @@ class FREDProvider:
         return resp.json()  # type: ignore[no-any-return]
 
     def get_series(
-        self, series_id: str, start: datetime | None = None, end: datetime | None = None,
+        self, series_id: str, start=None, end=None,
     ) -> pd.DataFrame:
+        if isinstance(start, str):
+            start = datetime.fromisoformat(start[:10])
+        if isinstance(end, str):
+            end = datetime.fromisoformat(end[:10])
         params: dict = {"series_id": series_id}
         if start:
             params["observation_start"] = start.strftime("%Y-%m-%d")
