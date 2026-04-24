@@ -83,6 +83,14 @@ async def run_engine(practice: bool) -> None:
     strategies = build_strategies(config, broker, oms)
     engine = LiveEngine(strategies, oms, broker)
 
+    # Wire web API to live state
+    try:
+        from src.web.api import set_runtime
+        set_runtime(broker, oms, strategies)
+        logger.info("Web API runtime wired")
+    except Exception:
+        pass
+
     loop = asyncio.get_event_loop()
 
     async def _shutdown() -> None:

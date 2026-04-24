@@ -7,4 +7,5 @@ RUN pip install --no-cache-dir \
     httpx \
     tenacity \
     beautifulsoup4 \
-    pyyaml
+    pyyaml \
+    yfinance
