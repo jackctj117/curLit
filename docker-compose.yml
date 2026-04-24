@@ -55,7 +55,7 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9090/-/healthy"]
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9090/-/healthy"]
       interval: 15s
       timeout: 5s
       retries: 3
@@ -104,7 +104,7 @@ services:
       - loki_data:/loki
     command: -config.file=/etc/loki/local-config.yaml
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3100/ready"]
+      test: ["CMD", "loki", "-version"]
       interval: 15s
       timeout: 5s
       retries: 3
@@ -134,18 +134,17 @@ services:
     ports:
       - "127.0.0.1:9093:9093"
     volumes:
-      - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - ./alertmanager/alertmanager.tmpl:/etc/alertmanager/alertmanager.tmpl:ro
+      - ./alertmanager/docker-entrypoint.sh:/docker-entrypoint.sh:ro
       - alertmanager_data:/alertmanager
-    command:
-      - "--config.file=/etc/alertmanager/alertmanager.yml"
-      - "--storage.path=/alertmanager"
+    entrypoint: ["/bin/sh", "/docker-entrypoint.sh"]
     environment:
       PUSHOVER_USER_KEY: ${PUSHOVER_USER_KEY}
       PUSHOVER_API_TOKEN: ${PUSHOVER_API_TOKEN}
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
       TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID}
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9093/-/healthy"]
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9093/-/healthy"]
       interval: 15s
       timeout: 5s
       retries: 3
@@ -169,7 +168,7 @@ services:
       - "--path.rootfs=/rootfs"
       - "--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)"
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9100/metrics"]
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9100/metrics"]
       interval: 15s
       timeout: 5s
       retries: 3
@@ -185,7 +184,7 @@ services:
       postgres:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9187/metrics"]
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9187/metrics"]
       interval: 15s
       timeout: 5s
       retries: 3
@@ -242,6 +241,7 @@ services:
     networks: [observability]
     ports:
       - "127.0.0.1:8080:8080"
+    command: webserver
     environment:
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:${AIRFLOW_DB_PASSWORD:-airflow}@airflow-db:5432/airflow
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
@@ -269,6 +269,7 @@ services:
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
       AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    command: scheduler
     volumes:
       - ./airflow/dags:/opt/airflow/dags:ro
     depends_on:

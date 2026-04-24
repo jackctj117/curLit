@@ -27,8 +27,8 @@ receivers:
 
   - name: "pager"
     pushover_configs:
-      - user_key: "${PUSHOVER_USER_KEY}"
-        token: "${PUSHOVER_API_TOKEN}"
+      - user_key: "__PUSHOVER_USER_KEY__"
+        token: "__PUSHOVER_API_TOKEN__"
         priority: 2
         retry: 30s
         expire: 3h
@@ -39,8 +39,8 @@ receivers:
           {{ .Annotations.description }}
           {{ end }}
     telegram_configs:
-      - bot_token: "${TELEGRAM_BOT_TOKEN}"
-        chat_id: "${TELEGRAM_CHAT_ID}"
+      - bot_token: "__TELEGRAM_BOT_TOKEN__"
+        chat_id: __TELEGRAM_CHAT_ID__
         parse_mode: "HTML"
         message: |
           🚨 <b>CRITICAL</b>
@@ -51,8 +51,8 @@ receivers:
 
   - name: "notify"
     pushover_configs:
-      - user_key: "${PUSHOVER_USER_KEY}"
-        token: "${PUSHOVER_API_TOKEN}"
+      - user_key: "__PUSHOVER_USER_KEY__"
+        token: "__PUSHOVER_API_TOKEN__"
         priority: 0
         title: 'FX Warning: {{ .GroupLabels.alertname }}'
         message: |
