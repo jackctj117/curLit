@@ -18,6 +18,9 @@ from src.execution.oanda_broker import OandaBroker
 from src.execution.oms import OrderManager
 from src.strategies.rate_diff_mean_reversion import RateDiffMRStrategy, RateDiffMRConfig
 from src.strategies.cb_sentiment_shift import CBSentimentShiftStrategy, CBSentimentConfig
+from src.data.provider import DataProvider
+from src.nlp.provider import NLPDataProvider
+from sqlalchemy import create_engine
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +46,14 @@ def build_broker(practice: bool) -> object:
 
 
 def build_strategies(config: dict, broker, oms) -> list:
+    db_url = os.environ.get(
+        "DATABASE_URL",
+        f"postgresql+psycopg2://{os.environ.get('POSTGRES_USER', 'fx')}:{os.environ.get('POSTGRES_PASSWORD', 'changeme')}@{os.environ.get('POSTGRES_HOST', 'localhost')}:5432/{os.environ.get('POSTGRES_DB', 'fx')}",
+    )
+    engine = create_engine(db_url)
+    data_provider = DataProvider(engine)
+    nlp_provider = NLPDataProvider(engine)
+
     strategies = []
     for sconf in config.get("strategies", []):
         sid = sconf.get("id", "")
@@ -50,16 +61,15 @@ def build_strategies(config: dict, broker, oms) -> list:
         if "rate_diff" in sid:
             strategies.append(RateDiffMRStrategy(
                 RateDiffMRConfig(**scfg) if scfg else RateDiffMRConfig(),
-                data_provider=None, state_store=None,
+                data_provider=data_provider, state_store=None,
             ))
         elif "sentiment" in sid or "cb" in sid:
             strategies.append(CBSentimentShiftStrategy(
                 CBSentimentConfig(**scfg) if scfg else CBSentimentConfig(),
-                data_provider=None, nlp_provider=None, state_store=None,
+                data_provider=data_provider, nlp_provider=nlp_provider, state_store=None,
             ))
     if not strategies:
-        # Default: always run rate diff strategy
-        strategies.append(RateDiffMRStrategy(RateDiffMRConfig()))
+        strategies.append(RateDiffMRStrategy(RateDiffMRConfig(), data_provider=data_provider))
     return strategies
 
 
