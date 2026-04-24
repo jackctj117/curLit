@@ -39,6 +39,7 @@ dependencies = [
     "beautifulsoup4>=4.12",
     # Finance
     "fredapi>=0.5",
+    "yfinance>=0.2",
     "holidays>=0.35",
     # Observability
     "prometheus-client>=0.17",
