@@ -77,6 +77,8 @@ class FREDProvider:
         if end:
             params["observation_end"] = end.strftime("%Y-%m-%d")
         data = self._get("series/observations", params)
+        if not data.get("observations"):
+            return pd.DataFrame()
         df = pd.DataFrame(data["observations"])
         df["date"] = pd.to_datetime(df["date"])
         df["value"] = pd.to_numeric(df["value"], errors="coerce")
