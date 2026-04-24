@@ -121,8 +121,12 @@ class FREDIngester(BaseIngester):
         frames = []
         for sid in self.series_ids:
             df = self.provider.get_series(sid, start, end)
+            if df.empty:
+                continue
+            df = df.reset_index()
             df["series_id"] = sid
-            frames.append(df.reset_index())
+            df = df.rename(columns={sid: "value"})
+            frames.append(df)
         return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
     def transform(self, raw: pd.DataFrame) -> pd.DataFrame:
