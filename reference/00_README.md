@@ -19,6 +19,7 @@ This repository contains code excerpts organized by subsystem. Each file is a st
 | `11_risk_management.md` | Risk | Position sizing, kill switches, correlation regime, stress testing |
 | `12_deployment.md` | Deployment | Systemd units, Docker compose, backup scripts, deployment workflow |
 | `13_research_workflow.md` | Research | Paper ingestion, relevance scoring, evaluation rubric, labeling tools |
+| `14_edge_testing.md` | Edge Testing | Null hypothesis framework, multiple testing correction, live tracker, decay detection, regime edge analysis |
 
 ## Directory Structure (Target)
 
@@ -38,7 +39,8 @@ fx-system/
 │   ├── security/          # Vault and credentials (file 09)
 │   ├── monitoring/        # Metrics and logging (file 10)
 │   ├── risk/              # Risk management (file 11)
-│   └── research/          # Research workflow (file 13)
+│   ├── research/          # Research workflow (file 13)
+│   └── edge_testing/      # Edge verification (file 14)
 ├── scripts/               # One-off scripts referenced across files
 ├── tests/                 # Tests mentioned in various files
 ├── configs/               # YAML configs
