@@ -27,6 +27,33 @@ Architecture & planning phase. Tech stack chosen, detailed design documented. No
 - `training/` — FinBERT fine-tuning scripts (once built)
 - `labeling/` — CB statement labeling tool (once built)
 
+## Reference Code (`reference/`)
+
+The `reference/` directory contains **14 markdown files (9,219 lines)** with reference implementations organized by subsystem. These are the canonical code patterns that should be used when implementing each subsystem. **Always consult the relevant reference file before writing code for a task.**
+
+### File mapping to phases / tasks
+
+| Reference File | Subsystem | Phase/Issue prefix |
+|---------------|-----------|-------------------|
+| `reference/01_data_layer.md` | DB schema, ingestion, providers | Phase 2, CL-nfc, CL-9kv, CL-ft3 |
+| `reference/02_features_and_models.md` | Feature store, OIS curve, rate diff, reaction function | Phase 3, CL-rvr, CL-8a9, CL-7x6 |
+| `reference/03_nlp_pipeline.md` | CB scrapers, preprocessing, lexicon, transformers, diffs | Phase 4, CL-4jm, CL-dc1, CL-kc9 |
+| `reference/04_backtest_framework.md` | Walk-forward runner, analytics, event backtest, bootstrap | Phase 5, CL-gkk, CL-cyk, CL-5yd |
+| `reference/05_strategies.md` | All 6 strategies (rate diff MR, CB sentiment, carry+vol, momentum, value, COT) | Phase 8, Phase A, CL-7d6, CL-6m6, CL-c77 |
+| `reference/06_portfolio.md` | Portfolio coordinator, risk parity, correlation monitor, attribution | Phase D, CL-6td, CL-6tu |
+| `reference/07_execution.md` | Broker ABC, OANDA, IBKR, OMS, paper broker | Phase 7, CL-s0v, CL-6q0, CL-po0 |
+| `reference/08_runtime.md` | Live engine, signal generation, price streaming, shutdown | Phase 9, CL-9l7, CL-xns |
+| `reference/09_security.md` | Vault, wolfCrypt, credential mgmt, SSH hardening | Phase 14, CL-446, CL-gm3, CL-0sg |
+| `reference/10_monitoring.md` | Prometheus metrics, structured logging, Grafana, alert rules | Phase 10, CL-98s, CL-2zx, CL-c0x |
+| `reference/11_risk_management.md` | Position sizing, kill switches, correlation, stress tests | Phase 6, CL-e0z, CL-a2p, CL-jn6 |
+| `reference/12_deployment.md` | Systemd, Docker Compose, backups, deploy workflow | Phase E, CL-cly, CL-2e2 |
+| `reference/13_research_workflow.md` | Paper ingestion, relevance scoring, evaluation rubric | Phase B, Phase C, CL-5b6, CL-366 |
+
+### Reading order for new tasks
+1. Check the table above for the relevant reference file
+2. Read that file's code patterns before writing implementation
+3. `reference/00_README.md` provides the full index and directory structure
+
 ## Development Conventions
 
 ### Test Integrity
