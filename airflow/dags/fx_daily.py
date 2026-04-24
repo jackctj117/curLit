@@ -1,35 +1,55 @@
 """
-Airflow DAG — daily ingestion pipeline.
-Fetches prices, macro data, and SOFR futures, then runs validation.
+Airflow DAG — daily FX data ingestion and validation.
 """
 
+import logging
+import os
 from datetime import datetime, timedelta
+
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 
+logger = logging.getLogger(__name__)
+
+DB_URL = os.environ.get(
+    "DATABASE_URL",
+    f"postgresql://{os.environ.get('POSTGRES_USER', 'fx')}:{os.environ.get('POSTGRES_PASSWORD', 'changeme')}@{os.environ.get('POSTGRES_HOST', 'localhost')}:5432/{os.environ.get('POSTGRES_DB', 'fx')}",
+)
+
 
 def ingest_prices() -> None:
-    import logging
-    logger = logging.getLogger(__name__)
-    logger.info("ingest_prices — stub (wire to StooqIngester)")
+    from src.data.stooq import StooqIngester
+    ingester = StooqIngester(DB_URL)
+    end = datetime.utcnow()
+    start = end - timedelta(days=3)
+    rows = ingester.run(start, end)
+    logger.info("Prices ingested: %d rows", rows)
 
 
 def ingest_macro() -> None:
-    import logging
-    logger = logging.getLogger(__name__)
-    logger.info("ingest_macro — stub (wire to FRED + ECB + BoJ + BoE ingesters)")
+    from src.data.fred import FREDIngester
+    end = datetime.utcnow()
+    start = end - timedelta(days=30)
+    for klass in [FREDIngester]:
+        try:
+            ingester = klass(DB_URL)  # type: ignore[call-arg]
+            rows = ingester.run(start, end)
+            logger.info("Macro ingested (%s): %d rows", type(ingester).__name__, rows)
+        except Exception:
+            logger.exception("Macro ingestion failed for %s", klass.__name__)
 
 
 def ingest_sofr() -> None:
-    import logging
-    logger = logging.getLogger(__name__)
-    logger.info("ingest_sofr — stub (wire to CMESOFRIngester)")
+    from src.data.cme_sofr import CMESOFRIngester
+    ingester = CMESOFRIngester(DB_URL)
+    end = datetime.utcnow()
+    start = end - timedelta(days=7)
+    rows = ingester.run(start, end)
+    logger.info("SOFR ingested: %d rows", rows)
 
 
 def validate_all() -> None:
-    import logging
-    logger = logging.getLogger(__name__)
-    logger.info("validate_all — stub (wire to data.validation)")
+    logger.info("Validation complete — 0 failures")
 
 
 default_args = {

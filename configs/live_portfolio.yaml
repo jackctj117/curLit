@@ -1,0 +1,42 @@
+# curLit live portfolio configuration
+
+engine:
+  practice: true
+  starting_equity: 100000
+
+strategies:
+  - id: eurusd_rate_diff_mr
+    class: src.strategies.rate_diff_mean_reversion.RateDiffMRStrategy
+    config:
+      pair: EURUSD
+      rate_spread_series: US2Y_MINUS_DE2Y
+      entry_z_threshold: 1.5
+      exit_z_threshold: 0.3
+      stop_loss_z: 3.5
+      max_holding_days: 30
+      volatility_target: 0.10
+      max_position_pct: 0.20
+      min_r_squared: 0.25
+      signal_interval_seconds: 3600
+
+  - id: cb_sentiment_shift
+    class: src.strategies.cb_sentiment_shift.CBSentimentShiftStrategy
+    config:
+      risk_per_trade_pct: 0.01
+      max_concurrent_positions: 3
+      strong_shift_percentile: 0.15
+      holding_days: 10
+      hard_stop_pct: 0.015
+      trailing_trigger_pct: 0.02
+      trailing_distance_pct: 0.015
+
+risk:
+  max_total_leverage: 2.0
+  max_per_pair_notional_pct: 0.30
+  max_drawdown: 0.20
+  vix_thresholds: [[15, 1.0], [20, 0.8], [25, 0.6], [30, 0.4], [40, 0.2]]
+  dd_thresholds: [[-0.05, 1.0], [-0.10, 0.75], [-0.15, 0.5], [-0.20, 0.25]]
+
+broker:
+  oanda_account_id: ""
+  oanda_api_key: ""

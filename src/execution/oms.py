@@ -71,7 +71,12 @@ class OrderManager:
         logger.warning("OMS: new trades halted")
 
     def has_pending(self) -> bool:
-        return False
+        return len(self._pending) > 0
+
+    def resume_trades(self) -> None:
+        with self._lock:
+            self._halted = False
+            logger.info("OMS: trades resumed")
 
     @staticmethod
     def _min_trade_size(symbol: str) -> float:
