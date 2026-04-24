@@ -35,6 +35,15 @@ Architecture & planning phase. Tech stack chosen, detailed design documented. No
 - Fix the CODE, not the tests. If the code cannot be fixed within scope, escalate
 - Every test must have an independent oracle: known test vectors from an external source, cross-validation between two independent implementations, or bit-exact comparison against a reference path
 
+### Code Quality Standards
+- **Logging**: Add extensive logging — more than you think you need. Every state change, every decision boundary, every external call. Use structured JSON logging via `LogContext`. Log at INFO for state changes, DEBUG for detailed flow.
+- **Assertions**: Add assertions at function boundaries for invariants. Check preconditions on inputs, postconditions on return values, and class invariants at method entry/exit. Assertions are documentation — they tell future readers what must be true.
+- **Property-based tests**: Write `hypothesis` tests alongside unit tests for every numerical function. Test monotonicity, boundedness, sign consistency, and round-trip properties. Use decorators: `@given(st.floats(...), st.floats(...))`.
+- **Type hints**: All functions must have explicit type hints on parameters and return values. Use `mypy --strict` mode. Use `| None` not `Optional`, `list[dict]` not `List[Dict]`. No `Any` except at system boundaries.
+- **Magic numbers**: Document every magic number and constant with a comment explaining WHY that specific value was chosen. Link to the source (paper, empirical study, architecture doc section). No unexplained numeric literals.
+- **Mypy must pass**: `make typecheck` must exit 0 before any commit. CI enforces this.
+- **Log BEFORE the action, not after**: "Placing order..." before the API call, "Order filled" after. You need the BEFORE log when the action crashes.
+
 ### No Fabrication
 - NEVER report status, results, or completion that does not reflect work actually performed
 - If uncertain whether a step succeeded, say so explicitly; do not paper over uncertainty
