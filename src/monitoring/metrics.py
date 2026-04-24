@@ -317,6 +317,11 @@ class HeartbeatTracker:
 
 def start_metrics_server(port: int = 8000) -> None:
     """Start the Prometheus /metrics HTTP endpoint."""
-    start_http_server(port)
+    import logging
+    logger = logging.getLogger(__name__)
+    try:
+        start_http_server(port)
+    except OSError:
+        logger.warning("Port %d unavailable — metrics server not started", port)
 
 import threading  # noqa: E402

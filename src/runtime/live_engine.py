@@ -22,7 +22,7 @@ class LiveEngine:
 
     async def run(self) -> None:
         self.running = True
-        start_metrics_server(port=8000)
+        start_metrics_server(port=8001)
         logger.info("Live engine starting")
         await asyncio.gather(
             self._price_stream_task(),
@@ -50,7 +50,7 @@ class LiveEngine:
             for strategy in self.strategies:
                 with LogContext(strategy_id=strategy.id):
                     try:
-                        last = self._last_signal_times.get(strategy.id, datetime.min)
+                        last = self._last_signal_times.get(strategy.id, datetime.min.replace(tzinfo=timezone.utc))
                         interval = getattr(strategy, "signal_interval_seconds", 60)
                         if (now - last).total_seconds() < interval:
                             continue
