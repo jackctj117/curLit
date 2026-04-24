@@ -34,7 +34,7 @@ groups:
 
       - alert: LiveEngineDown
         expr: up{service="live_engine"} == 0
-        for: 2m
+        for: 5m
         labels:
           severity: critical
           category: availability
