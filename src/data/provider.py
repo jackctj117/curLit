@@ -16,6 +16,7 @@ class DataProvider:
     def get_aligned_series(
         self, symbols: list[str], start: datetime, end: datetime,
     ) -> pd.DataFrame | None:
+        # Try prices table first
         try:
             query = text("""
                 SELECT ts, symbol, close
@@ -27,13 +28,38 @@ class DataProvider:
             df = pd.read_sql(query, self.engine, params={
                 "symbols": symbols, "start": start, "end": end,
             })
+            if not df.empty:
+                df["ts"] = pd.to_datetime(df["ts"])
+                return df.pivot_table(index="ts", columns="symbol", values="close", aggfunc="last")
+        except Exception:
+            pass
+
+        # Fallback: macro_data for FRED symbols (US_2Y, DE_2Y, etc.)
+        fred_map = {"US_2Y": "DGS2", "DE_2Y": "IRLTLT01DEM156N",
+                     "US_10Y": "DGS10", "EURUSD": "DEXUSEU",
+                     "US_FEDFUNDS": "DFF"}
+        fred_symbols = [fred_map[s] for s in symbols if s in fred_map]
+        if not fred_symbols:
+            return None
+        try:
+            query = text("""
+                SELECT DISTINCT ON (observation_date, series_id)
+                    observation_date as ts, series_id as symbol, value as close
+                FROM macro_data
+                WHERE series_id = ANY(:symbols)
+                  AND observation_date >= :start AND observation_date <= :end
+                ORDER BY observation_date, release_date DESC
+            """)
+            df = pd.read_sql(query, self.engine, params={
+                "symbols": fred_symbols, "start": start.date(), "end": end.date(),
+            })
             if df.empty:
                 return None
             df["ts"] = pd.to_datetime(df["ts"])
             pivot = df.pivot_table(index="ts", columns="symbol", values="close", aggfunc="last")
+            pivot.columns = [k for k, v in fred_map.items() if v in pivot.columns]
             return pivot
         except Exception:
-            logger.debug("Aligned series unavailable (table may not exist yet)")
             return None
 
     def get_latest_rate_spread(self) -> float | None:
