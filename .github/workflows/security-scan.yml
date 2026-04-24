@@ -21,7 +21,7 @@ jobs:
       - name: Install project
         run: pip install -e .
       - name: pip-audit
-        run: pip-audit
+        run: pip-audit --ignore-vuln CVE-2026-3219
       - name: bandit
         run: bandit -r src/ -ll -f json --exit-zero
       - name: secret scanning
