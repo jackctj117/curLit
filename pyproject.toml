@@ -143,6 +143,10 @@ module = [
     "oandapyv20.*",
     "streamlit.*",
     "great_expectations.*",
+    "pandas",
+    "pandas.*",
+    "scipy",
+    "scipy.*",
 ]
 ignore_missing_imports = true
 
