@@ -107,6 +107,22 @@ model_drift_severity = Gauge(
     ["model_id"],
 )
 
+tca_component_bps = Histogram(
+    "fx_tca_component_bps",
+    "Per-fill TCA component cost in bps, broken out by component "
+    "(queue / impact / broker). Positive = cost to us.",
+    ["pair", "component"],
+    buckets=(-5.0, -2.0, -1.0, -0.5, 0.0, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0),
+)
+
+tca_implementation_shortfall_bps = Histogram(
+    "fx_tca_implementation_shortfall_bps",
+    "Per-fill total implementation shortfall vs arrival mid in bps. "
+    "Positive = adverse fill price.",
+    ["pair", "side"],
+    buckets=(-5.0, -2.0, -1.0, -0.5, 0.0, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0),
+)
+
 orders_placed = Counter(
     "fx_orders_placed_total",
     "Orders placed",
