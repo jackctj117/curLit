@@ -29,11 +29,14 @@ class PerformanceAnalytics:
         running_max = equity.cummax()
         drawdown = (equity - running_max) / running_max
         max_dd = float(drawdown.min())
-        max_dd_idx = int(drawdown.idxmin()) if max_dd < 0 else -1
-        dd_duration = (
-            int(returns[max_dd_idx:][returns[max_dd_idx:] < 0].count())
-            if max_dd_idx >= 0 else 0
-        )
+        # idxmin() returns the index *value* — int for RangeIndex, Timestamp
+        # for DatetimeIndex. Use .loc[] for slicing so it works for either.
+        if max_dd < 0:
+            max_dd_idx = drawdown.idxmin()
+            tail = returns.loc[max_dd_idx:]
+            dd_duration = int(tail[tail < 0].count())
+        else:
+            dd_duration = 0
         calmar = cagr / abs(max_dd) if max_dd < 0 else 0.0
 
         trades = returns[returns != 0]
