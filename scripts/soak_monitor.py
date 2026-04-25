@@ -22,7 +22,7 @@ def capture_state() -> dict:
     }
     try:
         import httpx
-        r = httpx.get("http://localhost:8090/metrics", timeout=5)
+        r = httpx.get("http://localhost:8099/metrics", timeout=5)
         for line in r.text.split("\n"):
             if "fx_account_equity_usd" in line and not line.startswith("#"):
                 state["equity"] = float(line.split()[-1])
@@ -50,11 +50,28 @@ def capture_state() -> dict:
 
 
 def _find_engine_pid() -> int | None:
+    """Find the actual python engine PID, not the shell wrapper that launched it.
+
+    A run launched via `python -m src.runtime.run_engine` from a shell ends up
+    with two pgrep matches: the zsh wrapper holding the eval string AND the
+    python process. We want the python process — filter by checking each
+    candidate's `comm` (basename of the executable) for "python".
+    """
     try:
-        result = subprocess.run(["pgrep", "-f", "src.runtime.run_engine"],
-                                capture_output=True, text=True)
-        pids = result.stdout.strip().split("\n")
-        return int(pids[0]) if pids[0] else None
+        result = subprocess.run(
+            ["pgrep", "-f", "src\\.runtime\\.run_engine"],
+            capture_output=True, text=True,
+        )
+        pids = [int(p) for p in result.stdout.strip().split("\n") if p.strip().isdigit()]
+        for pid in pids:
+            comm = subprocess.run(
+                ["ps", "-p", str(pid), "-o", "comm="],
+                capture_output=True, text=True,
+            )
+            basename = comm.stdout.strip().lower()
+            if "python" in basename:
+                return pid
+        return pids[0] if pids else None
     except Exception:
         return None
 
