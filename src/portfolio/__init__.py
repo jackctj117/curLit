@@ -9,6 +9,11 @@ from src.portfolio.coordinator import (
     PortfolioStateProtocol,
     StrategyAllocation,
 )
+from src.portfolio.risk_parity import (
+    diagnose_allocation,
+    risk_parity_weights,
+    rolling_risk_parity_weights,
+)
 from src.portfolio.state_store import PortfolioStateStore
 
 __all__ = [
@@ -17,4 +22,7 @@ __all__ = [
     "PortfolioStateProtocol",
     "PortfolioStateStore",
     "StrategyAllocation",
+    "diagnose_allocation",
+    "risk_parity_weights",
+    "rolling_risk_parity_weights",
 ]

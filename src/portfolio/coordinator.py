@@ -35,11 +35,11 @@ from typing import Any, Protocol, runtime_checkable
 
 import numpy as np
 import pandas as pd
-from scipy.optimize import minimize
 
 from src.execution.broker import Broker
 from src.execution.oms import OrderIntent, OrderManager
 from src.monitoring.logging_setup import LogContext
+from src.portfolio.risk_parity import risk_parity_weights
 
 logger = logging.getLogger(__name__)
 
@@ -80,9 +80,6 @@ _CORR_REGIME_STRESSED_Z: float = 1.5
 _CORR_REGIME_EXPOSURE_CRISIS: float = 0.50
 _CORR_REGIME_EXPOSURE_STRESSED: float = 0.75
 _CORR_REGIME_EXPOSURE_NORMAL: float = 1.00
-
-# Trading days per year for annualized covariance. Convention.
-_TRADING_DAYS_PER_YEAR: int = 252
 
 # Urgency rank for escalation when multiple strategies share a symbol.
 _URGENCY_RANK: dict[str, int] = {"passive": 0, "normal": 1, "urgent": 2}
@@ -640,46 +637,41 @@ class PortfolioCoordinator:
     def _compute_risk_parity(returns: pd.DataFrame) -> dict[str, float]:
         """Solve for weights where each strategy contributes equal portfolio risk.
 
-        SLSQP on the mean-deviation objective with per-strategy bounds and a
-        sum-to-one equality. D2 (CL-6tu) will replace this with the shared
-        src/portfolio/risk_parity.py module.
+        Delegates to src/portfolio/risk_parity.py. Returns sum-to-1 weights —
+        exposure scaling is applied separately via current_exposure_mult.
+
+        Bounds are widened automatically for small portfolios where the default
+        (0.05, 0.40) would make sum-to-1 infeasible (e.g. n=2 → max sum 0.80).
         """
-        cov = returns.cov().values * _TRADING_DAYS_PER_YEAR
-        n = len(cov)
-        strategy_ids = returns.columns.tolist()
-
-        def objective(w: np.ndarray[Any, Any]) -> float:
-            port_vol = float(np.sqrt(w @ cov @ w))
-            if port_vol == 0:
-                return 0.0
-            marginal = cov @ w
-            rc = w * marginal / port_vol
-            return float(np.sum((rc - np.mean(rc)) ** 2))
-
-        x0 = np.ones(n) / n
-        bounds = [_RISK_PARITY_BOUNDS_PER_STRATEGY] * n
-        constraints = [{"type": "eq", "fun": lambda w: w.sum() - 1.0}]
-
-        result = minimize(
-            objective,
-            x0,
-            method="SLSQP",
+        n = len(returns.columns)
+        bounds = PortfolioCoordinator._effective_risk_parity_bounds(n)
+        weights_series = risk_parity_weights(
+            returns,
             bounds=bounds,
-            constraints=constraints,
+            target_total_vol=None,
         )
+        return {sid: float(w) for sid, w in weights_series.items()}
 
-        if not result.success:
-            logger.warning(
-                "Risk parity SLSQP failed: %s; falling back to equal weight",
-                result.message,
-            )
-            return {sid: 1.0 / n for sid in strategy_ids}
+    @staticmethod
+    def _effective_risk_parity_bounds(n: int) -> tuple[float, float]:
+        """Pick per-strategy bounds that are feasible for n strategies summing to 1.
 
-        # Renormalize to sum to exactly 1.0 (SLSQP equality is satisfied to ~1e-8).
-        raw = {sid: float(x) for sid, x in zip(strategy_ids, result.x, strict=True)}
-        total = sum(raw.values())
-        assert total > 0, "risk parity returned non-positive weight sum"
-        return {sid: w / total for sid, w in raw.items()}
+        Default (0.05, 0.40) targets a typical 4-6 strategy portfolio. For very
+        small n where the defaults are infeasible (n=2 → max sum 0.80 < 1.0)
+        the upper bound widens; for very large n where lower would over-saturate
+        (n > 1/lower → lower budget > 1.0) the lower bound shrinks. Otherwise
+        the defaults pass through unchanged.
+        """
+        lower, upper = _RISK_PARITY_BOUNDS_PER_STRATEGY
+        if n <= 0:
+            return (lower, upper)
+        # Widen upper only when n*upper < 1.0 (genuinely infeasible).
+        if n * upper < 1.0:
+            upper = min(1.0 / n + 0.10, 1.0)
+        # Tighten lower only when n*lower > 1.0 (genuinely infeasible).
+        if n * lower > 1.0:
+            lower = max(0.0, 0.5 / n)
+        return (lower, upper)
 
     @staticmethod
     def _check_correlation_regime(returns: pd.DataFrame) -> dict[str, Any]:
