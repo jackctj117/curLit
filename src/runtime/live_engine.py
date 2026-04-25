@@ -3,22 +3,49 @@
 import asyncio
 import logging
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+from typing import Any
 
+from src.execution.oms import OrderIntent
 from src.monitoring.logging_setup import LogContext
-from src.monitoring.metrics import start_metrics_server, HeartbeatTracker
+from src.monitoring.metrics import HeartbeatTracker, start_metrics_server
 
 logger = logging.getLogger(__name__)
 
 
+# Daily rebalance check interval (seconds). The coordinator's own
+# _REBALANCE_MIN_INTERVAL_DAYS gating prevents over-frequent risk-parity refits;
+# this loop just gives the coordinator a daily opportunity to decide.
+_REBALANCE_TASK_INTERVAL_SEC: int = 86_400
+
+
 class LiveEngine:
-    def __init__(self, strategies: list, oms, broker) -> None:
+    def __init__(
+        self,
+        strategies: list[Any],
+        oms: Any,
+        broker: Any,
+        coordinator: Any | None = None,
+    ) -> None:
         self.strategies = strategies
         self.oms = oms
         self.broker = broker
+        self.coordinator = coordinator
         self.running = False
-        self._last_prices: dict[str, dict] = {}
+        self._last_prices: dict[str, dict[str, Any]] = {}
         self._last_signal_times: dict[str, datetime] = {}
+
+        if coordinator is None:
+            logger.warning(
+                "LiveEngine started without PortfolioCoordinator — strategy intents "
+                "will route directly to OMS (legacy mode). Wire a coordinator for "
+                "portfolio-level scaling, aggregation, and constraints.",
+            )
+        else:
+            logger.info(
+                "LiveEngine using PortfolioCoordinator with %d strategies",
+                len(strategies),
+            )
 
     async def run(self) -> None:
         self.running = True
@@ -26,13 +53,16 @@ class LiveEngine:
         self._heartbeat = HeartbeatTracker("live_engine", interval_sec=30)
         self._heartbeat.start()
         logger.info("Live engine starting")
-        await asyncio.gather(
+        tasks = [
             self._price_stream_task(),
             self._signal_generation_task(),
             self._reconciliation_task(),
             self._health_check_task(),
             self._web_server_task(),
-        )
+        ]
+        if self.coordinator is not None:
+            tasks.append(self._rebalance_task())
+        await asyncio.gather(*tasks)
 
     async def _web_server_task(self) -> None:
         import uvicorn
@@ -54,24 +84,76 @@ class LiveEngine:
 
     async def _signal_generation_task(self) -> None:
         while self.running:
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             if not self._in_trading_window(now):
                 await asyncio.sleep(60)
                 continue
+
+            intents_by_strategy: dict[str, list[OrderIntent]] = {}
             for strategy in self.strategies:
                 with LogContext(strategy_id=strategy.id):
                     try:
-                        last = self._last_signal_times.get(strategy.id, datetime.min.replace(tzinfo=timezone.utc))
+                        last = self._last_signal_times.get(
+                            strategy.id, datetime.min.replace(tzinfo=UTC),
+                        )
                         interval = getattr(strategy, "signal_interval_seconds", 60)
                         if (now - last).total_seconds() < interval:
                             continue
-                        intents = await strategy.generate_intents(self._last_prices, self.broker)
-                        for intent in intents:
-                            self.oms.submit_intent(intent)
+                        intents = await strategy.generate_intents(
+                            self._last_prices, self.broker,
+                        )
+                        if intents:
+                            intents_by_strategy[strategy.id] = list(intents)
                         self._last_signal_times[strategy.id] = now
                     except Exception:
                         logger.exception("Strategy %s error", strategy.id)
+
+            if intents_by_strategy:
+                await self._dispatch_intents(intents_by_strategy)
+
             await asyncio.sleep(10)
+
+    async def _dispatch_intents(
+        self,
+        intents_by_strategy: dict[str, list[OrderIntent]],
+    ) -> None:
+        """Forward gathered intents either through the coordinator or directly to OMS.
+
+        Coordinator path is preferred — it scales by allocation, applies portfolio
+        constraints, and aggregates by symbol. Legacy direct-OMS path is used only
+        when no coordinator was wired (warning emitted at startup).
+        """
+        if self.coordinator is not None:
+            try:
+                await self.coordinator.process_intents(intents_by_strategy)
+            except Exception:
+                logger.exception(
+                    "Coordinator process_intents failed; intents dropped this tick"
+                )
+            return
+
+        # Legacy fallback: submit each intent directly. Preserved so the engine
+        # can run while operators wire the coordinator (D7 migration safety net).
+        for sid, intents in intents_by_strategy.items():
+            with LogContext(strategy_id=sid):
+                for intent in intents:
+                    self.oms.submit_intent(intent)
+
+    async def _rebalance_task(self) -> None:
+        """Daily rebalance trigger.
+
+        The coordinator's own minimum-interval gating handles whether a real refit
+        runs; this loop just ticks the opportunity once per day so we don't miss
+        a rebalance window.
+        """
+        if self.coordinator is None:
+            return
+        while self.running:
+            await asyncio.sleep(_REBALANCE_TASK_INTERVAL_SEC)
+            try:
+                await self.coordinator.rebalance_allocations()
+            except Exception:
+                logger.exception("Rebalance task error")
 
     async def _reconciliation_task(self) -> None:
         while self.running:

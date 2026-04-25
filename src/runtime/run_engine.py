@@ -5,36 +5,41 @@ import asyncio
 import logging
 import os
 import signal
-import sys
 from pathlib import Path
+from typing import Any
 
 import yaml
+from sqlalchemy import create_engine
 
-from src.monitoring.logging_setup import setup_logging
-from src.monitoring.metrics import start_metrics_server
-from src.runtime.live_engine import LiveEngine
-from src.execution.paper_broker import PaperBroker
+from src.data.provider import DataProvider
 from src.execution.oanda_broker import OandaBroker
 from src.execution.oms import OrderManager
-from src.strategies.rate_diff_mean_reversion import RateDiffMRStrategy, RateDiffMRConfig
-from src.strategies.cb_sentiment_shift import CBSentimentShiftStrategy, CBSentimentConfig
-from src.data.provider import DataProvider
+from src.execution.paper_broker import PaperBroker
+from src.monitoring.logging_setup import setup_logging
 from src.nlp.provider import NLPDataProvider
-from sqlalchemy import create_engine
+from src.portfolio import (
+    PortfolioConstraints,
+    PortfolioCoordinator,
+    PortfolioStateStore,
+)
+from src.runtime.live_engine import LiveEngine
+from src.strategies.cb_sentiment_shift import CBSentimentConfig, CBSentimentShiftStrategy
+from src.strategies.rate_diff_mean_reversion import RateDiffMRConfig, RateDiffMRStrategy
 
 logger = logging.getLogger(__name__)
 
 CONFIG_PATH = Path(os.environ.get("FX_CONFIG", "configs/live_portfolio.yaml"))
 
 
-def load_config(path: Path) -> dict:
+def load_config(path: Path) -> dict[str, Any]:
     if not path.exists():
         logger.warning("Config not found at %s — using defaults", path)
         return {}
-    return yaml.safe_load(path.read_text())
+    loaded = yaml.safe_load(path.read_text())
+    return loaded if isinstance(loaded, dict) else {}
 
 
-def build_broker(practice: bool) -> object:
+def build_broker(practice: bool) -> Any:
     if practice:
         return PaperBroker(initial_capital=100_000)
     oanda_key = os.environ.get("OANDA_API_KEY", "")
@@ -45,32 +50,96 @@ def build_broker(practice: bool) -> object:
     return OandaBroker(oanda_key, oanda_id, practice=False)
 
 
-def build_strategies(config: dict, broker, oms) -> list:
+def _build_db_engine() -> Any:
     db_url = os.environ.get(
         "DATABASE_URL",
-        f"postgresql+psycopg2://{os.environ.get('POSTGRES_USER', 'fx')}:{os.environ.get('POSTGRES_PASSWORD', 'changeme')}@{os.environ.get('POSTGRES_HOST', 'localhost')}:5432/{os.environ.get('POSTGRES_DB', 'fx')}",
+        f"postgresql+psycopg2://{os.environ.get('POSTGRES_USER', 'fx')}:"
+        f"{os.environ.get('POSTGRES_PASSWORD', 'changeme')}@"
+        f"{os.environ.get('POSTGRES_HOST', 'localhost')}:5432/"
+        f"{os.environ.get('POSTGRES_DB', 'fx')}",
     )
-    engine = create_engine(db_url)
+    return create_engine(db_url)
+
+
+def build_strategies(
+    config: dict[str, Any],
+    broker: Any,
+    oms: OrderManager,
+) -> list[Any]:
+    engine = _build_db_engine()
     data_provider = DataProvider(engine)
     nlp_provider = NLPDataProvider(engine)
 
-    strategies = []
+    strategies: list[Any] = []
     for sconf in config.get("strategies", []):
         sid = sconf.get("id", "")
         scfg = sconf.get("config", {})
         if "rate_diff" in sid:
-            strategies.append(RateDiffMRStrategy(
-                RateDiffMRConfig(**scfg) if scfg else RateDiffMRConfig(),
-                data_provider=data_provider, state_store=None,
-            ))
+            strategies.append(
+                RateDiffMRStrategy(
+                    RateDiffMRConfig(**scfg) if scfg else RateDiffMRConfig(),
+                    data_provider=data_provider,
+                    state_store=None,
+                )
+            )
         elif "sentiment" in sid or "cb" in sid:
-            strategies.append(CBSentimentShiftStrategy(
-                CBSentimentConfig(**scfg) if scfg else CBSentimentConfig(),
-                data_provider=data_provider, nlp_provider=nlp_provider, state_store=None,
-            ))
+            strategies.append(
+                CBSentimentShiftStrategy(
+                    CBSentimentConfig(**scfg) if scfg else CBSentimentConfig(),
+                    data_provider=data_provider,
+                    nlp_provider=nlp_provider,
+                    state_store=None,
+                )
+            )
     if not strategies:
-        strategies.append(RateDiffMRStrategy(RateDiffMRConfig(), data_provider=data_provider))
+        strategies.append(
+            RateDiffMRStrategy(RateDiffMRConfig(), data_provider=data_provider)
+        )
     return strategies
+
+
+def build_coordinator(
+    config: dict[str, Any],
+    strategies: list[Any],
+    oms: OrderManager,
+    broker: Any,
+) -> PortfolioCoordinator | None:
+    """Construct the PortfolioCoordinator from config.
+
+    Returns None and logs a warning if DB is unreachable — the engine will run
+    in legacy direct-OMS mode in that case rather than refusing to start.
+    """
+    portfolio_cfg = config.get("portfolio", {})
+    constraints_cfg = portfolio_cfg.get("constraints", {})
+    constraints = PortfolioConstraints(**constraints_cfg) if constraints_cfg else None
+
+    try:
+        engine = _build_db_engine()
+        state = PortfolioStateStore(engine)
+    except Exception:
+        logger.exception(
+            "Failed to construct PortfolioStateStore; engine will run in legacy mode"
+        )
+        return None
+
+    coordinator = PortfolioCoordinator(
+        strategies=strategies,
+        oms=oms,
+        broker=broker,
+        state=state,
+        constraints=constraints,
+    )
+
+    initial_weights = portfolio_cfg.get("initial_weights")
+    if initial_weights:
+        coordinator.initialize_allocations(initial_weights)
+    else:
+        # Default to equal weight across all strategies in live mode (paper-mode
+        # promotion via D5/CL-6vv will override this once that workflow lands).
+        n = len(strategies)
+        coordinator.initialize_allocations({s.id: 1.0 / n for s in strategies})
+
+    return coordinator
 
 
 async def run_engine(practice: bool) -> None:
@@ -81,7 +150,8 @@ async def run_engine(practice: bool) -> None:
     broker = build_broker(practice)
     oms = OrderManager(broker)
     strategies = build_strategies(config, broker, oms)
-    engine = LiveEngine(strategies, oms, broker)
+    coordinator = build_coordinator(config, strategies, oms, broker)
+    engine = LiveEngine(strategies, oms, broker, coordinator=coordinator)
 
     # Wire web API to live state
     try:

@@ -9,10 +9,12 @@ from src.portfolio.coordinator import (
     PortfolioStateProtocol,
     StrategyAllocation,
 )
+from src.portfolio.state_store import PortfolioStateStore
 
 __all__ = [
     "PortfolioConstraints",
     "PortfolioCoordinator",
     "PortfolioStateProtocol",
+    "PortfolioStateStore",
     "StrategyAllocation",
 ]
