@@ -30,6 +30,18 @@ strategies:
       trailing_trigger_pct: 0.02
       trailing_distance_pct: 0.015
 
+  - id: carry_vol_filter
+    class: src.strategies.carry_vol_filter.CarryVolFilterStrategy
+    config:
+      top_k: 3
+      bottom_k: 3
+      rebalance_day: 1
+      vol_index_series: CVIX
+      vol_lookback_days: 120
+      max_position_pct: 0.15
+      min_rate_spread: 0.005
+      signal_interval_seconds: 86400
+
 risk:
   max_total_leverage: 2.0
   max_per_pair_notional_pct: 0.30

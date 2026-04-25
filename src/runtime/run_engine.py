@@ -25,6 +25,10 @@ from src.portfolio import (
     ReconciliationPolicy,
 )
 from src.runtime.live_engine import LiveEngine
+from src.strategies.carry_vol_filter import (
+    CarryVolFilterConfig,
+    CarryVolFilterStrategy,
+)
 from src.strategies.cb_sentiment_shift import CBSentimentConfig, CBSentimentShiftStrategy
 from src.strategies.rate_diff_mean_reversion import RateDiffMRConfig, RateDiffMRStrategy
 
@@ -90,6 +94,14 @@ def build_strategies(
                     CBSentimentConfig(**scfg) if scfg else CBSentimentConfig(),
                     data_provider=data_provider,
                     nlp_provider=nlp_provider,
+                    state_store=None,
+                )
+            )
+        elif "carry" in sid or "vol_filter" in sid:
+            strategies.append(
+                CarryVolFilterStrategy(
+                    CarryVolFilterConfig(**scfg) if scfg else CarryVolFilterConfig(),
+                    data_provider=data_provider,
                     state_store=None,
                 )
             )
