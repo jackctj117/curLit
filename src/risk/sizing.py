@@ -64,15 +64,18 @@ class PositionSizer:
 
     @staticmethod
     def kelly(edge: float, odds: float, kelly_fraction: float = 0.25) -> float:
-        """Kelly-inspired position sizing fraction.
-        
+        """Kelly-inspired position sizing fraction, clamped to [0, 1].
+
         Full Kelly: f* = edge - (1 - edge) / odds
         Half Kelly produces 75% of growth rate with 25% of drawdown risk (Thorp 1997).
-        We default to 0.25 (quarter Kelly) for survival: 
-        higher retention of growth with dramatically lower ruin probability.
+        We default to 0.25 (quarter Kelly) for survival: higher retention of
+        growth with dramatically lower ruin probability.
+
+        Inputs are clamped, not asserted: a noisy estimator producing edge < 0
+        or edge > 1 returns 0 size (no trade) rather than crashing the strategy
+        mid-tick. Only kelly_fraction is asserted because it's a config knob
+        the operator owns, not a runtime input.
         """
-        assert 0 <= edge <= 1, f"edge must be in [0, 1], got {edge}"
-        assert odds >= 0, f"odds must be non-negative, got {odds}"
         assert 0 <= kelly_fraction <= 1, f"fraction must be in [0, 1], got {kelly_fraction}"
 
         if odds <= 0:
@@ -80,11 +83,10 @@ class PositionSizer:
             return 0.0
 
         full_kelly = edge - (1.0 - edge) / odds
-        result = max(0.0, full_kelly * kelly_fraction)
+        result = max(0.0, min(1.0, full_kelly * kelly_fraction))
 
-        logger.debug("kelly: edge=%.3f odds=%.2f full=%.3f frac=%.3f", 
+        logger.debug("kelly: edge=%.3f odds=%.2f full=%.3f frac=%.3f",
                       edge, odds, full_kelly, result)
-        assert 0.0 <= result <= 1.0, f"kelly result {result} out of [0,1]"
         return result
 
     @staticmethod

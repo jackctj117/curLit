@@ -3,8 +3,6 @@
 from dataclasses import dataclass
 from datetime import date, timedelta
 
-import numpy as np
-
 
 @dataclass
 class SwapModelConfig:
@@ -23,15 +21,28 @@ class SwapModel:
         base_rate: float,
         day_of_week: int,
     ) -> float:
+        """Daily swap on a signed position.
+
+        Convention: target_rate is the rate on the currency you're long; base_rate
+        is the rate on the currency you're short. position carries sign
+        (positive = long).
+
+        Cash flow has two components:
+            position * (target - base) / 360       — earn long, pay short
+            -|position| * markup / 360             — broker always charges markup
+
+        Wednesday rolls 3x to cover the weekend; Sat/Sun fall through to zero
+        (no rollover applied because Wednesday already captured them).
+        """
         if day_of_week in (5, 6):
             return 0.0
 
         multiplier = 3 if day_of_week == self.config.weekend_roll_weekday else 1
         rate_diff = target_rate - base_rate
-        daily_rate_diff = rate_diff / 360.0
-        markup = self.config.broker_markup_pct / 100.0 / 360.0
-        effective = daily_rate_diff - markup
-        return abs(position) * effective * multiplier * np.sign(position * rate_diff)
+        markup_rate = self.config.broker_markup_pct / 100.0
+        daily_carry = position * rate_diff / 360.0
+        daily_markup = abs(position) * markup_rate / 360.0
+        return (daily_carry - daily_markup) * multiplier
 
     def simulate_swap_over_hold(
         self,
