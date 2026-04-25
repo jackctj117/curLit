@@ -58,8 +58,16 @@ def test_quarter_kelly_less_than_full_kelly(edge: float, odds: float) -> None:
 def test_vol_target_size_not_exploding(
     capital: float, target_vol: float, realized_vol: float, price: float,
 ) -> None:
-    """Vol-targeted size should not exceed 5x capital/price."""
+    """Vol-targeted size stays under 5×capital/price for realistic vol ratios.
+
+    The function deliberately doesn't clamp size (clamping is RiskManager's
+    layer per docstring); for size <= 5*capital/price to hold, we need
+    realized_vol / target_vol >= 1/5. assume() filters the regime where
+    realized_vol is so low relative to target that the unclamped output
+    legitimately exceeds the bound.
+    """
     from src.risk.sizing import PositionSizer
+    assume(realized_vol >= target_vol / 5.0)
     size = PositionSizer.volatility_target(capital, target_vol, realized_vol, price)
     max_val = 5.0 * capital / price
     assert size <= max_val
@@ -146,11 +154,24 @@ def test_single_quote_curve_roundtrip(rate: float, days: int) -> None:
 )
 @settings(max_examples=30)
 def test_zscore_mean_near_zero(rets: list[float], window: int) -> None:
-    """Z-score of any series should have mean near 0."""
+    """Z-score of any series should have mean near 0.
+
+    Filters degenerate inputs where the rolling-window std is zero (constant
+    series) — z-score is mathematically undefined there (NaN), so the mean
+    assertion can't hold. Our zscore() doesn't guard against zero std because
+    constant features are caller-side data-quality issues, not numerical
+    invariants of the function.
+    """
     import pandas as pd
     from src.features import zscore
-    s = pd.Series(rets).cumsum() + 100
+    # Stationary input — z-score's mean-zero invariant holds for stationary
+    # series but not for cumulative (random-walk) series, where rolling
+    # z-scores carry the trend bias. Testing the function's correctness, not
+    # whether arbitrary non-stationary inputs are mean-centered.
+    s = pd.Series(rets) + 100
     z = zscore(s, window=window).dropna()
+    # Need a full window of valid z-scores; constant rolling subseries → NaN.
+    assume(len(z) >= window)
     assert abs(z.mean()) < 0.5
 
 

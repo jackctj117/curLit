@@ -9,9 +9,12 @@ from src.models.rate_diff import RateDiffModel
 
 class TestRateDiffModel:
     def test_fits_known_relationship(self) -> None:
+        # Stationary spread (not cumsum) avoids spurious-regression artifacts
+        # and gives predictable signal magnitude across seeds. With signal/noise
+        # ratio ≈ 5x, R² stays >0.9 regardless of the specific draw.
         np.random.seed(42)
         n = 500
-        spread = np.random.randn(n).cumsum() * 0.01 + 1.5
+        spread = np.random.randn(n) * 0.5 + 1.5
         price = 1.10 - 0.05 * spread + np.random.randn(n) * 0.005
         df = pd.DataFrame({"target": price, "spread": spread})
         model = RateDiffModel()
