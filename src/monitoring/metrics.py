@@ -101,6 +101,12 @@ edge_severity = Gauge(
     ["strategy_id"],
 )
 
+model_drift_severity = Gauge(
+    "fx_model_drift_severity",
+    "Model drift severity vs baseline: 0=normal, 1=degraded, 2=alarm",
+    ["model_id"],
+)
+
 orders_placed = Counter(
     "fx_orders_placed_total",
     "Orders placed",
