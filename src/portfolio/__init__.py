@@ -15,6 +15,13 @@ from src.portfolio.pretrade import (
     RejectionReason,
     TradabilityChecker,
 )
+from src.portfolio.reconciler import (
+    PositionReconciler,
+    ReconciliationEntry,
+    ReconciliationPolicy,
+    ReconciliationReport,
+    ReconciliationStatus,
+)
 from src.portfolio.risk_parity import (
     diagnose_allocation,
     risk_parity_weights,
@@ -27,7 +34,12 @@ __all__ = [
     "PortfolioCoordinator",
     "PortfolioStateProtocol",
     "PortfolioStateStore",
+    "PositionReconciler",
     "PreTradeValidator",
+    "ReconciliationEntry",
+    "ReconciliationPolicy",
+    "ReconciliationReport",
+    "ReconciliationStatus",
     "RejectionEvent",
     "RejectionReason",
     "StrategyAllocation",

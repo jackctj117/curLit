@@ -21,6 +21,8 @@ from src.portfolio import (
     PortfolioConstraints,
     PortfolioCoordinator,
     PortfolioStateStore,
+    PositionReconciler,
+    ReconciliationPolicy,
 )
 from src.runtime.live_engine import LiveEngine
 from src.strategies.cb_sentiment_shift import CBSentimentConfig, CBSentimentShiftStrategy
@@ -142,6 +144,37 @@ def build_coordinator(
     return coordinator
 
 
+def build_cold_start_reconciler(
+    config: dict[str, Any],
+    strategies: list[Any],
+    oms: OrderManager,
+    broker: Any,
+) -> PositionReconciler | None:
+    """Construct PositionReconciler for cold-start reconciliation.
+
+    Returns None if a strategy state store cannot be obtained (e.g. when
+    strategies aren't using one or DB is unreachable). The engine still starts;
+    cold-start reconciliation is just skipped.
+    """
+    # Attempt to find a strategy state store from one of the strategies.
+    state_store: Any | None = None
+    for s in strategies:
+        candidate = getattr(s, "state", None) or getattr(s, "state_store", None)
+        if candidate is not None and hasattr(candidate, "get_current_position"):
+            state_store = candidate
+            break
+
+    if state_store is None:
+        logger.info(
+            "No strategy state store available — cold-start reconciliation skipped"
+        )
+        return None
+
+    policy_cfg = config.get("reconciliation", {}).get("policy", {})
+    policy = ReconciliationPolicy(**policy_cfg) if policy_cfg else ReconciliationPolicy()
+    return PositionReconciler(broker, oms, state_store, strategies, policy)
+
+
 async def run_engine(practice: bool) -> None:
     log_dir = Path(os.environ.get("FX_LOG_DIR", "logs"))
     setup_logging("live_engine", log_dir)
@@ -151,7 +184,12 @@ async def run_engine(practice: bool) -> None:
     oms = OrderManager(broker)
     strategies = build_strategies(config, broker, oms)
     coordinator = build_coordinator(config, strategies, oms, broker)
-    engine = LiveEngine(strategies, oms, broker, coordinator=coordinator)
+    reconciler = build_cold_start_reconciler(config, strategies, oms, broker)
+    engine = LiveEngine(
+        strategies, oms, broker,
+        coordinator=coordinator,
+        cold_start_reconciler=reconciler,
+    )
 
     # Wire web API to live state
     try:

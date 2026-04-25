@@ -26,14 +26,17 @@ class LiveEngine:
         oms: Any,
         broker: Any,
         coordinator: Any | None = None,
+        cold_start_reconciler: Any | None = None,
     ) -> None:
         self.strategies = strategies
         self.oms = oms
         self.broker = broker
         self.coordinator = coordinator
+        self.cold_start_reconciler = cold_start_reconciler
         self.running = False
         self._last_prices: dict[str, dict[str, Any]] = {}
         self._last_signal_times: dict[str, datetime] = {}
+        self._last_reconciliation_report: Any | None = None
 
         if coordinator is None:
             logger.warning(
@@ -53,6 +56,22 @@ class LiveEngine:
         self._heartbeat = HeartbeatTracker("live_engine", interval_sec=30)
         self._heartbeat.start()
         logger.info("Live engine starting")
+
+        # Cold-start reconciliation runs BEFORE any signal generation so the
+        # engine starts with a clean broker-vs-internal alignment.
+        if self.cold_start_reconciler is not None:
+            try:
+                self._last_reconciliation_report = self.cold_start_reconciler.reconcile()
+                logger.info(
+                    "Cold-start reconciliation: %d entries, mismatches=%s",
+                    len(self._last_reconciliation_report.entries),
+                    self._last_reconciliation_report.has_mismatches,
+                )
+            except Exception:
+                logger.exception(
+                    "Cold-start reconciliation failed — continuing with engine startup"
+                )
+
         tasks = [
             self._price_stream_task(),
             self._signal_generation_task(),
