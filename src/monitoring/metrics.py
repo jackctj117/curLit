@@ -94,6 +94,13 @@ signal_z_score = Gauge(
     ["strategy_id", "pair"],
 )
 
+edge_severity = Gauge(
+    "fx_edge_severity",
+    "Live-vs-backtest edge severity per strategy: 0=on_track, 1=underperforming, "
+    "2=significantly_underperforming, 3=severely_underperforming",
+    ["strategy_id"],
+)
+
 orders_placed = Counter(
     "fx_orders_placed_total",
     "Orders placed",
