@@ -15,9 +15,9 @@ Reconciliation outcomes per (strategy_id?, symbol) tuple:
 The ReconciliationPolicy decides what to do for each non-matched outcome:
 flatten the broker position, clear the internal record, or alert-only.
 
-Wired into LiveEngine.run() at startup. Reports are persisted to the trade
-journal once that lands (CL-6mby) — for now they are returned to the caller
-and logged structurally.
+Wired into LiveEngine.run() at startup. When a TradeJournal is supplied, the
+final report is appended as a single RECONCILIATION_REPORT event so the
+audit trail starts at engine boot, not after the first trade.
 """
 
 from __future__ import annotations
@@ -30,6 +30,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from src.execution.broker import Broker, Position
 from src.execution.oms import OrderIntent, OrderManager
+from src.execution.trade_journal import EventType, TradeJournal
 
 logger = logging.getLogger(__name__)
 
@@ -151,6 +152,7 @@ class PositionReconciler:
         state: StrategyStateLike,
         strategies: list[Any],
         policy: ReconciliationPolicy | None = None,
+        journal: TradeJournal | None = None,
     ) -> None:
         assert strategies, "PositionReconciler requires at least one strategy"
         self.broker = broker
@@ -158,6 +160,7 @@ class PositionReconciler:
         self.state = state
         self.strategies = strategies
         self.policy = policy or ReconciliationPolicy()
+        self.journal = journal
 
     def reconcile(self) -> ReconciliationReport:
         """Run reconciliation and apply policy actions. Returns the full report.
@@ -195,6 +198,20 @@ class PositionReconciler:
             report.has_mismatches,
             report.to_dict()["summary"],
         )
+
+        # Single audit event at boot — captures broker truth + applied actions
+        # before the first trade. Journal failures must not block startup.
+        if self.journal is not None:
+            try:
+                self.journal.record(
+                    event_type=EventType.RECONCILIATION_REPORT,
+                    payload=report.to_dict(),
+                )
+            except Exception:
+                logger.exception(
+                    "Trade journal append failed for reconciliation report"
+                )
+
         return report
 
     # ------------------------------------------------------------------

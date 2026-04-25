@@ -37,6 +37,7 @@ from typing import Any
 
 from src.execution.broker import Order
 from src.execution.oms import OrderIntent
+from src.execution.trade_journal import EventType, TradeJournal
 from src.monitoring.metrics import orders_rejected
 
 logger = logging.getLogger(__name__)
@@ -230,8 +231,13 @@ class RejectionHandler:
     fx_orders_rejected_total{pair, reason} counter and structured log per call.
     """
 
-    def __init__(self, policy: RejectionPolicy | None = None) -> None:
+    def __init__(
+        self,
+        policy: RejectionPolicy | None = None,
+        journal: TradeJournal | None = None,
+    ) -> None:
         self.policy = policy or RejectionPolicy.default()
+        self.journal = journal
         self._events: list[RejectionEvent] = []
 
     def handle(
@@ -274,6 +280,31 @@ class RejectionHandler:
             class_policy.resolution.value,
             attempt, class_policy.max_attempts, exc,
         )
+
+        # Audit the rejection. Journal failures must not propagate — trading
+        # decisions are independent of audit-log availability.
+        if self.journal is not None:
+            try:
+                self.journal.record(
+                    event_type=EventType.ORDER_REJECTED,
+                    payload={
+                        "rejection_class": cls.value,
+                        "resolution": class_policy.resolution.value,
+                        "attempt": attempt,
+                        "max_attempts": class_policy.max_attempts,
+                        "detail": str(exc),
+                        "order_quantity": order.quantity,
+                        "order_side": order.side,
+                    },
+                    intent_id=intent.intent_id,
+                    strategy_id=intent.strategy_id,
+                    symbol=intent.symbol,
+                )
+            except Exception:
+                logger.exception(
+                    "Trade journal append failed for rejection of %s",
+                    intent.intent_id,
+                )
 
         # Decide based on class policy + attempt count.
         if attempt >= class_policy.max_attempts:

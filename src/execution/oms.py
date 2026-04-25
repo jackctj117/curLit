@@ -5,6 +5,13 @@ classifies the failure and decides retry/halve/abort/halt-strategy per
 docs/runbooks/OrderRejected.md. Without a handler attached, OMS falls back to
 the legacy log-and-drop behavior to preserve backward compatibility for tests
 and ad-hoc usage.
+
+Audit trail: when a TradeJournal is supplied, every intent emits
+INTENT_SUBMITTED on entry, ORDER_PLACED after broker.place_order returns, and
+ORDER_FILLED if the broker reports FILLED status synchronously (paper broker;
+OANDA fills arrive async via stream and would need a separate fill-stream
+callback to emit ORDER_FILLED). Without a journal, OMS is silent — the
+journal is optional so unit tests and ad-hoc usage don't require a DB.
 """
 
 import logging
@@ -14,7 +21,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from .broker import Broker, Order, OrderType
+from .broker import Broker, Order, OrderStatus, OrderType
+from .trade_journal import EventType, TradeJournal
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +43,7 @@ class OrderManager:
         broker: Broker,
         rejection_handler: Any | None = None,
         on_strategy_halt: Callable[[str, str], None] | None = None,
+        journal: TradeJournal | None = None,
     ) -> None:
         """Construct an OMS.
 
@@ -45,10 +54,13 @@ class OrderManager:
         when a rejection class demands the strategy be halted (e.g. instrument
         halted indefinitely). Caller is responsible for actually pausing the
         strategy.
+        journal: optional TradeJournal — every intent / placement / fill event
+        is appended for audit. None disables journaling (used in unit tests).
         """
         self.broker = broker
         self.rejection_handler = rejection_handler
         self.on_strategy_halt = on_strategy_halt
+        self.journal = journal
         self._lock = threading.Lock()
         self._halted = False
         self._pending: dict[str, list[Order]] = {}
@@ -62,6 +74,18 @@ class OrderManager:
             current_positions = {p.symbol: p.quantity for p in self.broker.get_positions()}
             current_qty = current_positions.get(intent.symbol, 0.0)
             delta = intent.target_position - current_qty
+
+            self._journal_event(
+                EventType.INTENT_SUBMITTED,
+                intent=intent,
+                payload={
+                    "target_position": intent.target_position,
+                    "current_position": current_qty,
+                    "delta": delta,
+                    "urgency": intent.urgency,
+                    "max_slippage_bps": intent.max_slippage_bps,
+                },
+            )
 
             if abs(delta) < self._min_trade_size(intent.symbol):
                 return intent.intent_id
@@ -94,6 +118,30 @@ class OrderManager:
                     "Placed %s %s %.4f (attempt=%d, fraction=%.2f)",
                     intent.symbol, side, qty, attempt, size_fraction,
                 )
+                self._journal_event(
+                    EventType.ORDER_PLACED,
+                    intent=intent,
+                    payload={
+                        "side": side,
+                        "quantity": qty,
+                        "attempt": attempt,
+                        "size_fraction": size_fraction,
+                        "order_type": order.order_type.value,
+                    },
+                )
+                # Synchronous fill (PaperBroker) — emit ORDER_FILLED now. For
+                # OANDA, fills arrive via stream and would need a separate
+                # fill-stream wiring; ORDER_PLACED is all OMS sees here.
+                if placed.status == OrderStatus.FILLED:
+                    self._journal_event(
+                        EventType.ORDER_FILLED,
+                        intent=intent,
+                        payload={
+                            "side": side,
+                            "quantity": qty,
+                            "attempt": attempt,
+                        },
+                    )
                 return
             except Exception as exc:
                 if self.rejection_handler is None:
@@ -154,3 +202,30 @@ class OrderManager:
     @staticmethod
     def _min_trade_size(symbol: str) -> float:
         return 1.0
+
+    def _journal_event(
+        self,
+        event_type: EventType,
+        intent: OrderIntent,
+        payload: dict[str, Any],
+    ) -> None:
+        """Append one event to the trade journal — silent no-op without one.
+
+        Journal failures must NOT propagate: trading is more important than
+        bookkeeping, and a DB hiccup must not drop or duplicate orders.
+        """
+        if self.journal is None:
+            return
+        try:
+            self.journal.record(
+                event_type=event_type,
+                payload=payload,
+                intent_id=intent.intent_id,
+                strategy_id=intent.strategy_id,
+                symbol=intent.symbol,
+            )
+        except Exception:
+            logger.exception(
+                "Trade journal append failed (event=%s intent=%s) — continuing",
+                event_type.value, intent.intent_id,
+            )

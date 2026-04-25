@@ -15,6 +15,8 @@ from src.data.provider import DataProvider
 from src.execution.oanda_broker import OandaBroker
 from src.execution.oms import OrderManager
 from src.execution.paper_broker import PaperBroker
+from src.execution.rejection import RejectionHandler
+from src.execution.trade_journal import TradeJournal
 from src.monitoring.logging_setup import setup_logging
 from src.nlp.provider import NLPDataProvider
 from src.portfolio import (
@@ -67,6 +69,21 @@ def _build_db_engine() -> Any:
         f"{os.environ.get('POSTGRES_DB', 'fx')}",
     )
     return create_engine(db_url)
+
+
+def build_trade_journal() -> TradeJournal | None:
+    """Construct the audit-trail journal. Returns None if the DB is unreachable
+    so the engine still starts — losing audit on a single boot is preferable
+    to refusing to trade.
+    """
+    try:
+        engine = _build_db_engine()
+        return TradeJournal(engine)
+    except Exception:
+        logger.exception(
+            "Failed to construct TradeJournal; engine will run without audit log"
+        )
+        return None
 
 
 def build_strategies(
@@ -217,6 +234,7 @@ def build_cold_start_reconciler(
     strategies: list[Any],
     oms: OrderManager,
     broker: Any,
+    journal: TradeJournal | None = None,
 ) -> PositionReconciler | None:
     """Construct PositionReconciler for cold-start reconciliation.
 
@@ -240,7 +258,9 @@ def build_cold_start_reconciler(
 
     policy_cfg = config.get("reconciliation", {}).get("policy", {})
     policy = ReconciliationPolicy(**policy_cfg) if policy_cfg else ReconciliationPolicy()
-    return PositionReconciler(broker, oms, state_store, strategies, policy)
+    return PositionReconciler(
+        broker, oms, state_store, strategies, policy, journal=journal,
+    )
 
 
 async def run_engine(practice: bool) -> None:
@@ -249,10 +269,14 @@ async def run_engine(practice: bool) -> None:
 
     config = load_config(CONFIG_PATH)
     broker = build_broker(practice)
-    oms = OrderManager(broker)
+    journal = build_trade_journal()
+    rejection_handler = RejectionHandler(journal=journal)
+    oms = OrderManager(broker, rejection_handler=rejection_handler, journal=journal)
     strategies = build_strategies(config, broker, oms)
     coordinator = build_coordinator(config, strategies, oms, broker)
-    reconciler = build_cold_start_reconciler(config, strategies, oms, broker)
+    reconciler = build_cold_start_reconciler(
+        config, strategies, oms, broker, journal=journal,
+    )
     engine = LiveEngine(
         strategies, oms, broker,
         coordinator=coordinator,
