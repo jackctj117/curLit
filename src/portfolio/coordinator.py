@@ -256,6 +256,7 @@ class PortfolioCoordinator:
         broker: Broker,
         state: PortfolioStateProtocol,
         constraints: PortfolioConstraints | None = None,
+        pre_trade_validator: Any | None = None,
     ) -> None:
         assert strategies, "PortfolioCoordinator requires at least one strategy"
         ids = [s.id for s in strategies]
@@ -266,6 +267,7 @@ class PortfolioCoordinator:
         self.broker = broker
         self.state = state
         self.constraints = constraints or PortfolioConstraints()
+        self.pre_trade_validator = pre_trade_validator
 
         self.allocations: dict[str, StrategyAllocation] = {}
         self._last_rebalance: datetime | None = None
@@ -273,9 +275,11 @@ class PortfolioCoordinator:
         self._conflicts_log: list[dict[str, Any]] = []
 
         logger.info(
-            "PortfolioCoordinator initialized with %d strategies: %s",
+            "PortfolioCoordinator initialized with %d strategies: %s "
+            "(pre_trade_validator=%s)",
             len(self.strategies),
             sorted(self.strategies.keys()),
+            "enabled" if pre_trade_validator is not None else "disabled",
         )
 
     # ------------------------------------------------------------------
@@ -337,7 +341,8 @@ class PortfolioCoordinator:
         """Process intents from all strategies and forward final orders to OMS.
 
         Returns the final aggregated, constrained intents per symbol so callers
-        can persist or surface them for observability.
+        can persist or surface them for observability. Pre-trade rejections
+        are logged via the validator and do NOT appear in the returned dict.
         """
         async with self._intent_lock:
             scaled = self._scale_intents(raw_intents)
@@ -345,6 +350,14 @@ class PortfolioCoordinator:
             feasible = self._apply_portfolio_constraints(aggregated)
 
             ts = datetime.now(UTC)
+            # Pre-trade rejections drop the offending intent from `feasible` so
+            # the returned dict reflects what actually went to OMS.
+            accepted: dict[str, dict[str, Any]] = {}
+            current_positions: list[Any] | None = None
+            if self.pre_trade_validator is not None:
+                # Single broker query reused across all per-symbol checks.
+                current_positions = self.broker.get_positions()
+
             for symbol, info in feasible.items():
                 with LogContext(symbol=symbol):
                     final = OrderIntent(
@@ -353,6 +366,15 @@ class PortfolioCoordinator:
                         target_position=info["target_position"],
                         urgency=info["urgency"],
                     )
+
+                    if self.pre_trade_validator is not None:
+                        rejection = self.pre_trade_validator.validate(
+                            final, current_positions=current_positions,
+                        )
+                        if rejection is not None:
+                            # Validator already logged + recorded metric.
+                            continue
+
                     logger.info(
                         "Submitting %s target=%.4f contributions=%s",
                         symbol,
@@ -366,8 +388,9 @@ class PortfolioCoordinator:
                         info["target_position"],
                         dict(info["strategy_contributions"]),
                     )
+                    accepted[symbol] = info
 
-            return feasible
+            return accepted
 
     # ------------------------------------------------------------------
     # Intent processing — internal stages

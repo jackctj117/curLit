@@ -112,6 +112,12 @@ orders_rejected = Counter(
     ["pair", "reason"],
 )
 
+pretrade_rejections = Counter(
+    "fx_pretrade_rejections_total",
+    "Intents rejected by PreTradeValidator before reaching OMS",
+    ["pair", "reason"],
+)
+
 order_fill_duration = Histogram(
     "fx_order_fill_duration_seconds",
     "Time from placement to fill",

@@ -9,6 +9,12 @@ from src.portfolio.coordinator import (
     PortfolioStateProtocol,
     StrategyAllocation,
 )
+from src.portfolio.pretrade import (
+    PreTradeValidator,
+    RejectionEvent,
+    RejectionReason,
+    TradabilityChecker,
+)
 from src.portfolio.risk_parity import (
     diagnose_allocation,
     risk_parity_weights,
@@ -21,7 +27,11 @@ __all__ = [
     "PortfolioCoordinator",
     "PortfolioStateProtocol",
     "PortfolioStateStore",
+    "PreTradeValidator",
+    "RejectionEvent",
+    "RejectionReason",
     "StrategyAllocation",
+    "TradabilityChecker",
     "diagnose_allocation",
     "risk_parity_weights",
     "rolling_risk_parity_weights",
