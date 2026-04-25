@@ -1,11 +1,20 @@
-"""Order Management System — intent to orders, retry, reconciliation."""
+"""Order Management System — intent to orders, retry, reconciliation.
+
+Rejection handling: when broker.place_order raises, an optional RejectionHandler
+classifies the failure and decides retry/halve/abort/halt-strategy per
+docs/runbooks/OrderRejected.md. Without a handler attached, OMS falls back to
+the legacy log-and-drop behavior to preserve backward compatibility for tests
+and ad-hoc usage.
+"""
 
 import logging
 import threading
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import Any
 
-from .broker import Account, Broker, Order, OrderType
+from .broker import Broker, Order, OrderType
 
 logger = logging.getLogger(__name__)
 
@@ -21,8 +30,25 @@ class OrderIntent:
 
 
 class OrderManager:
-    def __init__(self, broker: Broker) -> None:
+    def __init__(
+        self,
+        broker: Broker,
+        rejection_handler: Any | None = None,
+        on_strategy_halt: Callable[[str, str], None] | None = None,
+    ) -> None:
+        """Construct an OMS.
+
+        rejection_handler: optional RejectionHandler driving classified retry
+        behavior. When None, place_order failures are logged and the intent is
+        dropped (legacy behavior).
+        on_strategy_halt: optional callback invoked with (strategy_id, reason)
+        when a rejection class demands the strategy be halted (e.g. instrument
+        halted indefinitely). Caller is responsible for actually pausing the
+        strategy.
+        """
         self.broker = broker
+        self.rejection_handler = rejection_handler
+        self.on_strategy_halt = on_strategy_halt
         self._lock = threading.Lock()
         self._halted = False
         self._pending: dict[str, list[Order]] = {}
@@ -41,20 +67,67 @@ class OrderManager:
                 return intent.intent_id
 
             side = "buy" if delta > 0 else "sell"
+            self._submit_with_retry(intent, side, abs(delta))
+            return intent.intent_id
+
+    def _submit_with_retry(
+        self,
+        intent: OrderIntent,
+        side: str,
+        original_qty: float,
+    ) -> None:
+        """Place the order, applying RejectionHandler policy on broker failures."""
+        attempt = 1
+        size_fraction = 1.0
+        while True:
+            qty = original_qty * size_fraction
             order = Order(
                 symbol=intent.symbol,
                 side=side,
-                quantity=abs(delta),
+                quantity=qty,
                 order_type=OrderType.MARKET,
             )
             try:
                 placed = self.broker.place_order(order)
                 self._pending[intent.intent_id] = [placed]
-                logger.info("Placed %s %s %.0f", intent.symbol, side, abs(delta))
-            except Exception:
-                logger.exception("Order failed for %s", intent.intent_id)
+                logger.info(
+                    "Placed %s %s %.4f (attempt=%d, fraction=%.2f)",
+                    intent.symbol, side, qty, attempt, size_fraction,
+                )
+                return
+            except Exception as exc:
+                if self.rejection_handler is None:
+                    # Legacy behavior: log and drop.
+                    logger.exception("Order failed for %s", intent.intent_id)
+                    return
 
-            return intent.intent_id
+                outcome = self.rejection_handler.handle(
+                    intent=intent,
+                    order=order,
+                    exc=exc,
+                    attempt=attempt,
+                )
+
+                if outcome.halt_strategy and self.on_strategy_halt is not None:
+                    try:
+                        self.on_strategy_halt(intent.strategy_id, intent.symbol)
+                    except Exception:
+                        logger.exception(
+                            "on_strategy_halt callback failed for %s",
+                            intent.strategy_id,
+                        )
+
+                if not outcome.should_retry:
+                    logger.warning(
+                        "Giving up on %s after %d attempts (resolution=%s)",
+                        intent.intent_id, attempt, outcome.final_resolution.value,
+                    )
+                    return
+
+                if outcome.sleep_sec > 0:
+                    self.rejection_handler.sleep(outcome.sleep_sec)
+                size_fraction = outcome.next_size_fraction
+                attempt += 1
 
     def reconcile(self) -> dict[str, dict]:
         broker_pos = {p.symbol: p.quantity for p in self.broker.get_positions()}
