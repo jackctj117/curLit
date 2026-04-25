@@ -1,0 +1,54 @@
+# Sample economic calendar — hand-curated for the next ~30 days.
+# Replace with vendor-feed ingestion (FRED release schedule + ECB/BoE/BoJ
+# official calendars) once that ingester lands. The schema is stable;
+# only the source changes.
+#
+# Severity tiers:
+#   1 — NFP, FOMC, ECB / BoE / BoJ rate decisions, CPI, GDP-flash
+#   2 — GDP-final, retail sales, ISM, ADP, jobless claims
+#   3 — minor releases (housing starts, durable goods, trade balance)
+#
+# Times are UTC. Always tz-aware.
+
+events:
+  - ts: 2026-05-02T12:30:00Z
+    event_type: NFP
+    severity_tier: 1
+    description: US Non-Farm Payrolls
+    currency: USD
+
+  - ts: 2026-05-07T18:00:00Z
+    event_type: FOMC
+    severity_tier: 1
+    description: FOMC rate decision + statement
+    currency: USD
+
+  - ts: 2026-05-13T12:30:00Z
+    event_type: CPI
+    severity_tier: 1
+    description: US CPI (m/m + y/y)
+    currency: USD
+
+  - ts: 2026-05-15T11:45:00Z
+    event_type: ECB_RATE
+    severity_tier: 1
+    description: ECB rate decision + press conference
+    currency: EUR
+
+  - ts: 2026-05-20T11:00:00Z
+    event_type: BOE_RATE
+    severity_tier: 1
+    description: BoE rate decision + minutes
+    currency: GBP
+
+  - ts: 2026-05-21T03:00:00Z
+    event_type: BOJ_RATE
+    severity_tier: 1
+    description: BoJ rate decision + outlook
+    currency: JPY
+
+  - ts: 2026-05-30T12:30:00Z
+    event_type: GDP_Q1
+    severity_tier: 2
+    description: US GDP Q1 advance estimate
+    currency: USD
