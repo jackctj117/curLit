@@ -123,6 +123,13 @@ tca_implementation_shortfall_bps = Histogram(
     buckets=(-5.0, -2.0, -1.0, -0.5, 0.0, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0),
 )
 
+edge_verdict = Gauge(
+    "fx_edge_verdict",
+    "Unified per-strategy edge verdict: 0=insufficient_data, "
+    "1=no_edge_detected, 2=edge_decayed, 3=weak_edge, 4=strong_edge",
+    ["strategy_id"],
+)
+
 orders_placed = Counter(
     "fx_orders_placed_total",
     "Orders placed",
