@@ -8,7 +8,8 @@ tradability) which the coordinator can't see.
 Rejection layers (ordered by responsibility):
     Strategy intent  →  PortfolioCoordinator (scale + aggregate + constraints)
                     →  PreTradeValidator     (margin, post-trade leverage,
-                                              concentration, tradability)
+                                              concentration, tradability,
+                                              blackout-window block)
                     →  OMS / broker
 
 Rejected intents emit a RejectionEvent with structured reason; counter metric
@@ -22,9 +23,16 @@ Reasons handled:
     PER_CURRENCY_EXPOSURE   post-trade per-CCY exposure > constraints cap
     INSTRUMENT_UNSUPPORTED  symbol not in optional whitelist
     INSTRUMENT_HALTED       optional broker tradability check returned False
+    BLACKOUT_PAUSE          economic-calendar PAUSE_NEW_ENTRIES window — new
+                            entries blocked; reductions/exits allowed
+    BLACKOUT_EXIT_FLAT      economic-calendar EXIT_FLAT window — new entries
+                            blocked; reductions/exits allowed
 
 Halt detection requires a TradabilityChecker; without one, halt rejection is
 delegated to broker-side rejects (handled by CL-yteo order rejection policy).
+
+Blackout SIZE_DOWN_50PCT (halve-size pre-event) is a coordinator-level concern
+because it mutates the intent's target_position; tracked separately.
 """
 
 from __future__ import annotations
@@ -36,6 +44,7 @@ from datetime import UTC, datetime
 from enum import Enum
 from typing import Any, Protocol, runtime_checkable
 
+from src.data.economic_calendar import BlackoutAction, BlackoutEvaluator
 from src.execution.broker import Broker, Position
 from src.execution.oms import OrderIntent
 from src.monitoring.metrics import pretrade_rejections
@@ -58,6 +67,8 @@ class RejectionReason(Enum):
     PER_CURRENCY_EXPOSURE = "per_currency_exposure"
     INSTRUMENT_UNSUPPORTED = "instrument_unsupported"
     INSTRUMENT_HALTED = "instrument_halted"
+    BLACKOUT_PAUSE = "blackout_pause"
+    BLACKOUT_EXIT_FLAT = "blackout_exit_flat"
 
 
 @dataclass
@@ -113,12 +124,14 @@ class PreTradeValidator:
         supported_instruments: set[str] | None = None,
         tradability: TradabilityChecker | None = None,
         margin_requirement_pct: float = _DEFAULT_MARGIN_REQUIREMENT_PCT,
+        blackout_evaluator: BlackoutEvaluator | None = None,
     ) -> None:
         self.broker = broker
         self.constraints = constraints
         self.supported_instruments = supported_instruments
         self.tradability = tradability
         self.margin_requirement_pct = margin_requirement_pct
+        self.blackout_evaluator = blackout_evaluator
 
         assert margin_requirement_pct > 0, (
             f"margin_requirement_pct must be positive, got {margin_requirement_pct}"
@@ -147,6 +160,10 @@ class PreTradeValidator:
 
         positions = current_positions if current_positions is not None else self.broker.get_positions()
         position_map = {p.symbol: p for p in positions}
+
+        rejection = self._check_blackout(intent, position_map)
+        if rejection is not None:
+            return self._record(rejection)
 
         price = self._get_price(intent.symbol)
         new_pair_qty = intent.target_position
@@ -203,6 +220,61 @@ class PreTradeValidator:
                 detail=f"{intent.symbol} not in supported set",
             )
         return None
+
+    def _check_blackout(
+        self,
+        intent: OrderIntent,
+        position_map: dict[str, Position],
+    ) -> RejectionEvent | None:
+        """Reject new entries during PAUSE_NEW_ENTRIES / EXIT_FLAT windows.
+
+        "New entry" means |target| > |current|. Reductions / flattens / direction
+        changes are allowed: the operator should be able to de-risk during a
+        blackout regardless of policy.
+
+        SIZE_DOWN_50PCT is intentionally not enforced here — that requires
+        mutating the intent's target_position, which is a coordinator-level
+        responsibility (the validator's contract is reject-or-accept).
+        """
+        if self.blackout_evaluator is None:
+            return None
+
+        # Try the base currency first; the evaluator falls back to global
+        # (currency=None) events when no per-CCY filter is set on the calendar.
+        currency = self._currency_from_symbol(intent.symbol)
+        decision = self.blackout_evaluator.evaluate(
+            now=datetime.now(UTC), currency=currency,
+        )
+        if decision.action in (BlackoutAction.FULL_SIZE, BlackoutAction.SIZE_DOWN_50PCT):
+            return None
+
+        existing_qty = (
+            position_map[intent.symbol].quantity
+            if intent.symbol in position_map
+            else 0.0
+        )
+        # Allow reductions and flattens — abs(target) <= abs(existing) is OK.
+        # Block strict increases in magnitude (entries OR scale-ups).
+        if abs(intent.target_position) <= abs(existing_qty) + 1e-9:
+            return None
+
+        reason = (
+            RejectionReason.BLACKOUT_EXIT_FLAT
+            if decision.action == BlackoutAction.EXIT_FLAT
+            else RejectionReason.BLACKOUT_PAUSE
+        )
+        return RejectionEvent(
+            intent=intent,
+            reason=reason,
+            detail=decision.reason,
+        )
+
+    @staticmethod
+    def _currency_from_symbol(symbol: str) -> str | None:
+        """FX pair like 'EUR_USD' or 'EURUSD' → base currency 'EUR'."""
+        if not symbol or len(symbol) < 3:
+            return None
+        return symbol[:3].upper()
 
     def _check_instrument_tradable(self, intent: OrderIntent) -> RejectionEvent | None:
         if self.tradability is None:

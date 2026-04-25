@@ -3,8 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from src.data.economic_calendar import (
+    BlackoutEvaluator,
+    EconomicCalendar,
+    EconomicEvent,
+    SeverityTier,
+)
 from src.execution.broker import Position
 from src.execution.oms import OrderIntent
 from src.execution.paper_broker import PaperBroker
@@ -344,3 +351,133 @@ class TestCoordinatorWithValidator:
         assert oms.submitted[0].symbol == "EURUSD"
         assert "EURUSD" in accepted
         assert validator.rejections_log == []
+
+
+# =============================================================================
+# Blackout-window tests (CL-c8th)
+# =============================================================================
+
+
+def _evaluator_with_event(
+    minutes_until: float,
+    tier: SeverityTier = SeverityTier.TIER_1,
+    currency: str | None = None,
+) -> BlackoutEvaluator:
+    """Build a BlackoutEvaluator whose calendar has one upcoming event."""
+    when = datetime.now(UTC) + timedelta(minutes=minutes_until)
+    cal = EconomicCalendar([
+        EconomicEvent(
+            ts=when,
+            event_type="NFP",
+            severity_tier=tier,
+            description="test",
+            currency=currency,
+        ),
+    ])
+    return BlackoutEvaluator(cal)
+
+
+class TestBlackoutWindow:
+    def test_new_entry_blocked_within_exit_flat_window(self) -> None:
+        # Default tier-1 EXIT_FLAT window is 30 minutes — event in 5 min hits it.
+        evaluator = _evaluator_with_event(minutes_until=5)
+        validator, *_ = _make_validator(blackout_evaluator=evaluator)
+        intent = OrderIntent(strategy_id="s1", symbol="EURUSD", target_position=1_000)
+        rejection = validator.validate(intent, current_positions=[])
+        assert rejection is not None
+        assert rejection.reason == RejectionReason.BLACKOUT_EXIT_FLAT
+
+    def test_new_entry_blocked_within_pause_window(self) -> None:
+        # Default tier-1 PAUSE window is 1h, EXIT_FLAT is 30min — event at 45min
+        # falls strictly into PAUSE.
+        evaluator = _evaluator_with_event(minutes_until=45)
+        validator, *_ = _make_validator(blackout_evaluator=evaluator)
+        intent = OrderIntent(strategy_id="s1", symbol="EURUSD", target_position=1_000)
+        rejection = validator.validate(intent, current_positions=[])
+        assert rejection is not None
+        assert rejection.reason == RejectionReason.BLACKOUT_PAUSE
+
+    def test_size_down_window_does_not_block(self) -> None:
+        # Tier-1 SIZE_DOWN_50PCT window is 24h, PAUSE is 1h — event at 6h falls
+        # into SIZE_DOWN. Validator does NOT enforce size-down (coordinator's
+        # job); validate must accept.
+        evaluator = _evaluator_with_event(minutes_until=360)
+        validator, *_ = _make_validator(blackout_evaluator=evaluator)
+        intent = OrderIntent(strategy_id="s1", symbol="EURUSD", target_position=1_000)
+        rejection = validator.validate(intent, current_positions=[])
+        if rejection is not None:
+            assert rejection.reason not in (
+                RejectionReason.BLACKOUT_PAUSE,
+                RejectionReason.BLACKOUT_EXIT_FLAT,
+            )
+
+    def test_flatten_during_exit_flat_allowed(self) -> None:
+        # Existing 1_000 EURUSD long. Intent target=0 means "flatten" — must be
+        # allowed even during EXIT_FLAT.
+        evaluator = _evaluator_with_event(minutes_until=5)
+        broker = _make_broker(
+            positions=[Position(symbol="EURUSD", quantity=1_000, avg_price=1.10)],
+        )
+        validator, *_ = _make_validator(broker=broker, blackout_evaluator=evaluator)
+        intent = OrderIntent(strategy_id="s1", symbol="EURUSD", target_position=0)
+        rejection = validator.validate(intent)
+        if rejection is not None:
+            assert rejection.reason not in (
+                RejectionReason.BLACKOUT_PAUSE,
+                RejectionReason.BLACKOUT_EXIT_FLAT,
+            )
+
+    def test_reduction_during_pause_allowed(self) -> None:
+        # Existing 2_000 long, intent reduces to 500 — magnitude shrinks. Allow.
+        evaluator = _evaluator_with_event(minutes_until=45)
+        broker = _make_broker(
+            positions=[Position(symbol="EURUSD", quantity=2_000, avg_price=1.10)],
+        )
+        validator, *_ = _make_validator(broker=broker, blackout_evaluator=evaluator)
+        intent = OrderIntent(strategy_id="s1", symbol="EURUSD", target_position=500)
+        rejection = validator.validate(intent)
+        if rejection is not None:
+            assert rejection.reason not in (
+                RejectionReason.BLACKOUT_PAUSE,
+                RejectionReason.BLACKOUT_EXIT_FLAT,
+            )
+
+    def test_scale_up_during_pause_blocked(self) -> None:
+        # Existing 500 long, intent grows to 2_000 — magnitude increases. Block.
+        evaluator = _evaluator_with_event(minutes_until=45)
+        broker = _make_broker(
+            positions=[Position(symbol="EURUSD", quantity=500, avg_price=1.10)],
+        )
+        validator, *_ = _make_validator(broker=broker, blackout_evaluator=evaluator)
+        intent = OrderIntent(strategy_id="s1", symbol="EURUSD", target_position=2_000)
+        rejection = validator.validate(intent)
+        assert rejection is not None
+        assert rejection.reason == RejectionReason.BLACKOUT_PAUSE
+
+    def test_no_evaluator_does_not_block(self) -> None:
+        # Default validator has no blackout evaluator — never rejects on blackout.
+        validator, *_ = _make_validator()
+        intent = OrderIntent(strategy_id="s1", symbol="EURUSD", target_position=1_000)
+        rejection = validator.validate(intent, current_positions=[])
+        if rejection is not None:
+            assert rejection.reason not in (
+                RejectionReason.BLACKOUT_PAUSE,
+                RejectionReason.BLACKOUT_EXIT_FLAT,
+            )
+
+    def test_currency_filter_passes_base_currency(self) -> None:
+        # Event tagged USD; intent on EUR pair. Evaluator's currency filter is
+        # base-of-pair (EUR), so a USD-only event should not block. EconomicCalendar
+        # treats event currency as a hard match if both filter and event are set;
+        # this is the documented behavior.
+        evaluator = _evaluator_with_event(
+            minutes_until=5, currency="USD",
+        )
+        validator, *_ = _make_validator(blackout_evaluator=evaluator)
+        intent = OrderIntent(strategy_id="s1", symbol="EURJPY", target_position=1_000)
+        rejection = validator.validate(intent, current_positions=[])
+        if rejection is not None:
+            assert rejection.reason not in (
+                RejectionReason.BLACKOUT_PAUSE,
+                RejectionReason.BLACKOUT_EXIT_FLAT,
+            )

@@ -11,6 +11,11 @@ from typing import Any
 import yaml
 from sqlalchemy import create_engine
 
+from src.data.economic_calendar import (
+    BlackoutEvaluator,
+    EconomicCalendar,
+    load_calendar_from_yaml,
+)
 from src.data.provider import DataProvider
 from src.execution.oanda_broker import OandaBroker
 from src.execution.oms import OrderManager
@@ -84,6 +89,35 @@ def build_trade_journal() -> TradeJournal | None:
             "Failed to construct TradeJournal; engine will run without audit log"
         )
         return None
+
+
+def build_blackout_evaluator(
+    config: dict[str, Any],
+) -> BlackoutEvaluator | None:
+    """Load the economic-event calendar and build a BlackoutEvaluator.
+
+    Path resolution: explicit `calendar.path` in config wins; otherwise
+    configs/economic_calendar.yaml is the default. Missing file → None
+    (engine runs without blackout enforcement, which is non-fatal but logged).
+    """
+    cal_cfg = config.get("calendar", {})
+    explicit_path = cal_cfg.get("path")
+    path = Path(explicit_path) if explicit_path else Path("configs/economic_calendar.yaml")
+    if not path.exists():
+        logger.info(
+            "Economic calendar not found at %s — blackout enforcement disabled",
+            path,
+        )
+        return None
+    try:
+        calendar: EconomicCalendar = load_calendar_from_yaml(path)
+    except Exception:
+        logger.exception(
+            "Failed to load economic calendar from %s — blackout enforcement disabled",
+            path,
+        )
+        return None
+    return BlackoutEvaluator(calendar)
 
 
 def build_strategies(
@@ -177,6 +211,7 @@ def build_coordinator(
     strategies: list[Any],
     oms: OrderManager,
     broker: Any,
+    blackout_evaluator: BlackoutEvaluator | None = None,
 ) -> PortfolioCoordinator | None:
     """Construct the PortfolioCoordinator from config.
 
@@ -206,6 +241,7 @@ def build_coordinator(
         broker=broker,
         constraints=effective_constraints,
         supported_instruments=supported,
+        blackout_evaluator=blackout_evaluator,
     )
 
     coordinator = PortfolioCoordinator(
@@ -270,10 +306,14 @@ async def run_engine(practice: bool) -> None:
     config = load_config(CONFIG_PATH)
     broker = build_broker(practice)
     journal = build_trade_journal()
+    blackout_evaluator = build_blackout_evaluator(config)
     rejection_handler = RejectionHandler(journal=journal)
     oms = OrderManager(broker, rejection_handler=rejection_handler, journal=journal)
     strategies = build_strategies(config, broker, oms)
-    coordinator = build_coordinator(config, strategies, oms, broker)
+    coordinator = build_coordinator(
+        config, strategies, oms, broker,
+        blackout_evaluator=blackout_evaluator,
+    )
     reconciler = build_cold_start_reconciler(
         config, strategies, oms, broker, journal=journal,
     )
