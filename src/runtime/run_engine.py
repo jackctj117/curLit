@@ -22,6 +22,7 @@ from src.execution.oms import OrderManager
 from src.execution.paper_broker import PaperBroker
 from src.execution.rejection import RejectionHandler
 from src.execution.trade_journal import TradeJournal
+from src.models.feature_versioning import FeatureSnapshotStore
 from src.monitoring.logging_setup import setup_logging
 from src.nlp.provider import NLPDataProvider
 from src.portfolio import (
@@ -91,6 +92,24 @@ def build_trade_journal() -> TradeJournal | None:
         return None
 
 
+def build_feature_snapshot_store() -> FeatureSnapshotStore | None:
+    """Construct the feature-snapshot store for reproducibility tagging.
+
+    Returns None if the DB is unreachable so the engine still starts —
+    losing snapshot capture on a single boot is preferable to refusing
+    to trade. Strategies that get None skip emitting snapshots.
+    """
+    try:
+        engine = _build_db_engine()
+        return FeatureSnapshotStore(engine)
+    except Exception:
+        logger.exception(
+            "Failed to construct FeatureSnapshotStore; intents will not "
+            "carry feature-snapshot ids"
+        )
+        return None
+
+
 def build_blackout_evaluator(
     config: dict[str, Any],
 ) -> BlackoutEvaluator | None:
@@ -124,6 +143,7 @@ def build_strategies(
     config: dict[str, Any],
     broker: Any,
     oms: OrderManager,
+    snapshot_store: FeatureSnapshotStore | None = None,
 ) -> list[Any]:
     engine = _build_db_engine()
     data_provider = DataProvider(engine)
@@ -151,6 +171,7 @@ def build_strategies(
                     RateDiffMRConfig(**scfg) if scfg else RateDiffMRConfig(),
                     data_provider=data_provider,
                     state_store=state_store,
+                    snapshot_store=snapshot_store,
                 )
             )
         elif "sentiment" in sid or "cb" in sid:
@@ -160,6 +181,7 @@ def build_strategies(
                     data_provider=data_provider,
                     nlp_provider=nlp_provider,
                     state_store=state_store,
+                    snapshot_store=snapshot_store,
                 )
             )
         elif "carry" in sid or "vol_filter" in sid:
@@ -168,6 +190,7 @@ def build_strategies(
                     CarryVolFilterConfig(**scfg) if scfg else CarryVolFilterConfig(),
                     data_provider=data_provider,
                     state_store=state_store,
+                    snapshot_store=snapshot_store,
                 )
             )
     if not strategies:
@@ -176,6 +199,7 @@ def build_strategies(
                 RateDiffMRConfig(),
                 data_provider=data_provider,
                 state_store=state_store,
+                snapshot_store=snapshot_store,
             )
         )
     return strategies
@@ -306,10 +330,11 @@ async def run_engine(practice: bool) -> None:
     config = load_config(CONFIG_PATH)
     broker = build_broker(practice)
     journal = build_trade_journal()
+    snapshot_store = build_feature_snapshot_store()
     blackout_evaluator = build_blackout_evaluator(config)
     rejection_handler = RejectionHandler(journal=journal)
     oms = OrderManager(broker, rejection_handler=rejection_handler, journal=journal)
-    strategies = build_strategies(config, broker, oms)
+    strategies = build_strategies(config, broker, oms, snapshot_store=snapshot_store)
     coordinator = build_coordinator(
         config, strategies, oms, broker,
         blackout_evaluator=blackout_evaluator,

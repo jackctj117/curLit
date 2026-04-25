@@ -23,6 +23,14 @@ from typing import Any
 import numpy as np
 
 from src.execution.oms import OrderIntent
+from src.models.feature_versioning import (
+    FeatureSnapshot,
+    FeatureSnapshotStore,
+    attach_snapshot_payload,
+)
+
+_FEATURE_SET_NAME = "carry_vol_filter"
+_FEATURE_SET_VERSION = "v1"
 
 logger = logging.getLogger(__name__)
 
@@ -115,13 +123,41 @@ class CarryVolFilterStrategy:
         config: CarryVolFilterConfig | None = None,
         data_provider: Any | None = None,
         state_store: Any | None = None,
+        snapshot_store: FeatureSnapshotStore | None = None,
     ) -> None:
         self.config = config or CarryVolFilterConfig()
         self.data = data_provider
         self.state = state_store
+        self.snapshot_store = snapshot_store
         self.current_positions: dict[str, CarryPosition] = {}
         self._last_rebalance: date | None = None
         self._current_exposure: float = 1.0
+
+    def _emit_snapshot(self, values: dict[str, Any]) -> dict[str, Any]:
+        """Build, persist, and return a snapshot-reference payload (or {})."""
+        if self.snapshot_store is None:
+            return {}
+        snapshot = FeatureSnapshot.create(
+            feature_set_name=_FEATURE_SET_NAME,
+            feature_set_version=_FEATURE_SET_VERSION,
+            data_snapshot_id="live",
+            model_version=(
+                f"top_k={self.config.top_k},bot_k={self.config.bottom_k},"
+                f"min_spread={self.config.min_rate_spread}"
+            ),
+            ts=datetime.now(UTC),
+            values=values,
+        )
+        try:
+            self.snapshot_store.store(snapshot)
+        except Exception:
+            logger.exception(
+                "Failed to store feature snapshot for %s — intent will lack "
+                "snapshot reference",
+                self.id,
+            )
+            return {}
+        return attach_snapshot_payload(snapshot)
 
     @property
     def id(self) -> str:
@@ -339,6 +375,7 @@ class CarryVolFilterStrategy:
             self._current_exposure = new_exposure
 
         if not self._should_rebalance(now):
+            self._tag_intents(intents, vol_z, new_exposure, trigger="vol_scale")
             return intents
 
         rates = self._get_current_rates(now)
@@ -350,6 +387,10 @@ class CarryVolFilterStrategy:
             self._last_rebalance = now.date()
             self._current_exposure = new_exposure
             self._record_rebalance(now, rates, baskets, vol_z, new_exposure)
+            self._tag_intents(
+                intents, vol_z, new_exposure, trigger="rebalance_flatten",
+                baskets=baskets,
+            )
             return intents
 
         account = broker.get_account()
@@ -399,7 +440,47 @@ class CarryVolFilterStrategy:
         self._current_exposure = new_exposure
         self._last_rebalance = now.date()
         self._record_rebalance(now, rates, baskets, vol_z, new_exposure)
+        self._tag_intents(
+            intents, vol_z, new_exposure, trigger="rebalance",
+            baskets=baskets,
+        )
         return intents
+
+    def _tag_intents(
+        self,
+        intents: list[OrderIntent],
+        vol_z: float,
+        exposure: float,
+        trigger: str,
+        baskets: dict[str, Any] | None = None,
+    ) -> None:
+        """Build one snapshot per generate_intents call; tag every intent.
+
+        All intents in a single tick share the same feature evaluation
+        (vol_z + basket composition), so one snapshot covers them all.
+        """
+        if not intents:
+            return
+        values: dict[str, Any] = {
+            "trigger": trigger,
+            "vol_z": float(vol_z),
+            "exposure": float(exposure),
+            "n_intents": len(intents),
+        }
+        if baskets is not None:
+            values["long_basket"] = [
+                {"ccy": ccy, "rate": float(rate), "weight": float(weight)}
+                for ccy, rate, weight in baskets.get("long", [])
+            ]
+            values["short_basket"] = [
+                {"ccy": ccy, "rate": float(rate), "weight": float(weight)}
+                for ccy, rate, weight in baskets.get("short", [])
+            ]
+        meta = self._emit_snapshot(values)
+        if not meta:
+            return
+        for intent in intents:
+            intent.metadata = dict(meta)
 
     # ------------------------------------------------------------------
     # Helpers

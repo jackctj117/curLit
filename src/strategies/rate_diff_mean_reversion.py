@@ -2,14 +2,25 @@
 
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
+from typing import Any
 
 import numpy as np
 import pandas as pd
 
 from src.execution.oms import OrderIntent
+from src.models.feature_versioning import (
+    FeatureSnapshot,
+    FeatureSnapshotStore,
+    attach_snapshot_payload,
+)
 
 logger = logging.getLogger(__name__)
+
+
+# Strategy identity for the feature_versioning registry.
+_FEATURE_SET_NAME = "rate_diff_mr"
+_FEATURE_SET_VERSION = "v1"
 
 
 @dataclass
@@ -52,15 +63,56 @@ class RateDiffMRConfig:
 
 
 class RateDiffMRStrategy:
-    def __init__(self, config: RateDiffMRConfig = None, data_provider=None, state_store=None) -> None:
+    def __init__(
+        self,
+        config: RateDiffMRConfig = None,
+        data_provider=None,
+        state_store=None,
+        snapshot_store: FeatureSnapshotStore | None = None,
+    ) -> None:
         self.config = config or RateDiffMRConfig()
         self.data = data_provider
         self.state = state_store
+        self.snapshot_store = snapshot_store
         self._model: dict | None = None
         self._last_fit: datetime | None = None
         self._position_size: float = 0.0
         self._entry_z: float | None = None
         self._entry_ts: datetime | None = None
+
+    def _emit_snapshot(self, values: dict[str, Any]) -> dict[str, Any]:
+        """Build, persist, and return a snapshot-reference payload.
+
+        Returns a dict suitable to attach as OrderIntent.metadata so the
+        trade journal records the snapshot_id alongside the intent. Empty
+        dict if no snapshot store is configured (graceful degradation:
+        engine still trades, just without per-intent snapshot capture).
+        """
+        if self.snapshot_store is None:
+            return {}
+        model_version = (
+            f"alpha={self._model['alpha']:.6f},beta={self._model['beta']:.6f},"
+            f"std={self._model['residual_std']:.6f}"
+            if self._model else "no_model"
+        )
+        snapshot = FeatureSnapshot.create(
+            feature_set_name=_FEATURE_SET_NAME,
+            feature_set_version=_FEATURE_SET_VERSION,
+            data_snapshot_id="live",
+            model_version=model_version,
+            ts=datetime.now(UTC),
+            values=values,
+        )
+        try:
+            self.snapshot_store.store(snapshot)
+        except Exception:
+            logger.exception(
+                "Failed to store feature snapshot for %s — intent will lack "
+                "snapshot reference",
+                self.id,
+            )
+            return {}
+        return attach_snapshot_payload(snapshot)
 
     @property
     def id(self) -> str:
@@ -167,7 +219,15 @@ class RateDiffMRStrategy:
             if self._position_size != 0:
                 logger.info("Flattening — model quality degraded below gate")
                 self._position_size = 0
-                return [OrderIntent(strategy_id=self.id, symbol=self.config.pair, target_position=0)]
+                meta = self._emit_snapshot({
+                    "trigger": "model_quality_degraded",
+                    "r_squared": float(r2),
+                    "min_r_squared": self.config.min_r_squared,
+                })
+                return [OrderIntent(
+                    strategy_id=self.id, symbol=self.config.pair,
+                    target_position=0, metadata=meta,
+                )]
             return []
 
         tick = prices.get(self.config.pair)
@@ -228,11 +288,22 @@ class RateDiffMRStrategy:
                 assert self._entry_z is not None
                 logger.info("Exit %s: entry_z=%.2f exit_z=%.2f pos=%.0f reason=%s",
                             self.config.pair, self._entry_z, z, self._position_size, exit_reason)
+                meta = self._emit_snapshot({
+                    "trigger": "exit",
+                    "exit_reason": exit_reason,
+                    "z": float(z),
+                    "entry_z": float(self._entry_z),
+                    "price": float(current_price),
+                    "spread": float(current_spread),
+                })
                 self._position_size = 0.0
                 self._entry_z = None
                 self._entry_ts = None
                 signals_generated.labels(strategy_id=self.id, action="exit").inc()
-                return [OrderIntent(strategy_id=self.id, symbol=self.config.pair, target_position=0)]
+                return [OrderIntent(
+                    strategy_id=self.id, symbol=self.config.pair,
+                    target_position=0, metadata=meta,
+                )]
             return []
 
         # Entry check
@@ -255,6 +326,19 @@ class RateDiffMRStrategy:
             self._entry_ts = datetime.now(timezone.utc)
             logger.info("Entry: z=%.2f dir=%d size=%.0f", z, direction, size)
             signals_generated.labels(strategy_id=self.id, action="entry").inc()
-            return [OrderIntent(strategy_id=self.id, symbol=self.config.pair, target_position=size)]
+            meta = self._emit_snapshot({
+                "trigger": "entry",
+                "z": float(z),
+                "direction": int(direction),
+                "price": float(current_price),
+                "spread": float(current_spread),
+                "vol": float(vol),
+                "size": float(size),
+                "entry_z_threshold": self.config.entry_z_threshold,
+            })
+            return [OrderIntent(
+                strategy_id=self.id, symbol=self.config.pair,
+                target_position=size, metadata=meta,
+            )]
 
         return []

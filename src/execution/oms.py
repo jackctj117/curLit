@@ -35,6 +35,10 @@ class OrderIntent:
     urgency: str = "normal"
     max_slippage_bps: float = 2.0
     intent_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    # Free-form per-intent metadata. Strategies attach feature-snapshot ids
+    # (CL-xpw9) here so the trade journal can record reproducibility info
+    # without coupling OrderIntent's schema to feature-versioning internals.
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 class OrderManager:
@@ -75,16 +79,22 @@ class OrderManager:
             current_qty = current_positions.get(intent.symbol, 0.0)
             delta = intent.target_position - current_qty
 
+            intent_payload: dict[str, Any] = {
+                "target_position": intent.target_position,
+                "current_position": current_qty,
+                "delta": delta,
+                "urgency": intent.urgency,
+                "max_slippage_bps": intent.max_slippage_bps,
+            }
+            # Strategy-attached metadata (e.g. feature snapshot id from
+            # CL-xpw9) flows through to the journal so reconstruct_features
+            # can find the snapshot from the intent's audit row.
+            if intent.metadata:
+                intent_payload.update(intent.metadata)
             self._journal_event(
                 EventType.INTENT_SUBMITTED,
                 intent=intent,
-                payload={
-                    "target_position": intent.target_position,
-                    "current_position": current_qty,
-                    "delta": delta,
-                    "urgency": intent.urgency,
-                    "max_slippage_bps": intent.max_slippage_bps,
-                },
+                payload=intent_payload,
             )
 
             if abs(delta) < self._min_trade_size(intent.symbol):

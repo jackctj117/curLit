@@ -2,13 +2,23 @@
 
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
+from typing import Any
 
 import numpy as np
 
 from src.execution.oms import OrderIntent
+from src.models.feature_versioning import (
+    FeatureSnapshot,
+    FeatureSnapshotStore,
+    attach_snapshot_payload,
+)
 
 logger = logging.getLogger(__name__)
+
+
+_FEATURE_SET_NAME = "cb_sentiment_shift"
+_FEATURE_SET_VERSION = "v1"
 
 
 @dataclass
@@ -43,14 +53,45 @@ class OpenPosition:
 
 
 class CBSentimentShiftStrategy:
-    def __init__(self, config: CBSentimentConfig = None, data_provider=None, nlp_provider=None, state_store=None) -> None:
+    def __init__(
+        self,
+        config: CBSentimentConfig = None,
+        data_provider=None,
+        nlp_provider=None,
+        state_store=None,
+        snapshot_store: FeatureSnapshotStore | None = None,
+    ) -> None:
         self.config = config or CBSentimentConfig()
         self.data = data_provider
         self.nlp = nlp_provider
         self.state = state_store
+        self.snapshot_store = snapshot_store
         self.open_positions: dict[str, OpenPosition] = {}
         self._historical_diffs: dict[str, list[float]] = {}
         self._last_refresh: datetime | None = None
+
+    def _emit_snapshot(self, values: dict[str, Any]) -> dict[str, Any]:
+        """Build, persist, and return a snapshot-reference payload (or {})."""
+        if self.snapshot_store is None:
+            return {}
+        snapshot = FeatureSnapshot.create(
+            feature_set_name=_FEATURE_SET_NAME,
+            feature_set_version=_FEATURE_SET_VERSION,
+            data_snapshot_id="live",
+            model_version=f"thresh_pct={self.config.strong_shift_percentile}",
+            ts=datetime.now(UTC),
+            values=values,
+        )
+        try:
+            self.snapshot_store.store(snapshot)
+        except Exception:
+            logger.exception(
+                "Failed to store feature snapshot for %s — intent will lack "
+                "snapshot reference",
+                self.id,
+            )
+            return {}
+        return attach_snapshot_payload(snapshot)
 
     @property
     def id(self) -> str:
@@ -165,7 +206,20 @@ class CBSentimentShiftStrategy:
 
             if exit_reason:
                 logger.info("Exit %s: %s pnl=%.2f%%", symbol, exit_reason, pnl_pct * 100)
-                exits.append(OrderIntent(strategy_id=self.id, symbol=symbol, target_position=0))
+                meta = self._emit_snapshot({
+                    "trigger": "exit",
+                    "exit_reason": exit_reason,
+                    "symbol": symbol,
+                    "current_price": float(current),
+                    "entry_price": float(pos.entry_price),
+                    "direction": int(pos.direction),
+                    "pnl_pct": float(pnl_pct),
+                    "source_cb": pos.source_cb,
+                })
+                exits.append(OrderIntent(
+                    strategy_id=self.id, symbol=symbol,
+                    target_position=0, metadata=meta,
+                ))
                 del self.open_positions[symbol]
         return exits
 
@@ -199,6 +253,20 @@ class CBSentimentShiftStrategy:
                 quantity=size, direction=signal["direction"], stop_loss=stop_price,
                 source_cb=signal["cb"],
             )
-            intents.append(OrderIntent(strategy_id=self.id, symbol=pair, target_position=size))
+            meta = self._emit_snapshot({
+                "trigger": "entry",
+                "cb": signal["cb"],
+                "pair": pair,
+                "direction": int(signal["direction"]),
+                "shift": float(signal["shift"]),
+                "doc_id": signal.get("doc_id", ""),
+                "entry_price": float(entry_price),
+                "stop_price": float(stop_price),
+                "size": float(size),
+            })
+            intents.append(OrderIntent(
+                strategy_id=self.id, symbol=pair,
+                target_position=size, metadata=meta,
+            ))
 
         return intents
