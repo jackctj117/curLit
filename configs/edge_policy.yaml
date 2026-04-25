@@ -1,0 +1,77 @@
+# =============================================================================
+# edge_policy.yaml — pre-committed lifecycle actions for strategy management
+# =============================================================================
+#
+# THE MOST IMPORTANT CONFIG IN THE SYSTEM.
+#
+# Human judgment during drawdowns is worse than pre-committed policy. This
+# file exists so that when a strategy is failing in production, the response
+# is not "what should we do" but "execute the policy we agreed on in calm
+# conditions". When a trigger fires, the code reads this file, executes the
+# action, and notifies operators. Operators do NOT override without a git
+# commit changing this file.
+#
+# DO NOT EDIT DURING DRAWDOWNS. Edits made under stress are exactly the
+# decisions this file is designed to prevent.
+#
+# Loaded by src/edge_testing/edge_policy.py (load_edge_policy).
+# Edit + commit on a calm day with the rest of the team.
+# =============================================================================
+
+paper_trading:
+  # A strategy must run paper-mode for at least this many days before any
+  # promotion to live is even considered. Catches strategies that pass the
+  # statistical gates by luck on a short window.
+  min_days_before_live: 90
+
+  # Statistical gates that must ALL hold before promotion. Each gate references
+  # a metric produced by the edge_testing framework (G1, G2, etc).
+  required_tests:
+    # G1 null hypothesis: max acceptable p-value across the 6 nulls.
+    # Stricter than the default 0.05 because we ARE picking from many candidates.
+    null_p_max: 0.10
+    # G2 White's Reality Check: max acceptable p-value for the
+    # multi-strategy comparison.
+    reality_check_p_max: 0.15
+    # Top-feature edge concentration: if >60% of the edge comes from a single
+    # feature, the strategy is fragile. Computed by G5 feature attribution.
+    edge_concentration_max: 0.60
+
+live_trading:
+  # Degradation triggers map LiveEdgeTracker (G3) severity classifications to
+  # immediate actions. Severity uses the Sharpe z-score test as its primary
+  # input; the thresholds here are operational decision boundaries that
+  # bypass the severity bucket when needed.
+  degradation_triggers:
+    # Sharpe z-score thresholds. The G3 tracker reports z; these thresholds
+    # gate concrete actions independent of the severity-bucket classification.
+    sharpe_z_review: -1.5         # downstream: alert only
+    sharpe_z_reduce_size_50pct: -2.0
+    sharpe_z_halt: -3.0
+
+    # Edge decay (Half-Life Exponential): decay_tau is fitted by G7. A more
+    # negative number means edge is decaying faster. Below -0.7 means edge
+    # has nearly halved across the live window — retire the strategy.
+    decay_tau_retire: -0.7
+
+    # Live mean return floor — if live mean return is negative for a 30-day
+    # rolling window, escalate immediately regardless of test severity.
+    live_mean_return_floor: 0.0
+
+retirement:
+  # Cooldown after a strategy is retired. During this window the strategy
+  # cannot be re-promoted EVEN if it backtests favorably. Prevents the "well
+  # the market changed, let's bring it back" mistake.
+  cooldown_days: 180
+  # Re-promotion requires fresh research artifacts (new feature, new
+  # data source, new model — not just refitting on more recent data).
+  requires_new_research: true
+
+alerts:
+  # Action notifications fan out to Alertmanager via Prometheus alert rules.
+  # Severity here matches Alertmanager's routing tags in
+  # prometheus/rules/edge_policy.yaml.
+  promotion_blocked: warning
+  reduce_size_50pct: critical
+  halt_strategy: critical
+  retire_strategy: critical

@@ -6,6 +6,15 @@ Modules:
     live_tracker       — Live-vs-backtest divergence monitor with consequences (G3).
 """
 
+from src.edge_testing.edge_policy import (
+    EdgePolicy,
+    LiveAction,
+    LiveSnapshot,
+    PromotionDecision,
+    PromotionVerdict,
+    StrategyMetrics,
+    load_edge_policy,
+)
 from src.edge_testing.live_tracker import (
     BacktestExpectations,
     LiveEdgeAssessment,
@@ -35,8 +44,11 @@ from src.edge_testing.null_hypothesis import (
 __all__ = [
     "BacktestExpectations",
     "DivergenceReport",
+    "EdgePolicy",
+    "LiveAction",
     "LiveEdgeAssessment",
     "LiveEdgeTracker",
+    "LiveSnapshot",
     "MatchedPair",
     "MultipleTestingCorrection",
     "MultipleTestingReport",
@@ -44,10 +56,14 @@ __all__ = [
     "NullHypothesisReport",
     "NullResult",
     "PaperLiveDivergence",
+    "PromotionDecision",
+    "PromotionVerdict",
     "RealityCheckResult",
     "Recommendation",
     "Severity",
+    "StrategyMetrics",
     "benjamini_hochberg",
     "bonferroni",
+    "load_edge_policy",
     "whites_reality_check",
 ]
