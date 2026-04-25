@@ -22,6 +22,7 @@ from src.portfolio import (
     PortfolioCoordinator,
     PortfolioStateStore,
     PositionReconciler,
+    PreTradeValidator,
     ReconciliationPolicy,
 )
 from src.runtime.live_engine import LiveEngine
@@ -31,6 +32,7 @@ from src.strategies.carry_vol_filter import (
 )
 from src.strategies.cb_sentiment_shift import CBSentimentConfig, CBSentimentShiftStrategy
 from src.strategies.rate_diff_mean_reversion import RateDiffMRConfig, RateDiffMRStrategy
+from src.strategies.state import StrategyStateStore
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +77,18 @@ def build_strategies(
     engine = _build_db_engine()
     data_provider = DataProvider(engine)
     nlp_provider = NLPDataProvider(engine)
+    # Single shared StrategyStateStore across all strategies — the cold-start
+    # reconciler discovers it via getattr(strategy, "state", ...) and uses
+    # get_current_position(strategy_id) to aggregate per-symbol holdings.
+    # If table-creation fails (e.g. DB unreachable), strategies degrade to
+    # state_store=None and reconciliation is skipped — non-fatal.
+    try:
+        state_store: Any | None = StrategyStateStore(engine)
+    except Exception:
+        logger.exception(
+            "Failed to construct StrategyStateStore; strategies start without state",
+        )
+        state_store = None
 
     strategies: list[Any] = []
     for sconf in config.get("strategies", []):
@@ -85,7 +99,7 @@ def build_strategies(
                 RateDiffMRStrategy(
                     RateDiffMRConfig(**scfg) if scfg else RateDiffMRConfig(),
                     data_provider=data_provider,
-                    state_store=None,
+                    state_store=state_store,
                 )
             )
         elif "sentiment" in sid or "cb" in sid:
@@ -94,7 +108,7 @@ def build_strategies(
                     CBSentimentConfig(**scfg) if scfg else CBSentimentConfig(),
                     data_provider=data_provider,
                     nlp_provider=nlp_provider,
-                    state_store=None,
+                    state_store=state_store,
                 )
             )
         elif "carry" in sid or "vol_filter" in sid:
@@ -102,14 +116,43 @@ def build_strategies(
                 CarryVolFilterStrategy(
                     CarryVolFilterConfig(**scfg) if scfg else CarryVolFilterConfig(),
                     data_provider=data_provider,
-                    state_store=None,
+                    state_store=state_store,
                 )
             )
     if not strategies:
         strategies.append(
-            RateDiffMRStrategy(RateDiffMRConfig(), data_provider=data_provider)
+            RateDiffMRStrategy(
+                RateDiffMRConfig(),
+                data_provider=data_provider,
+                state_store=state_store,
+            )
         )
     return strategies
+
+
+def _supported_instruments(
+    config: dict[str, Any],
+    strategies: list[Any],
+) -> set[str] | None:
+    """Resolve the supported-instruments whitelist for the pre-trade gate.
+
+    Priority: explicit `portfolio.supported_instruments` list in config wins.
+    Otherwise we union every strategy's `.symbols` to derive the set the
+    portfolio actually trades on. Returns None to disable the whitelist
+    (validator accepts all symbols).
+    """
+    portfolio_cfg = config.get("portfolio", {})
+    explicit = portfolio_cfg.get("supported_instruments")
+    if isinstance(explicit, list) and explicit:
+        return set(explicit)
+    if not strategies:
+        return None
+    derived: set[str] = set()
+    for s in strategies:
+        symbols = getattr(s, "symbols", None) or []
+        for sym in symbols:
+            derived.add(sym)
+    return derived if derived else None
 
 
 def build_coordinator(
@@ -136,12 +179,25 @@ def build_coordinator(
         )
         return None
 
+    # Pre-trade gate: validates margin / leverage / per-pair / per-currency /
+    # tradability per intent before the OMS sees it. Supported instruments
+    # default to the union of all strategy symbols + USD-base inverses; an
+    # explicit set in config overrides.
+    effective_constraints = constraints or PortfolioConstraints()
+    supported = _supported_instruments(config, strategies)
+    pre_trade_validator = PreTradeValidator(
+        broker=broker,
+        constraints=effective_constraints,
+        supported_instruments=supported,
+    )
+
     coordinator = PortfolioCoordinator(
         strategies=strategies,
         oms=oms,
         broker=broker,
         state=state,
-        constraints=constraints,
+        constraints=effective_constraints,
+        pre_trade_validator=pre_trade_validator,
     )
 
     initial_weights = portfolio_cfg.get("initial_weights")
