@@ -357,13 +357,18 @@ async def run_engine(practice: bool) -> None:
         pass
 
     loop = asyncio.get_event_loop()
+    shutdown_started = False
 
     async def _shutdown() -> None:
+        # Idempotent — multiple SIGTERMs (or both SIGINT+SIGTERM during a
+        # ctrl-C+kill rollover) shouldn't trigger multiple shutdowns. Without
+        # this we previously logged "Shutdown complete" twice.
+        nonlocal shutdown_started
+        if shutdown_started:
+            return
+        shutdown_started = True
         logger.info("Graceful shutdown initiated")
-        engine.running = False
-        oms.halt_new_trades()
-        await asyncio.sleep(1)
-        logger.info("Shutdown complete")
+        await engine.graceful_shutdown(timeout=10)
 
     def _handler(sig: signal.Signals) -> None:
         logger.info("Received %s", sig.name)

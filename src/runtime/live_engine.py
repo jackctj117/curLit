@@ -37,6 +37,9 @@ class LiveEngine:
         self._last_prices: dict[str, dict[str, Any]] = {}
         self._last_signal_times: dict[str, datetime] = {}
         self._last_reconciliation_report: Any | None = None
+        # Tracked async tasks — populated in run(), used by graceful_shutdown()
+        # to cancel each so the run() gather can return and the process exit.
+        self._tasks: list[asyncio.Task[Any]] = []
 
         if coordinator is None:
             logger.warning(
@@ -72,16 +75,26 @@ class LiveEngine:
                     "Cold-start reconciliation failed — continuing with engine startup"
                 )
 
-        tasks = [
-            self._price_stream_task(),
-            self._signal_generation_task(),
-            self._reconciliation_task(),
-            self._health_check_task(),
-            self._web_server_task(),
+        # Track tasks as asyncio.Task so graceful_shutdown() can cancel them.
+        # Without this, any task that doesn't poll self.running between
+        # awaits (uvicorn server, the broker price-stream async-for) keeps
+        # the gather alive forever and the process can never exit on SIGTERM.
+        coros = [
+            ("price_stream", self._price_stream_task()),
+            ("signal_gen", self._signal_generation_task()),
+            ("reconciliation", self._reconciliation_task()),
+            ("health_check", self._health_check_task()),
+            ("web_server", self._web_server_task()),
         ]
         if self.coordinator is not None:
-            tasks.append(self._rebalance_task())
-        await asyncio.gather(*tasks)
+            coros.append(("rebalance", self._rebalance_task()))
+        self._tasks = [
+            asyncio.create_task(coro, name=name) for name, coro in coros
+        ]
+        try:
+            await asyncio.gather(*self._tasks)
+        except asyncio.CancelledError:
+            logger.info("Live engine tasks cancelled — exiting")
 
     async def _web_server_task(self) -> None:
         import uvicorn
@@ -201,10 +214,23 @@ class LiveEngine:
         return True
 
     async def graceful_shutdown(self, timeout: int = 30) -> None:
+        """Halt new trades, drain pending OMS work, then cancel all tasks.
+
+        Idempotent — repeat calls are no-ops once shutdown has run. Cancels
+        the tracked tasks so run()'s asyncio.gather raises CancelledError and
+        the awaiting caller (run_engine.run_engine) can return cleanly.
+        """
+        if not self.running:
+            return  # already shut down
         logger.info("Graceful shutdown")
         self.running = False
         self.oms.halt_new_trades()
+        # Wait briefly for OMS to drain in-flight orders.
         start = time.time()
         while self.oms.has_pending() and (time.time() - start) < timeout:
             await asyncio.sleep(0.5)
+        # Cancel tasks so run()'s gather can return.
+        for task in self._tasks:
+            if not task.done():
+                task.cancel()
         logger.info("Shutdown complete")
