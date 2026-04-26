@@ -32,7 +32,6 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
-from sqlalchemy import text
 
 # Make src.* imports work when running this script directly.
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -61,50 +60,21 @@ _EXPECT_HIT_LO, _EXPECT_HIT_HI = 0.55, 0.65
 def _load_data(start: datetime, end: datetime) -> pd.DataFrame:
     """Build the input DataFrame: EURUSD + US_10Y + DE_10Y aligned daily.
 
-    EURUSD and US_10Y come from `prices` (daily from yfinance); DE_10Y is
-    monthly from FRED IRLTLT01DEM156N — forward-filled to daily so the
-    walk-forward sees a continuous spread series.
+    DataProvider.get_aligned_series merges prices (yfinance daily) and
+    macro_data (FRED monthly) since CL-5rtm; DE_10Y comes through as a
+    monthly column joined into the daily index, ffill'd here so the
+    walk-forward sees continuous coverage.
     """
-    engine = _build_db_engine()
-
-    eurusd = pd.read_sql(
-        text(
-            "SELECT ts, close FROM prices WHERE symbol='EURUSD' "
-            "AND ts BETWEEN :s AND :e ORDER BY ts"
-        ),
-        engine, params={"s": start, "e": end},
-    ).set_index("ts")["close"].rename("EURUSD")
-
-    us10 = pd.read_sql(
-        text(
-            "SELECT ts, close FROM prices WHERE symbol='US_10Y' "
-            "AND ts BETWEEN :s AND :e ORDER BY ts"
-        ),
-        engine, params={"s": start, "e": end},
-    ).set_index("ts")["close"].rename("US_10Y")
-
-    # DISTINCT ON because FREDIngester duplicates observations across reruns
-    # (CL-mht0 — release_date=utcnow() makes the upsert key non-unique). We
-    # take the most recent release_date per observation_date.
-    de10 = pd.read_sql(
-        text(
-            "SELECT DISTINCT ON (observation_date) "
-            "  observation_date AS ts, value "
-            "FROM macro_data "
-            "WHERE series_id='IRLTLT01DEM156N' "
-            "  AND observation_date BETWEEN :s AND :e "
-            "ORDER BY observation_date, release_date DESC"
-        ),
-        engine, params={"s": start.date(), "e": end.date()},
-    ).set_index("ts")["value"].rename("DE_10Y")
-    # Drop tz from the daily index so all three series align cleanly.
-    eurusd.index = pd.to_datetime(eurusd.index).tz_localize(None)
-    us10.index = pd.to_datetime(us10.index).tz_localize(None)
-    de10.index = pd.to_datetime(de10.index)
-
-    df = pd.concat([eurusd, us10, de10], axis=1)
+    from src.data.provider import DataProvider
+    dp = DataProvider(_build_db_engine())
+    df = dp.get_aligned_series(["EURUSD", "US_10Y", "DE_10Y"], start, end)
+    if df is None or df.empty:
+        raise RuntimeError(
+            "No data returned from DataProvider — has the seed script run? CL-4bu"
+        )
+    df = df.copy()
     df["DE_10Y"] = df["DE_10Y"].ffill()
-    df = df.dropna()
+    df = df.dropna(subset=["EURUSD", "US_10Y", "DE_10Y"])
     df["US10Y_MINUS_DE10Y"] = df["US_10Y"].astype(float) - df["DE_10Y"].astype(float)
     df["close"] = df["EURUSD"].astype(float)
     return df
