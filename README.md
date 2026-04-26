@@ -122,9 +122,35 @@ The engine runs the live event loop — strategies evaluate signals, manage posi
 
 ### 7. View dashboards
 
-- **Web UI**: `http://localhost:8200/api/account?secret=curlit-dev`
+- **Web UI**: `http://localhost:8200/api/account?secret=curlit-dev` (JSON REST — positions, signals, P&L, manual trades)
 - **Grafana Glance**: `http://localhost:3000` → "curLit — Glance"
 - **Airflow**: `http://localhost:8080`
+- **Soak dashboard**: `http://127.0.0.1:8201/` (see below — must be launched separately)
+
+### Soak-test dashboard
+
+When the engine is running in paper mode for stability validation (24h soak runs), `scripts/soak_dashboard.py` provides a self-refreshing HTML view of engine health. Runs independently of the engine — start, stop, or restart it any time without disturbing the soak.
+
+```bash
+.venv/bin/python scripts/soak_monitor.py    # writes logs/soak_test.jsonl every 10min
+.venv/bin/python scripts/soak_dashboard.py  # serves http://127.0.0.1:8201/ (default port)
+```
+
+The page auto-refreshes every 10s and shows:
+
+| Panel | What it tells you |
+|---|---|
+| **verdict** | GREEN / YELLOW / RED rollup with reason |
+| **engine** | ALIVE/DEAD + python PID + uptime |
+| **memory · cpu · fds** | RSS, CPU%, threads, file descriptors + sparkline of last 100 samples |
+| **monitor** | Sample count + age of latest sample |
+| **latest sample** | Most recent `soak_test.jsonl` row |
+| **db rows** | `trade_journal_events` + `feature_snapshots` counts + latest event type |
+| **recent errors** | Last 20 ERROR/CRITICAL/Traceback lines from the engine log |
+
+Verdict thresholds: **RED** if engine is dead, monitor stale >25min, or memory has doubled · **YELLOW** if monitor stale 15–25min or memory grew >50% · **GREEN** otherwise.
+
+`GET /api/soak` returns the same data as JSON for external monitoring or scripting. Override the port via `SOAK_DASHBOARD_PORT=8500`. Bound to `127.0.0.1` only — read-only and local-network.
 
 ## API Keys Required
 
