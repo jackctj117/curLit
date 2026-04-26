@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import httpx
 import psutil
 import uvicorn
 from fastapi import FastAPI
@@ -126,6 +127,113 @@ def _recent_errors(n: int = 20) -> list[str]:
     return matches[-n:]
 
 
+def _engine_api_get(path: str) -> Any:
+    """Proxy GET to the engine's web API on :8200. Returns parsed JSON or
+    None on any failure (engine down, secret mismatch, transport error).
+    """
+    secret = os.environ.get("WEB_API_SECRET", "curlit-dev")
+    try:
+        r = httpx.get(
+            f"http://127.0.0.1:8200{path}",
+            params={"secret": secret}, timeout=2.0,
+        )
+        if r.status_code != 200:
+            return None
+        return r.json()
+    except Exception:
+        return None
+
+
+def _account_state() -> dict[str, Any]:
+    """Equity / margin from broker via engine's web API."""
+    data = _engine_api_get("/api/account")
+    if data is None:
+        return {"error": "engine api unreachable"}
+    return data
+
+
+def _positions() -> list[dict[str, Any]]:
+    """Live positions from broker via engine's web API."""
+    data = _engine_api_get("/api/positions")
+    return data if isinstance(data, list) else []
+
+
+def _strategies() -> list[dict[str, Any]]:
+    """Configured strategies + their symbols."""
+    data = _engine_api_get("/api/signals")
+    if not data or "strategies" not in data:
+        return []
+    return list(data["strategies"])
+
+
+def _system_status() -> dict[str, Any]:
+    """Engine running flag + OMS halted flag."""
+    data = _engine_api_get("/api/system")
+    return data or {"error": "unreachable"}
+
+
+def _recent_trades(n: int = 15) -> list[dict[str, Any]]:
+    """Last N trade-journal events with the bits a human cares about.
+
+    Each row distills payload fields most useful for "what's happening" —
+    target_position / delta for INTENT_SUBMITTED, side+quantity for
+    ORDER_PLACED/FILLED, rejection_class for ORDER_REJECTED, summary for
+    RECONCILIATION_REPORT.
+    """
+    try:
+        eng = _get_engine()
+        with eng.connect() as conn:
+            rows = conn.execute(
+                text(
+                    "SELECT seq, ts, event_type, intent_id, strategy_id, symbol, "
+                    "  payload "
+                    "FROM trade_journal_events ORDER BY seq DESC LIMIT :n"
+                ),
+                {"n": n},
+            ).fetchall()
+    except Exception:
+        return []
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        seq, ts, etype, iid, sid, sym, payload = r
+        # Postgres returns JSONB as dict; normalize for safety.
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except Exception:
+                payload = {}
+        # Pull the most-relevant payload fields per event type into a
+        # single short string — table cells stay readable.
+        detail_bits: list[str] = []
+        if etype == "intent_submitted":
+            if "delta" in payload:
+                detail_bits.append(f"Δ={payload['delta']:+.2f}")
+            if "target_position" in payload:
+                detail_bits.append(f"target={payload['target_position']:+.2f}")
+        elif etype in ("order_placed", "order_filled", "order_partial_fill"):
+            if "side" in payload and "quantity" in payload:
+                detail_bits.append(f"{payload['side']} {payload['quantity']:.2f}")
+        elif etype == "order_rejected":
+            if "rejection_class" in payload:
+                detail_bits.append(payload["rejection_class"])
+        elif etype == "reconciliation_report":
+            summary = payload.get("summary") if isinstance(payload, dict) else None
+            if summary:
+                matched = summary.get("matched", 0)
+                total = sum(summary.values())
+                detail_bits.append(f"{matched}/{total} matched")
+        out.append({
+            "seq": seq,
+            "ts": ts.isoformat() if hasattr(ts, "isoformat") else str(ts),
+            "event_type": etype,
+            "intent_id": (iid[:8] + "…") if iid else "",
+            "strategy_id": sid or "",
+            "symbol": sym or "",
+            "detail": " ".join(detail_bits),
+        })
+    return out
+
+
 def _db_counts() -> dict[str, Any]:
     """Counts on trade_journal_events + feature_snapshots."""
     try:
@@ -211,6 +319,14 @@ def soak_health() -> dict[str, Any]:
 
     verdict = _verdict(pid is not None, monitor_age, samples)
 
+    # Trade-activity / account info — fetched via the engine's web API.
+    # Returns empty/error fields if the engine API isn't reachable.
+    account = _account_state()
+    positions = _positions()
+    strategies = _strategies()
+    system = _system_status()
+    recent_trades = _recent_trades(n=15)
+
     return {
         "now": datetime.now(timezone.utc).isoformat(),
         "verdict": verdict,
@@ -232,6 +348,11 @@ def soak_health() -> dict[str, Any]:
         "latest_sample": samples[-1] if samples else None,
         "db": db,
         "recent_errors": errors,
+        "account": account,
+        "positions": positions,
+        "strategies": strategies,
+        "system": system,
+        "recent_trades": recent_trades,
     }
 
 
@@ -271,6 +392,15 @@ _HTML = """<!doctype html>
   #spark rect { fill: #4ade80; }
   .err { color: #f87171; font-size: 0.8em; padding: 0.3em 0; }
   footer { margin-top: 1em; font-size: 0.75em; color: #666; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.82em; }
+  th, td { text-align: left; padding: 0.3em 0.5em; border-bottom: 1px solid #2a2f3a; }
+  th { color: #888; font-weight: 500; text-transform: uppercase;
+       letter-spacing: 0.04em; font-size: 0.78em; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  td.pos { color: #4ade80; }
+  td.neg { color: #f87171; }
+  td.muted { color: #666; }
+  .full { grid-column: 1 / -1; }
 </style>
 </head>
 <body>
@@ -316,6 +446,59 @@ async function refresh() {
       }).join("") + `</svg>`;
   }
 
+  // ----- Account / positions / strategies / trades -----
+  const acct = d.account || {};
+  const positions = d.positions || [];
+  const strategies = d.strategies || [];
+  const sys_ = d.system || {};
+  const trades = d.recent_trades || [];
+
+  const fmtMoney = (n) => n == null ? "—" : "$" + Number(n).toLocaleString(undefined, { maximumFractionDigits: 2 });
+  const fmtNum = (n) => n == null ? "—" : Number(n).toLocaleString(undefined, { maximumFractionDigits: 4 });
+  const cls = (n) => n == null ? "muted" : (n > 0 ? "pos" : (n < 0 ? "neg" : "muted"));
+
+  const positionsHtml = positions.length
+    ? `<table>
+         <thead><tr><th>symbol</th><th>qty</th><th>avg px</th><th>uPnL</th></tr></thead>
+         <tbody>${positions.map(p => `
+           <tr>
+             <td>${p.symbol}</td>
+             <td class="num ${cls(p.quantity)}">${fmtNum(p.quantity)}</td>
+             <td class="num">${fmtNum(p.avg_price)}</td>
+             <td class="num ${cls(p.pnl)}">${fmtMoney(p.pnl)}</td>
+           </tr>`).join("")}
+         </tbody>
+       </table>`
+    : `<div class="small">no open positions</div>`;
+
+  const strategiesHtml = strategies.length
+    ? `<table>
+         <thead><tr><th>id</th><th>symbols</th></tr></thead>
+         <tbody>${strategies.map(s => `
+           <tr>
+             <td>${s.id}</td>
+             <td class="muted">${(s.symbols || []).join(", ")}</td>
+           </tr>`).join("")}
+         </tbody>
+       </table>`
+    : `<div class="small">engine api unreachable or no strategies</div>`;
+
+  const tradesHtml = trades.length
+    ? `<table>
+         <thead><tr><th>seq</th><th>ts</th><th>event</th><th>strategy</th><th>symbol</th><th>detail</th></tr></thead>
+         <tbody>${trades.map(t => `
+           <tr>
+             <td class="num muted">${t.seq}</td>
+             <td class="muted">${(t.ts || "").slice(11, 19)}</td>
+             <td>${t.event_type}</td>
+             <td class="muted">${t.strategy_id || "—"}</td>
+             <td>${t.symbol || "—"}</td>
+             <td class="muted">${t.detail}</td>
+           </tr>`).join("")}
+         </tbody>
+       </table>`
+    : `<div class="small">no journal events yet</div>`;
+
   document.getElementById("root").innerHTML = `
     <div class="grid">
       <div class="card ${v.status || ''}">
@@ -327,6 +510,13 @@ async function refresh() {
         <h2>engine</h2>
         <div class="v">${e.alive ? "ALIVE" : "DEAD"}</div>
         <div class="small">PID ${fmt(e.pid)} · uptime ${fmtDur(e.uptime_sec)}</div>
+        <div class="small">OMS ${sys_.oms_halted ? "HALTED" : "active"}</div>
+      </div>
+      <div class="card">
+        <h2>account · paper</h2>
+        <div class="v">${fmtMoney(acct.equity)}</div>
+        <div class="small">margin used ${fmtMoney(acct.margin_used)}</div>
+        ${acct.error ? `<div class="err">${acct.error}</div>` : ""}
       </div>
       <div class="card">
         <h2>memory · cpu · fds</h2>
@@ -340,18 +530,23 @@ async function refresh() {
         <div class="small">last sample ${fmtDur(m.sample_age_sec)} ago</div>
       </div>
       <div class="card">
-        <h2>latest sample</h2>
-        ${row("ts", (last.ts || "—").slice(0, 19) + " UTC")}
-        ${row("memory_mb", fmt(last.memory_mb))}
-        ${row("equity", fmt(last.equity))}
-        ${row("cpu_pct", fmt(last.cpu_pct))}
-      </div>
-      <div class="card">
         <h2>db rows</h2>
         ${row("trade_journal_events", fmt(db.trade_journal_events))}
         ${row("feature_snapshots", fmt(db.feature_snapshots))}
         ${db.latest_event ? row("latest", db.latest_event.type) : ""}
         ${db.error ? `<div class="err">${db.error}</div>` : ""}
+      </div>
+      <div class="card full">
+        <h2>positions</h2>
+        ${positionsHtml}
+      </div>
+      <div class="card full">
+        <h2>strategies</h2>
+        ${strategiesHtml}
+      </div>
+      <div class="card full">
+        <h2>recent trade-journal events</h2>
+        ${tradesHtml}
       </div>
     </div>
     <div class="card" style="margin-top:1em">

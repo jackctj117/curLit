@@ -136,17 +136,27 @@ When the engine is running in paper mode for stability validation (24h soak runs
 .venv/bin/python scripts/soak_dashboard.py  # serves http://127.0.0.1:8201/ (default port)
 ```
 
-The page auto-refreshes every 10s and shows:
+The page auto-refreshes every 10s. Health panels:
 
 | Panel | What it tells you |
 |---|---|
 | **verdict** | GREEN / YELLOW / RED rollup with reason |
-| **engine** | ALIVE/DEAD + python PID + uptime |
+| **engine** | ALIVE/DEAD + python PID + uptime + OMS halt state |
+| **account · paper** | Equity, margin used (from broker via engine API) |
 | **memory · cpu · fds** | RSS, CPU%, threads, file descriptors + sparkline of last 100 samples |
 | **monitor** | Sample count + age of latest sample |
-| **latest sample** | Most recent `soak_test.jsonl` row |
 | **db rows** | `trade_journal_events` + `feature_snapshots` counts + latest event type |
 | **recent errors** | Last 20 ERROR/CRITICAL/Traceback lines from the engine log |
+
+Trade-activity panels (full-width tables):
+
+| Panel | What it tells you |
+|---|---|
+| **positions** | Per-symbol open positions: qty, avg price, unrealized P&L (color-coded long/short) |
+| **strategies** | Configured strategies and the symbols each trades |
+| **recent trade-journal events** | Last 15 events with seq, ts, event type, strategy, symbol, and a per-event-type detail (delta for INTENT_SUBMITTED, side+qty for ORDER_PLACED/FILLED, rejection class for ORDER_REJECTED, summary for RECONCILIATION_REPORT) |
+
+The trade-activity panels proxy through the engine's web API at `:8200` (so they require the engine to be up — they degrade gracefully to "engine api unreachable" if it isn't). The dashboard uses the same `WEB_API_SECRET` env var the engine does, so any custom secret in `.env` works automatically.
 
 Verdict thresholds: **RED** if engine is dead, monitor stale >25min, or memory has doubled · **YELLOW** if monitor stale 15–25min or memory grew >50% · **GREEN** otherwise.
 
