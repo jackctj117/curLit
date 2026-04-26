@@ -1,0 +1,130 @@
+{
+  "ran_at": "2026-04-26T05:43:39.070948+00:00",
+  "data_window": {
+    "start": "2016-06-01",
+    "end": "2025-12-31",
+    "n_days": 2501
+  },
+  "config": {
+    "top_k": 3,
+    "bottom_k": 3,
+    "vol_lookback_days": 120,
+    "tradable_ccys": [
+      "EUR",
+      "JPY",
+      "GBP",
+      "CAD",
+      "AUD",
+      "CHF",
+      "NZD"
+    ],
+    "rebalance_day": 1
+  },
+  "metrics": {
+    "total_return": -0.007907573649569843,
+    "cagr": -0.0007996118020737741,
+    "volatility": 0.0698597045732663,
+    "sharpe": 0.023520800916459344,
+    "sortino": 0.032198623831390494,
+    "max_drawdown": -0.21612644202682968,
+    "max_dd_duration_days": 702.0,
+    "calmar": -0.0036997407377599417,
+    "hit_rate": 0.5176423416198878,
+    "avg_win": 0.003136252843842951,
+    "avg_loss": -0.0033521153351031667,
+    "profit_factor": 1.0040439653103517,
+    "var_95": -0.006901991154355117,
+    "expected_shortfall_95": -0.010159394319955356,
+    "skewness": -0.5173437464195849,
+    "kurtosis": 5.4422042436107345
+  },
+  "sharpe_ci_95": {
+    "low": -0.5293057163035334,
+    "high": 0.5895040216983759
+  },
+  "n_rebalances": 87,
+  "per_year": [
+    {
+      "year": 2016,
+      "n_days": 153,
+      "sharpe": 0.3527051411589887,
+      "total_return": 0.015615465810610463,
+      "max_drawdown": -0.04258381673322836
+    },
+    {
+      "year": 2017,
+      "n_days": 260,
+      "sharpe": -0.0943687517762449,
+      "total_return": -0.007829551616020392,
+      "max_drawdown": -0.07110778619535711
+    },
+    {
+      "year": 2018,
+      "n_days": 261,
+      "sharpe": -1.0178533741705398,
+      "total_return": -0.06751874561197801,
+      "max_drawdown": -0.07729897404602373
+    },
+    {
+      "year": 2019,
+      "n_days": 261,
+      "sharpe": 0.21783379100601405,
+      "total_return": 0.011618964148512267,
+      "max_drawdown": -0.07128712942945165
+    },
+    {
+      "year": 2020,
+      "n_days": 262,
+      "sharpe": -0.13300341346955882,
+      "total_return": -0.01734247958408741,
+      "max_drawdown": -0.13719682878101366
+    },
+    {
+      "year": 2021,
+      "n_days": 261,
+      "sharpe": 0.5845050266160777,
+      "total_return": 0.03969017222389115,
+      "max_drawdown": -0.050499673748742036
+    },
+    {
+      "year": 2022,
+      "n_days": 260,
+      "sharpe": 0.45125358975727764,
+      "total_return": 0.03339115800172521,
+      "max_drawdown": -0.056655332620189645
+    },
+    {
+      "year": 2023,
+      "n_days": 260,
+      "sharpe": 0.11028782680527621,
+      "total_return": 0.004894723676953205,
+      "max_drawdown": -0.04627666201451463
+    },
+    {
+      "year": 2024,
+      "n_days": 262,
+      "sharpe": 0.16320358827645226,
+      "total_return": 0.008151971705892658,
+      "max_drawdown": -0.07652162184284973
+    },
+    {
+      "year": 2025,
+      "n_days": 261,
+      "sharpe": -0.28290041042447145,
+      "total_return": -0.024197251904081507,
+      "max_drawdown": -0.08078894627503011
+    }
+  ],
+  "architecture_comparison": {
+    "sharpe_in_expected_range": "\u2717",
+    "max_drawdown_in_expected_range": "\u2717",
+    "expected_sharpe_range": [
+      0.5,
+      1.0
+    ],
+    "expected_max_drawdown_range": [
+      -0.18,
+      -0.1
+    ]
+  }
+}

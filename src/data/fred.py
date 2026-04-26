@@ -39,6 +39,13 @@ FRED_SERIES: dict[str, str] = {
     "IRLTLT01DEM156N": "Germany 10Y Bond Yield",
     "IRLTLT01JPM156N": "Japan 10Y Bond Yield",
     "IRLTLT01GBM156N": "UK 10Y Bond Yield",
+    # G10 long-term yields used by the carry_vol_filter backtest (CL-lcxd).
+    "IRLTLT01CAM156N": "Canada 10Y Bond Yield",
+    "IRLTLT01AUM156N": "Australia 10Y Bond Yield",
+    "IRLTLT01CHM156N": "Switzerland 10Y Bond Yield",
+    "IRLTLT01NZM156N": "New Zealand 10Y Bond Yield",
+    "IRLTLT01NOM156N": "Norway 10Y Bond Yield",
+    "IRLTLT01SEM156N": "Sweden 10Y Bond Yield",
 }
 
 
