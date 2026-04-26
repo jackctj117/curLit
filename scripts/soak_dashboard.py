@@ -27,12 +27,37 @@ import psutil
 import uvicorn
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
+from sqlalchemy import create_engine, text
+from sqlalchemy.engine import Engine
 
 ROOT = Path(__file__).parent.parent
 LOG_DIR = ROOT / "logs"
 SOAK_LOG = LOG_DIR / "soak_test.jsonl"
 
 app = FastAPI(title="curLit Soak Dashboard", version="0.1.0")
+
+
+# Lazy-initialized DB engine so dashboard polling doesn't create a fresh
+# SQLAlchemy engine (with its own connection pool) per request — that
+# accumulates connections until Postgres rejects with "too many clients
+# already" (CL-xn6k). One engine, reused across all polls.
+_engine: Engine | None = None
+
+
+def _get_engine() -> Engine:
+    global _engine
+    if _engine is None:
+        url = os.environ.get(
+            "DATABASE_URL",
+            f"postgresql+psycopg2://{os.environ.get('POSTGRES_USER', 'fx')}:"
+            f"{os.environ.get('POSTGRES_PASSWORD', 'changeme')}@"
+            f"{os.environ.get('POSTGRES_HOST', 'localhost')}:5432/"
+            f"{os.environ.get('POSTGRES_DB', 'fx')}",
+        )
+        # Small pool — dashboard is read-only and low-frequency. Without
+        # the explicit cap a default pool of 5+10 would be wasteful.
+        _engine = create_engine(url, pool_size=2, max_overflow=0, pool_pre_ping=True)
+    return _engine
 
 
 def _find_engine_pid() -> int | None:
@@ -104,15 +129,7 @@ def _recent_errors(n: int = 20) -> list[str]:
 def _db_counts() -> dict[str, Any]:
     """Counts on trade_journal_events + feature_snapshots."""
     try:
-        from sqlalchemy import create_engine, text
-        url = os.environ.get(
-            "DATABASE_URL",
-            f"postgresql+psycopg2://{os.environ.get('POSTGRES_USER', 'fx')}:"
-            f"{os.environ.get('POSTGRES_PASSWORD', 'changeme')}@"
-            f"{os.environ.get('POSTGRES_HOST', 'localhost')}:5432/"
-            f"{os.environ.get('POSTGRES_DB', 'fx')}",
-        )
-        eng = create_engine(url)
+        eng = _get_engine()
         out: dict[str, Any] = {}
         with eng.connect() as conn:
             for table in ("trade_journal_events", "feature_snapshots"):

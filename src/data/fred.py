@@ -138,6 +138,12 @@ class FREDIngester(BaseIngester):
 
     def transform(self, raw: pd.DataFrame) -> pd.DataFrame:
         df = raw.rename(columns={"date": "observation_date"})
+        # release_date is recorded as the moment we ingested this row, but
+        # is not part of the dedup key — otherwise reruns create duplicate
+        # observation rows because each rerun gets a fresh utcnow() (CL-mht0).
+        # The schema's PK includes release_date for ALFRED-vintage support;
+        # the ingester intentionally treats (observation_date, series_id) as
+        # the natural dedup key.
         df["release_date"] = pd.Timestamp.utcnow()
         df["revision"] = 0
         df["source"] = self.source
@@ -145,7 +151,7 @@ class FREDIngester(BaseIngester):
         return df.dropna(subset=["value"])
 
     def _key_columns(self) -> list[str]:
-        return ["observation_date", "release_date", "series_id"]
+        return ["observation_date", "series_id"]
 
     def upsert(self, df: pd.DataFrame) -> int:
         return self._upsert_dataframe(df, "macro_data", self.engine, self._key_columns())
