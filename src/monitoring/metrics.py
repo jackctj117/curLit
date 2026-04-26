@@ -154,6 +154,13 @@ pretrade_rejections = Counter(
     ["pair", "reason"],
 )
 
+blackout_size_down = Counter(
+    "fx_blackout_size_down_total",
+    "Intents whose size was reduced by the coordinator due to an "
+    "economic-calendar blackout window (CL-k74b)",
+    ["pair"],
+)
+
 order_fill_duration = Histogram(
     "fx_order_fill_duration_seconds",
     "Time from placement to fill",

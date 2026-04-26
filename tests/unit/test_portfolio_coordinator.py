@@ -109,6 +109,7 @@ def _make_coord(
     eurusd_mid: float = 1.10,
     usdjpy_mid: float = 150.0,
     gbpusd_mid: float = 1.25,
+    blackout_evaluator: Any | None = None,
 ) -> tuple[PortfolioCoordinator, _RecordingOMS, PaperBroker, _FakeState]:
     sids = strategy_ids or ["s1", "s2"]
     strategies = [_FakeStrategy(id=sid) for sid in sids]
@@ -125,6 +126,7 @@ def _make_coord(
         broker=broker,
         state=fake_state,  # type: ignore[arg-type]
         constraints=constraints,
+        blackout_evaluator=blackout_evaluator,
     )
     return coord, oms, broker, fake_state
 
@@ -705,3 +707,89 @@ def test_gross_leverage_capped_after_constraints(notionals: list[float]) -> None
     equity = coord.broker.get_account().equity
     leverage = gross / equity
     assert leverage <= coord.constraints.max_gross_leverage + 1e-6
+
+
+# =============================================================================
+# Blackout SIZE_DOWN_50PCT (CL-k74b) — coordinator-level intent halving.
+# =============================================================================
+
+
+def _evaluator_with_event(
+    minutes_until: float,
+    currency: str | None = None,
+) -> Any:
+    """Build a BlackoutEvaluator whose calendar has one tier-1 event at the
+    given offset.
+    """
+    from datetime import timedelta
+
+    from src.data.economic_calendar import (
+        BlackoutEvaluator,
+        EconomicCalendar,
+        EconomicEvent,
+        SeverityTier,
+    )
+    when = datetime.now(UTC) + timedelta(minutes=minutes_until)
+    cal = EconomicCalendar([
+        EconomicEvent(
+            ts=when,
+            event_type="NFP",
+            severity_tier=SeverityTier.TIER_1,
+            description="test",
+            currency=currency,
+        ),
+    ])
+    return BlackoutEvaluator(cal)
+
+
+class TestBlackoutSizeDown:
+    def test_size_down_window_halves_target(self) -> None:
+        # Tier-1 SIZE_DOWN window is 0..24h; PAUSE starts at 1h, EXIT_FLAT at
+        # 30min. Event at 6h falls strictly into SIZE_DOWN_50PCT.
+        evaluator = _evaluator_with_event(minutes_until=360)
+        coord, *_ = _make_coord(["s1"], blackout_evaluator=evaluator)
+        out = coord._apply_blackout_size_down("EURUSD", 10_000.0)
+        assert out == pytest.approx(5_000.0)
+
+    def test_full_size_window_unchanged(self) -> None:
+        # Event 48h+ away — outside any tier-1 window → FULL_SIZE → no halving.
+        evaluator = _evaluator_with_event(minutes_until=4320)  # 72h
+        coord, *_ = _make_coord(["s1"], blackout_evaluator=evaluator)
+        out = coord._apply_blackout_size_down("EURUSD", 10_000.0)
+        assert out == pytest.approx(10_000.0)
+
+    def test_pause_window_unchanged_at_coordinator_level(self) -> None:
+        # PAUSE_NEW_ENTRIES is the validator's responsibility (rejection),
+        # not the coordinator's (size mutation). Coordinator must NOT mutate
+        # in pause/exit-flat windows — pass through unchanged.
+        evaluator = _evaluator_with_event(minutes_until=45)  # PAUSE window
+        coord, *_ = _make_coord(["s1"], blackout_evaluator=evaluator)
+        out = coord._apply_blackout_size_down("EURUSD", 10_000.0)
+        assert out == pytest.approx(10_000.0)
+
+    def test_exit_flat_window_unchanged_at_coordinator_level(self) -> None:
+        # Same as PAUSE — validator rejects, coordinator doesn't mutate.
+        evaluator = _evaluator_with_event(minutes_until=5)  # EXIT_FLAT
+        coord, *_ = _make_coord(["s1"], blackout_evaluator=evaluator)
+        out = coord._apply_blackout_size_down("EURUSD", 10_000.0)
+        assert out == pytest.approx(10_000.0)
+
+    def test_no_evaluator_passes_through(self) -> None:
+        coord, *_ = _make_coord(["s1"], blackout_evaluator=None)
+        out = coord._apply_blackout_size_down("EURUSD", 10_000.0)
+        assert out == pytest.approx(10_000.0)
+
+    def test_currency_filter_passes_for_unaffected_pair(self) -> None:
+        # Event tagged USD-only; intent on EUR pair derives currency='EUR'
+        # → calendar.evaluate filters out the USD event → FULL_SIZE.
+        evaluator = _evaluator_with_event(minutes_until=360, currency="USD")
+        coord, *_ = _make_coord(["s1"], blackout_evaluator=evaluator)
+        out = coord._apply_blackout_size_down("EURJPY", 10_000.0)
+        assert out == pytest.approx(10_000.0)
+
+    def test_negative_target_halved(self) -> None:
+        # Short positions also get halved (sign-preserving multiply by 0.5).
+        evaluator = _evaluator_with_event(minutes_until=360)
+        coord, *_ = _make_coord(["s1"], blackout_evaluator=evaluator)
+        out = coord._apply_blackout_size_down("EURUSD", -8_000.0)
+        assert out == pytest.approx(-4_000.0)

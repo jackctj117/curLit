@@ -36,9 +36,11 @@ from typing import Any, Protocol, runtime_checkable
 import numpy as np
 import pandas as pd
 
+from src.data.economic_calendar import BlackoutAction, BlackoutEvaluator
 from src.execution.broker import Broker
 from src.execution.oms import OrderIntent, OrderManager
 from src.monitoring.logging_setup import LogContext
+from src.monitoring.metrics import blackout_size_down
 from src.portfolio.risk_parity import risk_parity_weights
 
 logger = logging.getLogger(__name__)
@@ -257,6 +259,7 @@ class PortfolioCoordinator:
         state: PortfolioStateProtocol,
         constraints: PortfolioConstraints | None = None,
         pre_trade_validator: Any | None = None,
+        blackout_evaluator: BlackoutEvaluator | None = None,
     ) -> None:
         assert strategies, "PortfolioCoordinator requires at least one strategy"
         ids = [s.id for s in strategies]
@@ -268,6 +271,12 @@ class PortfolioCoordinator:
         self.state = state
         self.constraints = constraints or PortfolioConstraints()
         self.pre_trade_validator = pre_trade_validator
+        # Blackout evaluator handles SIZE_DOWN_50PCT here at the coordinator
+        # level (intent mutation); PAUSE/EXIT_FLAT are handled separately by
+        # the validator (rejection only). Splitting by responsibility:
+        # validator's contract is reject-or-accept, coordinator owns intent
+        # construction so it can mutate target_position cleanly.
+        self.blackout_evaluator = blackout_evaluator
 
         self.allocations: dict[str, StrategyAllocation] = {}
         self._last_rebalance: datetime | None = None
@@ -276,10 +285,11 @@ class PortfolioCoordinator:
 
         logger.info(
             "PortfolioCoordinator initialized with %d strategies: %s "
-            "(pre_trade_validator=%s)",
+            "(pre_trade_validator=%s, blackout_evaluator=%s)",
             len(self.strategies),
             sorted(self.strategies.keys()),
             "enabled" if pre_trade_validator is not None else "disabled",
+            "enabled" if blackout_evaluator is not None else "disabled",
         )
 
     # ------------------------------------------------------------------
@@ -360,10 +370,17 @@ class PortfolioCoordinator:
 
             for symbol, info in feasible.items():
                 with LogContext(symbol=symbol):
+                    target = float(info["target_position"])
+                    # Blackout SIZE_DOWN_50PCT — halve the intent BEFORE
+                    # passing to the validator. PAUSE/EXIT_FLAT cases are
+                    # rejected by the validator separately (CL-c8th); we
+                    # only mutate here for the size-down case.
+                    target = self._apply_blackout_size_down(symbol, target)
+
                     final = OrderIntent(
                         strategy_id="portfolio",
                         symbol=symbol,
-                        target_position=info["target_position"],
+                        target_position=target,
                         urgency=info["urgency"],
                     )
 
@@ -391,6 +408,37 @@ class PortfolioCoordinator:
                     accepted[symbol] = info
 
             return accepted
+
+    def _apply_blackout_size_down(
+        self, symbol: str, target_position: float,
+    ) -> float:
+        """Halve target_position when the calendar is in SIZE_DOWN_50PCT.
+
+        FULL_SIZE / PAUSE_NEW_ENTRIES / EXIT_FLAT are not handled here:
+        FULL_SIZE is a no-op, the other two are rejected by the validator.
+
+        Currency derived from symbol[:3] (e.g. EURUSD → EUR) — same
+        convention as PreTradeValidator._currency_from_symbol.
+        """
+        if self.blackout_evaluator is None:
+            return target_position
+        currency = symbol[:3].upper() if symbol and len(symbol) >= 3 else None
+        decision = self.blackout_evaluator.evaluate(
+            now=datetime.now(UTC), currency=currency,
+        )
+        if decision.action != BlackoutAction.SIZE_DOWN_50PCT:
+            return target_position
+        # Mutate to half size, log + emit metric.
+        new_target = target_position * 0.5
+        logger.info(
+            "Blackout SIZE_DOWN_50PCT for %s — halving target %.4f → %.4f (%s)",
+            symbol, target_position, new_target, decision.reason,
+        )
+        try:
+            blackout_size_down.labels(pair=symbol).inc()
+        except Exception:
+            logger.exception("blackout_size_down metric increment failed")
+        return new_target
 
     # ------------------------------------------------------------------
     # Intent processing — internal stages

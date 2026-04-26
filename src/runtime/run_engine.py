@@ -275,6 +275,7 @@ def build_coordinator(
         state=state,
         constraints=effective_constraints,
         pre_trade_validator=pre_trade_validator,
+        blackout_evaluator=blackout_evaluator,
     )
 
     initial_weights = portfolio_cfg.get("initial_weights")
