@@ -41,13 +41,9 @@ htmlcov/
 *~
 .DS_Store
 
-# Project data directories (content, not structure)
-data/raw/*
-data/processed/*
-data/vintage/*
-!data/raw/.gitkeep
-!data/processed/.gitkeep
-!data/vintage/.gitkeep
+# Project data directories — runtime artifacts, never source.
+# Structure is created by the scripts that populate them.
+data/
 
 # Models (artifacts)
 models/**/pytorch_model*.bin
