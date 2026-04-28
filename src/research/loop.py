@@ -57,6 +57,7 @@ from src.research.ingest import (
 )
 from src.research.notifications import DispatchResult, notify_operator
 from src.research.orchestrator import DebateOrchestrator
+from src.research.promote import PromoteRegistrar, RegistrationResult
 from src.research.verdict import (
     ParsedRule,
     Verdict,
@@ -84,6 +85,21 @@ GATE1_PENDING_STATUS: str = "PENDING_OPERATOR_APPROVAL"
 GATE1_APPROVED_STATUS: str = "APPROVED"
 GATE1_SKIPPED_STATUS: str = "SKIPPED"
 DEFAULT_GATE1_TIMEOUT_SEC: float = 7 * 24 * 60 * 60  # 7 days
+
+# GATE 2: pre-deploy operator confirmation (CL-yta6).
+#
+# After verdict=PROMOTE, the loop holds at deploy_status=
+# PENDING_DEPLOY_CONFIRMATION until the operator marks DEPLOY_APPROVED
+# (registrar runs on the next pass) or DEPLOY_REJECTED (strategy
+# archived). Default timeout: 7 days; expired pending entries auto-
+# REJECT (safer-default — a deploy decision should never be made by
+# silence). Configurable per-run.
+GATE2_PENDING_STATUS: str = "PENDING_DEPLOY_CONFIRMATION"
+GATE2_APPROVED_STATUS: str = "DEPLOY_APPROVED"
+GATE2_REJECTED_STATUS: str = "DEPLOY_REJECTED"
+GATE2_DEPLOYED_STATUS: str = "DEPLOYED"
+GATE2_DEPLOY_FAILED_STATUS: str = "DEPLOY_FAILED"
+DEFAULT_GATE2_TIMEOUT_SEC: float = 7 * 24 * 60 * 60  # 7 days
 
 
 # --------------------------------------------------------------------------- #
@@ -157,6 +173,11 @@ class RunSummary:
     verdicts_promote: int = 0
     verdicts_reject: int = 0
     verdicts_escalate: int = 0
+    # GATE 2 (CL-yta6) bookkeeping
+    gate2_notifications_sent: int = 0
+    gate2_auto_rejected_expired: int = 0
+    deployments_succeeded: int = 0
+    deployments_failed: int = 0
     errors: list[str] = field(default_factory=list)
 
 
@@ -199,6 +220,8 @@ class ResearchLoop:
         candidate_dir: Path | str = DEFAULT_CANDIDATE_DIR,
         notify_fn: NotifyFn | None = None,
         gate1_timeout_sec: float = DEFAULT_GATE1_TIMEOUT_SEC,
+        gate2_timeout_sec: float = DEFAULT_GATE2_TIMEOUT_SEC,
+        registrar: PromoteRegistrar | None = None,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         self.ingest_runner = ingest_runner
@@ -219,6 +242,10 @@ class ResearchLoop:
             lambda t, m, p: notify_operator(title=t, message=m, priority=p)
         )
         self.gate1_timeout_sec = gate1_timeout_sec
+        self.gate2_timeout_sec = gate2_timeout_sec
+        # Default registrar runs git + gh; tests/dev environments can
+        # set skip_git=True or pass a mocked registrar.
+        self.registrar = registrar or PromoteRegistrar()
         # Injected clock so tests can simulate the timeout window.
         self._clock: Callable[[], datetime] = clock or (
             lambda: datetime.now(UTC)
@@ -249,6 +276,9 @@ class ResearchLoop:
             save_state(state, self.state_path)
 
             self._phase_debate(state, summary)
+            save_state(state, self.state_path)
+
+            self._phase_gate2(state, summary)
             save_state(state, self.state_path)
         except Exception as exc:
             logger.exception("research loop crashed")
@@ -537,13 +567,23 @@ class ResearchLoop:
                 continue
             summary.debates_run += 1
             self._tally_verdict(summary, verdict)
-            state.debates_completed[slug] = {
+            new_entry: dict[str, Any] = {
                 "verdict": verdict.verdict.value,
                 "reason": verdict.reason,
                 "transcript_path": str(debate_result.transcript_path),
                 "bull": str(bull_pos),
                 "bear": str(bear_pos),
             }
+            # GATE 2: PROMOTE verdicts hold for operator deploy
+            # confirmation before the registrar runs.
+            if verdict.verdict == Verdict.PROMOTE:
+                new_entry["deploy_status"] = GATE2_PENDING_STATUS
+                new_entry["pending_since"] = self._clock().isoformat(
+                    timespec="seconds",
+                )
+                new_entry["candidate_report_path"] = str(report_path)
+                self._notify_gate2(slug, new_entry, summary)
+            state.debates_completed[slug] = new_entry
 
     @staticmethod
     def _tally_verdict(summary: RunSummary, verdict: VerdictResult) -> None:
@@ -553,6 +593,121 @@ class ResearchLoop:
             summary.verdicts_reject += 1
         elif verdict.verdict == Verdict.ESCALATE:
             summary.verdicts_escalate += 1
+
+    # ------------------------------------------------------------------ #
+    # GATE 2 — pre-deploy operator confirmation (CL-yta6)
+    # ------------------------------------------------------------------ #
+
+    def _phase_gate2(self, state: LoopState, summary: RunSummary) -> None:
+        """Two responsibilities:
+
+          1. Auto-REJECT pending entries older than the timeout. Note
+             this is the OPPOSITE default from GATE 1 — silence on a
+             deploy decision means "no", not "yes". A skipped deploy
+             can always be re-promoted later; an erroneous deploy is
+             harder to undo even at allocation=0.
+          2. Run the PROMOTE registrar for entries the operator has
+             marked DEPLOY_APPROVED. Records DEPLOYED on success or
+             DEPLOY_FAILED with the registrar's error.
+        """
+        now = self._clock()
+        for slug, entry in state.debates_completed.items():
+            deploy_status = entry.get("deploy_status")
+            if deploy_status == GATE2_PENDING_STATUS:
+                pending_since_str = entry.get("pending_since")
+                if not pending_since_str:
+                    continue
+                try:
+                    pending_since = datetime.fromisoformat(pending_since_str)
+                except ValueError:
+                    logger.warning(
+                        "debates_completed[%s].pending_since malformed: %r",
+                        slug, pending_since_str,
+                    )
+                    continue
+                elapsed = (now - pending_since).total_seconds()
+                if elapsed > self.gate2_timeout_sec:
+                    entry["deploy_status"] = GATE2_REJECTED_STATUS
+                    entry["deploy_reason"] = (
+                        f"auto-REJECTED: pending {elapsed/86400:.1f}d > "
+                        f"{self.gate2_timeout_sec/86400:.1f}d operator timeout"
+                    )
+                    summary.gate2_auto_rejected_expired += 1
+                    logger.info(
+                        "GATE 2 auto-rejected expired pending deploy %s", slug,
+                    )
+            elif deploy_status == GATE2_APPROVED_STATUS:
+                self._run_registrar(slug, entry, summary)
+
+    def _run_registrar(
+        self,
+        slug: str,
+        entry: dict[str, Any],
+        summary: RunSummary,
+    ) -> None:
+        """Execute the PROMOTE side-effect for a DEPLOY_APPROVED entry."""
+        try:
+            result: RegistrationResult = self.registrar.register(
+                strategy_slug=slug,
+                candidate_report_path=entry.get("candidate_report_path", ""),
+                debate_transcript_path=entry.get("transcript_path", ""),
+                verdict_reason=entry.get("reason", ""),
+            )
+        except Exception as exc:
+            logger.exception("registrar raised for slug %s", slug)
+            entry["deploy_status"] = GATE2_DEPLOY_FAILED_STATUS
+            entry["deploy_reason"] = f"{type(exc).__name__}: {exc}"
+            summary.deployments_failed += 1
+            summary.errors.append(f"deploy/{slug}: {type(exc).__name__}: {exc}")
+            return
+        if result.succeeded:
+            entry["deploy_status"] = GATE2_DEPLOYED_STATUS
+            entry["pr_url"] = result.pr_url
+            entry["branch_name"] = result.branch_name
+            entry["deploy_reason"] = (
+                f"steps: {','.join(result.steps_completed)}"
+            )
+            summary.deployments_succeeded += 1
+        else:
+            entry["deploy_status"] = GATE2_DEPLOY_FAILED_STATUS
+            entry["deploy_reason"] = result.error or "registrar reported failure"
+            summary.deployments_failed += 1
+            summary.errors.append(f"deploy/{slug}: {result.error}")
+
+    def _notify_gate2(
+        self,
+        slug: str,
+        entry: dict[str, Any],
+        summary: RunSummary,
+    ) -> None:
+        """Fire pre-deploy confirmation notification. priority=1 since
+        this is a deploy decision and we want the operator to notice."""
+        title = f"GATE 2: deploy confirmation — {slug}"
+        message = (
+            f"PROMOTE verdict — strategy ready for paper-shadow.\n\n"
+            f"Slug: {slug}\n"
+            f"Verdict reason: {entry.get('reason', '(none)')}\n"
+            f"Bull: {entry.get('bull')}  Bear: {entry.get('bear')}\n"
+            f"Transcript: {entry.get('transcript_path')}\n"
+            f"Candidate report: {entry.get('candidate_report_path')}\n\n"
+            f"NOTE: paper-shadow registration starts at allocation=0 so "
+            f"there is no real-money risk. This gate is operator-awareness, "
+            f"not financial-loss prevention.\n\n"
+            f"Approve via:\n"
+            f"  python -m scripts.research_approve --gate=2 --slug {slug} "
+            f"--action GO\n"
+            f"Reject with --action SKIP --reason 'why'."
+        )
+        try:
+            disp = self.notify_fn(title, message, 1)
+        except Exception as exc:
+            logger.warning(
+                "GATE 2 notification dispatch raised: %s: %s",
+                type(exc).__name__, exc,
+            )
+            return
+        if disp.any_attempted:
+            summary.gate2_notifications_sent += 1
 
     # ------------------------------------------------------------------ #
     # Run-summary persistence

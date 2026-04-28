@@ -221,6 +221,41 @@ def _silent_notifier(*_args: Any, **_kwargs: Any) -> Any:
     return DispatchResult()
 
 
+class _FakeRegistrar:
+    """Records register() calls and returns a configurable result."""
+
+    def __init__(self, *, succeeded: bool = True, error: str = "") -> None:
+        self._succeeded = succeeded
+        self._error = error
+        self.calls: list[dict[str, Any]] = []
+
+    def register(
+        self,
+        strategy_slug: str,
+        candidate_report_path: Any,
+        debate_transcript_path: Any,
+        verdict_reason: str = "",
+    ) -> Any:
+        from src.research.promote import RegistrationResult
+        self.calls.append({
+            "slug": strategy_slug,
+            "report": str(candidate_report_path),
+            "transcript": str(debate_transcript_path),
+            "reason": verdict_reason,
+        })
+        return RegistrationResult(
+            succeeded=self._succeeded,
+            strategy_slug=strategy_slug,
+            error=self._error,
+            pr_url="https://example.com/pr/1" if self._succeeded else "",
+            branch_name=f"experiment/{strategy_slug}",
+            steps_completed=(
+                ["move_file", "portfolio_yaml", "git", "pr"]
+                if self._succeeded else ["move_file"]
+            ),
+        )
+
+
 # --------------------------------------------------------------------------- #
 # Fixtures
 # --------------------------------------------------------------------------- #
@@ -750,3 +785,248 @@ class TestGate1:
         assert state.ideas_processed["h1"]["status"] == (
             "PENDING_OPERATOR_APPROVAL"
         )
+
+
+# --------------------------------------------------------------------------- #
+# GATE 2 — pre-deploy operator confirmation (CL-yta6)
+# --------------------------------------------------------------------------- #
+
+
+def _build_promote_loop(
+    loop_paths: dict[str, Path],
+    *,
+    bull: Position = Position.PROMOTE,
+    bear: Position = Position.PROMOTE,
+    registrar: Any = None,
+    notify_fn: Any = None,
+    clock: Any = None,
+    gate2_timeout_sec: float | None = None,
+) -> tuple[ResearchLoop, _FakeRegistrar]:
+    """Helper: build a loop wired through to a PROMOTE verdict so the
+    test can drive GATE 2 transitions."""
+    store = _FakeExtractStore(root=loop_paths["extracts"])
+    ingest = _FakeIngestRunner(
+        extract_store=store, new_extracts=[("h1", "# A\n")],
+    )
+    idea = _FakeIdeaAgent(responses={
+        "h1": {"status": "PROPOSED", "slug": "alpha"},
+    })
+    impl = _FakeImplementer(
+        responses={"alpha": {"status": "IMPLEMENTED"}},
+        candidate_dir=loop_paths["candidates"],
+    )
+    transcript = loop_paths["transcripts"] / "alpha" / "transcript.md"
+    transcript.parent.mkdir(parents=True)
+    transcript.write_text("(stub)")
+    orch = _FakeOrchestrator(results={
+        "alpha": _make_debate_result(
+            "alpha", bull, bear, transcript=transcript,
+        ),
+    })
+    used_registrar = registrar if registrar is not None else _FakeRegistrar()
+    kwargs: dict[str, Any] = {
+        "notify_fn": notify_fn or _silent_notifier,
+        "registrar": used_registrar,
+    }
+    if clock is not None:
+        kwargs["clock"] = clock
+    if gate2_timeout_sec is not None:
+        kwargs["gate2_timeout_sec"] = gate2_timeout_sec
+    loop = ResearchLoop(
+        ingest_runner=ingest, idea_agent=idea,  # type: ignore[arg-type]
+        implementer=impl,  # type: ignore[arg-type]
+        debate_orchestrator=orch,  # type: ignore[arg-type]
+        rules_loader=lambda: [], feed_configs=[],
+        extract_store=store,  # type: ignore[arg-type]
+        state_path=loop_paths["state"],
+        runs_dir=loop_paths["runs"],
+        hypothesis_dir=loop_paths["hypotheses"],
+        candidate_dir=loop_paths["candidates"],
+        **kwargs,
+    )
+    return loop, used_registrar
+
+
+class TestGate2:
+    def test_promote_holds_pending_and_fires_priority1_notification(
+        self, loop_paths: dict[str, Path],
+    ) -> None:
+        notifications: list[tuple[str, str, int]] = []
+
+        def recorder(title: str, message: str, priority: int) -> Any:
+            from src.research.notifications import DispatchResult
+            notifications.append((title, message, priority))
+            r = DispatchResult()
+            r.pushover_attempted = True
+            r.pushover_succeeded = True
+            return r
+
+        loop, registrar = _build_promote_loop(
+            loop_paths, notify_fn=recorder,
+        )
+        # Pass 1: gate 1 holds.
+        loop.run()
+        _approve_all_pending(loop_paths["state"])
+        # Pass 2: implementer + debate. Debate produces PROMOTE → gate 2
+        # holds at PENDING_DEPLOY_CONFIRMATION.
+        summary = loop.run()
+        assert summary.verdicts_promote == 1
+        assert summary.gate2_notifications_sent == 1
+        # Registrar NOT called on PENDING entries
+        assert registrar.calls == []
+        # State reflects pending deploy
+        state = load_state(loop_paths["state"])
+        entry = state.debates_completed["alpha"]
+        assert entry["deploy_status"] == "PENDING_DEPLOY_CONFIRMATION"
+        assert "pending_since" in entry
+        assert entry["candidate_report_path"]
+        # Notification: only the GATE 2 one is priority=1 (deploy
+        # decision); GATE 1 was priority=0 on pass 1.
+        gate2_notifs = [n for n in notifications if "GATE 2" in n[0]]
+        assert len(gate2_notifs) == 1
+        title, message, priority = gate2_notifs[0]
+        assert priority == 1
+        assert "alpha" in title
+        assert "research_approve" in message
+        assert "allocation=0" in message
+
+    def test_approved_runs_registrar_on_next_pass(
+        self, loop_paths: dict[str, Path],
+    ) -> None:
+        loop, registrar = _build_promote_loop(loop_paths)
+        loop.run()  # gate 1
+        _approve_all_pending(loop_paths["state"])
+        loop.run()  # gate 2 holds at PENDING
+
+        # Operator approves deploy
+        state = load_state(loop_paths["state"])
+        state.debates_completed["alpha"]["deploy_status"] = (
+            "DEPLOY_APPROVED"
+        )
+        save_state(state, loop_paths["state"])
+
+        summary = loop.run()
+        assert summary.deployments_succeeded == 1
+        assert registrar.calls == [{
+            "slug": "alpha",
+            "report": str(
+                loop_paths["candidates"] / "alpha.json",
+            ),
+            "transcript": str(
+                loop_paths["transcripts"] / "alpha" / "transcript.md",
+            ),
+            "reason": "All gates pass; both reviewers PROMOTE",
+        }]
+        state = load_state(loop_paths["state"])
+        assert state.debates_completed["alpha"]["deploy_status"] == "DEPLOYED"
+        assert state.debates_completed["alpha"]["pr_url"]
+        assert state.debates_completed["alpha"]["branch_name"]
+
+    def test_rejected_doesnt_run_registrar(
+        self, loop_paths: dict[str, Path],
+    ) -> None:
+        loop, registrar = _build_promote_loop(loop_paths)
+        loop.run()
+        _approve_all_pending(loop_paths["state"])
+        loop.run()  # gate 2 holds
+
+        # Operator rejects deploy
+        state = load_state(loop_paths["state"])
+        state.debates_completed["alpha"]["deploy_status"] = (
+            "DEPLOY_REJECTED"
+        )
+        state.debates_completed["alpha"]["deploy_reason"] = (
+            "duplicates carry strategy"
+        )
+        save_state(state, loop_paths["state"])
+
+        summary = loop.run()
+        assert summary.deployments_succeeded == 0
+        assert summary.deployments_failed == 0
+        assert registrar.calls == []
+
+    def test_auto_reject_after_timeout(
+        self, loop_paths: dict[str, Path],
+    ) -> None:
+        from datetime import UTC, datetime, timedelta
+
+        clock_time = [datetime(2026, 1, 1, tzinfo=UTC)]
+
+        def fake_clock() -> datetime:
+            return clock_time[0]
+
+        loop, registrar = _build_promote_loop(
+            loop_paths, clock=fake_clock, gate2_timeout_sec=60.0,
+        )
+        loop.run()
+        _approve_all_pending(loop_paths["state"])
+        loop.run()  # gate 2 holds at t=0
+
+        state = load_state(loop_paths["state"])
+        assert state.debates_completed["alpha"]["deploy_status"] == (
+            "PENDING_DEPLOY_CONFIRMATION"
+        )
+
+        # Advance clock past timeout
+        clock_time[0] = datetime(2026, 1, 1, tzinfo=UTC) + timedelta(
+            seconds=120,
+        )
+        summary = loop.run()
+        assert summary.gate2_auto_rejected_expired == 1
+        state = load_state(loop_paths["state"])
+        assert state.debates_completed["alpha"]["deploy_status"] == (
+            "DEPLOY_REJECTED"
+        )
+        assert "auto-REJECTED" in state.debates_completed["alpha"][
+            "deploy_reason"]
+        # Registrar never ran
+        assert registrar.calls == []
+
+    def test_registrar_failure_marks_deploy_failed(
+        self, loop_paths: dict[str, Path],
+    ) -> None:
+        bad_registrar = _FakeRegistrar(
+            succeeded=False, error="git: branch already exists",
+        )
+        loop, _ = _build_promote_loop(loop_paths, registrar=bad_registrar)
+        loop.run()
+        _approve_all_pending(loop_paths["state"])
+        loop.run()
+
+        # Operator approves
+        state = load_state(loop_paths["state"])
+        state.debates_completed["alpha"]["deploy_status"] = (
+            "DEPLOY_APPROVED"
+        )
+        save_state(state, loop_paths["state"])
+
+        summary = loop.run()
+        assert summary.deployments_failed == 1
+        assert summary.deployments_succeeded == 0
+        assert any(
+            "branch already exists" in e for e in summary.errors
+        )
+        state = load_state(loop_paths["state"])
+        assert state.debates_completed["alpha"]["deploy_status"] == (
+            "DEPLOY_FAILED"
+        )
+
+    def test_non_promote_verdict_no_gate2(
+        self, loop_paths: dict[str, Path],
+    ) -> None:
+        # Mixed positions → ESCALATE; no gate 2 entry created
+        loop, registrar = _build_promote_loop(
+            loop_paths,
+            bull=Position.PROMOTE, bear=Position.REJECT,  # ESCALATE
+        )
+        loop.run()
+        _approve_all_pending(loop_paths["state"])
+        summary = loop.run()
+        assert summary.verdicts_escalate == 1
+        assert summary.verdicts_promote == 0
+        assert summary.gate2_notifications_sent == 0
+        state = load_state(loop_paths["state"])
+        # Entry exists but has no deploy_status
+        assert "deploy_status" not in state.debates_completed["alpha"]
+        # Registrar never ran
+        assert registrar.calls == []
