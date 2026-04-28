@@ -1,0 +1,80 @@
+# Multi-agent research pipeline config (CL-rzf7).
+#
+# Schema validated by src/research/config.py:ResearchConfig at load time.
+# Adding a new agent or a new debate type is a YAML edit only — no Python
+# changes anywhere else. Provider names must match the drivers registered
+# in src/research/llm/client.py:_DRIVERS.
+
+providers:
+  claude:
+    api_key_env: ANTHROPIC_API_KEY
+    default_model: claude-opus-4-7
+  deepseek:
+    api_key_env: DEEPSEEK_API_KEY
+    default_model: deepseek-chat
+  grok:
+    api_key_env: XAI_API_KEY
+    default_model: grok-4
+
+agents:
+  # Reads paper extracts (data/research/extracts/*.md) and emits
+  # pre-registered hypothesis briefs. Cheap repetitive task → DeepSeek.
+  idea_generator:
+    provider: deepseek
+    role: idea_generator
+    prompt_path: configs/research_prompts/idea_generator.md
+    max_tokens: 4096
+
+  # Writes strategy code from a hypothesis brief and runs the backtest.
+  # Code-generation reasoning quality matters → Claude.
+  implementer:
+    provider: claude
+    role: implementer
+    prompt_path: configs/research_prompts/implementer.md
+    max_tokens: 8192
+
+  # Bull reviewer — argues PROMOTE with evidence cited from REVIEW_RULES.md.
+  bull_reviewer:
+    provider: claude
+    role: bull
+    prompt_path: configs/research_prompts/bull_reviewer.md
+    max_tokens: 4096
+
+  # Bear reviewer — adversarial; argues REJECT, hunts for failure modes.
+  # Could be Grok for distinct training distribution → genuine viewpoint
+  # diversity vs Claude-Bull. Switch to grok by changing this one line.
+  bear_reviewer:
+    provider: claude
+    role: bear
+    prompt_path: configs/research_prompts/bear_reviewer.md
+    max_tokens: 4096
+
+  # Routes smart-questions to code/agent/human; bounces ESR-violators.
+  # Mostly format-checking + tool-calling → DeepSeek.
+  question_resolver:
+    provider: deepseek
+    role: resolver
+    prompt_path: configs/research_prompts/question_resolver.md
+    max_tokens: 2048
+
+debates:
+  # The default promotion-review debate. Bull + Bear go through 4 rounds
+  # culminating in a verdict. Adding a different debate type (e.g. a
+  # 5-agent committee, a cost-only review, a risk-only review) is just
+  # a new entry under this key.
+  promotion_review:
+    participants:
+      - bull_reviewer
+      - bear_reviewer
+    rules_path: docs/research/REVIEW_RULES.md
+    verdict_engine: rule_based
+    rounds:
+      - name: initial_positions
+        type: parallel
+      - name: smart_questions
+        type: per_agent_async
+        sub_loop: list_unknowns_then_resolve
+      - name: rebuttal
+        type: sequential
+      - name: final_position
+        type: parallel

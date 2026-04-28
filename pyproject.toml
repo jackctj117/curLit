@@ -48,6 +48,9 @@ dependencies = [
     "uvicorn>=0.23",
     # Labelling
     "streamlit>=1.26",
+    # LLM providers (CL-h986 research pipeline)
+    "anthropic>=0.40",
+    "openai>=2.0",        # used as DeepSeek + xAI Grok base (OpenAI-compat)
     # Utilities
     "python-dotenv>=1.0",
     "pyyaml>=6.0",
