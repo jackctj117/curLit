@@ -57,6 +57,15 @@ agents:
     prompt_path: configs/research_prompts/question_resolver.md
     max_tokens: 2048
 
+  # Reads paper metadata + abstract → produces the four-section markdown
+  # extract that the Idea Agent consumes. High-volume, cost-sensitive
+  # → DeepSeek.
+  paper_extractor:
+    provider: deepseek
+    role: paper_extractor
+    prompt_path: configs/research_prompts/paper_extractor.md
+    max_tokens: 1024
+
 debates:
   # The default promotion-review debate. Bull + Bear go through 4 rounds
   # culminating in a verdict. Adding a different debate type (e.g. a

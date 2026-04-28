@@ -1,0 +1,22 @@
+# Paper-stream config (CL-2klj).
+#
+# Each feed entry is fetched + parsed by the matching adapter in
+# src/research/ingest.py. v1 ships the arXiv adapter only; SSRN, NBER,
+# Fed, BIS, AQR and the rest are extensible by adding (a) a YAML entry
+# below and (b) a corresponding fetcher class registered in
+# ingest._FETCHER_REGISTRY. Tracked as separate beads under CL-h986.
+
+feeds:
+  arxiv_qfin_pm:
+    adapter: arxiv
+    # arXiv API: portfolio-management category. Atom 1.0 response.
+    query_url: |
+      http://export.arxiv.org/api/query?search_query=cat:q-fin.PM&max_results=25&sortBy=submittedDate&sortOrder=descending
+    source_label: arXiv q-fin.PM
+
+  arxiv_qfin_tr:
+    adapter: arxiv
+    # Trading & market microstructure category.
+    query_url: |
+      http://export.arxiv.org/api/query?search_query=cat:q-fin.TR&max_results=25&sortBy=submittedDate&sortOrder=descending
+    source_label: arXiv q-fin.TR
