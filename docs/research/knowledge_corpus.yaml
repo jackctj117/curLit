@@ -1,0 +1,290 @@
+# Knowledge corpus for the multi-agent research pipeline (CL-i8bw).
+#
+# This is the curated reading list that grounds agent reasoning in real
+# wisdom. The ingester (CL-jg43) reads each entry and produces summary
+# chunks stored in the knowledge_chunks table — original PDFs are NEVER
+# stored, only the LLM-extracted notes plus the citation needed to cite
+# them.
+#
+# `extract_source` controls how the ingester gets the source text:
+#
+#   llm-prior-knowledge   The ingester asks the LLM to produce structured
+#                          summaries from its training-data memory of the
+#                          work. Honest about limits — the LLM might
+#                          hallucinate page refs, paraphrase imperfectly.
+#                          Suitable for canonical works the LLMs have
+#                          definitely seen during training.
+#
+#   pdf:/abs/path         Operator points at a local PDF. Ingester chunks
+#                          + summarizes each chunk. Most accurate but
+#                          requires owning the source.
+#
+#   notes:/abs/path       Operator hand-writes markdown notes (one
+#                          section = one chunk). Highest fidelity, no
+#                          hallucination, but needs a human reading.
+#
+# v1 ships with `llm-prior-knowledge` for every entry — testable end-to-
+# end without owning PDFs. As the operator reads each work, they swap
+# the entry to `notes:` mode for higher fidelity.
+#
+# Curation matters more than volume — one bad entry pollutes retrieval.
+# Add new entries via PR review, with a written rationale for why this
+# work belongs in the agents' reasoning context.
+
+sources:
+
+  # =============================================================================
+  # P1 — load first; foundational for the agents' reasoning
+  # =============================================================================
+
+  - title: "Thinking, Fast and Slow"
+    author: "Daniel Kahneman"
+    year: 2011
+    source_type: book
+    importance: P1
+    topic_tags: [behavioral-finance, cognitive-biases, dual-system, anchoring, overconfidence, prospect-theory]
+    rationale: |
+      Foundational for understanding the cognitive failure modes of human
+      traders — overconfidence, anchoring, narrative fallacy. Bull/Bear
+      reviewers should cite this when arguing whether a strategy's
+      backtest reflects a real edge or post-hoc explanatory bias.
+    extract_strategy: chapter-summary
+    extract_source: llm-prior-knowledge
+    chunks_per_source: 24
+
+  - title: "Irrational Exuberance"
+    author: "Robert J. Shiller"
+    year: 2015 # 3rd ed
+    source_type: book
+    importance: P1
+    topic_tags: [bubble-psychology, mass-belief, valuation-cycles, narrative-economics]
+    rationale: |
+      The canonical empirical treatment of bubble dynamics. The Bear
+      reviewer cites this when challenging strategies whose edge depends
+      on regimes that look bubble-shaped (e.g. carry trades during
+      easy-money cycles).
+    extract_strategy: chapter-summary
+    extract_source: llm-prior-knowledge
+    chunks_per_source: 18
+
+  - title: "The Alchemy of Finance"
+    author: "George Soros"
+    year: 1987
+    source_type: book
+    importance: P1
+    topic_tags: [reflexivity, market-microstructure, feedback-loops, soros-method]
+    rationale: |
+      Soros's reflexivity framework: market participants' beliefs change
+      the very fundamentals they're trying to read. Critical when an
+      agent considers strategies whose own popularity would arbitrage
+      out the edge.
+    extract_strategy: chapter-summary
+    extract_source: llm-prior-knowledge
+    chunks_per_source: 20
+
+  - title: "Adaptive Markets"
+    author: "Andrew W. Lo"
+    year: 2017
+    source_type: book
+    importance: P1
+    topic_tags: [adaptive-markets, evolutionary-finance, regime-shifts, ecology-of-markets]
+    rationale: |
+      Lo's framework — markets aren't efficient but evolutionary;
+      strategies are temporary adaptations to environments that change.
+      Anchors agent reasoning that 'edge decays' isn't unusual; it's the
+      base rate. Maps directly to the G7 decay-detection framework.
+    extract_strategy: chapter-summary
+    extract_source: llm-prior-knowledge
+    chunks_per_source: 22
+
+  - title: "The Black Swan"
+    author: "Nassim Nicholas Taleb"
+    year: 2007
+    source_type: book
+    importance: P1
+    topic_tags: [tail-risk, fat-tails, narrative-fallacy, ludic-fallacy, antifragility]
+    rationale: |
+      Establishes that the most consequential market events are rare and
+      unpredictable from in-sample data. Bear should cite when strategies
+      have suspiciously low max-drawdown in the OOS — meaning the OOS
+      probably didn't include a tail event.
+    extract_strategy: chapter-summary
+    extract_source: llm-prior-knowledge
+    chunks_per_source: 16
+
+  - title: "The (Mis)behavior of Markets"
+    author: "Benoit Mandelbrot, Richard L. Hudson"
+    year: 2004
+    source_type: book
+    importance: P1
+    topic_tags: [fat-tails, fractal-markets, multifractal, levy-stable, non-gaussian]
+    rationale: |
+      The mathematical case that returns aren't Gaussian — they're fat-
+      tailed, scale-invariant, and clustered. Important when an agent
+      considers strategies whose risk metrics (Sharpe, VaR) implicitly
+      assume normality.
+    extract_strategy: chapter-summary
+    extract_source: llm-prior-knowledge
+    chunks_per_source: 14
+
+  - title: "Extraordinary Popular Delusions and the Madness of Crowds"
+    author: "Charles Mackay"
+    year: 1841
+    source_type: book
+    importance: P1
+    topic_tags: [mass-psychology, manias, panics, historical-bubbles, crowd-behavior]
+    rationale: |
+      The 19th-century chronicle of tulip mania, South Sea Bubble, and
+      the Mississippi scheme. Provides historical anchors for what mass
+      psychology looks like in markets across centuries — a check
+      against agents thinking 'this time is different'.
+    extract_strategy: chapter-summary
+    extract_source: llm-prior-knowledge
+    chunks_per_source: 12
+
+  - title: "Advances in Financial Machine Learning"
+    author: "Marcos López de Prado"
+    year: 2018
+    source_type: book
+    importance: P1
+    topic_tags: [quantitative-finance, ml-pitfalls, backtest-overfitting, sample-bias, the-seven-data-sins]
+    rationale: |
+      The textbook for what NOT to do in quantitative backtesting.
+      López de Prado's 'seven sins of data' (overfitting, look-ahead,
+      survivorship, etc.) maps directly to the Bear reviewer's hunting
+      list per REVIEW_RULES.md Section C.
+    extract_strategy: chapter-summary
+    extract_source: llm-prior-knowledge
+    chunks_per_source: 22
+
+  - title: "This Time is Different — Eight Centuries of Financial Folly"
+    author: "Carmen M. Reinhart, Kenneth S. Rogoff"
+    year: 2009
+    source_type: book
+    importance: P1
+    topic_tags: [crisis-history, sovereign-default, debt-cycles, banking-panics]
+    rationale: |
+      Empirical history of crises across countries and centuries. Useful
+      for agents reasoning about FX strategies — many crises are
+      currency crises (1997 Asian crisis, 1992 ERM, 2008 dollar funding).
+    extract_strategy: chapter-summary
+    extract_source: llm-prior-knowledge
+    chunks_per_source: 16
+
+  # =============================================================================
+  # P2 — load when P1 set proves useful; widens the agents' library
+  # =============================================================================
+
+  - title: "Reminiscences of a Stock Operator"
+    author: "Edwin Lefèvre"
+    year: 1923
+    source_type: book
+    importance: P2
+    topic_tags: [practitioner-wisdom, jesse-livermore, market-tape, position-sizing]
+    rationale: |
+      The classic trader-practitioner narrative. Lefèvre's accounts of
+      Livermore's reasoning capture the experiential knowledge that
+      formal models miss.
+    extract_strategy: chapter-summary
+    extract_source: llm-prior-knowledge
+    chunks_per_source: 18
+
+  - title: "Market Wizards (and the New Market Wizards)"
+    author: "Jack D. Schwager"
+    year: 1989
+    source_type: book
+    importance: P2
+    topic_tags: [practitioner-wisdom, interviews, risk-management, position-sizing]
+    rationale: |
+      Interviews with successful traders covering trend-following,
+      arbitrage, options, macro. Concrete examples of how disciplined
+      practitioners think about edge + risk in real markets.
+    extract_strategy: chapter-summary
+    extract_source: llm-prior-knowledge
+    chunks_per_source: 20
+
+  - title: "More Money Than God"
+    author: "Sebastian Mallaby"
+    year: 2010
+    source_type: book
+    importance: P2
+    topic_tags: [hedge-fund-history, strategy-evolution, soros, simons, paulson]
+    rationale: |
+      History of the hedge fund industry — what strategies worked when,
+      why, and what made them stop working. Anchors agents in the
+      'strategies have lifespans' frame.
+    extract_strategy: chapter-summary
+    extract_source: llm-prior-knowledge
+    chunks_per_source: 18
+
+  - title: "The Great Crash 1929"
+    author: "John Kenneth Galbraith"
+    year: 1955
+    source_type: book
+    importance: P2
+    topic_tags: [crisis-history, 1929-crash, mass-psychology, banking-failure]
+    rationale: |
+      Galbraith's narrative history of 1929 — leverage cycle, mass
+      delusion, regulatory failure. A primary-source anchor for what
+      'crisis' looks like at the daily-news level.
+    extract_strategy: chapter-summary
+    extract_source: llm-prior-knowledge
+    chunks_per_source: 10
+
+  - title: "The Big Short"
+    author: "Michael Lewis"
+    year: 2010
+    source_type: book
+    importance: P2
+    topic_tags: [crisis-history, 2008-financial-crisis, subprime, contrarian-trades]
+    rationale: |
+      The story of investors who shorted the housing bubble. Useful for
+      agents reasoning about what 'finding the contrarian trade in a
+      regime everyone agrees on' actually requires.
+    extract_strategy: chapter-summary
+    extract_source: llm-prior-knowledge
+    chunks_per_source: 12
+
+  - title: "Efficient Inefficient Markets"
+    author: "Lasse Heje Pedersen"
+    year: 2015
+    source_type: book
+    importance: P2
+    topic_tags: [factor-investing, carry, momentum, value, market-microstructure]
+    rationale: |
+      The most rigorous treatment of factor-based investing
+      (carry/value/momentum/quality). The carry chapter especially is
+      directly relevant to the carry_vol_filter strategy.
+    extract_strategy: chapter-summary
+    extract_source: llm-prior-knowledge
+    chunks_per_source: 24
+
+  - title: "The Strategy of Conflict"
+    author: "Thomas Schelling"
+    year: 1960
+    source_type: book
+    importance: P2
+    topic_tags: [game-theory, mass-coordination, schelling-points, mutual-knowledge]
+    rationale: |
+      Schelling's game-theoretic framework for thinking about
+      coordination + commitment. Relevant when agents reason about
+      market participants' coordination dynamics (e.g. what makes a
+      reserve currency stay reserve).
+    extract_strategy: chapter-summary
+    extract_source: llm-prior-knowledge
+    chunks_per_source: 14
+
+  - title: "The Emergence of Probability"
+    author: "Ian Hacking"
+    year: 1975
+    source_type: book
+    importance: P2
+    topic_tags: [philosophy-of-probability, history-of-statistics, frequentist-vs-bayesian, risk-vs-uncertainty]
+    rationale: |
+      The historical-philosophical foundation of how Western thought
+      came to formalize probability. Helps agents distinguish risk
+      (computable) from uncertainty (genuinely unknown) — the latter
+      being where Taleb's tail risks live.
+    extract_strategy: chapter-summary
+    extract_source: llm-prior-knowledge
+    chunks_per_source: 10
