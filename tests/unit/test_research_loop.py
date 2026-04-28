@@ -201,6 +201,26 @@ class _FakeExtractStore:
     root: Path
 
 
+def _approve_all_pending(state_path: Path) -> int:
+    """Test helper: flip every PENDING_OPERATOR_APPROVAL entry to
+    APPROVED, simulating an operator who clicked GO via the dashboard
+    or scripts/research_approve.py. Returns the number flipped."""
+    state = load_state(state_path)
+    flipped = 0
+    for entry in state.ideas_processed.values():
+        if entry.get("status") == "PENDING_OPERATOR_APPROVAL":
+            entry["status"] = "APPROVED"
+            flipped += 1
+    save_state(state, state_path)
+    return flipped
+
+
+def _silent_notifier(*_args: Any, **_kwargs: Any) -> Any:
+    """No-op notifier so tests don't try to dispatch over the network."""
+    from src.research.notifications import DispatchResult
+    return DispatchResult()
+
+
 # --------------------------------------------------------------------------- #
 # Fixtures
 # --------------------------------------------------------------------------- #
@@ -298,31 +318,47 @@ class TestFullPipelineRun:
             runs_dir=loop_paths["runs"],
             hypothesis_dir=loop_paths["hypotheses"],
             candidate_dir=loop_paths["candidates"],
+            notify_fn=_silent_notifier,
         )
+        # Pass 1: get through ingest + idea + GATE 1 notification.
         summary = loop.run()
         assert summary.extracts_new == 2
         assert summary.ideas_proposed == 1
         assert summary.ideas_declined == 1
-        assert summary.candidates_implemented == 1
-        assert summary.candidates_rejected == 0
-        assert summary.debates_run == 1
-        assert summary.verdicts_promote == 1
-        assert summary.verdicts_reject == 0
-        assert summary.verdicts_escalate == 0
-        assert summary.errors == []
+        assert summary.gate1_notifications_sent == 0  # silent notifier
+        # No implementer / debate yet — held by GATE 1
+        assert summary.candidates_implemented == 0
+        assert summary.debates_run == 0
 
-        # State persisted with all expected entries
         state = load_state(loop_paths["state"])
-        assert state.ideas_processed["hash1"]["status"] == "PROPOSED"
+        assert state.ideas_processed["hash1"]["status"] == (
+            "PENDING_OPERATOR_APPROVAL"
+        )
         assert state.ideas_processed["hash2"]["status"] == "DECLINED"
+
+        # Operator approves via the helper.
+        assert _approve_all_pending(loop_paths["state"]) == 1
+
+        # Pass 2: implementer + debate now run for the approved entry.
+        summary2 = loop.run()
+        assert summary2.candidates_implemented == 1
+        assert summary2.debates_run == 1
+        assert summary2.verdicts_promote == 1
+
+        state = load_state(loop_paths["state"])
+        assert state.ideas_processed["hash1"]["status"] == "APPROVED"
         assert state.candidates_processed["alpha"]["status"] == "IMPLEMENTED"
         assert state.debates_completed["alpha"]["verdict"] == "PROMOTE"
 
-        # Run summary file written
+        # Run summary file written. Both runs share a second-precision
+        # filename in this test (real cron runs are minutes apart);
+        # the latest write reflects pass 2's verdict tally.
         run_files = list(loop_paths["runs"].glob("*.json"))
-        assert len(run_files) == 1
-        run_data = json.loads(run_files[0].read_text())
-        assert run_data["verdicts_promote"] == 1
+        assert run_files
+        latest_run = json.loads(
+            max(run_files, key=lambda p: p.stat().st_mtime).read_text(),
+        )
+        assert latest_run["verdicts_promote"] == 1
 
 
 class TestIdempotency:
@@ -360,15 +396,21 @@ class TestIdempotency:
             runs_dir=loop_paths["runs"],
             hypothesis_dir=loop_paths["hypotheses"],
             candidate_dir=loop_paths["candidates"],
+            notify_fn=_silent_notifier,
         )
 
+        # Pass 1: idea runs, GATE 1 holds.
+        loop.run()
+        assert (len(idea.calls), len(impl.calls), len(orch.calls)) == (1, 0, 0)
+        _approve_all_pending(loop_paths["state"])
+
+        # Pass 2: implementer + debate run.
         loop.run()
         first_calls = (len(idea.calls), len(impl.calls), len(orch.calls))
         assert first_calls == (1, 1, 1)
 
+        # Pass 3: nothing new — every phase finds its work already done.
         loop.run()
-        # Second run should NOT re-call any sub-component on the same
-        # extract/hypothesis/candidate.
         assert (len(idea.calls), len(impl.calls), len(orch.calls)) == first_calls
 
 
@@ -411,14 +453,23 @@ class TestErrorHandling:
             runs_dir=loop_paths["runs"],
             hypothesis_dir=loop_paths["hypotheses"],
             candidate_dir=loop_paths["candidates"],
+            notify_fn=_silent_notifier,
         )
+        # Pass 1: hash1 errored in idea phase, hash2 PROPOSED → PENDING.
         summary = loop.run()
-        # hash1 errored, hash2 went through
         assert summary.errors  # one entry for hash1
-        assert summary.candidates_implemented == 1
-        assert summary.verdicts_promote == 1
+        assert summary.candidates_implemented == 0
         state = load_state(loop_paths["state"])
         assert state.ideas_processed["hash1"]["status"] == "ERROR"
+        assert state.ideas_processed["hash2"]["status"] == (
+            "PENDING_OPERATOR_APPROVAL"
+        )
+
+        # Pass 2: operator approves hash2 → it makes it through.
+        _approve_all_pending(loop_paths["state"])
+        summary2 = loop.run()
+        assert summary2.candidates_implemented == 1
+        assert summary2.verdicts_promote == 1
 
     def test_implementer_rejected_skips_debate(
         self, loop_paths: dict[str, Path],
@@ -447,7 +498,11 @@ class TestErrorHandling:
             runs_dir=loop_paths["runs"],
             hypothesis_dir=loop_paths["hypotheses"],
             candidate_dir=loop_paths["candidates"],
+            notify_fn=_silent_notifier,
         )
+        # Pass 1: idea → PENDING. Pass 2: implementer rejects.
+        loop.run()
+        _approve_all_pending(loop_paths["state"])
         summary = loop.run()
         assert summary.candidates_rejected == 1
         assert summary.debates_run == 0
@@ -490,7 +545,11 @@ class TestVerdictTally:
             runs_dir=loop_paths["runs"],
             hypothesis_dir=loop_paths["hypotheses"],
             candidate_dir=loop_paths["candidates"],
+            notify_fn=_silent_notifier,
         )
+        # Pass 1: idea → PENDING. Pass 2: implementer + debate run.
+        loop.run()
+        _approve_all_pending(loop_paths["state"])
         summary = loop.run()
         assert summary.verdicts_escalate == 1
         assert summary.verdicts_promote == 0
@@ -502,3 +561,192 @@ class TestRunSummaryDataclass:
         s = RunSummary(started_at="2026-01-01T00:00:00")
         assert s.extracts_new == 0
         assert s.errors == []
+
+
+# --------------------------------------------------------------------------- #
+# GATE 1 — pre-research operator approval (CL-0hr3)
+# --------------------------------------------------------------------------- #
+
+
+class TestGate1:
+    def test_propose_holds_at_pending_and_fires_notification(
+        self, loop_paths: dict[str, Path],
+    ) -> None:
+        notifications: list[tuple[str, str, int]] = []
+
+        def recorder(title: str, message: str, priority: int) -> Any:
+            from src.research.notifications import DispatchResult
+            notifications.append((title, message, priority))
+            r = DispatchResult()
+            r.pushover_attempted = True
+            r.pushover_succeeded = True
+            return r
+
+        store = _FakeExtractStore(root=loop_paths["extracts"])
+        ingest = _FakeIngestRunner(
+            extract_store=store, new_extracts=[("h1", "# A\n")],
+        )
+        idea = _FakeIdeaAgent(responses={
+            "h1": {"status": "PROPOSED", "slug": "alpha"},
+        })
+        loop = ResearchLoop(
+            ingest_runner=ingest, idea_agent=idea,  # type: ignore[arg-type]
+            implementer=_FakeImplementer({}, loop_paths["candidates"]),  # type: ignore[arg-type]
+            debate_orchestrator=_FakeOrchestrator({}),  # type: ignore[arg-type]
+            rules_loader=lambda: [], feed_configs=[],
+            extract_store=store,  # type: ignore[arg-type]
+            state_path=loop_paths["state"],
+            runs_dir=loop_paths["runs"],
+            hypothesis_dir=loop_paths["hypotheses"],
+            candidate_dir=loop_paths["candidates"],
+            notify_fn=recorder,
+        )
+        summary = loop.run()
+        assert summary.ideas_proposed == 1
+        assert summary.gate1_notifications_sent == 1
+        # Implementer NOT called for a PENDING entry
+        assert summary.candidates_implemented == 0
+
+        state = load_state(loop_paths["state"])
+        assert state.ideas_processed["h1"]["status"] == (
+            "PENDING_OPERATOR_APPROVAL"
+        )
+        assert "pending_since" in state.ideas_processed["h1"]
+        assert state.ideas_processed["h1"]["hypothesis_path"]
+
+        # Notification body should mention the slug + the approve command
+        assert len(notifications) == 1
+        title, message, priority = notifications[0]
+        assert "GATE 1" in title
+        assert "alpha" in title
+        assert "research_approve" in message
+        assert priority == 0
+
+    def test_skipped_entry_doesnt_reach_implementer(
+        self, loop_paths: dict[str, Path],
+    ) -> None:
+        store = _FakeExtractStore(root=loop_paths["extracts"])
+        ingest = _FakeIngestRunner(
+            extract_store=store, new_extracts=[("h1", "# A\n")],
+        )
+        idea = _FakeIdeaAgent(responses={
+            "h1": {"status": "PROPOSED", "slug": "alpha"},
+        })
+        impl = _FakeImplementer(
+            responses={"alpha": {"status": "IMPLEMENTED"}},
+            candidate_dir=loop_paths["candidates"],
+        )
+        loop = ResearchLoop(
+            ingest_runner=ingest, idea_agent=idea,  # type: ignore[arg-type]
+            implementer=impl,  # type: ignore[arg-type]
+            debate_orchestrator=_FakeOrchestrator({}),  # type: ignore[arg-type]
+            rules_loader=lambda: [], feed_configs=[],
+            extract_store=store,  # type: ignore[arg-type]
+            state_path=loop_paths["state"],
+            runs_dir=loop_paths["runs"],
+            hypothesis_dir=loop_paths["hypotheses"],
+            candidate_dir=loop_paths["candidates"],
+            notify_fn=_silent_notifier,
+        )
+        loop.run()
+        # Operator skips
+        state = load_state(loop_paths["state"])
+        state.ideas_processed["h1"]["status"] = "SKIPPED"
+        state.ideas_processed["h1"]["reason"] = "duplicate of existing"
+        save_state(state, loop_paths["state"])
+
+        loop.run()
+        assert impl.calls == []  # implementer NEVER ran
+
+    def test_auto_skip_after_timeout(
+        self, loop_paths: dict[str, Path],
+    ) -> None:
+        from datetime import UTC, datetime, timedelta
+
+        # First run "happens" at t=0; gate1 timeout is 60s for the test.
+        clock_time = [datetime(2026, 1, 1, tzinfo=UTC)]
+
+        def fake_clock() -> datetime:
+            return clock_time[0]
+
+        store = _FakeExtractStore(root=loop_paths["extracts"])
+        ingest = _FakeIngestRunner(
+            extract_store=store, new_extracts=[("h1", "# A\n")],
+        )
+        idea = _FakeIdeaAgent(responses={
+            "h1": {"status": "PROPOSED", "slug": "alpha"},
+        })
+        impl = _FakeImplementer({}, loop_paths["candidates"])
+        loop = ResearchLoop(
+            ingest_runner=ingest, idea_agent=idea,  # type: ignore[arg-type]
+            implementer=impl,  # type: ignore[arg-type]
+            debate_orchestrator=_FakeOrchestrator({}),  # type: ignore[arg-type]
+            rules_loader=lambda: [], feed_configs=[],
+            extract_store=store,  # type: ignore[arg-type]
+            state_path=loop_paths["state"],
+            runs_dir=loop_paths["runs"],
+            hypothesis_dir=loop_paths["hypotheses"],
+            candidate_dir=loop_paths["candidates"],
+            notify_fn=_silent_notifier,
+            gate1_timeout_sec=60.0,
+            clock=fake_clock,
+        )
+
+        # First run: PROPOSED → PENDING (with pending_since=t0)
+        loop.run()
+        state = load_state(loop_paths["state"])
+        assert state.ideas_processed["h1"]["status"] == (
+            "PENDING_OPERATOR_APPROVAL"
+        )
+
+        # Advance clock past the timeout. Don't re-ingest (idea already
+        # processed) — second run only does the GATE 1 sweep + downstream.
+        clock_time[0] = datetime(2026, 1, 1, tzinfo=UTC) + timedelta(
+            seconds=120,
+        )
+        # Make ingest a no-op for pass 2 by clearing its new_extracts
+        ingest.new_extracts = []
+
+        summary = loop.run()
+        assert summary.gate1_auto_skipped_expired == 1
+        state = load_state(loop_paths["state"])
+        assert state.ideas_processed["h1"]["status"] == "SKIPPED"
+        assert "auto-SKIPPED" in state.ideas_processed["h1"]["reason"]
+        # Implementer never reached
+        assert impl.calls == []
+
+    def test_notifier_failure_doesnt_kill_run(
+        self, loop_paths: dict[str, Path],
+    ) -> None:
+        def boom(*_a: Any, **_kw: Any) -> Any:
+            raise ConnectionError("pushover unreachable")
+
+        store = _FakeExtractStore(root=loop_paths["extracts"])
+        ingest = _FakeIngestRunner(
+            extract_store=store, new_extracts=[("h1", "# A\n")],
+        )
+        idea = _FakeIdeaAgent(responses={
+            "h1": {"status": "PROPOSED", "slug": "alpha"},
+        })
+        loop = ResearchLoop(
+            ingest_runner=ingest, idea_agent=idea,  # type: ignore[arg-type]
+            implementer=_FakeImplementer({}, loop_paths["candidates"]),  # type: ignore[arg-type]
+            debate_orchestrator=_FakeOrchestrator({}),  # type: ignore[arg-type]
+            rules_loader=lambda: [], feed_configs=[],
+            extract_store=store,  # type: ignore[arg-type]
+            state_path=loop_paths["state"],
+            runs_dir=loop_paths["runs"],
+            hypothesis_dir=loop_paths["hypotheses"],
+            candidate_dir=loop_paths["candidates"],
+            notify_fn=boom,
+        )
+        # Should not raise — notifier failure is contained
+        summary = loop.run()
+        assert summary.ideas_proposed == 1
+        # Notification didn't actually send
+        assert summary.gate1_notifications_sent == 0
+        # State still records the entry as PENDING
+        state = load_state(loop_paths["state"])
+        assert state.ideas_processed["h1"]["status"] == (
+            "PENDING_OPERATOR_APPROVAL"
+        )

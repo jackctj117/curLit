@@ -55,6 +55,7 @@ from src.research.ingest import (
     FeedConfig,
     IngestRunner,
 )
+from src.research.notifications import DispatchResult, notify_operator
 from src.research.orchestrator import DebateOrchestrator
 from src.research.verdict import (
     ParsedRule,
@@ -71,6 +72,18 @@ DEFAULT_STATE_PATH: Path = Path("data/research/state.json")
 DEFAULT_RUNS_DIR: Path = Path("data/research/runs")
 DEFAULT_HYPOTHESIS_DIR: Path = Path("docs/research/hypotheses")
 DEFAULT_CANDIDATE_DIR: Path = Path("reports/candidates")
+
+# GATE 1: pre-research operator approval (CL-0hr3).
+#
+# After the Idea Agent emits PROPOSED, the loop holds the hypothesis at
+# PENDING_OPERATOR_APPROVAL until the operator marks it APPROVED or
+# SKIPPED (via the dashboard or scripts/research_approve.py). Default
+# timeout: 7 days; pending entries older than this auto-SKIP so the
+# pipeline doesn't pile up indefinitely. Configurable per-run.
+GATE1_PENDING_STATUS: str = "PENDING_OPERATOR_APPROVAL"
+GATE1_APPROVED_STATUS: str = "APPROVED"
+GATE1_SKIPPED_STATUS: str = "SKIPPED"
+DEFAULT_GATE1_TIMEOUT_SEC: float = 7 * 24 * 60 * 60  # 7 days
 
 
 # --------------------------------------------------------------------------- #
@@ -135,6 +148,9 @@ class RunSummary:
     extracts_failed: int = 0
     ideas_proposed: int = 0
     ideas_declined: int = 0
+    # GATE 1 (CL-0hr3) bookkeeping
+    gate1_notifications_sent: int = 0
+    gate1_auto_skipped_expired: int = 0
     candidates_implemented: int = 0
     candidates_rejected: int = 0
     debates_run: int = 0
@@ -152,6 +168,11 @@ class RunSummary:
 # Type alias for the verdict-rules loader. Default reads + parses the
 # configured REVIEW_RULES.md once per run; tests inject a fixed list.
 RulesLoader = Callable[[], list[ParsedRule]]
+
+# GATE 1 notifier. Default = production pushover/telegram via
+# src.research.notifications.notify_operator; tests inject a recorder.
+# Signature: (title, message, priority) → DispatchResult.
+NotifyFn = Callable[[str, str, int], DispatchResult]
 
 
 class ResearchLoop:
@@ -176,6 +197,9 @@ class ResearchLoop:
         runs_dir: Path | str = DEFAULT_RUNS_DIR,
         hypothesis_dir: Path | str = DEFAULT_HYPOTHESIS_DIR,
         candidate_dir: Path | str = DEFAULT_CANDIDATE_DIR,
+        notify_fn: NotifyFn | None = None,
+        gate1_timeout_sec: float = DEFAULT_GATE1_TIMEOUT_SEC,
+        clock: Callable[[], datetime] | None = None,
     ) -> None:
         self.ingest_runner = ingest_runner
         self.idea_agent = idea_agent
@@ -190,6 +214,15 @@ class ResearchLoop:
         self.runs_dir = Path(runs_dir)
         self.hypothesis_dir = Path(hypothesis_dir)
         self.candidate_dir = Path(candidate_dir)
+        # Default notifier hits prod channels (no-op when env-vars unset).
+        self.notify_fn: NotifyFn = notify_fn or (
+            lambda t, m, p: notify_operator(title=t, message=m, priority=p)
+        )
+        self.gate1_timeout_sec = gate1_timeout_sec
+        # Injected clock so tests can simulate the timeout window.
+        self._clock: Callable[[], datetime] = clock or (
+            lambda: datetime.now(UTC)
+        )
 
     # ------------------------------------------------------------------ #
     # Top-level entry
@@ -207,6 +240,9 @@ class ResearchLoop:
             save_state(state, self.state_path)
 
             self._phase_ideas(state, summary)
+            save_state(state, self.state_path)
+
+            self._phase_gate1(state, summary)
             save_state(state, self.state_path)
 
             self._phase_implement(state, summary)
@@ -271,11 +307,20 @@ class ResearchLoop:
                 continue
             if result.status == IdeaStatus.PROPOSED:
                 summary.ideas_proposed += 1
+                # GATE 1: hold for operator approval rather than feed
+                # straight into the implementer.
+                pending_since = self._clock().isoformat(timespec="seconds")
                 state.ideas_processed[extract_hash] = {
-                    "status": "PROPOSED",
+                    "status": GATE1_PENDING_STATUS,
                     "slug": result.strategy_slug,
                     "reason": "",
+                    "pending_since": pending_since,
+                    "hypothesis_path": (
+                        str(result.hypothesis_path)
+                        if result.hypothesis_path else None
+                    ),
                 }
+                self._notify_gate1(result, summary, extract_hash)
             else:
                 summary.ideas_declined += 1
                 state.ideas_processed[extract_hash] = {
@@ -285,16 +330,90 @@ class ResearchLoop:
                 }
 
     # ------------------------------------------------------------------ #
+    # GATE 1 — pre-research operator approval (CL-0hr3)
+    # ------------------------------------------------------------------ #
+
+    def _phase_gate1(self, state: LoopState, summary: RunSummary) -> None:
+        """Auto-skip pending entries older than the configured timeout.
+
+        The actual approval transition (PENDING → APPROVED / SKIPPED) is
+        operator-driven via scripts/research_approve.py or the dashboard
+        — the loop only enforces the timeout safety so the queue
+        doesn't grow unbounded when the operator is on vacation.
+        """
+        now = self._clock()
+        for extract_hash, entry in state.ideas_processed.items():
+            if entry.get("status") != GATE1_PENDING_STATUS:
+                continue
+            pending_since_str = entry.get("pending_since")
+            if not pending_since_str:
+                continue
+            try:
+                pending_since = datetime.fromisoformat(pending_since_str)
+            except ValueError:
+                logger.warning(
+                    "ideas_processed[%s].pending_since malformed: %r",
+                    extract_hash, pending_since_str,
+                )
+                continue
+            elapsed = (now - pending_since).total_seconds()
+            if elapsed > self.gate1_timeout_sec:
+                entry["status"] = GATE1_SKIPPED_STATUS
+                entry["reason"] = (
+                    f"auto-SKIPPED: pending {elapsed/86400:.1f}d > "
+                    f"{self.gate1_timeout_sec/86400:.1f}d operator timeout"
+                )
+                summary.gate1_auto_skipped_expired += 1
+                logger.info(
+                    "GATE 1 auto-skipped expired pending entry %s",
+                    extract_hash,
+                )
+
+    def _notify_gate1(
+        self,
+        result: Any,
+        summary: RunSummary,
+        extract_hash: str,
+    ) -> None:
+        """Fire pre-research approval notification. Best-effort —
+        notifier failures don't kill the loop, they just get logged."""
+        title = f"GATE 1: research approval — {result.strategy_slug}"
+        body_preview = (
+            result.raw_text[:600] if result.raw_text else "(no preview)"
+        )
+        message = (
+            f"New hypothesis pending operator GO/SKIP.\n\n"
+            f"Slug: {result.strategy_slug}\n"
+            f"Extract: {extract_hash}\n"
+            f"Hypothesis: {result.hypothesis_path}\n\n"
+            f"--- preview ---\n{body_preview}\n"
+            f"\nApprove via:\n"
+            f"  python -m scripts.research_approve --slug {result.strategy_slug} "
+            f"--action GO\n"
+            f"Or SKIP with --action SKIP --reason 'why'."
+        )
+        try:
+            disp = self.notify_fn(title, message, 0)
+        except Exception as exc:
+            logger.warning(
+                "GATE 1 notification dispatch raised: %s: %s",
+                type(exc).__name__, exc,
+            )
+            return
+        if disp.any_attempted:
+            summary.gate1_notifications_sent += 1
+
+    # ------------------------------------------------------------------ #
     # Phase 3 — implementer
     # ------------------------------------------------------------------ #
 
     def _phase_implement(self, state: LoopState, summary: RunSummary) -> None:
-        """For each PROPOSED hypothesis not yet implemented, run the
-        Implementer. Records IMPLEMENTED/REJECTED status in
-        state.candidates_processed keyed by slug."""
+        """For each APPROVED hypothesis not yet implemented (passed
+        GATE 1), run the Implementer. Records IMPLEMENTED/REJECTED
+        status in state.candidates_processed keyed by slug."""
         logger.info("phase 3: implementer")
         for entry in state.ideas_processed.values():
-            if entry.get("status") != "PROPOSED":
+            if entry.get("status") != GATE1_APPROVED_STATUS:
                 continue
             slug = entry.get("slug")
             if not slug or slug in state.candidates_processed:
