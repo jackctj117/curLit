@@ -374,3 +374,28 @@ class TestRealPromptFiles:
         # Hunting list should include the failure-mode keywords
         for keyword in ("look-ahead", "overfitting", "regime concentration"):
             assert keyword.lower() in text.lower(), f"missing {keyword}"
+
+    def test_evidence_first_principle_loaded_in_both_prompts(self) -> None:
+        """EVIDENCE_FIRST.md is the operating principle — both reviewer
+        prompts must reference it so agents inherit the discipline."""
+        for prompt_file in (
+            "configs/research_prompts/bull_reviewer.md",
+            "configs/research_prompts/bear_reviewer.md",
+        ):
+            text = Path(prompt_file).read_text()
+            assert "EVIDENCE_FIRST.md" in text, (
+                f"{prompt_file} doesn't reference EVIDENCE_FIRST.md"
+            )
+
+    def test_evidence_first_doc_exists_with_principle(self) -> None:
+        """The doctrine itself — must contain the operator's standing
+        guidance about pulling data before risking money."""
+        path = Path("docs/research/EVIDENCE_FIRST.md")
+        assert path.exists(), "EVIDENCE_FIRST.md missing"
+        text = path.read_text()
+        # Key concept markers — vibes-not-edge framing + data-first action
+        assert "trading a vibe" in text.lower()
+        assert "pull the data first" in text.lower()
+        # Examples of public data sources that should be in the canon
+        for example in ("Dubai Land Department", "CBUAE", "family-office"):
+            assert example.lower() in text.lower(), f"missing example {example!r}"
