@@ -110,15 +110,28 @@ class _FakeIdeaAgent:
 
 
 class _FakeImplementer:
-    """Programmable Implementer. ``responses`` keyed by slug."""
+    """Programmable Implementer. ``responses`` keyed by slug.
+
+    Takes both code_dir and candidate_dir at construction so the fake
+    never falls through to the real ``src/strategies/_experimental/``
+    when the loop calls ``implement(...)`` without per-call dir args
+    (the loop intentionally doesn't pass them — the real Implementer
+    has them as defaults pointing at the production paths)."""
 
     def __init__(
         self,
         responses: dict[str, dict[str, Any]],
         candidate_dir: Path,
+        code_dir: Path | None = None,
     ) -> None:
         self.responses = responses
         self.candidate_dir = candidate_dir
+        # Default to the candidate_dir's sibling so tests never write
+        # outside tmp_path.
+        self.code_dir = (
+            code_dir if code_dir is not None
+            else candidate_dir.parent / "experimental"
+        )
         self.calls: list[str] = []
 
     def implement(
@@ -126,8 +139,8 @@ class _FakeImplementer:
         hypothesis_path: Path,  # noqa: ARG002
         strategy_slug: str,
         backtest_runner: Any = None,  # noqa: ARG002
-        code_dir: Path | str = "src/strategies/_experimental",
-        report_dir: Path | str = "reports/candidates",  # noqa: ARG002
+        code_dir: Path | str | None = None,
+        report_dir: Path | str | None = None,  # noqa: ARG002
     ) -> ImplementerResult:
         self.calls.append(strategy_slug)
         if strategy_slug not in self.responses:
@@ -136,7 +149,10 @@ class _FakeImplementer:
         if spec.get("raise"):
             raise RuntimeError(spec["raise"])
         status = ImplementerStatus(spec["status"])
-        code_path = Path(code_dir) / f"{strategy_slug}.py"
+        # Honor a per-call override but otherwise use the fake's
+        # tmp-path-rooted dir.
+        effective_code_dir = Path(code_dir) if code_dir else self.code_dir
+        code_path = effective_code_dir / f"{strategy_slug}.py"
         code_path.parent.mkdir(parents=True, exist_ok=True)
         code_path.write_text(spec.get("code", "# stub\n"))
         report_path: Path | None = None
