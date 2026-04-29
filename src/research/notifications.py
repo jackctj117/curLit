@@ -119,22 +119,39 @@ def _dispatch_telegram(
         )
         return
     result.telegram_attempted = True
-    # Telegram has no separate title field; prepend it bold-styled.
-    body = f"*{title}*\n\n{message}"
+    # Plain text — no parse_mode. Markdown was a 400-magnet because
+    # underscores in slugs (e.g. ``regime_carry_underscores``) are
+    # italic toggles that don't pair up cleanly. HTML would also need
+    # careful escaping. Plain text is the smallest safe surface.
+    body = f"{title}\n\n{message}"
     try:
         resp = httpx.post(
             f"https://api.telegram.org/bot{token}/sendMessage",
             data={
                 "chat_id": chat_id,
                 "text": body,
-                "parse_mode": "Markdown",
             },
             timeout=_HTTP_TIMEOUT_SEC,
         )
         resp.raise_for_status()
         result.telegram_succeeded = True
     except Exception as exc:
+        # Scrub the bot token from any error message — httpx echoes
+        # the request URL on HTTPStatusError and that contains the
+        # token. Replace with a sentinel so logs + DispatchResult
+        # don't leak credentials.
+        sanitized = _scrub_token(str(exc), token)
         logger.warning(
-            "Telegram dispatch failed: %s: %s", type(exc).__name__, exc,
+            "Telegram dispatch failed: %s: %s", type(exc).__name__, sanitized,
         )
-        result.telegram_error = f"{type(exc).__name__}: {exc}"
+        result.telegram_error = f"{type(exc).__name__}: {sanitized}"
+
+
+def _scrub_token(text: str, token: str) -> str:
+    """Replace any occurrence of ``token`` in ``text`` with ``[REDACTED]``.
+    Used to prevent the Telegram bot token from leaking into error
+    messages / logs / DispatchResult fields when an HTTP exception
+    echoes the request URL."""
+    if not token:
+        return text
+    return text.replace(token, "[REDACTED]")

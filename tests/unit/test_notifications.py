@@ -101,8 +101,29 @@ class TestGating:
         call = http_recorder[0]
         assert call["url"] == "https://api.telegram.org/botbtok/sendMessage"
         assert call["data"]["chat_id"] == "12345"
-        # Title bold-prefixed in body
-        assert "*GATE 1*" in call["data"]["text"]
+        # Plain text — title prefixed, no Markdown formatting.
+        # Markdown was a 400-magnet on slugs containing underscores.
+        assert call["data"]["text"] == "GATE 1\n\nhi"
+        assert "parse_mode" not in call["data"]
+
+    def test_telegram_handles_underscores_in_message(
+        self, monkeypatch: pytest.MonkeyPatch, http_recorder: list[Any],
+    ) -> None:
+        """Smoke regression: an underscore-laden slug used to trigger a
+        Telegram 400 because Markdown parse_mode interpreted ``_..._``
+        as italic. Plain-text dispatch must accept this body cleanly."""
+        monkeypatch.delenv("PUSHOVER_API_TOKEN", raising=False)
+        monkeypatch.delenv("PUSHOVER_USER_KEY", raising=False)
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "btok")
+        monkeypatch.setenv("TELEGRAM_CHAT_ID", "12345")
+        result = notify_operator(
+            title="GATE 1",
+            message="Slug: regime_carry_underscores_in_slug\nNext line",
+        )
+        assert result.telegram_succeeded
+        assert "regime_carry_underscores_in_slug" in (
+            http_recorder[0]["data"]["text"]
+        )
 
     def test_both_channels(
         self, monkeypatch: pytest.MonkeyPatch, http_recorder: list[Any],
@@ -142,6 +163,34 @@ class TestErrorContainment:
         assert "ConnectionError" in result.pushover_error
         # Telegram still ran
         assert result.telegram_attempted and result.telegram_succeeded
+
+
+class TestTokenScrubbing:
+    def test_telegram_token_redacted_from_error(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """httpx echoes the request URL on HTTPStatusError, and that
+        URL contains the bot token. Verify the dispatcher scrubs it
+        before the token lands in DispatchResult.telegram_error."""
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "secret-bot-token-xyz")
+        monkeypatch.setenv("TELEGRAM_CHAT_ID", "12345")
+
+        def boom_with_token_in_message(_url: str, **_kwargs: Any) -> Any:
+            # Simulate httpx including the token-bearing URL in the
+            # exception text (this is what real HTTPStatusError does).
+            raise ConnectionError(
+                "request to /botsecret-bot-token-xyz/sendMessage failed",
+            )
+
+        monkeypatch.setattr(
+            "src.research.notifications.httpx.post",
+            boom_with_token_in_message,
+        )
+        result = notify_operator(title="t", message="m")
+        assert result.telegram_attempted
+        assert not result.telegram_succeeded
+        assert "secret-bot-token-xyz" not in result.telegram_error
+        assert "[REDACTED]" in result.telegram_error
 
 
 class TestDispatchResult:
