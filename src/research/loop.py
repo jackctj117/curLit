@@ -178,6 +178,8 @@ class RunSummary:
     gate2_auto_rejected_expired: int = 0
     deployments_succeeded: int = 0
     deployments_failed: int = 0
+    # ESCALATE side-effect (CL-o2vb)
+    escalate_notifications_sent: int = 0
     errors: list[str] = field(default_factory=list)
 
 
@@ -583,6 +585,18 @@ class ResearchLoop:
                 )
                 new_entry["candidate_report_path"] = str(report_path)
                 self._notify_gate2(slug, new_entry, summary)
+            # ESCALATE: fire operator alert with debate context. Dedup
+            # is automatic — a slug only gets debated once (the outer
+            # loop skips slugs already in debates_completed), so this
+            # notification fires exactly once per escalated candidate.
+            elif verdict.verdict == Verdict.ESCALATE:
+                self._notify_escalate(
+                    slug=slug, verdict=verdict,
+                    candidate_report_path=report_path,
+                    transcript_path=debate_result.transcript_path,
+                    candidate_report=candidate_report_dict,
+                    summary=summary,
+                )
             state.debates_completed[slug] = new_entry
 
     @staticmethod
@@ -673,6 +687,61 @@ class ResearchLoop:
             entry["deploy_reason"] = result.error or "registrar reported failure"
             summary.deployments_failed += 1
             summary.errors.append(f"deploy/{slug}: {result.error}")
+
+    def _notify_escalate(
+        self,
+        slug: str,
+        verdict: VerdictResult,
+        candidate_report_path: Path,
+        transcript_path: Path,
+        candidate_report: dict[str, Any],
+        summary: RunSummary,
+    ) -> None:
+        """Fire ESCALATE alert (CL-o2vb). priority=1 so the operator
+        notices; the dedup invariant holds because the outer phase
+        skips slugs already in debates_completed."""
+        # Identify which rule(s) triggered ESCALATE: missing metrics
+        # are the most common cause; ambiguous-positions case shows up
+        # in verdict.reason.
+        problem_rules = [
+            f"{e.rule_id} ({e.detail})"
+            for e in verdict.rule_evaluations
+            if e.missing or not e.passed
+        ]
+        oos = candidate_report.get("backtest_metrics", {}).get(
+            "oos_metrics", {},
+        ) or candidate_report.get("oos_metrics", {})
+        metrics_blurb = ", ".join(
+            f"{k}={v}" for k, v in oos.items()
+        ) if isinstance(oos, dict) else ""
+        title = f"ESCALATE: debate result needs operator review — {slug}"
+        message = (
+            f"Verdict: ESCALATE\n"
+            f"Slug: {slug}\n"
+            f"Reason: {verdict.reason}\n"
+            f"Bull: {verdict.bull_position}  "
+            f"Bear: {verdict.bear_position}\n\n"
+            f"Problem rules / metrics:\n"
+            + (
+                "\n".join(f"  - {r}" for r in problem_rules)
+                if problem_rules else "  (none — agent positions diverged)"
+            )
+            + (f"\n\nOOS metrics: {metrics_blurb}" if metrics_blurb else "")
+            + f"\n\nTranscript: {transcript_path}\n"
+            + f"Candidate report: {candidate_report_path}\n\n"
+            + "Open the transcript to see the full debate, then file an "
+            "operator decision (manually retry / archive / data-seed)."
+        )
+        try:
+            disp = self.notify_fn(title, message, 1)
+        except Exception as exc:
+            logger.warning(
+                "ESCALATE notification dispatch raised: %s: %s",
+                type(exc).__name__, exc,
+            )
+            return
+        if disp.any_attempted:
+            summary.escalate_notifications_sent += 1
 
     def _notify_gate2(
         self,

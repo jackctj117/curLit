@@ -1030,3 +1030,96 @@ class TestGate2:
         assert "deploy_status" not in state.debates_completed["alpha"]
         # Registrar never ran
         assert registrar.calls == []
+
+
+# --------------------------------------------------------------------------- #
+# ESCALATE side-effect (CL-o2vb)
+# --------------------------------------------------------------------------- #
+
+
+class TestEscalateAlert:
+    def test_escalate_fires_priority1_alert_with_context(
+        self, loop_paths: dict[str, Path],
+    ) -> None:
+        notifications: list[tuple[str, str, int]] = []
+
+        def recorder(title: str, message: str, priority: int) -> Any:
+            from src.research.notifications import DispatchResult
+            notifications.append((title, message, priority))
+            r = DispatchResult()
+            r.pushover_attempted = True
+            r.pushover_succeeded = True
+            return r
+
+        # Mixed positions → ESCALATE
+        loop, _ = _build_promote_loop(
+            loop_paths,
+            bull=Position.PROMOTE, bear=Position.REJECT,
+            notify_fn=recorder,
+        )
+        loop.run()
+        _approve_all_pending(loop_paths["state"])
+        summary = loop.run()
+        assert summary.verdicts_escalate == 1
+        assert summary.escalate_notifications_sent == 1
+
+        escalate_notifs = [n for n in notifications if "ESCALATE" in n[0]]
+        assert len(escalate_notifs) == 1
+        title, message, priority = escalate_notifs[0]
+        assert priority == 1
+        assert "alpha" in title
+        # Body has bull/bear positions and links to transcript + report
+        assert "Bull: PROMOTE" in message
+        assert "Bear: REJECT" in message
+        assert "transcript" in message.lower()
+        assert "report" in message.lower()
+
+    def test_escalate_notification_deduped_across_runs(
+        self, loop_paths: dict[str, Path],
+    ) -> None:
+        # Outer loop skips already-debated slugs, so an ESCALATE alert
+        # naturally fires only once across reruns of the same slug.
+        notifications: list[tuple[str, str, int]] = []
+
+        def recorder(title: str, message: str, priority: int) -> Any:
+            from src.research.notifications import DispatchResult
+            notifications.append((title, message, priority))
+            r = DispatchResult()
+            r.pushover_attempted = True
+            return r
+
+        loop, _ = _build_promote_loop(
+            loop_paths,
+            bull=Position.PROMOTE, bear=Position.REJECT,
+            notify_fn=recorder,
+        )
+        loop.run()
+        _approve_all_pending(loop_paths["state"])
+        loop.run()  # ESCALATE fires here
+        # Re-run twice; ESCALATE notification should NOT fire again.
+        loop.run()
+        loop.run()
+        escalate_count = sum(
+            1 for n in notifications if "ESCALATE" in n[0]
+        )
+        assert escalate_count == 1
+
+    def test_escalate_notifier_failure_doesnt_kill_run(
+        self, loop_paths: dict[str, Path],
+    ) -> None:
+        def boom(*_a: Any, **_kw: Any) -> Any:
+            raise ConnectionError("pushover unreachable")
+
+        loop, _ = _build_promote_loop(
+            loop_paths,
+            bull=Position.PROMOTE, bear=Position.REJECT,
+            notify_fn=boom,
+        )
+        loop.run()
+        _approve_all_pending(loop_paths["state"])
+        summary = loop.run()  # ESCALATE alert raises, but loop continues
+        assert summary.verdicts_escalate == 1
+        assert summary.escalate_notifications_sent == 0
+        # State still recorded the verdict
+        state = load_state(loop_paths["state"])
+        assert state.debates_completed["alpha"]["verdict"] == "ESCALATE"
