@@ -19,17 +19,24 @@ import glob
 import json
 import os
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import httpx
 import psutil
 import uvicorn
-from fastapi import FastAPI
+from fastapi import Body, FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
+
+from src.research.dashboard_panel import (
+    DecisionError,
+    apply_decision,
+    list_pending_approvals,
+)
+from src.research.loop import DEFAULT_STATE_PATH, load_state
 
 ROOT = Path(__file__).parent.parent
 LOG_DIR = ROOT / "logs"
@@ -310,7 +317,7 @@ def soak_health() -> dict[str, Any]:
             last_ts = datetime.fromisoformat(
                 samples[-1]["ts"].replace("Z", "+00:00")
             )
-            sample_age = (datetime.now(timezone.utc) - last_ts).total_seconds()
+            sample_age = (datetime.now(UTC) - last_ts).total_seconds()
         except Exception:
             pass
 
@@ -328,7 +335,7 @@ def soak_health() -> dict[str, Any]:
     recent_trades = _recent_trades(n=15)
 
     return {
-        "now": datetime.now(timezone.utc).isoformat(),
+        "now": datetime.now(UTC).isoformat(),
         "verdict": verdict,
         "engine": {
             "pid": pid,
@@ -548,6 +555,10 @@ async function refresh() {
         <h2>recent trade-journal events</h2>
         ${tradesHtml}
       </div>
+      <div class="card full" id="approvals-card">
+        <h2>pending approvals</h2>
+        <div id="approvals-body" class="small">loading…</div>
+      </div>
     </div>
     <div class="card" style="margin-top:1em">
       <h2>recent errors (engine log)</h2>
@@ -558,8 +569,81 @@ async function refresh() {
   `;
 }
 
+// ---- Approvals panel (CL-7t8d) -----------------------------------
+async function refreshApprovals() {
+  const body = document.getElementById("approvals-body");
+  if (!body) return;
+  let d;
+  try { d = await fetch("/api/approvals").then(r => r.json()); }
+  catch (e) {
+    body.innerHTML = `<div class="err">${e.message}</div>`; return;
+  }
+  if (d.error) {
+    body.innerHTML = `<div class="err">${d.error}</div>`; return;
+  }
+  const pending = d.pending || [];
+  if (!pending.length) {
+    body.innerHTML = `<div class="small">no entries pending operator action</div>`;
+    return;
+  }
+  body.innerHTML = `<table>
+    <thead><tr>
+      <th>gate</th><th>slug</th><th>since</th><th>detail</th><th></th>
+    </tr></thead>
+    <tbody>${pending.map(e => `
+      <tr id="row-${e.gate}-${e.slug.replace(/[^a-z0-9]/gi,'_')}">
+        <td>GATE ${e.gate}</td>
+        <td>${e.slug}</td>
+        <td class="muted">${(e.pending_since || "").slice(11, 19)}</td>
+        <td class="muted">${e.gate === 1
+          ? (e.hypothesis_path || "")
+          : `${e.bull || ""}/${e.bear || ""} · ${e.transcript_path || ""}`}</td>
+        <td>
+          <input type="text" placeholder="reason (optional)"
+                 id="reason-${e.gate}-${e.slug.replace(/[^a-z0-9]/gi,'_')}"
+                 style="width: 12em; background:#0a0d12; color:#d4d4d4;
+                        border:1px solid #2a2f3a; padding:0.2em 0.4em;
+                        font: inherit; border-radius: 3px;">
+          <button onclick="decide(${e.gate}, '${e.slug.replace(/'/g,"\\'")}', 'APPROVE')"
+                  style="background:#1f4d1f; color:#4ade80; border:none;
+                         padding:0.3em 0.7em; cursor:pointer; border-radius: 3px;">
+            APPROVE</button>
+          <button onclick="decide(${e.gate}, '${e.slug.replace(/'/g,"\\'")}', 'REJECT')"
+                  style="background:#4d1f1f; color:#f87171; border:none;
+                         padding:0.3em 0.7em; cursor:pointer; border-radius: 3px;
+                         margin-left: 0.3em;">
+            REJECT</button>
+        </td>
+      </tr>`).join("")}
+    </tbody></table>`;
+}
+
+async function decide(gate, slug, action) {
+  const safeSlug = slug.replace(/[^a-z0-9]/gi,'_');
+  const reasonEl = document.getElementById(`reason-${gate}-${safeSlug}`);
+  const reason = reasonEl ? reasonEl.value : "";
+  const secret = (new URLSearchParams(window.location.search)).get("secret") || "curlit-dev";
+  try {
+    const resp = await fetch(`/api/approvals/${encodeURIComponent(slug)}?secret=${encodeURIComponent(secret)}`, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({gate, action, reason}),
+    });
+    if (!resp.ok) {
+      const detail = await resp.text();
+      alert(`error: ${resp.status} ${detail}`);
+      return;
+    }
+  } catch (e) {
+    alert(`network error: ${e.message}`); return;
+  }
+  await refreshApprovals();
+}
+
 refresh();
+refreshApprovals();
 setInterval(refresh, 10000);
+setInterval(refreshApprovals, 10000);
 </script>
 </body></html>"""
 
@@ -567,6 +651,67 @@ setInterval(refresh, 10000);
 @app.get("/", response_class=HTMLResponse)
 def dashboard() -> str:
     return _HTML
+
+
+# =============================================================================
+# Approvals panel (CL-7t8d)
+# =============================================================================
+#
+# Pending GATE 1 (research) + GATE 2 (deploy) entries surface here so
+# the operator can approve/skip via the browser instead of running
+# scripts/research_approve.py manually. Decisions write through to
+# data/research/state.json (the source of truth the loop watches) and
+# append a line to data/research/decisions.log for audit.
+#
+# Auth: same WEB_API_SECRET pattern the rest of the dashboard uses for
+# state-mutating endpoints. The list endpoint is read-only and binds
+# only to 127.0.0.1 (uvicorn host below) — that's the dashboard's
+# existing security boundary.
+
+
+_DECISIONS_LOG = Path("data/research/decisions.log")
+
+
+def _check_secret(secret: str) -> None:
+    """Validate the WEB_API_SECRET header. Raises HTTPException(401)
+    on mismatch. Same pattern the engine API uses (see _engine_api
+    above)."""
+    expected = os.environ.get("WEB_API_SECRET", "curlit-dev")
+    if not secret or secret != expected:
+        raise HTTPException(status_code=401, detail="invalid secret")
+
+
+@app.get("/api/approvals")
+def api_approvals() -> dict[str, Any]:
+    """Read-only listing of all pending GATE 1 + GATE 2 entries."""
+    try:
+        state = load_state(DEFAULT_STATE_PATH)
+    except (OSError, ValueError) as exc:
+        return {"error": f"{type(exc).__name__}: {exc}", "pending": []}
+    pending = [e.to_json() for e in list_pending_approvals(state)]
+    return {"pending": pending}
+
+
+@app.post("/api/approvals/{slug}")
+def api_apply_decision(
+    slug: str,
+    body: dict[str, Any] = Body(...),  # noqa: B008
+    secret: str = Query(""),
+) -> dict[str, Any]:
+    """Apply an APPROVE/REJECT decision. Body keys: ``gate`` (1|2),
+    ``action`` (APPROVE|REJECT), ``reason`` (optional)."""
+    _check_secret(secret)
+    gate = int(body.get("gate", 0))
+    action = str(body.get("action", "")).upper()
+    reason = str(body.get("reason", ""))
+    try:
+        return apply_decision(
+            state_path=DEFAULT_STATE_PATH,
+            gate=gate, slug=slug, action=action, reason=reason,
+            decisions_log=_DECISIONS_LOG,
+        )
+    except DecisionError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 # =============================================================================
