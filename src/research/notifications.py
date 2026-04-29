@@ -31,6 +31,14 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
+# Silence httpx's INFO-level "HTTP Request: POST <url>" logging at
+# import time (CL-wmn4). The Telegram URL contains the bot token —
+# logging it on every successful send leaks the credential into any
+# log aggregator (Loki, Cloudwatch, journald). httpx's WARNING and
+# above still surface; if a request fails, the dispatcher's own
+# exception handler logs it via _scrub_token.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
 
 # HTTP timeout for notification dispatch. Both APIs are fast; this is
 # a cap on how long the loop will block on a stuck request.

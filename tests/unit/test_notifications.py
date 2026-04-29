@@ -165,6 +165,20 @@ class TestErrorContainment:
         assert result.telegram_attempted and result.telegram_succeeded
 
 
+class TestHttpxLogSuppression:
+    def test_httpx_info_silenced_at_import(self) -> None:
+        """CL-wmn4: import-time setup pins httpx's logger to WARNING
+        so successful requests don't log the URL (which contains the
+        Telegram bot token in our case)."""
+        # Re-import to be defensive against test-ordering effects
+        import importlib
+        import logging as _logging
+
+        from src.research import notifications
+        importlib.reload(notifications)
+        assert _logging.getLogger("httpx").level == _logging.WARNING
+
+
 class TestTokenScrubbing:
     def test_telegram_token_redacted_from_error(
         self, monkeypatch: pytest.MonkeyPatch,
