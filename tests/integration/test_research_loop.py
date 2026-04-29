@@ -401,22 +401,17 @@ def _build_loop(
         transcript_root=repo_paths["transcripts"],
     )
 
-    # Override implement to write a candidate report whose metric paths
-    # match the verdict engine's threshold expressions (top-level
-    # ``oos_metrics.sharpe`` etc., not nested under ``backtest_metrics``).
+    # The Implementer now spreads its backtest_runner result at top
+    # level (CL-p9ix), so the verdict engine reads oos_metrics.sharpe
+    # directly. Inject the test's metrics via a backtest_runner
+    # callback rather than post-processing the report on disk.
     original_implement = impl.implement  # type: ignore[attr-defined]
 
     def patched_implement(*args: Any, **kwargs: Any) -> Any:
         kwargs.setdefault("code_dir", repo_paths["experimental"])
         kwargs.setdefault("report_dir", repo_paths["candidates"])
-        result = original_implement(*args, **kwargs)
-        if result.report_path is not None:
-            existing = json.loads(result.report_path.read_text())
-            existing.update(metrics)  # flatten metrics to top-level
-            result.report_path.write_text(
-                json.dumps(existing, indent=2, default=str),
-            )
-        return result
+        kwargs["backtest_runner"] = lambda _code_path: metrics
+        return original_implement(*args, **kwargs)
 
     impl.implement = patched_implement  # type: ignore[method-assign]
 

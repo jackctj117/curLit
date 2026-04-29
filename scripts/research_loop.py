@@ -29,6 +29,7 @@ from typing import cast
 
 from src.research.agents.idea import IdeaGenerator
 from src.research.agents.implementer import Implementer
+from src.research.backtest_runner import make_backtest_runner
 from src.research.config import load_config
 from src.research.ingest import (
     ExtractStore,
@@ -63,6 +64,22 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--hypothesis-dir", default=str(DEFAULT_HYPOTHESIS_DIR))
     p.add_argument("--candidate-dir", default=str(DEFAULT_CANDIDATE_DIR))
     p.add_argument(
+        "--backtest-start", default="2018-01-01",
+        help="Backtest window start (ISO date)",
+    )
+    p.add_argument(
+        "--backtest-end", default="2024-12-31",
+        help="Backtest window end (ISO date)",
+    )
+    p.add_argument(
+        "--no-backtest", action="store_true",
+        help=(
+            "Skip the real backtest_runner. Implementer ships with "
+            "empty backtest_metrics, verdict engine ESCALATEs everything "
+            "for missing-metric. Useful for dev / dry-run."
+        ),
+    )
+    p.add_argument(
         "-v", "--verbose", action="store_true", help="DEBUG-level logging",
     )
     return p
@@ -93,6 +110,19 @@ def main(argv: list[str] | None = None) -> int:
         research_config=research_config, debate_name=args.debate,
     )
 
+    # Wire the real backtest_runner unless --no-backtest. Construction
+    # is lazy because the DataProvider needs a Postgres engine and we
+    # don't want to require it for --dry-run / --no-backtest.
+    backtest_runner = None
+    if not args.no_backtest:
+        from src.data.provider import DataProvider  # noqa: PLC0415
+        from src.runtime.run_engine import _build_db_engine  # noqa: PLC0415
+        backtest_runner = make_backtest_runner(
+            data_provider=DataProvider(_build_db_engine()),
+            start=args.backtest_start,
+            end=args.backtest_end,
+        )
+
     rules_path = research_config.debates[args.debate].rules_path
     loop = ResearchLoop(
         ingest_runner=ingest_runner,
@@ -106,6 +136,7 @@ def main(argv: list[str] | None = None) -> int:
         runs_dir=Path(args.runs_dir),
         hypothesis_dir=Path(args.hypothesis_dir),
         candidate_dir=Path(args.candidate_dir),
+        backtest_runner=backtest_runner,
     )
 
     summary = loop.run()

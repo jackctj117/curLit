@@ -224,6 +224,7 @@ class ResearchLoop:
         gate1_timeout_sec: float = DEFAULT_GATE1_TIMEOUT_SEC,
         gate2_timeout_sec: float = DEFAULT_GATE2_TIMEOUT_SEC,
         registrar: PromoteRegistrar | None = None,
+        backtest_runner: Callable[[Path], dict[str, Any]] | None = None,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         self.ingest_runner = ingest_runner
@@ -248,6 +249,13 @@ class ResearchLoop:
         # Default registrar runs git + gh; tests/dev environments can
         # set skip_git=True or pass a mocked registrar.
         self.registrar = registrar or PromoteRegistrar()
+        # Real backtest_runner (CL-p9ix). When None, the implementer
+        # writes a candidate report with empty backtest_metrics and the
+        # verdict engine ESCALATEs everything for missing metrics —
+        # which is the correct behavior for a misconfigured loop. The
+        # CLI wires up src/research/backtest_runner.py:make_backtest_runner
+        # by default; tests inject fakes.
+        self.backtest_runner = backtest_runner
         # Injected clock so tests can simulate the timeout window.
         self._clock: Callable[[], datetime] = clock or (
             lambda: datetime.now(UTC)
@@ -467,8 +475,7 @@ class ResearchLoop:
                 result = self.implementer.implement(
                     hypothesis_path=hyp_path,
                     strategy_slug=slug,
-                    backtest_runner=None,  # backtest deferred to
-                    # operator/CLI; loop runs syntax gate only
+                    backtest_runner=self.backtest_runner,
                 )
             except Exception as exc:
                 logger.exception("implementer failed for slug %s", slug)

@@ -338,6 +338,15 @@ candidates into capital.
 # One full pipeline pass (cron-friendly, idempotent)
 .venv/bin/python -m scripts.research_loop
 
+# Same, but skip the real backtest (dev / dry-run; verdict engine
+# will then ESCALATE everything for missing-metric — useful only for
+# wiring smokes, not for finding edge):
+.venv/bin/python -m scripts.research_loop --no-backtest
+
+# Adjust backtest window (default 2018-01-01 → 2024-12-31):
+.venv/bin/python -m scripts.research_loop \
+    --backtest-start 2015-01-01 --backtest-end 2025-06-30
+
 # Inspect what's pending operator action
 .venv/bin/python -m scripts.research_approve --list           # GATE 1
 .venv/bin/python -m scripts.research_approve --gate=2 --list  # GATE 2

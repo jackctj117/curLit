@@ -355,7 +355,12 @@ class Implementer(Agent):
         raw_text: str,
         backtest_metrics: dict[str, Any],
     ) -> dict[str, Any]:
-        return {
+        # Backtest metrics are merged at top level so the verdict
+        # engine's threshold paths (e.g. ``oos_metrics.sharpe``) resolve
+        # against the candidate report directly. The nested
+        # ``backtest_metrics`` copy is kept for audit / backwards-
+        # compatible consumers.
+        report: dict[str, Any] = {
             "schema_version": 1,
             "strategy_slug": slug,
             "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
@@ -378,3 +383,10 @@ class Implementer(Agent):
                 "backtest": "ran" if backtest_metrics else "skipped",
             },
         }
+        # Spread the backtest_metrics keys at the top level — but never
+        # let them clobber the report's own keys (slug, gates, etc.).
+        reserved = set(report.keys())
+        for k, v in backtest_metrics.items():
+            if k not in reserved:
+                report[k] = v
+        return report
