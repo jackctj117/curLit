@@ -210,20 +210,19 @@ class _DeepSeekDriver(_OpenAICompatDriver):
     base_url = "https://api.deepseek.com"
 
 
-class _GrokDriver(_OpenAICompatDriver):
-    name = "grok"
-    base_url = "https://api.x.ai/v1"
-
-
 # =============================================================================
 # Public client
 # =============================================================================
 
 
+# Grok lives in its own module per CL-dpw6 acceptance and registers
+# itself at import time via ``register_driver``. Avoid a top-level
+# import here (the module's class subclasses ``_OpenAICompatDriver``
+# defined above, so importing it before ``register_driver`` is defined
+# would either circularly fail or pull the registration too early).
 _DRIVERS: dict[str, type[Driver]] = {
     "claude": _ClaudeDriver,
     "deepseek": _DeepSeekDriver,
-    "grok": _GrokDriver,
 }
 
 
