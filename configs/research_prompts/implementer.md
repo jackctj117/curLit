@@ -34,16 +34,47 @@ Required surface:
     with explicit defaults and (where applicable) acceptable ranges
     documented in the docstring.
   * A `Strategy` class with:
-      * `__init__(self, config, ...)` — takes the config + any required
-         dependencies (DataProvider, etc.).
+      * `__init__(self, config=None)` — must be callable with **zero
+         args** (the walk-forward runner does `strategy_factory()`).
+         If config is None, instantiate the default. Do NOT take a
+         DataProvider, broker, db engine, or any other curLit
+         internal as a constructor argument.
       * `id: str` — stable identifier matching the hypothesis slug.
-      * `symbols: list[str]` — pairs/instruments traded.
+      * `symbols: list[str]` — **class-level list of strings**, NOT a
+         ``@property`` and NOT a method. The backtest harness reads it
+         off the class without instantiating. Each entry must be a
+         **full pair code** like ``"EURUSD"`` / ``"USDJPY"`` /
+         ``"AUDUSD"`` — not a single currency like ``"AUD"``. The
+         walk-forward backtest only uses ``symbols[0]`` (single-asset
+         harness, see hard constraints below).
       * `fit(train_data: pd.DataFrame) -> None` — fits parameters from
          in-sample data ONLY. No look-ahead. No fitting on test data.
+         The DataFrame contains a ``close`` column at minimum.
       * `generate_signals(data: pd.DataFrame) -> pd.Series` — returns
          a numeric signal series indexed by the data's index.
 
 Hard constraints:
+  * **Single-asset DataFrame, ``close`` column only.** The walk-
+    forward harness fetches data for ``symbols[0]`` and passes a
+    DataFrame with ONE column (``close``) and a ``DatetimeIndex`` to
+    ``fit`` / ``generate_signals``. Do NOT expect a MultiIndex, do
+    NOT index by column-name-as-symbol (``train_data['EURUSD']``
+    will KeyError), do NOT require OHLCV / volume / vix / forward /
+    sentiment columns. If your hypothesis genuinely needs panel data
+    or multi-column inputs, it should have been DECLINED at the idea
+    stage — return REJECTED here with a clear reason.
+  * **Strategy must produce non-zero signals on a meaningful fraction
+    of bars.** A strategy that returns ``0`` (or a constant) for the
+    full OOS window fails the walk-forward's "empty/constant returns"
+    check → REJECTED. Aim for at least 5-10% of bars being non-zero
+    for a single-asset strategy.
+  * **NEVER import from `src.*`.** The strategy file must be
+    self-contained. The DataFrame passed into `fit` and
+    `generate_signals` is everything the strategy gets — there is no
+    DataProvider, no DB engine, no other curLit internal available.
+    Any `from src.data.*`, `from src.backtest.*`, etc. is wrong and
+    will fail at import time → REJECTED. Allowed imports: stdlib,
+    `numpy`, `pandas`, `scipy`, `statsmodels`, `sklearn` only.
   * **No look-ahead**. Every value in the signal at index `t` must be
     computable from data with `ts <= t`. If you need a rolling stat,
     compute it via `.shift(1).rolling(...)` or equivalent, not the

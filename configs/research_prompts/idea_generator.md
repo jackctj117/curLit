@@ -80,6 +80,41 @@ in [0.3, 1.0] OOS.
  path, or duplicate of an existing backlog hypothesis.)
 ```
 
+## What the backtest harness can actually run
+
+This is critical. The Implementer's strategy code runs through a
+walk-forward backtest harness with a hard-coded shape:
+
+  * **Single asset**, single primary symbol from the strategy's
+    ``symbols[0]``. The DataFrame has ONE ``close`` column and a
+    ``DatetimeIndex`` — no panel, no MultiIndex, no other columns.
+  * **No OHLCV beyond close**. No volume, no high, no low, no open.
+  * **No alternative-data columns**. No vix, no forward, no rates,
+    no sentiment, no news.
+  * **Walk-forward windowing**: ``is_window_days=756`` (~3y),
+    ``oos_window_days=63`` (~3 months), ``step_days=63``. So you need
+    enough history that ≥ ~3y in-sample + at least one OOS slice fits.
+
+If the paper's thesis fundamentally requires any of:
+
+  * **Panel data / cross-sectional asset selection** (e.g. "long the
+    top quintile, short the bottom") — DECLINE.
+  * **Multi-asset signals** that need joint state across pairs —
+    DECLINE.
+  * **Volume, OHLC, or microstructure features** (limit-order book,
+    bid-ask spread series) — DECLINE.
+  * **Alt-data the harness doesn't provide** (sentiment, options
+    implied vol, forward rates as their own series) — DECLINE.
+  * **Cross-asset volatility surfaces / term structure** — DECLINE.
+
+The backtest harness will eventually grow — these are tracked as
+follow-ups under CL-40n2. For now, the only theses that produce
+running candidates are **single-asset time-series**: momentum,
+mean-reversion, regime-switching, volatility-targeting, etc.
+
+DECLINE in this case is the correct outcome — it saves the operator's
+LLM budget and surfaces the harness gap explicitly.
+
 ## When to decline
 
 DECLINE when:
