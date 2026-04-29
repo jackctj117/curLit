@@ -10,6 +10,9 @@ companion to the technical doctrine docs:
   verdict engine evaluates
 - [`docs/research/SMART_QUESTIONS.md`](SMART_QUESTIONS.md) — the format
   agents must use for blocker-resolving questions
+- [`docs/research/SMOKE_TESTS.md`](SMOKE_TESTS.md) — real-network
+  smokes (manual, operator-driven) before trusting the loop in
+  production
 
 Where this doc says "the loop", that's
 `src/research/loop.py:ResearchLoop` invoked via
@@ -335,12 +338,19 @@ candidates into capital.
 ## Quickstart
 
 ```bash
+# Preflight: walk every phase with stubbed LLM + HTTP + backtest, no
+# creds, no network, no production-tree pollution. Outputs land under
+# /tmp/research-dry-run-XXXX. Run this any time you change agent
+# prompts or sub-component interfaces — see SMOKE_TESTS.md for what
+# to look for.
+.venv/bin/python -m scripts.research_loop --dry-run --auto-approve
+
 # One full pipeline pass (cron-friendly, idempotent)
 .venv/bin/python -m scripts.research_loop
 
-# Same, but skip the real backtest (dev / dry-run; verdict engine
-# will then ESCALATE everything for missing-metric — useful only for
-# wiring smokes, not for finding edge):
+# Skip the real backtest (verdict engine will then ESCALATE
+# everything for missing-metric — useful only for wiring smokes,
+# not for finding edge):
 .venv/bin/python -m scripts.research_loop --no-backtest
 
 # Adjust backtest window (default 2018-01-01 → 2024-12-31):

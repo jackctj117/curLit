@@ -139,7 +139,7 @@ class _FakeImplementer:
         hypothesis_path: Path,  # noqa: ARG002
         strategy_slug: str,
         backtest_runner: Any = None,  # noqa: ARG002
-        code_dir: Path | str | None = None,
+        code_dir: Path | str | None = None,  # noqa: ARG002
         report_dir: Path | str | None = None,  # noqa: ARG002
     ) -> ImplementerResult:
         self.calls.append(strategy_slug)
@@ -149,10 +149,10 @@ class _FakeImplementer:
         if spec.get("raise"):
             raise RuntimeError(spec["raise"])
         status = ImplementerStatus(spec["status"])
-        # Honor a per-call override but otherwise use the fake's
-        # tmp-path-rooted dir.
-        effective_code_dir = Path(code_dir) if code_dir else self.code_dir
-        code_path = effective_code_dir / f"{strategy_slug}.py"
+        # Always use the fake's tmp-path-rooted dir, ignoring whatever
+        # the loop passes — keeps tests from polluting the production
+        # ``src/strategies/_experimental`` path.
+        code_path = self.code_dir / f"{strategy_slug}.py"
         code_path.parent.mkdir(parents=True, exist_ok=True)
         code_path.write_text(spec.get("code", "# stub\n"))
         report_path: Path | None = None

@@ -73,6 +73,7 @@ DEFAULT_STATE_PATH: Path = Path("data/research/state.json")
 DEFAULT_RUNS_DIR: Path = Path("data/research/runs")
 DEFAULT_HYPOTHESIS_DIR: Path = Path("docs/research/hypotheses")
 DEFAULT_CANDIDATE_DIR: Path = Path("reports/candidates")
+DEFAULT_EXPERIMENTAL_CODE_DIR: Path = Path("src/strategies/_experimental")
 
 # GATE 1: pre-research operator approval (CL-0hr3).
 #
@@ -220,11 +221,13 @@ class ResearchLoop:
         runs_dir: Path | str = DEFAULT_RUNS_DIR,
         hypothesis_dir: Path | str = DEFAULT_HYPOTHESIS_DIR,
         candidate_dir: Path | str = DEFAULT_CANDIDATE_DIR,
+        experimental_code_dir: Path | str = DEFAULT_EXPERIMENTAL_CODE_DIR,
         notify_fn: NotifyFn | None = None,
         gate1_timeout_sec: float = DEFAULT_GATE1_TIMEOUT_SEC,
         gate2_timeout_sec: float = DEFAULT_GATE2_TIMEOUT_SEC,
         registrar: PromoteRegistrar | None = None,
         backtest_runner: Callable[[Path], dict[str, Any]] | None = None,
+        auto_approve: bool = False,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         self.ingest_runner = ingest_runner
@@ -240,6 +243,7 @@ class ResearchLoop:
         self.runs_dir = Path(runs_dir)
         self.hypothesis_dir = Path(hypothesis_dir)
         self.candidate_dir = Path(candidate_dir)
+        self.experimental_code_dir = Path(experimental_code_dir)
         # Default notifier hits prod channels (no-op when env-vars unset).
         self.notify_fn: NotifyFn = notify_fn or (
             lambda t, m, p: notify_operator(title=t, message=m, priority=p)
@@ -256,6 +260,11 @@ class ResearchLoop:
         # CLI wires up src/research/backtest_runner.py:make_backtest_runner
         # by default; tests inject fakes.
         self.backtest_runner = backtest_runner
+        # Operator-bypass switch for --dry-run preflights. Flips
+        # PENDING entries to APPROVED between phases so a single
+        # invocation walks the entire pipeline including the registrar.
+        # Never set in production — the gates exist for a reason.
+        self.auto_approve = auto_approve
         # Injected clock so tests can simulate the timeout window.
         self._clock: Callable[[], datetime] = clock or (
             lambda: datetime.now(UTC)
@@ -280,12 +289,16 @@ class ResearchLoop:
             save_state(state, self.state_path)
 
             self._phase_gate1(state, summary)
+            if self.auto_approve:
+                self._auto_approve_gate1(state)
             save_state(state, self.state_path)
 
             self._phase_implement(state, summary)
             save_state(state, self.state_path)
 
             self._phase_debate(state, summary)
+            if self.auto_approve:
+                self._auto_approve_gate2(state)
             save_state(state, self.state_path)
 
             self._phase_gate2(state, summary)
@@ -476,6 +489,8 @@ class ResearchLoop:
                     hypothesis_path=hyp_path,
                     strategy_slug=slug,
                     backtest_runner=self.backtest_runner,
+                    code_dir=self.experimental_code_dir,
+                    report_dir=self.candidate_dir,
                 )
             except Exception as exc:
                 logger.exception("implementer failed for slug %s", slug)
@@ -605,6 +620,24 @@ class ResearchLoop:
                     summary=summary,
                 )
             state.debates_completed[slug] = new_entry
+
+    def _auto_approve_gate1(self, state: LoopState) -> None:
+        """--auto-approve helper: flip every PENDING_OPERATOR_APPROVAL
+        to APPROVED. Only safe for dry-run preflights."""
+        for entry in state.ideas_processed.values():
+            if entry.get("status") == GATE1_PENDING_STATUS:
+                entry["status"] = GATE1_APPROVED_STATUS
+                entry["reason"] = "auto-approved (--auto-approve / dry-run)"
+
+    def _auto_approve_gate2(self, state: LoopState) -> None:
+        """--auto-approve helper: flip every PENDING_DEPLOY_CONFIRMATION
+        to DEPLOY_APPROVED."""
+        for entry in state.debates_completed.values():
+            if entry.get("deploy_status") == GATE2_PENDING_STATUS:
+                entry["deploy_status"] = GATE2_APPROVED_STATUS
+                entry["deploy_reason"] = (
+                    "auto-approved (--auto-approve / dry-run)"
+                )
 
     @staticmethod
     def _tally_verdict(summary: RunSummary, verdict: VerdictResult) -> None:

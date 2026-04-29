@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 from pathlib import Path
 from typing import cast
@@ -80,6 +81,25 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     p.add_argument(
+        "--dry-run", action="store_true",
+        help=(
+            "Walk every phase with stubbed LLM calls + stubbed HTTP + "
+            "stubbed backtest. No real API calls, no network, no "
+            "money risk. Preflight before CL-77rq (the real smoke). "
+            "Implies skip_git=True + skip_pr=True on the registrar."
+        ),
+    )
+    p.add_argument(
+        "--auto-approve", action="store_true",
+        help=(
+            "Auto-flip PENDING_OPERATOR_APPROVAL → APPROVED and "
+            "PENDING_DEPLOY_CONFIRMATION → DEPLOY_APPROVED before each "
+            "phase. Useful with --dry-run for a single-invocation walk "
+            "through every phase. Never use in production — it bypasses "
+            "the operator gates."
+        ),
+    )
+    p.add_argument(
         "-v", "--verbose", action="store_true", help="DEBUG-level logging",
     )
     return p
@@ -91,6 +111,47 @@ def main(argv: list[str] | None = None) -> int:
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+
+    # Dry-run pollutes nothing: every output path gets re-rooted under
+    # a tmp dir so the production tree stays clean. Used by the
+    # extract store, hypothesis dir, candidate dir, transcript root,
+    # registrar code+yaml paths, and state file.
+    dry_run_tmp: Path | None = None
+    if args.dry_run:
+        # Install the stubs BEFORE loading the research config so the
+        # config validator sees the dry-run drivers under the
+        # canonical provider names.
+        from src.research.dry_run import install_dry_run_driver  # noqa: PLC0415
+        install_dry_run_driver()
+        # Make sure agent-config validators don't fail on missing API
+        # keys for the canonical providers — DryRunDriver doesn't need
+        # them, but the config layer reads them at construction time.
+        for env_name in ("ANTHROPIC_API_KEY", "DEEPSEEK_API_KEY", "XAI_API_KEY"):
+            os.environ.setdefault(env_name, "dry-run-fake-key")
+        # Re-root every output path so the dry-run never touches the
+        # real repo. Operator can override individual paths with the
+        # explicit --state / --hypothesis-dir / --candidate-dir flags
+        # if they want to inspect outputs in a stable location.
+        import tempfile  # noqa: PLC0415
+        dry_run_tmp = Path(tempfile.mkdtemp(prefix="research-dry-run-"))
+        defaults_used = {
+            "state": args.state == str(DEFAULT_STATE_PATH),
+            "runs": args.runs_dir == str(DEFAULT_RUNS_DIR),
+            "hyp": args.hypothesis_dir == str(DEFAULT_HYPOTHESIS_DIR),
+            "cand": args.candidate_dir == str(DEFAULT_CANDIDATE_DIR),
+        }
+        if defaults_used["state"]:
+            args.state = str(dry_run_tmp / "state.json")
+        if defaults_used["runs"]:
+            args.runs_dir = str(dry_run_tmp / "runs")
+        if defaults_used["hyp"]:
+            args.hypothesis_dir = str(dry_run_tmp / "hypotheses")
+        if defaults_used["cand"]:
+            args.candidate_dir = str(dry_run_tmp / "candidates")
+        print(
+            f"DRY RUN: stubbed LLM + HTTP + backtest; outputs under "
+            f"{dry_run_tmp}",
+        )
 
     research_config = load_config(args.config)
     feed_configs = load_feed_configs(args.feeds)
@@ -104,23 +165,57 @@ def main(argv: list[str] | None = None) -> int:
     implementer = cast(Implementer, Implementer.from_config(
         name="implementer", research_config=research_config,
     ))
-    extract_store = ExtractStore()
-    ingest_runner = IngestRunner(extractor=extractor, store=extract_store)
-    orchestrator = DebateOrchestrator(
-        research_config=research_config, debate_name=args.debate,
-    )
+    if args.dry_run and dry_run_tmp is not None:
+        from src.research.dry_run import stub_http_get  # noqa: PLC0415
+        extract_store = ExtractStore(root=dry_run_tmp / "extracts")
+        ingest_runner = IngestRunner(
+            extractor=extractor, store=extract_store, http_get=stub_http_get,
+        )
+        orchestrator = DebateOrchestrator(
+            research_config=research_config, debate_name=args.debate,
+            transcript_root=dry_run_tmp / "debates",
+        )
+    else:
+        extract_store = ExtractStore()
+        ingest_runner = IngestRunner(extractor=extractor, store=extract_store)
+        orchestrator = DebateOrchestrator(
+            research_config=research_config, debate_name=args.debate,
+        )
 
-    # Wire the real backtest_runner unless --no-backtest. Construction
-    # is lazy because the DataProvider needs a Postgres engine and we
-    # don't want to require it for --dry-run / --no-backtest.
-    backtest_runner = None
-    if not args.no_backtest:
+    # Wire the real backtest_runner unless --no-backtest / --dry-run.
+    # Construction is lazy because the DataProvider needs a Postgres
+    # engine and we don't want to require it for --dry-run / --no-backtest.
+    from collections.abc import Callable as _Callable  # noqa: PLC0415
+    from typing import Any as _Any  # noqa: PLC0415
+    backtest_runner: _Callable[[Path], dict[str, _Any]] | None = None
+    if args.dry_run:
+        from src.research.dry_run import stub_backtest_runner  # noqa: PLC0415
+        backtest_runner = stub_backtest_runner
+    elif not args.no_backtest:
         from src.data.provider import DataProvider  # noqa: PLC0415
         from src.runtime.run_engine import _build_db_engine  # noqa: PLC0415
         backtest_runner = make_backtest_runner(
             data_provider=DataProvider(_build_db_engine()),
             start=args.backtest_start,
             end=args.backtest_end,
+        )
+
+    # Dry runs use a no-op registrar with paths re-rooted under the
+    # tmp dir so the production strategies dir + portfolio yaml stay
+    # untouched.
+    registrar = None
+    if args.dry_run and dry_run_tmp is not None:
+        from src.research.promote import PromoteRegistrar  # noqa: PLC0415
+        # Seed a minimal portfolio YAML for the registrar to mutate.
+        portfolio_yaml = dry_run_tmp / "live_portfolio.yaml"
+        portfolio_yaml.write_text(
+            "strategies: []\ninitial_weights: {}\n",
+        )
+        registrar = PromoteRegistrar(
+            experimental_dir=dry_run_tmp / "_experimental",
+            production_dir=dry_run_tmp / "production",
+            portfolio_yaml=portfolio_yaml,
+            skip_git=True, skip_pr=True,
         )
 
     rules_path = research_config.debates[args.debate].rules_path
@@ -136,7 +231,13 @@ def main(argv: list[str] | None = None) -> int:
         runs_dir=Path(args.runs_dir),
         hypothesis_dir=Path(args.hypothesis_dir),
         candidate_dir=Path(args.candidate_dir),
+        experimental_code_dir=(
+            dry_run_tmp / "_experimental" if dry_run_tmp is not None
+            else Path("src/strategies/_experimental")
+        ),
         backtest_runner=backtest_runner,
+        registrar=registrar,
+        auto_approve=args.auto_approve,
     )
 
     summary = loop.run()

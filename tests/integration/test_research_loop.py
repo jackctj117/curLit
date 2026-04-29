@@ -408,8 +408,12 @@ def _build_loop(
     original_implement = impl.implement  # type: ignore[attr-defined]
 
     def patched_implement(*args: Any, **kwargs: Any) -> Any:
-        kwargs.setdefault("code_dir", repo_paths["experimental"])
-        kwargs.setdefault("report_dir", repo_paths["candidates"])
+        # Force tmp paths regardless of what the loop passes —
+        # otherwise the loop's experimental_code_dir default
+        # (``src/strategies/_experimental``) would write into the
+        # production tree.
+        kwargs["code_dir"] = repo_paths["experimental"]
+        kwargs["report_dir"] = repo_paths["candidates"]
         kwargs["backtest_runner"] = lambda _code_path: metrics
         return original_implement(*args, **kwargs)
 
