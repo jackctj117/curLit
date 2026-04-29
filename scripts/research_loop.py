@@ -111,6 +111,11 @@ def main(argv: list[str] | None = None) -> int:
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+    # Auto-load .env so the operator doesn't need to source it before
+    # invoking the script. Explicit env vars (systemd / shell exports)
+    # still win over the file's contents.
+    from src.dotenv_bootstrap import load_project_env  # noqa: PLC0415
+    load_project_env()
 
     # Dry-run pollutes nothing: every output path gets re-rooted under
     # a tmp dir so the production tree stays clean. Used by the

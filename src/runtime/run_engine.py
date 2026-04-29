@@ -386,6 +386,10 @@ async def run_engine(practice: bool) -> None:
 
 
 def main() -> None:
+    # Auto-load .env so OANDA / Postgres / Pushover creds are available
+    # without first sourcing the file. Explicit env vars still win.
+    from src.dotenv_bootstrap import load_project_env  # noqa: PLC0415
+    load_project_env()
     parser = argparse.ArgumentParser(description="curLit live trading engine")
     parser.add_argument("--practice", action="store_true", default=True)
     parser.add_argument("--live", dest="practice", action="store_false")

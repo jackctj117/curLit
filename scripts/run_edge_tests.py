@@ -165,6 +165,10 @@ def _send_alerts_if_configured(
 
 
 def main() -> None:
+    # Auto-load .env so PUSHOVER_* / Postgres creds are available
+    # without first sourcing the file. Explicit env vars still win.
+    from src.dotenv_bootstrap import load_project_env  # noqa: PLC0415
+    load_project_env()
     parser = argparse.ArgumentParser(description="Run weekly edge tests")
     parser.add_argument("--output", type=Path, default=None,
                         help="report output path (default: edge_reports/edge_<ts>.json)")

@@ -72,6 +72,10 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Auto-load .env so credentials/paths are available without first
+    # sourcing the file. Explicit env vars still win.
+    from src.dotenv_bootstrap import load_project_env  # noqa: PLC0415
+    load_project_env()
     args = _build_parser().parse_args(argv)
     state = load_state(args.state)
 

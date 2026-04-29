@@ -73,6 +73,10 @@ def main(argv: list[str] | None = None) -> int:
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+    # Auto-load .env so the LLM extractor's API keys are available
+    # without first sourcing the file. Explicit env vars still win.
+    from src.dotenv_bootstrap import load_project_env  # noqa: PLC0415
+    load_project_env()
 
     feeds = load_feed_configs(args.config)
     if args.feed:

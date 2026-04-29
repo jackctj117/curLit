@@ -720,6 +720,10 @@ def api_apply_decision(
 
 
 def main() -> None:
+    # Auto-load .env so WEB_API_SECRET / Postgres creds are available
+    # without first sourcing the file. Explicit env vars still win.
+    from src.dotenv_bootstrap import load_project_env  # noqa: PLC0415
+    load_project_env()
     port = int(os.environ.get("SOAK_DASHBOARD_PORT", "8201"))
     print(f"curLit soak dashboard → http://127.0.0.1:{port}/")
     uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
