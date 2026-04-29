@@ -26,25 +26,30 @@ agents:
     max_tokens: 4096
 
   # Writes strategy code from a hypothesis brief and runs the backtest.
-  # Code-generation reasoning quality matters → Claude.
+  # PRODUCTION SHOULD USE Claude (code-generation reasoning quality
+  # matters); temporarily on DeepSeek for initial paper-trading tests
+  # until ANTHROPIC_API_KEY is added (CL-wkil).
   implementer:
-    provider: claude
+    provider: deepseek
     role: implementer
     prompt_path: configs/research_prompts/implementer.md
     max_tokens: 8192
 
   # Bull reviewer — argues PROMOTE with evidence cited from REVIEW_RULES.md.
+  # PRODUCTION SHOULD USE Claude — same-model Bull + Bear converge despite
+  # the asymmetric prompts; provider diversity is what makes the debate
+  # genuinely adversarial. Temporarily DeepSeek (CL-wkil).
   bull_reviewer:
-    provider: claude
+    provider: deepseek
     role: bull
     prompt_path: configs/research_prompts/bull_reviewer.md
     max_tokens: 4096
 
   # Bear reviewer — adversarial; argues REJECT, hunts for failure modes.
-  # Could be Grok for distinct training distribution → genuine viewpoint
-  # diversity vs Claude-Bull. Switch to grok by changing this one line.
+  # PRODUCTION SHOULD USE Claude or Grok (distinct training distribution
+  # from Bull → genuine viewpoint diversity). Temporarily DeepSeek (CL-wkil).
   bear_reviewer:
-    provider: claude
+    provider: deepseek
     role: bear
     prompt_path: configs/research_prompts/bear_reviewer.md
     max_tokens: 4096
