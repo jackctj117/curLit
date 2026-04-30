@@ -44,9 +44,15 @@ Required surface:
          ``@property`` and NOT a method. The backtest harness reads it
          off the class without instantiating. Each entry must be a
          **full pair code** like ``"EURUSD"`` / ``"USDJPY"`` /
-         ``"AUDUSD"`` — not a single currency like ``"AUD"``. The
-         walk-forward backtest only uses ``symbols[0]`` (single-asset
-         harness, see hard constraints below).
+         ``"AUDUSD"`` — not a single currency like ``"AUD"``. You can
+         declare multiple symbols and use them as cross-symbol signal
+         inputs; the strategy still trades **one** instrument (see
+         ``execution_symbol``).
+      * `execution_symbol: str` (optional, defaults to ``symbols[0]``)
+         — the pair whose price returns the harness uses for P&L. Use
+         this when your strategy reads multiple pairs to inform a
+         single-instrument trade (e.g. ``symbols=['DXY','EURUSD']``,
+         ``execution_symbol='EURUSD'``).
       * `fit(train_data: pd.DataFrame) -> None` — fits parameters from
          in-sample data ONLY. No look-ahead. No fitting on test data.
          The DataFrame contains a ``close`` column at minimum.
@@ -54,15 +60,23 @@ Required surface:
          a numeric signal series indexed by the data's index.
 
 Hard constraints:
-  * **Single-asset DataFrame, ``close`` column only.** The walk-
-    forward harness fetches data for ``symbols[0]`` and passes a
-    DataFrame with ONE column (``close``) and a ``DatetimeIndex`` to
-    ``fit`` / ``generate_signals``. Do NOT expect a MultiIndex, do
-    NOT index by column-name-as-symbol (``train_data['EURUSD']``
-    will KeyError), do NOT require OHLCV / volume / vix / forward /
-    sentiment columns. If your hypothesis genuinely needs panel data
-    or multi-column inputs, it should have been DECLINED at the idea
-    stage — return REJECTED here with a clear reason.
+  * **Wide DataFrame with one column per declared symbol** (CL-40n2).
+    The harness fetches every entry in ``symbols`` and passes a
+    DataFrame whose columns are the symbol names (e.g. ``EURUSD``,
+    ``USDJPY``) plus an alias ``close`` column equal to
+    ``execution_symbol``'s prices. Index is a ``DatetimeIndex``. So
+    ``train_data['EURUSD']`` works if you declared EURUSD; cross-
+    symbol signals are explicitly supported.
+    Do NOT expect: a MultiIndex (``(symbol, date)``), OHLCV columns
+    (no high/low/open/volume), vix/forward/sentiment columns. The
+    harness only provides close prices — one per declared symbol.
+    Forward-filled across timestamp gaps (yfinance daily vs FRED
+    monthly), so don't rely on grid alignment.
+    True panel/cross-sectional strategies (long-short top/bottom
+    quintiles, etc.) still don't fit — generate_signals returns ONE
+    position series for ``execution_symbol``, not a multi-asset
+    portfolio. If your hypothesis genuinely needs joint multi-asset
+    positions, return REJECTED with a clear reason.
   * **Strategy must produce non-zero signals on a meaningful fraction
     of bars.** A strategy that returns ``0`` (or a constant) for the
     full OOS window fails the walk-forward's "empty/constant returns"

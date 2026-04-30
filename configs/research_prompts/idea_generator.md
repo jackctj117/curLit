@@ -83,34 +83,41 @@ in [0.3, 1.0] OOS.
 ## What the backtest harness can actually run
 
 This is critical. The Implementer's strategy code runs through a
-walk-forward backtest harness with a hard-coded shape:
+walk-forward backtest harness with a constrained shape:
 
-  * **Single asset**, single primary symbol from the strategy's
-    ``symbols[0]``. The DataFrame has ONE ``close`` column and a
-    ``DatetimeIndex`` — no panel, no MultiIndex, no other columns.
+  * **Wide DataFrame, one column per declared symbol** (CL-40n2 v1).
+    The strategy declares ``symbols=['EURUSD','USDJPY','DXY',...]``
+    and the harness passes a DataFrame with each as a column (close
+    prices). Cross-symbol signals are supported.
+  * **Single execution instrument.** P&L is computed on
+    ``execution_symbol`` (defaults to ``symbols[0]``). The strategy
+    can READ multiple symbols but TRADES one. This means:
+      * "Long DXY when EURUSD breaks below SMA" — supported.
+      * "Long top quintile / short bottom quintile of G10 carry" —
+        NOT supported; needs portfolio-of-positions output.
   * **No OHLCV beyond close**. No volume, no high, no low, no open.
-  * **No alternative-data columns**. No vix, no forward, no rates,
-    no sentiment, no news.
+  * **No alternative-data columns**. No vix, no forward rates as
+    their own series, no sentiment, no news, no IV surface.
   * **Walk-forward windowing**: ``is_window_days=756`` (~3y),
-    ``oos_window_days=63`` (~3 months), ``step_days=63``. So you need
-    enough history that ≥ ~3y in-sample + at least one OOS slice fits.
+    ``oos_window_days=63`` (~3 months), ``step_days=63``.
 
-If the paper's thesis fundamentally requires any of:
+If the paper's thesis fundamentally requires:
 
-  * **Panel data / cross-sectional asset selection** (e.g. "long the
-    top quintile, short the bottom") — DECLINE.
-  * **Multi-asset signals** that need joint state across pairs —
-    DECLINE.
-  * **Volume, OHLC, or microstructure features** (limit-order book,
+  * **Joint multi-asset positions** (long-short cross-sectional
+    portfolios, equal-risk allocation across many pairs, hierarchical
+    clustering selection) — DECLINE. Single execution_symbol can't
+    represent this.
+  * **Volume / OHLC / microstructure features** (limit-order book,
     bid-ask spread series) — DECLINE.
-  * **Alt-data the harness doesn't provide** (sentiment, options
-    implied vol, forward rates as their own series) — DECLINE.
+  * **Alt-data not in close prices** (sentiment, options IV, forward
+    rates as separate series, news embedding) — DECLINE.
   * **Cross-asset volatility surfaces / term structure** — DECLINE.
 
-The backtest harness will eventually grow — these are tracked as
-follow-ups under CL-40n2. For now, the only theses that produce
-running candidates are **single-asset time-series**: momentum,
-mean-reversion, regime-switching, volatility-targeting, etc.
+The backtest harness will eventually grow further — joint multi-asset
+positions are tracked under CL-40n2 v2. For now, theses that produce
+running candidates are: time-series momentum, mean-reversion,
+regime-switching, volatility-targeting, AND cross-symbol signals
+that time a single execution pair.
 
 DECLINE in this case is the correct outcome — it saves the operator's
 LLM budget and surfaces the harness gap explicitly.

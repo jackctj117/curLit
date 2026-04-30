@@ -53,14 +53,18 @@ class _FakeProvider:
         return self.data
 
 
-def _synth_ohlcv(n: int = 1500, seed: int = 42) -> pd.DataFrame:
-    """Random-walk close prices with a daily index. Walk-forward
-    needs at least cfg.min_history=756 rows + an OOS window."""
+def _synth_ohlcv(
+    n: int = 1500, seed: int = 42, symbol: str = "EURUSD",
+) -> pd.DataFrame:
+    """Random-walk close prices with a daily index, returned as a wide
+    DataFrame with one column named ``symbol`` (matches what
+    DataProvider.get_aligned_series produces). Walk-forward needs at
+    least cfg.min_history=756 rows + an OOS window."""
     rng = np.random.default_rng(seed)
     rets = rng.normal(0.0001, 0.01, size=n)
     close = 100 * np.exp(np.cumsum(rets))
     idx = pd.date_range("2018-01-01", periods=n, freq="B")
-    return pd.DataFrame({"close": close}, index=idx)
+    return pd.DataFrame({symbol: close}, index=idx)
 
 
 def _write_strategy(tmp_path: Path, body: str, name: str = "stub") -> Path:
@@ -168,6 +172,34 @@ class TestReadSymbols:
         class B:
             pass
         assert _read_symbols(B) == ["EURUSD"]
+
+
+class TestReadExecutionSymbol:
+    def test_explicit_execution_symbol(self) -> None:
+        from src.research.backtest_runner import _read_execution_symbol
+
+        class A:
+            symbols = ["DXY", "EURUSD"]
+            execution_symbol = "EURUSD"
+
+        assert _read_execution_symbol(A, A.symbols) == "EURUSD"
+
+    def test_defaults_to_first_symbol(self) -> None:
+        from src.research.backtest_runner import _read_execution_symbol
+
+        class A:
+            symbols = ["EURUSD", "USDJPY"]
+
+        assert _read_execution_symbol(A, A.symbols) == "EURUSD"
+
+    def test_invalid_execution_symbol_falls_back(self) -> None:
+        from src.research.backtest_runner import _read_execution_symbol
+
+        class A:
+            symbols = ["EURUSD"]
+            execution_symbol = "GBPUSD"  # not in symbols
+
+        assert _read_execution_symbol(A, A.symbols) == "EURUSD"
 
 
 # ---------------------------------------------------------------------- #
@@ -278,9 +310,12 @@ class TestRunnerEndToEnd:
         with pytest.raises(ValueError, match="no data"):
             runner(strat_path)
 
-    def test_raises_when_close_column_missing(self, tmp_path: Path) -> None:
+    def test_raises_when_execution_symbol_column_missing(
+        self, tmp_path: Path,
+    ) -> None:
         strat_path = _write_strategy(tmp_path, _VALID_STRATEGY, name="stub_nocol")
-        # DataFrame with neither 'close' nor a column matching the symbol
+        # DataFrame with neither 'close' nor a column matching the
+        # strategy's execution_symbol (defaults to symbols[0] = EURUSD)
         provider = _FakeProvider(data=pd.DataFrame(
             {"foo": [1.0, 2.0]},
             index=pd.date_range("2018-01-01", periods=2),
@@ -289,7 +324,9 @@ class TestRunnerEndToEnd:
             data_provider=provider,  # type: ignore[arg-type]
             bootstrap_n=100,
         )
-        with pytest.raises(ValueError, match="missing 'close' column"):
+        with pytest.raises(
+            ValueError, match="missing execution_symbol column",
+        ):
             runner(strat_path)
 
     def test_raises_on_strategy_import_error(self, tmp_path: Path) -> None:

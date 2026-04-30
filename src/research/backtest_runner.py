@@ -162,6 +162,25 @@ def _read_symbols(strategy_cls: type) -> list[str]:
     return list(syms) if isinstance(syms, (list, tuple)) else [str(syms)]
 
 
+def _read_execution_symbol(strategy_cls: type, symbols: list[str]) -> str:
+    """The strategy's P&L is computed on this symbol's price returns.
+    Strategies can declare ``execution_symbol`` to use cross-symbol
+    signals to trade a single pair (e.g. ``symbols = ['DXY', 'EURUSD']``,
+    ``execution_symbol = 'EURUSD'`` — DXY informs but EURUSD trades).
+    Defaults to ``symbols[0]`` if not declared. CL-40n2 v1."""
+    exec_sym = getattr(strategy_cls, "execution_symbol", None)
+    if not exec_sym:
+        return symbols[0]
+    if exec_sym not in symbols:
+        logger.warning(
+            "strategy %s declares execution_symbol=%r but it's not in "
+            "symbols=%r; falling back to symbols[0]",
+            strategy_cls.__name__, exec_sym, symbols,
+        )
+        return symbols[0]
+    return str(exec_sym)
+
+
 # ---------------------------------------------------------------------- #
 # B-rule proxies (computed from walk-forward output)
 # ---------------------------------------------------------------------- #
@@ -251,36 +270,44 @@ def make_backtest_runner(
         module = _import_strategy_module(code_path)
         strategy_cls = _find_strategy_class(module)
         symbols = _read_symbols(strategy_cls)
-        primary = symbols[0]
+        execution_symbol = _read_execution_symbol(strategy_cls, symbols)
         logger.info(
-            "research backtest: %s symbol=%s window=%s..%s",
-            strategy_cls.__name__, primary, start, end,
+            "research backtest: %s symbols=%s exec=%s window=%s..%s",
+            strategy_cls.__name__, symbols, execution_symbol, start, end,
         )
 
-        # 2) Pull data. Use get_aligned_series with one symbol so we
-        #    have a 'close' column the walk-forward can reference.
+        # 2) Pull data for ALL declared symbols so the strategy can
+        #    use cross-symbol signals (CL-40n2 v1). DataProvider.
+        #    get_aligned_series returns a wide DataFrame with one
+        #    column per symbol; we add a 'close' alias for the
+        #    execution_symbol so the walk-forward runner's existing
+        #    return calc keeps working.
         start_dt = datetime.fromisoformat(start)
         end_dt = datetime.fromisoformat(end)
         data = data_provider.get_aligned_series(
-            symbols=[primary], start=start_dt, end=end_dt,
+            symbols=symbols, start=start_dt, end=end_dt,
         )
         if data is None or data.empty:
             msg = (
-                f"DataProvider returned no data for {primary!r} in "
+                f"DataProvider returned no data for symbols={symbols} in "
                 f"window {start}..{end}; cannot backtest"
             )
             raise ValueError(msg)
+        if execution_symbol not in data.columns:
+            msg = (
+                f"backtest data missing execution_symbol column "
+                f"{execution_symbol!r}; got {list(data.columns)}"
+            )
+            raise ValueError(msg)
+        # Add 'close' alias pointing at execution_symbol's price series
+        # so walk-forward's hard-coded data['close'] works.
         if "close" not in data.columns:
-            # Some providers return the price column under the symbol's
-            # name; rename for walk-forward's expected shape.
-            if primary in data.columns:
-                data = data.rename(columns={primary: "close"})
-            else:
-                msg = (
-                    f"backtest data missing 'close' column for {primary!r}; "
-                    f"got {list(data.columns)}"
-                )
-                raise ValueError(msg)
+            data = data.assign(close=data[execution_symbol])
+        # Forward-fill missing values across columns — different sources
+        # (yfinance daily vs FRED monthly) have different timestamps,
+        # so the merged frame is sparse. ffill makes signal computation
+        # well-defined; missing-data risk lives on the strategy.
+        data = data.ffill().dropna(subset=["close"])
 
         # 3) Walk-forward.
         wf_runner = WalkForwardRunner(config=config)
