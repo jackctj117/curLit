@@ -8,7 +8,13 @@
 providers:
   claude:
     api_key_env: ANTHROPIC_API_KEY
-    default_model: claude-opus-4-7
+    # claude-opus-4-7 deprecated the `temperature` parameter; the LLM
+    # client passes it on every call, so requests against opus-4-7
+    # 400 with "temperature is deprecated for this model". Pin to
+    # sonnet-4-6 until the driver is updated to drop temperature for
+    # opus models. Sonnet is cheaper anyway ($3/$15 per Mtok vs
+    # $15/$75) and still strong on code generation.
+    default_model: claude-sonnet-4-6
   deepseek:
     api_key_env: DEEPSEEK_API_KEY
     default_model: deepseek-chat
@@ -26,30 +32,25 @@ agents:
     max_tokens: 4096
 
   # Writes strategy code from a hypothesis brief and runs the backtest.
-  # PRODUCTION SHOULD USE Claude (code-generation reasoning quality
-  # matters); temporarily on DeepSeek for initial paper-trading tests
-  # until ANTHROPIC_API_KEY is added (CL-wkil).
+  # Code-generation reasoning quality matters → Claude.
   implementer:
-    provider: deepseek
+    provider: claude
     role: implementer
     prompt_path: configs/research_prompts/implementer.md
     max_tokens: 8192
 
   # Bull reviewer — argues PROMOTE with evidence cited from REVIEW_RULES.md.
-  # PRODUCTION SHOULD USE Claude — same-model Bull + Bear converge despite
-  # the asymmetric prompts; provider diversity is what makes the debate
-  # genuinely adversarial. Temporarily DeepSeek (CL-wkil).
   bull_reviewer:
-    provider: deepseek
+    provider: claude
     role: bull
     prompt_path: configs/research_prompts/bull_reviewer.md
     max_tokens: 4096
 
   # Bear reviewer — adversarial; argues REJECT, hunts for failure modes.
-  # PRODUCTION SHOULD USE Claude or Grok (distinct training distribution
-  # from Bull → genuine viewpoint diversity). Temporarily DeepSeek (CL-wkil).
+  # Could be Grok for distinct training distribution → genuine viewpoint
+  # diversity vs Claude-Bull. Switch to grok by changing this one line.
   bear_reviewer:
-    provider: deepseek
+    provider: claude
     role: bear
     prompt_path: configs/research_prompts/bear_reviewer.md
     max_tokens: 4096
