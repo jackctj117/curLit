@@ -17,7 +17,7 @@ providers:
     default_model: claude-sonnet-4-6
   deepseek:
     api_key_env: DEEPSEEK_API_KEY
-    default_model: deepseek-chat
+    default_model: deepseek-v4-pro
   grok:
     api_key_env: XAI_API_KEY
     default_model: grok-4

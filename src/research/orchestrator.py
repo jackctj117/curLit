@@ -63,6 +63,87 @@ logger = logging.getLogger(__name__)
 MAX_REBUTTAL_ROUNDS: int = 3
 
 
+# ---------------------------------------------------------------------- #
+# Context-trimming helpers
+# ---------------------------------------------------------------------- #
+# Every debate call sends (system prompt) + REVIEW_RULES + candidate
+# report + running transcript. By round 4 of a Bull/Bear debate the
+# transcript alone runs ~30k chars (~7.5k tokens), and the candidate
+# report duplicates metrics under both top-level and ``backtest_metrics``
+# keys. Anthropic tier 1's 10k input-tokens/minute cap rejects calls
+# that exceed it. These helpers strip verdict-irrelevant bulk before
+# the LLM ever sees it.
+#
+# Keep on report: oos_metrics, sharpe_ci_95, is_oos_sharpe_ratio,
+# edge_concentration, regime_diversified, decay_severity, prediction,
+# data_sources_consumed, gates, schema_version, strategy_slug, code_path.
+# Drop: backtest_metrics (duplicate of top-level), fold_metrics (per-
+# fold detail not used in verdict), _metrics_provenance (PROXY notes,
+# meta-info), generated_at, hypothesis_path, provenance.
+
+_REPORT_DROP_KEYS: frozenset[str] = frozenset({
+    "backtest_metrics",
+    "fold_metrics",
+    "_metrics_provenance",
+    "generated_at",
+    "hypothesis_path",
+    "provenance",
+})
+
+
+def _slim_candidate_report(report_text: str) -> str:
+    """Strip bulk + duplicate keys from a JSON candidate report. If the
+    input isn't JSON (e.g. markdown), pass through unchanged."""
+    try:
+        report = json.loads(report_text)
+    except (json.JSONDecodeError, ValueError):
+        return report_text
+    if not isinstance(report, dict):
+        return report_text
+    slim = {k: v for k, v in report.items() if k not in _REPORT_DROP_KEYS}
+    return json.dumps(slim, indent=2, default=str)
+
+
+def _slim_transcript(transcript: str) -> str:
+    """Replace each agent block in the transcript with a 1-line digest:
+    just the round + agent + final position keyword + first 200 chars
+    of the agent's text. Bull/Bear's actual reasoning is summarized
+    enough to cite — full text would blow the rate limit by round 4."""
+    if not transcript:
+        return transcript
+    out_lines: list[str] = []
+    # Each entry block in the markdown starts with "## Round: ..." and
+    # is separated by "---". Walk the blocks and emit one line each.
+    blocks = transcript.split("\n---\n")
+    for block in blocks:
+        block = block.strip()
+        if not block:
+            continue
+        # Header line + position pull
+        header = ""
+        position = ""
+        first_para = ""
+        for line in block.splitlines():
+            if line.startswith("## Round:"):
+                header = line
+            if "FINAL_POSITION" in line:
+                position = line.strip()
+        # Body summary: first non-meta paragraph (skip ts= line)
+        body_lines = [
+            ln for ln in block.splitlines()
+            if ln and not ln.startswith("## Round:")
+            and not ln.startswith("*ts=")
+            and not ln.startswith("FINAL_POSITION")
+            and not ln.startswith("**FINAL_POSITION")
+        ]
+        if body_lines:
+            first_para = " ".join(body_lines)[:200]
+        out_lines.append(
+            f"{header}\n  {position}\n  summary: {first_para}",
+        )
+    return "\n\n".join(out_lines)
+
+
 # ---------------------------------------------------------------------------
 # Result types
 # ---------------------------------------------------------------------------
@@ -470,13 +551,21 @@ class DebateOrchestrator:
         transcript_so_far: str,
         extra_instruction: str | None = None,
     ) -> AgentResponse:
-        """Single agent.run call with the round's standard context wiring."""
+        """Single agent.run call with the round's standard context wiring.
+
+        The candidate_report and transcript are trimmed to verdict-
+        relevant content before being passed in — this keeps each call
+        under provider rate limits (Anthropic tier 1 = 10k input
+        tokens/min) without losing the signal the reviewers need.
+        """
+        slim_report = _slim_candidate_report(candidate_report_text)
+        slim_transcript = _slim_transcript(transcript_so_far)
         context_files: dict[str, str] = {
             "REVIEW_RULES.md": review_rules_text,
-            "candidate_report": candidate_report_text,
+            "candidate_report": slim_report,
         }
-        if transcript_so_far:
-            context_files["debate_transcript_so_far"] = transcript_so_far
+        if slim_transcript:
+            context_files["debate_transcript_so_far"] = slim_transcript
         instruction = (
             f"This is round {round_name!r} of the {self.debate_name!r} "
             f"debate. Produce the output specified by your system prompt "

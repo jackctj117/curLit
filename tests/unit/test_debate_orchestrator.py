@@ -37,7 +37,12 @@ from src.research.config import (
     RoundType,
 )
 from src.research.llm.client import Driver, LLMResponse, register_driver
-from src.research.orchestrator import MAX_REBUTTAL_ROUNDS, DebateOrchestrator
+from src.research.orchestrator import (
+    MAX_REBUTTAL_ROUNDS,
+    DebateOrchestrator,
+    _slim_candidate_report,
+    _slim_transcript,
+)
 
 # Provider registration ------------------------------------------------------
 # The config schema validates provider names against registered drivers; we
@@ -593,3 +598,68 @@ class TestFinalPositions:
         assert set(result.final_positions.keys()) == {"bull", "bear"}
         assert result.final_positions["bull"] == Position.PROMOTE
         assert result.final_positions["bear"] == Position.REJECT
+
+
+# ---------------------------------------------------------------------------
+# Context-trimming helpers (token budget for tier-1 rate limits)
+# ---------------------------------------------------------------------------
+
+
+class TestSlimCandidateReport:
+    def test_drops_bulk_keys(self) -> None:
+        big = json.dumps({
+            "schema_version": 1,
+            "strategy_slug": "x",
+            "oos_metrics": {"sharpe": 0.7, "n_trades": 50},
+            "sharpe_ci_95": {"low": 0.2, "high": 1.2},
+            "edge_concentration": 0.4,
+            "regime_diversified": True,
+            "decay_severity": "NONE",
+            # Bulk to drop:
+            "backtest_metrics": {"verbose": "x" * 500},
+            "fold_metrics": [{"fold_id": i} for i in range(20)],
+            "_metrics_provenance": {"all": "x" * 200},
+            "generated_at": "2026-01-01",
+            "hypothesis_path": "y",
+            "provenance": {"agent": "z" * 100},
+        })
+        slim = _slim_candidate_report(big)
+        assert "backtest_metrics" not in slim
+        assert "fold_metrics" not in slim
+        assert "_metrics_provenance" not in slim
+        assert "generated_at" not in slim
+        assert "provenance" not in slim
+        # Verdict-relevant keys preserved
+        assert "oos_metrics" in slim
+        assert "sharpe_ci_95" in slim
+        assert "edge_concentration" in slim
+        assert "regime_diversified" in slim
+        assert "decay_severity" in slim
+        assert "strategy_slug" in slim
+        # Materially smaller
+        assert len(slim) < len(big) * 0.5
+
+    def test_passes_through_non_json(self) -> None:
+        text = "this is just markdown, not JSON"
+        assert _slim_candidate_report(text) == text
+
+
+class TestSlimTranscript:
+    def test_empty_returns_empty(self) -> None:
+        assert _slim_transcript("") == ""
+
+    def test_compresses_long_blocks(self) -> None:
+        # A real-shape transcript block from the orchestrator's writer
+        long_block = (
+            "## Round: rebuttal — agent: bull_reviewer (bull)\n"
+            "*ts=2026-04-30T10:30:00 model=claude-sonnet-4-6 "
+            "in/out_tokens=4000/2000 cost=$0.0420 elapsed=3.10s*\n\n"
+            + "This is a very verbose Bull rebuttal " * 200 + "\n"
+            + "**FINAL_POSITION**: PROMOTE\n"
+        )
+        slim = _slim_transcript(long_block + "\n---\n" + long_block)
+        # Each block summarized to a header + position + capped digest
+        assert "FINAL_POSITION" in slim
+        assert "PROMOTE" in slim
+        # Materially shorter than the input
+        assert len(slim) < len(long_block) * 0.5

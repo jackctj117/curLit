@@ -40,6 +40,12 @@ _PRICING_USD_PER_MTOK: dict[str, tuple[float, float]] = {
     # DeepSeek
     "deepseek-chat":            (0.27, 1.10),
     "deepseek-reasoner":        (0.55, 2.19),
+    # deepseek-v4-pro pricing not yet verified against the rate card —
+    # operator should confirm. Using deepseek-reasoner's rate as a
+    # conservative placeholder so cost reports don't show $0. If the
+    # model ID isn't recognized at the API end, requests will 400
+    # cleanly without spending tokens.
+    "deepseek-v4-pro":          (0.55, 2.19),
     # Grok (xAI). Tune in CL-dpw6.
     "grok-4":                   (3.0,  15.0),
     "grok-3":                   (3.0,  15.0),
