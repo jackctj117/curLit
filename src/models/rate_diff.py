@@ -15,7 +15,13 @@ class RateDiffModel:
         self,
         pair: str = "EURUSD",
         spread_name: str = "US2Y_MINUS_DE2Y",
+        # 756 days ≈ 3 years, same horizon as walk-forward IS window
+        # (CL-g7e) — captures multiple rate cycles so the regression
+        # isn't pinned to a single regime.
         window_days: int = 756,
+        # 0.25 R² floor: below this, the FX-vs-yield-spread relationship
+        # is too noisy to trade. 25% explained variance is typical for
+        # macro factor models; under it we sit out rather than gamble.
         min_r_squared: float = 0.25,
     ) -> None:
         self.pair = pair
@@ -27,6 +33,9 @@ class RateDiffModel:
 
     def fit(self, df: pd.DataFrame) -> dict[str, Any]:
         df = df.dropna()
+        # 100-row floor: below this, OLS standard errors are too wide to
+        # be informative (df < 95 with 3 params typically). Bail rather
+        # than emit a model whose stats are statistical noise.
         if len(df) < 100:
             logger.warning("Insufficient data for model fit (%d rows)", len(df))
             return {}

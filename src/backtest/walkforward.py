@@ -17,9 +17,20 @@ class Strategy(Protocol):
 
 @dataclass
 class WalkForwardConfig:
+    # 756 trading days = ~3 years. Long enough to span at least one full
+    # rate cycle so the in-sample fit doesn't bake in single-regime
+    # parameters. Below ~2y, FX strategies overfit to a single Fed cycle.
     is_window_days: int = 756
+    # 63 trading days = ~3 months out-of-sample. Short enough that we get
+    # multiple OOS folds per year (4 quarterly checks); long enough that
+    # the Sharpe of the OOS slice is statistically meaningful (n>=63).
     oos_window_days: int = 63
+    # Step size = OOS window means non-overlapping OOS slices, which is
+    # the canonical walk-forward design (Pardo 2008). Overlapping OOS
+    # double-counts test data and inflates apparent significance.
     step_days: int = 63
+    # Same 756-day floor as is_window — refuse to run if there isn't
+    # enough history for even one fold.
     min_history: int = 756
 
 

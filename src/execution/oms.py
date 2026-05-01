@@ -33,6 +33,10 @@ class OrderIntent:
     symbol: str
     target_position: float
     urgency: str = "normal"
+    # 2 bps = typical OANDA spread on majors at normal liquidity. Above
+    # this, refuse the fill rather than chase a runaway book. Strategies
+    # with looser tolerances (event-driven, breakout) bump this in their
+    # OrderIntent construction.
     max_slippage_bps: float = 2.0
     intent_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     # Free-form per-intent metadata. Strategies attach feature-snapshot ids
