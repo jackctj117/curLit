@@ -47,6 +47,34 @@ FRED_SERIES: dict[str, str] = {
     "IRLTLT01NZM156N": "New Zealand 10Y Bond Yield",
     "IRLTLT01NOM156N": "Norway 10Y Bond Yield",
     "IRLTLT01SEM156N": "Sweden 10Y Bond Yield",
+    # G10 3-month interbank rates (CL-cxr) — drives carry-trade scoring.
+    # IR3TIB01* are FRED's "3-Month or 90-Day Rates and Yields: Interbank
+    # Rates" series — monthly cadence. USD interbank uses Fed Funds (DFF)
+    # already in this dict, so the G10 set below is the other 9.
+    "IR3TIB01EZM156N": "Euro Area 3M Interbank",
+    "IR3TIB01JPM156N": "Japan 3M Interbank",
+    "IR3TIB01GBM156N": "UK 3M Interbank",
+    "IR3TIB01CHM156N": "Switzerland 3M Interbank",
+    "IR3TIB01CAM156N": "Canada 3M Interbank",
+    "IR3TIB01AUM156N": "Australia 3M Interbank",
+    "IR3TIB01NZM156N": "New Zealand 3M Interbank",
+    "IR3TIB01NOM156N": "Norway 3M Interbank",
+    "IR3TIB01SEM156N": "Sweden 3M Interbank",
+}
+
+# Currency-code → FRED series-id mapping for the 3M interbank set, used
+# by carry-trade strategies that need to look up rates by ISO code.
+G10_INTERBANK_3M: dict[str, str] = {
+    "USD": "DFF",  # Fed Funds is our USD short-rate proxy
+    "EUR": "IR3TIB01EZM156N",
+    "JPY": "IR3TIB01JPM156N",
+    "GBP": "IR3TIB01GBM156N",
+    "CHF": "IR3TIB01CHM156N",
+    "CAD": "IR3TIB01CAM156N",
+    "AUD": "IR3TIB01AUM156N",
+    "NZD": "IR3TIB01NZM156N",
+    "NOK": "IR3TIB01NOM156N",
+    "SEK": "IR3TIB01SEM156N",
 }
 
 

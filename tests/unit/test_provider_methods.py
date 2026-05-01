@@ -133,6 +133,33 @@ class TestGetSeries:
         assert s.iloc[0] == 4.6
 
 
+class TestGetRealizedVol:
+    def test_basic(self, provider_engine) -> None:  # type: ignore[no-untyped-def]
+        # Seed 22 sequential closes to ensure 21 returns for window=20.
+        with provider_engine.begin() as conn:
+            from sqlalchemy import text as _t
+            for i in range(22):
+                conn.execute(_t(
+                    "INSERT INTO prices VALUES "
+                    f"('2026-01-{i+1:02d} 00:00:00', 'AUDUSD', "
+                    f"{1.10 + 0.001 * i})",
+                ))
+        provider = DataProvider(provider_engine)
+        v = provider.get_realized_vol("AUDUSD", window=20)
+        assert v is not None
+        # Annualized vol of monotonic small steps is finite, > 0.
+        assert 0 < v < 5.0
+
+    def test_too_few_rows(self, provider_engine) -> None:  # type: ignore[no-untyped-def]
+        provider = DataProvider(provider_engine)
+        # Default fixture has 3 EURUSD rows; window=20 needs 21.
+        assert provider.get_realized_vol("EURUSD", window=20) is None
+
+    def test_unknown_pair(self, provider_engine) -> None:  # type: ignore[no-untyped-def]
+        provider = DataProvider(provider_engine)
+        assert provider.get_realized_vol("GHOST", window=5) is None
+
+
 class TestErrorPath:
     def test_db_error_returns_none_with_warning(
         self, caplog: pytest.LogCaptureFixture,

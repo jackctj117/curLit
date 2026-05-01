@@ -4,6 +4,7 @@ import logging
 from datetime import datetime
 from typing import Any
 
+import numpy as np
 import pandas as pd
 from sqlalchemy import text
 
@@ -218,3 +219,50 @@ class DataProvider:
             return pd.Series(dtype=float)
         df["ts"] = pd.to_datetime(df["ts"])
         return df.set_index("ts")["v"].astype(float)
+
+    def get_realized_vol(
+        self, pair: str, window: int = 20, as_of: datetime | None = None,
+    ) -> float | None:
+        """Annualized realized volatility from the most recent ``window``
+        daily closes of ``pair`` in the prices table. Returns None when
+        there aren't at least ``window+1`` rows available (need N+1 closes
+        for N log-returns).
+
+        Uses 252 trading days per year for annualization. Window is the
+        number of daily returns; pass 20 for ~1-month vol, 63 for 3-month,
+        252 for full-year. Added for CL-jxn (rate_diff_mr was the only
+        consumer pre-CL-2yta; portfolio-level metrics added in CL-5lq
+        also call this)."""
+        try:
+            with self.engine.connect() as conn:
+                params: dict[str, Any] = {"pair": pair, "n": window + 1}
+                cutoff_clause = ""
+                if as_of is not None:
+                    cutoff_clause = "AND ts <= :cutoff"
+                    params["cutoff"] = as_of
+                df = pd.read_sql(
+                    text(f"""
+                        SELECT close FROM prices
+                        WHERE symbol = :pair {cutoff_clause}
+                        ORDER BY ts DESC LIMIT :n
+                    """),
+                    conn,
+                    params=params,
+                )
+        except Exception as exc:
+            logger.warning(
+                "get_realized_vol(%s) failed: %s: %s",
+                pair, type(exc).__name__, exc,
+            )
+            return None
+        if len(df) < window + 1:
+            return None
+        # Order ASC so log-returns are chronological; sign flip on diff
+        # doesn't affect std but keeps semantics readable.
+        closes = df["close"].astype(float).iloc[::-1].reset_index(drop=True)
+        log_ret = (closes / closes.shift(1)).map(
+            lambda x: 0.0 if x is None or x <= 0 else float(np.log(x)),
+        ).dropna()
+        if log_ret.empty:
+            return None
+        return float(log_ret.std(ddof=1) * (252.0 ** 0.5))
