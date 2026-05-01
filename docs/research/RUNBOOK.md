@@ -428,14 +428,29 @@ strategy to `configs/live_portfolio.yaml` with
 scaling zeroes out every intent the strategy emits. The strategy runs
 in production but emits no real-money trades.
 
-**Note on broker semantics (CL-920k):** the engine entrypoint
-`src/runtime/run_engine.py` currently uses an in-process
-`PaperBroker` (`initial_capital=100_000`, mid-price fills, no
-spread, no partial fills) for its `--practice` flag. There is NOT
-yet a path to OANDA's live-practice API even though `.env` contains
-`OANDA_API_KEY` + `OANDA_PRACTICE=true`. Realistic paper-trading
-with real spreads / fills requires implementing OANDA-practice mode
-— filed as CL-920k. The allocation=0 invariant holds regardless.
+**Broker modes (CL-920k):** the engine entrypoint accepts three
+broker selections via `--broker`:
+
+```bash
+python -m src.runtime.run_engine --broker paper           # default
+python -m src.runtime.run_engine --broker oanda-practice  # real OANDA practice
+python -m src.runtime.run_engine --broker oanda-live --confirm-live   # REAL MONEY
+```
+
+| Mode | What it does | Money at risk |
+|---|---|---|
+| `paper` (default) | In-process `PaperBroker`, $100k simulated capital, mid-price fills, no network | None — pure simulation |
+| `oanda-practice` | `OandaBroker` against `api-fxpractice.oanda.com`. Real spreads, real fills, practice account state survives engine restarts | None — practice account |
+| `oanda-live` | `OandaBroker` against `api-fxtrade.oanda.com`. Requires `--confirm-live` flag | **Real money** |
+
+`paper` is the default because it works without network or credentials.
+`oanda-practice` is what you want for realistic paper-trading: real
+broker semantics without real-money exposure. `oanda-live` is gated
+behind an explicit `--confirm-live` flag to prevent accidents.
+
+The allocation=0 invariant holds regardless of broker mode: a
+research-pipeline-promoted strategy still emits intents the
+coordinator scales to zero until you raise the allocation manually.
 
 **Promoting to real allocation is a separate manual step**: the
 operator edits `initial_weights[slug]` to a positive number in a

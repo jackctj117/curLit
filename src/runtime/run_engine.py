@@ -55,15 +55,36 @@ def load_config(path: Path) -> dict[str, Any]:
     return loaded if isinstance(loaded, dict) else {}
 
 
-def build_broker(practice: bool) -> Any:
-    if practice:
+# Three broker modes the engine entrypoint accepts (CL-920k):
+#   "paper"          — in-process PaperBroker, no network, $100k start
+#                       capital. Pure simulation; no real spreads.
+#   "oanda-practice" — OandaBroker against api-fxpractice.oanda.com.
+#                       Real OANDA practice account, real spreads,
+#                       real fills, but no real money. Practice
+#                       account state survives engine restarts.
+#   "oanda-live"     — OandaBroker against api-fxtrade.oanda.com.
+#                       REAL MONEY. Requires --confirm-live.
+BROKER_MODES = ("paper", "oanda-practice", "oanda-live")
+
+
+def build_broker(mode: str) -> Any:
+    if mode == "paper":
         return PaperBroker(initial_capital=100_000)
-    oanda_key = os.environ.get("OANDA_API_KEY", "")
-    oanda_id = os.environ.get("OANDA_ACCOUNT_ID", "")
-    if not oanda_key:
-        logger.error("OANDA_API_KEY not set — falling back to paper broker")
-        return PaperBroker(initial_capital=100_000)
-    return OandaBroker(oanda_key, oanda_id, practice=False)
+    if mode in ("oanda-practice", "oanda-live"):
+        oanda_key = os.environ.get("OANDA_API_KEY", "")
+        oanda_id = os.environ.get("OANDA_ACCOUNT_ID", "")
+        if not oanda_key or not oanda_id:
+            logger.error(
+                "OANDA_API_KEY/OANDA_ACCOUNT_ID not set — falling back to "
+                "in-process PaperBroker. Set both in .env to use OANDA.",
+            )
+            return PaperBroker(initial_capital=100_000)
+        return OandaBroker(
+            oanda_key, oanda_id,
+            practice=(mode == "oanda-practice"),
+        )
+    msg = f"unknown broker mode: {mode!r} (must be one of {BROKER_MODES})"
+    raise ValueError(msg)
 
 
 def _build_db_engine() -> Any:
@@ -324,12 +345,12 @@ def build_cold_start_reconciler(
     )
 
 
-async def run_engine(practice: bool) -> None:
+async def run_engine(broker_mode: str = "paper") -> None:
     log_dir = Path(os.environ.get("FX_LOG_DIR", "logs"))
     setup_logging("live_engine", log_dir)
 
     config = load_config(CONFIG_PATH)
-    broker = build_broker(practice)
+    broker = build_broker(broker_mode)
     journal = build_trade_journal()
     snapshot_store = build_feature_snapshot_store()
     blackout_evaluator = build_blackout_evaluator(config)
@@ -391,10 +412,45 @@ def main() -> None:
     from src.dotenv_bootstrap import load_project_env  # noqa: PLC0415
     load_project_env()
     parser = argparse.ArgumentParser(description="curLit live trading engine")
-    parser.add_argument("--practice", action="store_true", default=True)
-    parser.add_argument("--live", dest="practice", action="store_false")
+    parser.add_argument(
+        "--broker",
+        choices=BROKER_MODES,
+        default="paper",
+        help=(
+            "Broker selection (CL-920k). 'paper' = in-process PaperBroker "
+            "(default, no network). 'oanda-practice' = OANDA practice "
+            "API (real spreads, real fills, no real money). 'oanda-live' "
+            "= REAL MONEY — requires --confirm-live."
+        ),
+    )
+    parser.add_argument(
+        "--confirm-live", action="store_true",
+        help="Required when --broker=oanda-live (REAL MONEY guard).",
+    )
+    # Legacy flags — kept for backwards compatibility; map to --broker.
+    parser.add_argument(
+        "--practice", action="store_true",
+        help="Deprecated alias: --broker=paper.",
+    )
+    parser.add_argument(
+        "--live", action="store_true",
+        help="Deprecated alias: --broker=oanda-live (still requires --confirm-live).",
+    )
     args = parser.parse_args()
-    asyncio.run(run_engine(args.practice))
+
+    # Resolve legacy aliases.
+    mode = args.broker
+    if args.live:
+        mode = "oanda-live"
+    elif args.practice:
+        mode = "paper"
+
+    if mode == "oanda-live" and not args.confirm_live:
+        parser.error(
+            "--broker=oanda-live requires --confirm-live (REAL MONEY guard)",
+        )
+
+    asyncio.run(run_engine(mode))
 
 
 if __name__ == "__main__":
