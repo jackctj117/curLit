@@ -321,3 +321,52 @@ class TestRegister:
         assert "allocation = 0" in body
         assert "candidate report" in body.lower()
         assert "debate transcript" in body.lower()
+
+
+# ---------------------------------------------------------------------- #
+# CL-2uns — gh PR URL extraction (regex, not last-line)
+# ---------------------------------------------------------------------- #
+
+
+class TestPRUrlExtraction:
+    def test_extracts_canonical_url(self) -> None:
+        from src.research.promote import _extract_pr_url
+        out = "https://github.com/user/repo/pull/42\n"
+        assert _extract_pr_url(out, "x") == (
+            "https://github.com/user/repo/pull/42"
+        )
+
+    def test_finds_url_when_gh_emits_extra_lines(self) -> None:
+        # Real failure mode: gh emits a deprecation notice / login
+        # prompt AFTER the URL. The old "last line" parse breaks; the
+        # regex finds the URL anywhere.
+        from src.research.promote import _extract_pr_url
+        out = (
+            "https://github.com/user/repo/pull/42\n"
+            "warning: gh CLI version 2.x is deprecated; upgrade soon\n"
+        )
+        assert _extract_pr_url(out, "x") == (
+            "https://github.com/user/repo/pull/42"
+        )
+
+    def test_falls_back_to_last_line_when_no_url(self) -> None:
+        from src.research.promote import _extract_pr_url
+        out = "Created draft PR\nDone\n"
+        # No canonical URL → fallback to last non-empty line
+        assert _extract_pr_url(out, "x") == "Done"
+
+    def test_empty_stdout_returns_empty(self) -> None:
+        from src.research.promote import _extract_pr_url
+        assert _extract_pr_url("", "x") == ""
+        assert _extract_pr_url("   \n\n  ", "x") == ""
+
+    def test_picks_first_canonical_url_when_multiple(self) -> None:
+        from src.research.promote import _extract_pr_url
+        out = (
+            "Found related PR: https://github.com/user/repo/pull/40\n"
+            "https://github.com/user/repo/pull/42\n"
+        )
+        # Regex match returns the first URL found
+        assert _extract_pr_url(out, "x") == (
+            "https://github.com/user/repo/pull/40"
+        )

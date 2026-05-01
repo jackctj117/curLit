@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import ast
 import logging
+import re
 import shutil
 import subprocess
 from collections.abc import Callable
@@ -97,6 +98,35 @@ def _default_gh_runner(args: list[str]) -> str:
     return subprocess.check_output(
         ["gh", *args], stderr=subprocess.STDOUT, text=True,
     )
+
+
+# Match a GitHub PR URL anywhere in gh stdout (CL-2uns). The previous
+# parse used "last line" which broke if gh emitted deprecation notices
+# or login prompts after the URL. The canonical URL shape is the only
+# stable signal.
+_GH_PR_URL_PATTERN = re.compile(
+    r"https://github\.com/[^/\s]+/[^/\s]+/pull/\d+",
+)
+
+
+def _extract_pr_url(stdout: str, strategy_slug: str) -> str:
+    """Pull the GitHub PR URL out of gh's stdout. Falls back to last-
+    line if no canonical URL is found, with a warning — the caller
+    treats this as best-effort. Returns empty string when nothing is
+    parseable."""
+    match = _GH_PR_URL_PATTERN.search(stdout)
+    if match:
+        return match.group(0)
+    # Fallback: last non-empty line, in case gh's URL format ever shifts.
+    lines = [line.strip() for line in stdout.splitlines() if line.strip()]
+    if lines:
+        logger.warning(
+            "gh stdout for %s had no canonical PR URL; falling back to "
+            "last line: %r", strategy_slug, lines[-1][:120],
+        )
+        return lines[-1]
+    logger.warning("gh stdout for %s was empty; PR URL unknown", strategy_slug)
+    return ""
 
 
 # --------------------------------------------------------------------------- #
@@ -379,8 +409,7 @@ class PromoteRegistrar:
             "--body", body,
             "--head", branch_name,
         ])
-        # gh's last line is the PR URL.
-        return out.strip().splitlines()[-1].strip()
+        return _extract_pr_url(out, strategy_slug)
 
     @staticmethod
     def _compose_pr_body(

@@ -140,15 +140,32 @@ class _ClaudeDriver(Driver):
             {"role": m.role, "content": m.content}
             for m in messages if m.role in ("user", "assistant")
         ]
-        t0 = time.time()
-        resp = self._client.messages.create(
-            model=model,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            system=system_text if system_text else "",
-            messages=chat,
+        # Some Anthropic models (claude-opus-4-7 and reasoning variants)
+        # deprecate the temperature param — passing it returns a 400.
+        # Try with temperature first; on the specific deprecation
+        # error, retry without it (CL-xo0t). Other API errors propagate.
+        request_args: dict[str, Any] = {
+            "model": model,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "system": system_text if system_text else "",
+            "messages": chat,
             **kwargs,
-        )
+        }
+        t0 = time.time()
+        try:
+            resp = self._client.messages.create(**request_args)
+        except Exception as exc:  # anthropic.BadRequestError + base
+            msg = str(exc).lower()
+            if "temperature" in msg and "deprecated" in msg:
+                logger.info(
+                    "Claude model %s deprecated `temperature`; "
+                    "retrying without it (CL-xo0t)", model,
+                )
+                request_args.pop("temperature", None)
+                resp = self._client.messages.create(**request_args)
+            else:
+                raise
         elapsed = time.time() - t0
         # Anthropic returns a union of block types — only TextBlock has .text.
         # We only request plain-text generation here so the first block is
