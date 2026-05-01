@@ -256,15 +256,25 @@ class MyStrategy:
 - Single-asset time-series strategies (momentum, mean-reversion,
   regime-switching, vol-targeting).
 - Cross-symbol signal strategies (read DXY + rates; trade EURUSD).
+- **Prediction-market-feature strategies (CL-3t4j v2):** declare
+  ``symbols=['EURUSD', 'POLY:fed-cut-jun-2026']`` to read implied
+  probabilities alongside FX prices. The market list is operator-
+  curated in ``configs/polymarket_markets.yaml`` and seeded into
+  the ``prices`` table via ``python -m scripts.seed_polymarket_history``.
+  Strategies use POLY columns as feature inputs (e.g.
+  ``data['POLY:fed-cut-jun-2026'] > 0.70``); execution_symbol must
+  remain a real FX pair.
 
-**What the harness can't yet run** (filed as CL-40n2 v2, idea agent
-DECLINEs these at the brief stage):
+**What the harness can't yet run** (idea agent DECLINEs at brief stage):
 
 - Joint multi-asset positions — long top quintile / short bottom
   quintile across G10 carry, equal-risk allocation across many pairs,
-  hierarchical clustering selection.
+  hierarchical clustering selection. Tracked as CL-40n2 v2.
 - Anything needing OHLCV beyond close, vix, options IV, sentiment,
-  news embedding, or other alt-data.
+  news embedding, or other alt-data not in DataProvider.
+- Polymarket markets NOT in ``configs/polymarket_markets.yaml`` —
+  operator must add the market entry + run the seed script before
+  a strategy can use it.
 
 The full contract spec lives in
 `configs/research_prompts/implementer.md`.
@@ -550,6 +560,15 @@ atomic per phase).
     ~5k input tokens to fit Anthropic tier-1's 10k/min cap.
   - **`.env` auto-loader**: `src/dotenv_bootstrap.py` wired into
     every CLI entrypoint. No more `source .env` step.
+  - **Polymarket as strategy feature (CL-3t4j v2)**: new
+    ``src/data/polymarket.py:PolymarketHistoryIngester`` pulls
+    per-market probability history via Polymarket's CLOB
+    prices-history API and upserts to the existing ``prices``
+    table with synthetic ``POLY:<slug>`` symbols. Strategies
+    declare these symbols alongside FX pairs and use them as
+    feature inputs (probabilities in [0, 1]). Curated market list
+    at ``configs/polymarket_markets.yaml``; seed via
+    ``python -m scripts.seed_polymarket_history``.
   - **Bug fixes from real-network smokes**: Telegram parse_mode
     plain-text (was 400-magnet on slugs with underscores), bot-
     token scrubbing in error logs, httpx INFO suppression

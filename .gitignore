@@ -42,8 +42,11 @@ htmlcov/
 .DS_Store
 
 # Project data directories — runtime artifacts, never source.
-# Structure is created by the scripts that populate them.
-data/
+# Anchored with leading slash so this only matches the top-level
+# ``data/`` runtime tree, not ``src/data/`` which is data-ingester
+# source code (CL-3t4j surfaced this conflict — adding a new file
+# under src/data/ was blocked by the unanchored pattern).
+/data/
 
 # Models (artifacts)
 models/**/pytorch_model*.bin

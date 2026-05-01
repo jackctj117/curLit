@@ -1,0 +1,55 @@
+# Curated Polymarket markets ingested as DataProvider symbols (CL-3t4j v2).
+#
+# Each entry below becomes a row in the `prices` table with:
+#   symbol = "POLY:<slug>"  (capped at 64 chars)
+#   close  = implied probability in [0, 1]
+#
+# Strategies declare these symbols alongside FX pairs:
+#   class MyStrategy:
+#       symbols = ['EURUSD', 'POLY:fed-cut-jun-2026']
+#       execution_symbol = 'EURUSD'      # P&L on the pair, not the prediction market
+#
+# Operator workflow:
+#   1. Find the market on https://polymarket.com — the URL slug is what
+#      goes in `slug` here.
+#   2. Get the CLOB token_id from the market's API endpoint:
+#      https://clob.polymarket.com/markets/<condition_id>
+#      Each market has YES + NO tokens; we track the YES token's price.
+#   3. Add an entry below + run scripts/seed_polymarket_history.py.
+#
+# Curation rule: keep this list small. Daily pulls of ~10-20 high-volume
+# FX/macro-relevant markets is plenty. More than that and the daily
+# extract noise overwhelms the agents.
+
+markets:
+  # Federal Reserve rate decisions — FX-relevant, high-volume.
+  # Token IDs are placeholders; operator fills them in by querying
+  # the Gamma API for the actual condition_id once the markets are
+  # listed for the corresponding FOMC meeting.
+  - slug: fed-cut-jun-2026
+    token_id: PLACEHOLDER_FED_JUN_YES
+    description: "Will the Fed cut rates by 25bps at the June 2026 FOMC meeting?"
+    fx_relevance: high
+
+  - slug: fed-cut-sep-2026
+    token_id: PLACEHOLDER_FED_SEP_YES
+    description: "Will the Fed cut rates by 25bps at the September 2026 FOMC meeting?"
+    fx_relevance: high
+
+  # CPI surprise market — directly drives dollar moves on release.
+  - slug: cpi-above-3pct-may-2026
+    token_id: PLACEHOLDER_CPI_MAY_YES
+    description: "Will May 2026 US CPI YoY come in above 3.0%?"
+    fx_relevance: high
+
+  # ECB next move — drives EUR.
+  - slug: ecb-cut-by-end-q3-2026
+    token_id: PLACEHOLDER_ECB_Q3_YES
+    description: "Will the ECB cut its deposit rate at any meeting through end-Q3 2026?"
+    fx_relevance: high
+
+  # Recession indicator — broad macro signal.
+  - slug: us-recession-2026
+    token_id: PLACEHOLDER_RECESSION_YES
+    description: "Will the US enter recession (NBER definition) in 2026?"
+    fx_relevance: medium

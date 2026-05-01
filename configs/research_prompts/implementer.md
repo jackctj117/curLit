@@ -42,16 +42,27 @@ Required surface:
       * `id: str` — stable identifier matching the hypothesis slug.
       * `symbols: list[str]` — **class-level list of strings**, NOT a
          ``@property`` and NOT a method. The backtest harness reads it
-         off the class without instantiating. Each entry must be a
-         **full pair code** like ``"EURUSD"`` / ``"USDJPY"`` /
-         ``"AUDUSD"`` — not a single currency like ``"AUD"``. You can
-         declare multiple symbols and use them as cross-symbol signal
-         inputs; the strategy still trades **one** instrument (see
-         ``execution_symbol``).
+         off the class without instantiating. Each entry must be one
+         of:
+           - A **full pair code** like ``"EURUSD"`` / ``"USDJPY"`` /
+             ``"AUDUSD"`` — not a single currency like ``"AUD"``.
+           - A FRED-mappable symbol like ``"US_2Y"`` / ``"DE_10Y"``.
+           - A **prediction-market feature** like
+             ``"POLY:fed-cut-jun-2026"`` (CL-3t4j). The ``POLY:`` prefix
+             tells the harness this column carries an implied
+             probability in [0, 1], not a price. Strategies use these
+             as feature inputs (e.g. trigger rules off
+             ``data['POLY:fed-cut-jun-2026'] > 0.70``); they should
+             NOT be the ``execution_symbol``.
+         You can declare multiple symbols and use them as cross-
+         symbol signal inputs; the strategy still trades **one**
+         instrument (see ``execution_symbol``).
       * `execution_symbol: str` (optional, defaults to ``symbols[0]``)
-         — the pair whose price returns the harness uses for P&L. Use
-         this when your strategy reads multiple pairs to inform a
-         single-instrument trade (e.g. ``symbols=['DXY','EURUSD']``,
+         — the pair whose price returns the harness uses for P&L.
+         Must be a real tradeable instrument (an FX pair), NOT a
+         POLY: symbol. Use this when your strategy reads multiple
+         symbols to inform a single-instrument trade (e.g.
+         ``symbols=['DXY','EURUSD','POLY:fed-cut-jun-2026']``,
          ``execution_symbol='EURUSD'``).
       * `fit(train_data: pd.DataFrame) -> None` — fits parameters from
          in-sample data ONLY. No look-ahead. No fitting on test data.

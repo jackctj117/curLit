@@ -80,6 +80,29 @@ in [0.3, 1.0] OOS.
  path, or duplicate of an existing backlog hypothesis.)
 ```
 
+## Polymarket / prediction-market features (CL-3t4j)
+
+The harness's ``DataProvider.get_aligned_series`` accepts symbols of
+the form ``POLY:<slug>`` for prediction markets that have been
+ingested into the ``prices`` table. The list of currently-tracked
+markets lives in ``configs/polymarket_markets.yaml`` — operator-
+curated. If your hypothesis depends on a market NOT in that list,
+you must DECLINE with a "data source not yet ingested" reason; the
+operator will add it via that config + run
+``scripts/seed_polymarket_history.py``.
+
+Strategies use POLY symbols as **feature inputs**, not execution
+instruments. Example pattern:
+
+  ``symbols = ['EURUSD', 'POLY:fed-cut-jun-2026']``
+  ``execution_symbol = 'EURUSD'``
+  ``# in generate_signals: long EURUSD when POLY:fed-cut-jun-2026 > 0.70``
+
+This lets you propose hypotheses like "When market-implied Fed-cut
+probability rises above X, position for dollar weakness in EURUSD"
+— substantiable via the ingested probability time-series, not just
+a one-shot reading.
+
 ## What the backtest harness can actually run
 
 This is critical. The Implementer's strategy code runs through a
