@@ -20,7 +20,7 @@ def decrypt_vault(path: Path, key: bytes) -> dict:
     ct = bytes.fromhex(data["ciphertext"])
     tag = bytes.fromhex(data.get("tag", ""))
     try:
-        from wolfcrypt.ciphers import Aes, MODE_GCM
+        from wolfcrypt.ciphers import MODE_GCM, Aes
         aes = Aes(key, MODE_GCM, nonce)
         return json.loads(aes.decrypt(ct, tag))
     except ImportError:
@@ -32,7 +32,7 @@ def decrypt_vault(path: Path, key: bytes) -> dict:
 def encrypt_vault(data: bytes, key: bytes) -> dict:
     nonce = secrets.token_bytes(12)
     try:
-        from wolfcrypt.ciphers import Aes, MODE_GCM
+        from wolfcrypt.ciphers import MODE_GCM, Aes
         aes = Aes(key, MODE_GCM, nonce)
         ct, tag = aes.encrypt(data)
     except ImportError:

@@ -9,7 +9,6 @@ from datetime import datetime
 from pathlib import Path
 
 import httpx
-from bs4 import BeautifulSoup
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 logger = logging.getLogger(__name__)

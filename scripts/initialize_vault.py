@@ -6,7 +6,7 @@ import json
 import os
 import secrets
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 
@@ -41,7 +41,7 @@ def derive_key(passphrase: str, salt: bytes, iterations: int = 600000) -> bytes:
 def encrypt(data: bytes, key: bytes) -> dict:
     nonce = secrets.token_bytes(12)
     try:
-        from wolfcrypt.ciphers import Aes, MODE_GCM
+        from wolfcrypt.ciphers import MODE_GCM, Aes
         aes = Aes(key, MODE_GCM, nonce)
         ct, tag = aes.encrypt(data)
         return {"v": 1, "nonce": nonce.hex(), "ct": ct.hex(), "tag": tag.hex()}
@@ -81,13 +81,13 @@ def main() -> None:
     checksum = hashlib.sha256(entropy).hexdigest()[:8]
     print("\n" + "=" * 56)
     print("FX SYSTEM -- RECOVERY DOCUMENT -- DO NOT LOSE")
-    print(f"Generated: {datetime.now(timezone.utc).isoformat()[:10]}")
+    print(f"Generated: {datetime.now(UTC).isoformat()[:10]}")
     print("=" * 56)
     print(f"\nMASTER PASSPHRASE:\n  {passphrase}")
     print("\nRECOVERY SEED (24 words):")
     for i, w in enumerate(seed_words, 1):
         if i % 4 == 1:
-            print(f"\n  ", end="")
+            print("\n  ", end="")
         print(f"{i:2d}. {w:<12}", end="")
     print(f"\n\nVERIFICATION CHECKSUM: {checksum}")
     print("\n" + "=" * 56)
@@ -97,7 +97,7 @@ def main() -> None:
     input("\nPress ENTER after printing...")
     os.system("clear" if os.name == "posix" else "cls")
     print(f"Vault initialized: {vault_path}")
-    print(f"Add credentials: python scripts/vault_add.py add")
+    print("Add credentials: python scripts/vault_add.py add")
 
 
 if __name__ == "__main__":

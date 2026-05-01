@@ -1,11 +1,10 @@
 """Strategy 1: Rate differential mean reversion on EUR/USD."""
 
 import logging
-from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta, timezone
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
-import numpy as np
 import pandas as pd
 
 from src.execution.oms import OrderIntent
@@ -127,7 +126,7 @@ class RateDiffMRStrategy:
         return self.config.signal_interval_seconds
 
     def _refit_if_stale(self) -> None:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         if self._last_fit and (now - self._last_fit).days < 7:
             return
         if self.data is None:
@@ -179,7 +178,7 @@ class RateDiffMRStrategy:
         ols = sm.OLS(y, X).fit()
         self._model = {"alpha": float(ols.params.iloc[0]), "beta": float(ols.params.iloc[1]),
                         "r_squared": float(ols.rsquared), "residual_std": float(ols.resid.std())}
-        self._last_fit = datetime.now(timezone.utc)
+        self._last_fit = datetime.now(UTC)
 
     def generate_signals(self, data: pd.DataFrame) -> pd.Series:
         if self._model is None:
@@ -243,7 +242,7 @@ class RateDiffMRStrategy:
             try:
                 spread_data = self.data.get_aligned_series(
                     ["US_10Y", "DE_10Y"],
-                    datetime.now(timezone.utc) - timedelta(days=5), datetime.now(timezone.utc),
+                    datetime.now(UTC) - timedelta(days=5), datetime.now(UTC),
                 )
                 if spread_data is not None and len(spread_data) > 0:
                     current_spread = float(spread_data["US_10Y"].iloc[-1] - spread_data["DE_10Y"].iloc[-1])
@@ -281,7 +280,7 @@ class RateDiffMRStrategy:
                     should_exit = True
                     exit_reason = "stop_loss"
             if not should_exit and self._entry_ts and \
-               (datetime.now(timezone.utc) - self._entry_ts).days > self.config.max_holding_days:
+               (datetime.now(UTC) - self._entry_ts).days > self.config.max_holding_days:
                 should_exit = True
                 exit_reason = "timeout"
             if should_exit:
@@ -323,7 +322,7 @@ class RateDiffMRStrategy:
             size = direction * notional / current_price
             self._position_size = size
             self._entry_z = z
-            self._entry_ts = datetime.now(timezone.utc)
+            self._entry_ts = datetime.now(UTC)
             logger.info("Entry: z=%.2f dir=%d size=%.0f", z, direction, size)
             signals_generated.labels(strategy_id=self.id, action="entry").inc()
             meta = self._emit_snapshot({

@@ -25,9 +25,8 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import os
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -96,7 +95,7 @@ def _build_report(
 ) -> dict[str, Any]:
     """Compose the JSON report."""
     return {
-        "ran_at": datetime.now(timezone.utc).isoformat(),
+        "ran_at": datetime.now(UTC).isoformat(),
         "data_window": {
             "start": start.date().isoformat(),
             "end": end.date().isoformat(),
@@ -158,7 +157,7 @@ def main() -> int:
         description="Rate-diff MR walk-forward backtest on real data.",
     )
     parser.add_argument("--start", type=str, default="2015-01-01")
-    parser.add_argument("--end", type=str, default=datetime.now(timezone.utc).strftime("%Y-%m-%d"))
+    parser.add_argument("--end", type=str, default=datetime.now(UTC).strftime("%Y-%m-%d"))
     parser.add_argument(
         "--out", type=Path,
         default=Path("reports/backtest_rate_diff.json"),

@@ -4,7 +4,7 @@ import json
 import logging
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +33,7 @@ def check_github(repo: str) -> dict | None:
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO)
-    results = {"timestamp": datetime.now(timezone.utc).isoformat(), "pypi": [], "models": []}
+    results = {"timestamp": datetime.now(UTC).isoformat(), "pypi": [], "models": []}
 
     results["pypi"] = check_pypi()
 

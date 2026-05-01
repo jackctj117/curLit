@@ -168,10 +168,7 @@ def merge_into_config(
     Returns (new_doc, stats) where stats has counts:
       preserved, replaced, added, placeholders_remaining.
     """
-    if existing_path.exists():
-        existing_doc = yaml.safe_load(existing_path.read_text()) or {}
-    else:
-        existing_doc = {}
+    existing_doc = yaml.safe_load(existing_path.read_text()) or {} if existing_path.exists() else {}
     existing_markets = (
         existing_doc.get("markets", []) if isinstance(existing_doc, dict)
         else []

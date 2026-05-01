@@ -1,7 +1,7 @@
 """Paper broker — simulated execution with cost model, full P&L tracking."""
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from .broker import Account, Broker, Order, OrderStatus, Position
 
@@ -40,7 +40,7 @@ class PaperBroker(Broker):
         self._equity -= cost
         order.status = OrderStatus.FILLED
         self._trade_log.append({
-            "ts": datetime.now(timezone.utc),
+            "ts": datetime.now(UTC),
             "symbol": order.symbol,
             "side": order.side,
             "quantity": order.quantity,
@@ -72,7 +72,7 @@ class PaperBroker(Broker):
         import asyncio
         while True:
             for sym in symbols:
-                yield {"symbol": sym, "bid": 1.1000, "ask": 1.1002, "ts": datetime.now(timezone.utc).isoformat()}
+                yield {"symbol": sym, "bid": 1.1000, "ask": 1.1002, "ts": datetime.now(UTC).isoformat()}
             await asyncio.sleep(1.0)
 
     # -- Test helpers --------------------------------------------------

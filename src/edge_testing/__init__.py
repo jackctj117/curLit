@@ -22,11 +22,6 @@ from src.edge_testing.live_tracker import (
     Recommendation,
     Severity,
 )
-from src.edge_testing.paper_live_divergence import (
-    DivergenceReport,
-    MatchedPair,
-    PaperLiveDivergence,
-)
 from src.edge_testing.multiple_testing import (
     MultipleTestingCorrection,
     MultipleTestingReport,
@@ -39,6 +34,11 @@ from src.edge_testing.null_hypothesis import (
     NullHypothesisFramework,
     NullHypothesisReport,
     NullResult,
+)
+from src.edge_testing.paper_live_divergence import (
+    DivergenceReport,
+    MatchedPair,
+    PaperLiveDivergence,
 )
 
 __all__ = [

@@ -14,13 +14,13 @@ class PositionSizer:
         capital: float, risk_pct: float, stop_distance: float, price: float,
     ) -> float:
         """Size a position risking fixed % of capital on a stop-loss.
-        
+
         Args:
             capital: total account equity in currency units
             risk_pct: fraction of capital to risk (e.g. 0.01 = 1%)
             stop_distance: absolute distance from entry to stop in price units
             price: current entry price
-            
+
         Returns:
             number of units to trade
         """
@@ -40,10 +40,10 @@ class PositionSizer:
         capital: float, target_vol: float, realized_vol: float, price: float,
     ) -> float:
         """Size a position to contribute target_vol annualized vol to portfolio.
-        
+
         Uses the relationship: position_vol = notional_vol / equity
         where notional_vol = realized_vol (annualized) of the pair.
-        
+
         target_vol = 0.10 (10% annualized) is typical for a single strategy leg
         per Architecture doc Section 5.1. Max 20% per position per RiskManager.
         """
@@ -92,7 +92,7 @@ class PositionSizer:
     @staticmethod
     def risk_parity_weights(cov_matrix: pd.DataFrame) -> pd.Series:
         """Compute equal risk contribution weights via SLSQP optimization.
-        
+
         Each asset contributes 1/n of total portfolio risk.
         Adapted from Maillard, Roncalli, Teiletche (2010) 'On the Property
         of Equally Weighted Risk Contribution Portfolios'.

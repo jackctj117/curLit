@@ -41,10 +41,7 @@ def stationary_bootstrap(
         i = np.random.randint(n)
         while len(indices) < n:
             indices.append(i)
-            if np.random.random() < p:
-                i = np.random.randint(n)
-            else:
-                i = (i + 1) % n
+            i = np.random.randint(n) if np.random.random() < p else (i + 1) % n
         sample = values[np.array(indices[:n])]
         if np.std(sample) > 0:
             results[b] = np.mean(sample) / np.std(sample) * np.sqrt(periods_per_year)

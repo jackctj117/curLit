@@ -24,7 +24,7 @@ import argparse
 import json
 import logging
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -247,7 +247,7 @@ def main() -> int:
     )
     parser.add_argument("--start", type=str, default="2015-01-01")
     parser.add_argument(
-        "--end", type=str, default=datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+        "--end", type=str, default=datetime.now(UTC).strftime("%Y-%m-%d"),
     )
     parser.add_argument(
         "--holding-days", type=int, default=10,
@@ -353,7 +353,7 @@ def main() -> int:
     }
 
     report = {
-        "ran_at": datetime.now(timezone.utc).isoformat(),
+        "ran_at": datetime.now(UTC).isoformat(),
         "data_window": {
             "start": start.date().isoformat(),
             "end": end.date().isoformat(),

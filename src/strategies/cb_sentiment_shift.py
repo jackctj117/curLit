@@ -2,7 +2,7 @@
 
 import logging
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import numpy as np
@@ -114,7 +114,7 @@ class CBSentimentShiftStrategy:
     def _refresh_thresholds(self) -> None:
         if self.nlp is None:
             return
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         if self._last_refresh and (now - self._last_refresh).days < 7:
             return
         try:
@@ -145,7 +145,7 @@ class CBSentimentShiftStrategy:
     def _check_new_events(self) -> list[dict]:
         if self.nlp is None:
             return []
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         try:
             events = self.nlp.get_recent_diff_events(
                 since=now - timedelta(hours=2),
@@ -200,7 +200,7 @@ class CBSentimentShiftStrategy:
                 elif pos.trailing_stop and current >= pos.trailing_stop:
                     exit_reason = "trailing_stop"
 
-            days_held = (datetime.now(timezone.utc) - pos.entry_ts).days
+            days_held = (datetime.now(UTC) - pos.entry_ts).days
             if days_held >= self.config.holding_days:
                 exit_reason = "time_exit"
 
@@ -249,7 +249,7 @@ class CBSentimentShiftStrategy:
 
             logger.info("Entry %s: %s shift=%.3f size=%.0f", pair, signal["cb"], signal["shift"], size)
             self.open_positions[pair] = OpenPosition(
-                symbol=pair, entry_ts=datetime.now(timezone.utc), entry_price=entry_price,
+                symbol=pair, entry_ts=datetime.now(UTC), entry_price=entry_price,
                 quantity=size, direction=signal["direction"], stop_loss=stop_price,
                 source_cb=signal["cb"],
             )

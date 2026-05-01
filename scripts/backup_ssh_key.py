@@ -13,8 +13,8 @@ def derive_ssh_key_from_mnemonic(mnemonic: str, purpose: str = "ssh-fx-server") 
     seed = hashlib.pbkdf2_hmac("sha512", f"{prefix}{mnemonic}".encode(), b"mnemonic", 2048, 64)
     key_bytes = hmac.new(seed, purpose.encode(), hashlib.sha256).digest()[:32]
     try:
-        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
         from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
         private_key = Ed25519PrivateKey.from_private_bytes(key_bytes)
         priv = private_key.private_bytes(
             encoding=serialization.Encoding.PEM,

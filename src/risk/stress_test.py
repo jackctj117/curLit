@@ -2,7 +2,6 @@
 
 from datetime import date
 
-
 SCENARIOS = {
     "gfc_2008": (date(2008, 9, 1), date(2008, 12, 31)),
     "eurocrisis_2011": (date(2011, 7, 1), date(2011, 12, 31)),
@@ -18,7 +17,6 @@ SCENARIOS = {
 
 def run_stress_test(strategies, data_provider) -> dict:
     import pandas as pd
-    import numpy as np
     results = {}
     for name, (start, end) in SCENARIOS.items():
         try:

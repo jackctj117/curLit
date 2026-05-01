@@ -1,8 +1,8 @@
 """Vault client — Unix socket client for credential retrieval."""
 
 import json
-import socket
 import logging
+import socket
 
 logger = logging.getLogger(__name__)
 
@@ -25,8 +25,10 @@ class VaultClient:
             if not resp.get("ok"):
                 raise KeyError(f"Credential '{name}': {resp.get('error', 'unknown')}")
             return resp["value"]
-        except FileNotFoundError:
-            raise KeyError(f"Vault agent not running (socket {self.socket_path} not found)")
+        except FileNotFoundError as exc:
+            raise KeyError(
+                f"Vault agent not running (socket {self.socket_path} not found)",
+            ) from exc
         finally:
             sock.close()
 

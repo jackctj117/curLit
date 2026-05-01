@@ -4,7 +4,7 @@ import logging
 from datetime import datetime, timedelta
 
 import pandas as pd
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 
 logger = logging.getLogger(__name__)
 

@@ -1,11 +1,10 @@
 """OANDA broker — REST + streaming API v20."""
 
-import asyncio
 import logging
 
 import httpx
 
-from .broker import Account, Broker, Order, OrderStatus, OrderType, Position
+from .broker import Account, Broker, Order, OrderStatus, Position
 
 logger = logging.getLogger(__name__)
 
@@ -87,12 +86,14 @@ class OandaBroker(Broker):
 
     async def stream_prices(self, symbols: list[str]):
         oanda_syms = ",".join(self._to_oanda(s) for s in symbols)
-        async with httpx.AsyncClient(base_url=self.STREAM_PRACTICE if "practice" in str(self.client.base_url) else self.STREAM_LIVE,
-                                      headers=self.headers, timeout=None) as client:
-            async with client.stream(
+        base_url = self.STREAM_PRACTICE if "practice" in str(self.client.base_url) else self.STREAM_LIVE
+        async with (
+            httpx.AsyncClient(base_url=base_url, headers=self.headers, timeout=None) as client,
+            client.stream(
                 "GET", f"/v3/accounts/{self.account_id}/pricing/stream",
                 params={"instruments": oanda_syms},
-            ) as resp:
+            ) as resp,
+        ):
                 async for line in resp.aiter_lines():
                     import json
                     if not line.strip():

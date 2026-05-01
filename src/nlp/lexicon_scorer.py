@@ -3,7 +3,6 @@
 import re
 from dataclasses import dataclass
 
-
 HAWKISH_TERMS: set[str] = {
     "additional firming", "further tightening", "more restrictive",
     "higher for longer", "committed to returning", "combat inflation",

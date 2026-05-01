@@ -3,7 +3,6 @@
 import logging
 from dataclasses import dataclass
 
-import numpy as np
 import pandas as pd
 
 logger = logging.getLogger(__name__)
@@ -50,7 +49,7 @@ class EventBacktester:
             exit_reason = "time_exit"
 
             for ts in exit_window.index[1:]:
-                current = costs_prices.iloc[ts, pair] if hasattr(exit_window, "iloc") else exit_window.loc[ts, pair]
+                current = exit_window.loc[ts, pair]
                 pnl_pct = (current - entry_price) / entry_price * direction
 
                 if pnl_pct >= trailing_trigger_pct:

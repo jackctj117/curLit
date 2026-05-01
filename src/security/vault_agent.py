@@ -5,7 +5,6 @@ import getpass
 import hashlib
 import json
 import os
-import sys
 from pathlib import Path
 
 SOCKET_PATH = "/run/fx-vault-agent.sock"
@@ -20,7 +19,7 @@ def decrypt_vault(path: Path, key: bytes) -> dict:
     nonce = bytes.fromhex(data["nonce"])
     ct = bytes.fromhex(data["ciphertext"])
     try:
-        from wolfcrypt.ciphers import Aes, MODE_GCM
+        from wolfcrypt.ciphers import MODE_GCM, Aes
         aes = Aes(key, MODE_GCM, nonce)
         return json.loads(aes.decrypt(ct, bytes.fromhex(data.get("tag", ""))))
     except ImportError:

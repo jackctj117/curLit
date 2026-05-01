@@ -70,7 +70,7 @@ def _upsert_sentences(
     On conflict (doc_id, sentence_idx) we DO NOTHING — re-runs are no-ops.
     """
     rows: list[dict[str, Any]] = []
-    for idx, (sent, score) in enumerate(zip(processed.sentences, scores)):
+    for idx, (sent, score) in enumerate(zip(processed.sentences, scores, strict=False)):
         rows.append({
             "ts": processed.date,
             "doc_id": processed.doc_id,
@@ -211,7 +211,7 @@ def main() -> int:
         # 4. Diff each consecutive pair (sorted by date) → cb_diff_events.
         processed_by_doc.sort(key=lambda p: p.date)
         n_events = 0
-        for prev, curr in zip(processed_by_doc, processed_by_doc[1:]):
+        for prev, curr in zip(processed_by_doc, processed_by_doc[1:], strict=False):
             try:
                 diff = differ.diff(curr.sentences, prev.sentences)
             except Exception:

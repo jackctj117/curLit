@@ -28,8 +28,8 @@ import os
 import sys
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
 # Make `src.*` imports work when running this script directly.
@@ -46,7 +46,7 @@ logger = logging.getLogger(__name__)
 # Default date range: 11 years of history is enough for walk-forward
 # validation (multiple full rate cycles) without ballooning the FRED
 # API budget. Override via --start/--end.
-DEFAULT_START = datetime(2015, 1, 1, tzinfo=timezone.utc)
+DEFAULT_START = datetime(2015, 1, 1, tzinfo=UTC)
 
 
 def _build_db_url() -> str:
@@ -149,7 +149,7 @@ def main() -> int:
         help=f"Start date YYYY-MM-DD (default {DEFAULT_START.date()})",
     )
     parser.add_argument(
-        "--end", type=str, default=datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+        "--end", type=str, default=datetime.now(UTC).strftime("%Y-%m-%d"),
         help="End date YYYY-MM-DD (default: today)",
     )
     parser.add_argument(
@@ -168,8 +168,8 @@ def main() -> int:
         format="%(asctime)s %(levelname)-7s %(name)s | %(message)s",
     )
 
-    start = datetime.strptime(args.start, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-    end = datetime.strptime(args.end, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    start = datetime.strptime(args.start, "%Y-%m-%d").replace(tzinfo=UTC)
+    end = datetime.strptime(args.end, "%Y-%m-%d").replace(tzinfo=UTC)
     if end <= start:
         logger.error("end (%s) must be after start (%s)", end, start)
         return 2

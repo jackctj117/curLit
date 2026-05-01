@@ -3,9 +3,8 @@
 import logging
 from pathlib import Path
 
-import numpy as np
 import torch
-from transformers import AutoTokenizer, AutoModelForSequenceClassification
+from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +40,7 @@ class CBSentimentModel:
             logits = self.model(**enc).logits
             probs = torch.softmax(logits / self.temperature, dim=-1).cpu().numpy()
             preds = probs.argmax(axis=-1)
-            for p, pred in zip(probs, preds):
+            for p, pred in zip(probs, preds, strict=False):
                 results.append({
                     "prediction": LABELS[int(pred)],
                     "confidence": float(p[pred]),
@@ -56,7 +55,7 @@ class CBSentimentModel:
         scores = [r["hawkish_score"] for r in results]
         confs = [r["confidence"] for r in results]
         total_weight = sum(confs) or 1
-        weighted_score = sum(s * c for s, c in zip(scores, confs)) / total_weight
+        weighted_score = sum(s * c for s, c in zip(scores, confs, strict=False)) / total_weight
 
         counts = {"dovish": 0, "neutral": 0, "hawkish": 0}
         for r in results:

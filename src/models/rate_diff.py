@@ -1,12 +1,10 @@
 """Rate differential model — rolling OLS regression between FX spot and yield spreads."""
 
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 
-import numpy as np
 import pandas as pd
 import statsmodels.api as sm
-from sqlalchemy import create_engine, text
 
 logger = logging.getLogger(__name__)
 

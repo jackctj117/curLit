@@ -1,0 +1,375 @@
+{
+  "schema_version": 1,
+  "strategy_slug": "measuring-strategy-decay-risk-minimum-regime-performance-and-the",
+  "generated_at": "2026-04-30T16:34:15+00:00",
+  "code_path": "src/strategies/_experimental/measuring-strategy-decay-risk-minimum-regime-performance-and-the.py",
+  "hypothesis_path": "docs/research/hypotheses/measuring-strategy-decay-risk-minimum-regime-performance-and-the.md",
+  "prediction": {
+    "predicted_sharpe_range": "[0.4, 0.8]",
+    "predicted_hit_rate_range": "[0.52, 0.60]",
+    "expected_n_trades_per_year": "40",
+    "regime_dependence": "\"trend-following\"",
+    "abandon_threshold": "OOS Sharpe < 0 over any rolling 6-month (\u2248126 trading day) window; additionally, if the regime filter suppresses > 60% of bars OOS (indicating the filter has overfit to in-sample regimes), the strategy should be considered dead."
+  },
+  "data_sources_consumed": [
+    "close` column of the single-asset DataFrame passed by the walk-forward harness, corresponding to `symbols[0]` = `\"EURUSD\"` daily close prices.",
+    "No external series, DB tables, or API calls. All regime features (rolling volatility, trend strength) are derived entirely from the price series."
+  ],
+  "backtest_metrics": {
+    "oos_metrics": {
+      "sharpe": 0.3609583851348018,
+      "n_trades": 204,
+      "hit_rate": 0.43275862068965515,
+      "max_drawdown": -0.0970860741902343,
+      "profit_factor": 1.0894252952745482,
+      "sortino": 0.3920172367208922,
+      "total_return": 0.07242109175705425
+    },
+    "sharpe_ci_95": {
+      "low": -0.6754108492963778,
+      "high": 1.3684510401526142
+    },
+    "is_oos_sharpe_ratio": 992.7546107543884,
+    "edge_concentration": 0.16320238378010213,
+    "regime_diversified": true,
+    "decay_severity": "NONE",
+    "fold_metrics": [
+      {
+        "fold_id": 0,
+        "train_start": "2018-01-01 00:00:00",
+        "train_end": "2020-11-24 00:00:00",
+        "test_start": "2020-11-25 00:00:00",
+        "test_end": "2021-02-19 00:00:00",
+        "train_sharpe": 438.6358881987021,
+        "test_sharpe": 0.758818882955958
+      },
+      {
+        "fold_id": 1,
+        "train_start": "2018-03-29 00:00:00",
+        "train_end": "2021-02-19 00:00:00",
+        "test_start": "2021-02-22 00:00:00",
+        "test_end": "2021-05-19 00:00:00",
+        "train_sharpe": 466.4033042876813,
+        "test_sharpe": 1.5921164725478982
+      },
+      {
+        "fold_id": 2,
+        "train_start": "2018-06-26 00:00:00",
+        "train_end": "2021-05-19 00:00:00",
+        "test_start": "2021-05-20 00:00:00",
+        "test_end": "2021-08-16 00:00:00",
+        "train_sharpe": 470.3370568999065,
+        "test_sharpe": -0.5868276839153114
+      },
+      {
+        "fold_id": 3,
+        "train_start": "2018-09-21 00:00:00",
+        "train_end": "2021-08-16 00:00:00",
+        "test_start": "2021-08-17 00:00:00",
+        "test_end": "2021-11-11 00:00:00",
+        "train_sharpe": 443.1790043919431,
+        "test_sharpe": 1.666164996587731
+      },
+      {
+        "fold_id": 4,
+        "train_start": "2018-12-19 00:00:00",
+        "train_end": "2021-11-11 00:00:00",
+        "test_start": "2021-11-12 00:00:00",
+        "test_end": "2022-02-08 00:00:00",
+        "train_sharpe": 440.2332110216935,
+        "test_sharpe": -3.6368261332814327
+      },
+      {
+        "fold_id": 5,
+        "train_start": "2019-03-18 00:00:00",
+        "train_end": "2022-02-08 00:00:00",
+        "test_start": "2022-02-09 00:00:00",
+        "test_end": "2022-05-06 00:00:00",
+        "train_sharpe": 438.3182871552933,
+        "test_sharpe": 1.30916972296584
+      },
+      {
+        "fold_id": 6,
+        "train_start": "2019-06-14 00:00:00",
+        "train_end": "2022-05-06 00:00:00",
+        "test_start": "2022-05-09 00:00:00",
+        "test_end": "2022-08-03 00:00:00",
+        "train_sharpe": 414.50444581083576,
+        "test_sharpe": 0.27185175621191415
+      },
+      {
+        "fold_id": 7,
+        "train_start": "2019-09-11 00:00:00",
+        "train_end": "2022-08-03 00:00:00",
+        "test_start": "2022-08-04 00:00:00",
+        "test_end": "2022-10-31 00:00:00",
+        "train_sharpe": 345.70886963376637,
+        "test_sharpe": -4.705973311830045
+      },
+      {
+        "fold_id": 8,
+        "train_start": "2019-12-09 00:00:00",
+        "train_end": "2022-10-31 00:00:00",
+        "test_start": "2022-11-01 00:00:00",
+        "test_end": "2023-01-26 00:00:00",
+        "train_sharpe": 272.9688096542848,
+        "test_sharpe": 4.625064988348713
+      },
+      {
+        "fold_id": 9,
+        "train_start": "2020-03-05 00:00:00",
+        "train_end": "2023-01-26 00:00:00",
+        "test_start": "2023-01-27 00:00:00",
+        "test_end": "2023-04-25 00:00:00",
+        "train_sharpe": 256.6172909987651,
+        "test_sharpe": 0.47873662942177436
+      },
+      {
+        "fold_id": 10,
+        "train_start": "2020-06-02 00:00:00",
+        "train_end": "2023-04-25 00:00:00",
+        "test_start": "2023-04-26 00:00:00",
+        "test_end": "2023-07-21 00:00:00",
+        "train_sharpe": 253.64521634518604,
+        "test_sharpe": 1.0918717169718353
+      },
+      {
+        "fold_id": 11,
+        "train_start": "2020-08-28 00:00:00",
+        "train_end": "2023-07-21 00:00:00",
+        "test_start": "2023-07-24 00:00:00",
+        "test_end": "2023-10-18 00:00:00",
+        "train_sharpe": 253.01423779633691,
+        "test_sharpe": 3.4617364590188235
+      },
+      {
+        "fold_id": 12,
+        "train_start": "2020-11-25 00:00:00",
+        "train_end": "2023-10-18 00:00:00",
+        "test_start": "2023-10-19 00:00:00",
+        "test_end": "2024-01-15 00:00:00",
+        "train_sharpe": 255.99137557050443,
+        "test_sharpe": 0.6345443579705548
+      },
+      {
+        "fold_id": 13,
+        "train_start": "2021-02-22 00:00:00",
+        "train_end": "2024-01-15 00:00:00",
+        "test_start": "2024-01-16 00:00:00",
+        "test_end": "2024-04-11 00:00:00",
+        "train_sharpe": 281.46514292017434,
+        "test_sharpe": 1.5499522668926298
+      },
+      {
+        "fold_id": 14,
+        "train_start": "2021-05-20 00:00:00",
+        "train_end": "2024-04-11 00:00:00",
+        "test_start": "2024-04-12 00:00:00",
+        "test_end": "2024-07-09 00:00:00",
+        "train_sharpe": 317.361706709725,
+        "test_sharpe": -1.9473062804415506
+      },
+      {
+        "fold_id": 15,
+        "train_start": "2021-08-17 00:00:00",
+        "train_end": "2024-07-09 00:00:00",
+        "test_start": "2024-07-10 00:00:00",
+        "test_end": "2024-10-04 00:00:00",
+        "train_sharpe": 385.1057707337253,
+        "test_sharpe": 0.5182379426906358
+      }
+    ],
+    "_metrics_provenance": {
+      "oos_metrics": "computed from PerformanceAnalytics on walk-forward OOS returns",
+      "sharpe_ci_95": "stationary bootstrap, n=2000",
+      "is_oos_sharpe_ratio": "mean(train_sharpe) / oos_sharpe across folds",
+      "edge_concentration": "PROXY: max|fold_sharpe|/sum|fold_sharpe| across folds, not feature-attribution G5",
+      "regime_diversified": "PROXY: \u22652 folds positive AND not all folds positive \u2014 not regime-decomposed G6",
+      "decay_severity": "PROXY: oldest-third vs newest-third fold-Sharpe comparison \u2014 not full decay test"
+    }
+  },
+  "provenance": {
+    "agent_name": "implementer",
+    "model": "claude-sonnet-4-6",
+    "provider": "claude",
+    "input_tokens": 3012,
+    "output_tokens": 4065,
+    "usd_cost": 0.070011,
+    "elapsed_sec": 65.55341410636902
+  },
+  "gates": {
+    "syntax": "passed",
+    "backtest": "ran"
+  },
+  "oos_metrics": {
+    "sharpe": 0.3609583851348018,
+    "n_trades": 204,
+    "hit_rate": 0.43275862068965515,
+    "max_drawdown": -0.0970860741902343,
+    "profit_factor": 1.0894252952745482,
+    "sortino": 0.3920172367208922,
+    "total_return": 0.07242109175705425
+  },
+  "sharpe_ci_95": {
+    "low": -0.6754108492963778,
+    "high": 1.3684510401526142
+  },
+  "is_oos_sharpe_ratio": 992.7546107543884,
+  "edge_concentration": 0.16320238378010213,
+  "regime_diversified": true,
+  "decay_severity": "NONE",
+  "fold_metrics": [
+    {
+      "fold_id": 0,
+      "train_start": "2018-01-01 00:00:00",
+      "train_end": "2020-11-24 00:00:00",
+      "test_start": "2020-11-25 00:00:00",
+      "test_end": "2021-02-19 00:00:00",
+      "train_sharpe": 438.6358881987021,
+      "test_sharpe": 0.758818882955958
+    },
+    {
+      "fold_id": 1,
+      "train_start": "2018-03-29 00:00:00",
+      "train_end": "2021-02-19 00:00:00",
+      "test_start": "2021-02-22 00:00:00",
+      "test_end": "2021-05-19 00:00:00",
+      "train_sharpe": 466.4033042876813,
+      "test_sharpe": 1.5921164725478982
+    },
+    {
+      "fold_id": 2,
+      "train_start": "2018-06-26 00:00:00",
+      "train_end": "2021-05-19 00:00:00",
+      "test_start": "2021-05-20 00:00:00",
+      "test_end": "2021-08-16 00:00:00",
+      "train_sharpe": 470.3370568999065,
+      "test_sharpe": -0.5868276839153114
+    },
+    {
+      "fold_id": 3,
+      "train_start": "2018-09-21 00:00:00",
+      "train_end": "2021-08-16 00:00:00",
+      "test_start": "2021-08-17 00:00:00",
+      "test_end": "2021-11-11 00:00:00",
+      "train_sharpe": 443.1790043919431,
+      "test_sharpe": 1.666164996587731
+    },
+    {
+      "fold_id": 4,
+      "train_start": "2018-12-19 00:00:00",
+      "train_end": "2021-11-11 00:00:00",
+      "test_start": "2021-11-12 00:00:00",
+      "test_end": "2022-02-08 00:00:00",
+      "train_sharpe": 440.2332110216935,
+      "test_sharpe": -3.6368261332814327
+    },
+    {
+      "fold_id": 5,
+      "train_start": "2019-03-18 00:00:00",
+      "train_end": "2022-02-08 00:00:00",
+      "test_start": "2022-02-09 00:00:00",
+      "test_end": "2022-05-06 00:00:00",
+      "train_sharpe": 438.3182871552933,
+      "test_sharpe": 1.30916972296584
+    },
+    {
+      "fold_id": 6,
+      "train_start": "2019-06-14 00:00:00",
+      "train_end": "2022-05-06 00:00:00",
+      "test_start": "2022-05-09 00:00:00",
+      "test_end": "2022-08-03 00:00:00",
+      "train_sharpe": 414.50444581083576,
+      "test_sharpe": 0.27185175621191415
+    },
+    {
+      "fold_id": 7,
+      "train_start": "2019-09-11 00:00:00",
+      "train_end": "2022-08-03 00:00:00",
+      "test_start": "2022-08-04 00:00:00",
+      "test_end": "2022-10-31 00:00:00",
+      "train_sharpe": 345.70886963376637,
+      "test_sharpe": -4.705973311830045
+    },
+    {
+      "fold_id": 8,
+      "train_start": "2019-12-09 00:00:00",
+      "train_end": "2022-10-31 00:00:00",
+      "test_start": "2022-11-01 00:00:00",
+      "test_end": "2023-01-26 00:00:00",
+      "train_sharpe": 272.9688096542848,
+      "test_sharpe": 4.625064988348713
+    },
+    {
+      "fold_id": 9,
+      "train_start": "2020-03-05 00:00:00",
+      "train_end": "2023-01-26 00:00:00",
+      "test_start": "2023-01-27 00:00:00",
+      "test_end": "2023-04-25 00:00:00",
+      "train_sharpe": 256.6172909987651,
+      "test_sharpe": 0.47873662942177436
+    },
+    {
+      "fold_id": 10,
+      "train_start": "2020-06-02 00:00:00",
+      "train_end": "2023-04-25 00:00:00",
+      "test_start": "2023-04-26 00:00:00",
+      "test_end": "2023-07-21 00:00:00",
+      "train_sharpe": 253.64521634518604,
+      "test_sharpe": 1.0918717169718353
+    },
+    {
+      "fold_id": 11,
+      "train_start": "2020-08-28 00:00:00",
+      "train_end": "2023-07-21 00:00:00",
+      "test_start": "2023-07-24 00:00:00",
+      "test_end": "2023-10-18 00:00:00",
+      "train_sharpe": 253.01423779633691,
+      "test_sharpe": 3.4617364590188235
+    },
+    {
+      "fold_id": 12,
+      "train_start": "2020-11-25 00:00:00",
+      "train_end": "2023-10-18 00:00:00",
+      "test_start": "2023-10-19 00:00:00",
+      "test_end": "2024-01-15 00:00:00",
+      "train_sharpe": 255.99137557050443,
+      "test_sharpe": 0.6345443579705548
+    },
+    {
+      "fold_id": 13,
+      "train_start": "2021-02-22 00:00:00",
+      "train_end": "2024-01-15 00:00:00",
+      "test_start": "2024-01-16 00:00:00",
+      "test_end": "2024-04-11 00:00:00",
+      "train_sharpe": 281.46514292017434,
+      "test_sharpe": 1.5499522668926298
+    },
+    {
+      "fold_id": 14,
+      "train_start": "2021-05-20 00:00:00",
+      "train_end": "2024-04-11 00:00:00",
+      "test_start": "2024-04-12 00:00:00",
+      "test_end": "2024-07-09 00:00:00",
+      "train_sharpe": 317.361706709725,
+      "test_sharpe": -1.9473062804415506
+    },
+    {
+      "fold_id": 15,
+      "train_start": "2021-08-17 00:00:00",
+      "train_end": "2024-07-09 00:00:00",
+      "test_start": "2024-07-10 00:00:00",
+      "test_end": "2024-10-04 00:00:00",
+      "train_sharpe": 385.1057707337253,
+      "test_sharpe": 0.5182379426906358
+    }
+  ],
+  "_metrics_provenance": {
+    "oos_metrics": "computed from PerformanceAnalytics on walk-forward OOS returns",
+    "sharpe_ci_95": "stationary bootstrap, n=2000",
+    "is_oos_sharpe_ratio": "mean(train_sharpe) / oos_sharpe across folds",
+    "edge_concentration": "PROXY: max|fold_sharpe|/sum|fold_sharpe| across folds, not feature-attribution G5",
+    "regime_diversified": "PROXY: \u22652 folds positive AND not all folds positive \u2014 not regime-decomposed G6",
+    "decay_severity": "PROXY: oldest-third vs newest-third fold-Sharpe comparison \u2014 not full decay test"
+  }
+}

@@ -3,8 +3,12 @@
 import logging
 
 from src.monitoring.metrics import (
-    model_refit_duration, model_r_squared, model_residual_std,
-    model_last_refit_timestamp, correlation_regime, strategy_pair_correlation,
+    correlation_regime,
+    model_last_refit_timestamp,
+    model_r_squared,
+    model_refit_duration,
+    model_residual_std,
+    strategy_pair_correlation,
 )
 
 logger = logging.getLogger(__name__)

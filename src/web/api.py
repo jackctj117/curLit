@@ -1,8 +1,9 @@
 """FastAPI backend — REST API wired to live engine state."""
 
-from fastapi import FastAPI, HTTPException, Depends
-from pydantic import BaseModel
 import os
+
+from fastapi import Depends, FastAPI, HTTPException
+from pydantic import BaseModel
 
 app = FastAPI(title="curLit Web API", version="0.1.0")
 

@@ -3,9 +3,9 @@ Prometheus metrics definitions for curLit.
 Centralised gauge, counter, and histogram registry with utility decorators.
 """
 
+from collections.abc import Callable
 from functools import wraps
 from time import time
-from typing import Callable
 
 from prometheus_client import (
     Counter,

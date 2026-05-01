@@ -48,7 +48,6 @@ class TextPreprocessor:
         return sentences, paragraphs
 
     def process(self, doc: "Document") -> ProcessedDocument:  # type: ignore[name-defined] # noqa: F821
-        from src.nlp.scrapers.base import Document  # noqa: F811
         cleaned = self.clean(doc.raw_text)
         sentences, paragraphs = self.segment(cleaned)
         return ProcessedDocument(

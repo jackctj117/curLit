@@ -132,6 +132,15 @@ line-ending = "auto"
 [tool.ruff.lint.isort]
 known-first-party = ["src"]
 
+[tool.ruff.lint.per-file-ignores]
+# Math / ML convention: capital X is the design matrix, T is term tenors,
+# S is the rate matrix. Renaming to lowercase actively hurts readability
+# in code that mirrors academic notation.
+"src/rates/ois_curve.py" = ["N806"]
+"src/strategies/rate_diff_mean_reversion.py" = ["N806"]
+"src/strategies/_experimental/*" = ["N806"]
+"src/models/rate_diff.py" = ["N806"]
+
 [tool.mypy]
 python_version = "3.11"
 strict = true

@@ -4,14 +4,14 @@
 import logging
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 logger = logging.getLogger(__name__)
 
 
 def create_update_branch(pkg: str, version: str) -> None:
     """Create a branch and run test suite for an updated package."""
-    branch = f"update/{pkg}-{version}-{datetime.now(timezone.utc).strftime('%Y%m%d')}"
+    branch = f"update/{pkg}-{version}-{datetime.now(UTC).strftime('%Y%m%d')}"
     subprocess.run(["git", "checkout", "-b", branch], check=True)
     logger.info("Created branch %s", branch)
 

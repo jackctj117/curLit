@@ -2,10 +2,9 @@
 """Soak test monitor — capture engine state every 10 minutes for stability analysis."""
 
 import json
-import time
 import subprocess
-import sys
-from datetime import datetime, timezone
+import time
+from datetime import UTC, datetime
 from pathlib import Path
 
 LOG_DIR = Path(__file__).parent.parent / "logs"
@@ -17,7 +16,7 @@ DURATION_HOURS = 24
 def capture_state() -> dict:
     """Capture relevant system state for soak test analysis."""
     state = {
-        "ts": datetime.now(timezone.utc).isoformat(),
+        "ts": datetime.now(UTC).isoformat(),
         "engine_pid": _find_engine_pid(),
     }
     try:
@@ -78,13 +77,13 @@ def _find_engine_pid() -> int | None:
 
 def main() -> None:
     print(f"Soak test starting — {DURATION_HOURS}h duration, {CHECK_INTERVAL}s intervals")
-    start = datetime.now(timezone.utc)
+    start = datetime.now(UTC)
     checks = 0
 
-    while (datetime.now(timezone.utc) - start).total_seconds() < DURATION_HOURS * 3600:
+    while (datetime.now(UTC) - start).total_seconds() < DURATION_HOURS * 3600:
         state = capture_state()
         checks += 1
-        elapsed = (datetime.now(timezone.utc) - start).total_seconds() / 3600
+        elapsed = (datetime.now(UTC) - start).total_seconds() / 3600
         mem = state.get("memory_mb", "?")
         sig = state.get("signals", "?")
         err = state.get("errors", "?")

@@ -42,7 +42,7 @@ class FedReactionFunction:
             self.w_core_pce, self.w_unemployment, self.w_fci = params
             pred = np.array([
                 self.implied_rate(pce, u, fci)
-                for pce, u, fci in zip(df["core_pce"], df["unemployment"], df["fci"])
+                for pce, u, fci in zip(df["core_pce"], df["unemployment"], df["fci"], strict=False)
             ])
             return float(((pred - actual) ** 2).sum() / len(actual))
 

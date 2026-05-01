@@ -34,7 +34,7 @@ import argparse
 import json
 import logging
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -324,7 +324,7 @@ def main() -> int:
         description="Carry+vol-filter walk-forward backtest on real data.",
     )
     parser.add_argument("--start", type=str, default="2016-06-01")
-    parser.add_argument("--end", type=str, default=datetime.now(timezone.utc).strftime("%Y-%m-%d"))
+    parser.add_argument("--end", type=str, default=datetime.now(UTC).strftime("%Y-%m-%d"))
     parser.add_argument("--top-k", type=int, default=3)
     parser.add_argument("--bottom-k", type=int, default=3)
     parser.add_argument(
@@ -390,7 +390,7 @@ def main() -> int:
     )
 
     report = {
-        "ran_at": datetime.now(timezone.utc).isoformat(),
+        "ran_at": datetime.now(UTC).isoformat(),
         "data_window": {
             "start": start.date().isoformat(),
             "end": end.date().isoformat(),

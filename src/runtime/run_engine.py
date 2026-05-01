@@ -2,6 +2,7 @@
 
 import argparse
 import asyncio
+import contextlib
 import logging
 import os
 import signal
@@ -397,12 +398,10 @@ async def run_engine(broker_mode: str = "paper") -> None:
         loop.create_task(_shutdown())
 
     for sig in (signal.SIGINT, signal.SIGTERM):
-        try:
+        with contextlib.suppress(NotImplementedError):
             loop.add_signal_handler(sig, _handler, sig)
-        except NotImplementedError:
-            pass
 
-    logger.info("Starting curLit live engine (practice=%s)", practice)
+    logger.info("Starting curLit live engine (broker=%s)", broker_mode)
     await engine.run()
 
 

@@ -1,5 +1,6 @@
 """BoE, BoJ, BoC scrapers — central bank document parsing."""
 
+import contextlib
 import re
 from datetime import datetime
 
@@ -103,10 +104,8 @@ class BoCStatementScraper(CBScraper):
                 d = datetime.utcnow()
                 if date_el:
                     date_str = date_el.get("datetime", "") or date_el.get_text(strip=True)
-                    try:
+                    with contextlib.suppress(ValueError):
                         d = datetime.fromisoformat(date_str[:10])
-                    except ValueError:
-                        pass
                 if d < since:
                     continue
                 docs.append({"url": href if href.startswith("http") else f"https://www.bankofcanada.ca{href}",

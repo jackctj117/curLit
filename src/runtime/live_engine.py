@@ -98,6 +98,7 @@ class LiveEngine:
 
     async def _web_server_task(self) -> None:
         import uvicorn
+
         from src.web.api import app, set_runtime
         set_runtime(self.broker, self.oms, self.strategies)
         config = uvicorn.Config(app, host="127.0.0.1", port=8200, log_level="warning")
@@ -208,10 +209,11 @@ class LiveEngine:
     def _in_trading_window(ts: datetime) -> bool:
         wd = ts.weekday()
         h = ts.hour
-        if wd == 5: return False
-        if wd == 6 and h < 22: return False
-        if wd == 4 and h >= 22: return False
-        return True
+        if wd == 5:
+            return False
+        if wd == 6 and h < 22:
+            return False
+        return not (wd == 4 and h >= 22)
 
     async def graceful_shutdown(self, timeout: int = 30) -> None:
         """Halt new trades, drain pending OMS work, then cancel all tasks.
