@@ -8,7 +8,7 @@ Algorithmic FX trading system: pulls live ticker values for currencies, cryptocu
 
 ## Features
 
-- **Autonomous research pipeline**: paper ingest → idea agent → operator GATE 1 → implementer → Bull/Bear debate → verdict engine → operator GATE 2 → paper-shadow registration (allocation=0). Pluggable LLM providers, cron-friendly state, full transcripts. See [`docs/research/RUNBOOK.md`](docs/research/RUNBOOK.md).
+- **Autonomous research pipeline**: multi-source ingest (arXiv preprints + quant substacks + Polymarket prediction markets) → idea agent → operator GATE 1 → implementer → walk-forward backtest → Bull/Bear debate → verdict engine → operator GATE 2 → paper-shadow registration (allocation=0). Pluggable LLM providers (Claude + DeepSeek + Grok), daily cron, full transcripts, Pushover/Telegram alerts. See [`docs/research/RUNBOOK.md`](docs/research/RUNBOOK.md).
 - **Multi-source data ingestion**: FRED (US macro, yields), ECB/BoJ/BoE, Yahoo Finance (FX spot, commodities, indices), CFTC COT (positioning), CME SOFR futures
 - **Rate differential models**: Rolling OLS regression on yield spreads for FX pair fair-value estimation
 - **NLP pipeline**: Fine-tuned FinBERT on central bank statements — hawkish/dovish sentiment scoring and diff analysis (Fed, ECB, BoE, BoJ, BoC)
