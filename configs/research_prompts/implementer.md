@@ -67,8 +67,20 @@ Required surface:
       * `fit(train_data: pd.DataFrame) -> None` — fits parameters from
          in-sample data ONLY. No look-ahead. No fitting on test data.
          The DataFrame contains a ``close`` column at minimum.
-      * `generate_signals(data: pd.DataFrame) -> pd.Series` — returns
-         a numeric signal series indexed by the data's index.
+      * `generate_signals(data: pd.DataFrame) -> pd.Series | pd.DataFrame`
+         — return shape depends on strategy type (CL-40n2 v2):
+         **Single-asset** (most strategies): return a numeric Series
+         indexed by ``data.index``. Position is interpreted as the
+         weight on ``execution_symbol``. Walk-forward computes P&L
+         from ``execution_symbol``'s price returns.
+         **Joint multi-asset / cross-sectional** (long-short, equal-
+         risk allocation across multiple pairs, hierarchical
+         clustering): return a DataFrame with columns equal to the
+         pairs you trade and values being per-bar position weights.
+         Walk-forward computes per-symbol returns from ``data``'s
+         same-named columns and aggregates to a portfolio return.
+         Each column's name must match a tradeable pair in
+         ``symbols`` (NOT ``POLY:*`` features).
 
 Hard constraints:
   * **Wide DataFrame with one column per declared symbol** (CL-40n2).

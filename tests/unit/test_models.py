@@ -93,3 +93,66 @@ class TestWalkForward:
             assert -5.0 < ts < 5.0, (
                 f"train_sharpe={ts:.1f} out of sane range — CL-u9rn regressed"
             )
+
+    def test_multi_asset_strategy_dataframe_signals(self) -> None:
+        """CL-40n2 v2: strategies that return DataFrame signals (one
+        column per tradeable pair) should aggregate to portfolio P&L.
+        Verifies the wide DataFrame contract works alongside the
+        existing Series contract."""
+        import numpy as np
+        import pandas as pd
+
+        from src.backtest.cost_model import CostModel
+        from src.backtest.walkforward import (
+            WalkForwardConfig,
+            WalkForwardRunner,
+        )
+
+        # Two-pair synthetic data — wide DataFrame with both columns
+        rng = np.random.default_rng(7)
+        n = 1500
+        data = pd.DataFrame({
+            "EURUSD": 1.1 * np.exp(
+                np.cumsum(rng.normal(0.0001, 0.005, n)),
+            ),
+            "USDJPY": 110 * np.exp(
+                np.cumsum(rng.normal(0.0001, 0.006, n)),
+            ),
+            "close": 1.1 * np.exp(
+                np.cumsum(rng.normal(0.0001, 0.005, n)),
+            ),
+        })
+        data.index = pd.date_range("2018-01-01", periods=n, freq="B")
+
+        class TwoPairStrategy:
+            symbols = ["EURUSD", "USDJPY"]
+
+            def fit(self, train: pd.DataFrame) -> None:
+                self._eu_mean = float(train["EURUSD"].mean())
+                self._uj_mean = float(train["USDJPY"].mean())
+
+            def generate_signals(self, test: pd.DataFrame) -> pd.DataFrame:
+                # Long when below mean, short when above; both pairs
+                eu_pos = (
+                    (test["EURUSD"] < self._eu_mean).astype(float) - 0.5
+                )
+                uj_pos = (
+                    (test["USDJPY"] < self._uj_mean).astype(float) - 0.5
+                )
+                return pd.DataFrame({
+                    "EURUSD": eu_pos,
+                    "USDJPY": uj_pos,
+                })
+
+        runner = WalkForwardRunner(WalkForwardConfig(min_history=756))
+        cost = CostModel()
+        result = runner.run(data, lambda: TwoPairStrategy(), cost)
+
+        # Portfolio metrics produced — non-empty trades + finite returns
+        assert len(result.fold_metrics) > 0
+        assert not result.oos_returns.empty
+        # Returns aren't all zero (the strategy actually traded)
+        assert result.oos_returns.abs().sum() > 0
+        # Sharpes in a sane range — CL-u9rn fix carries over
+        for ts in result.fold_metrics["train_sharpe"]:
+            assert -5.0 < ts < 5.0

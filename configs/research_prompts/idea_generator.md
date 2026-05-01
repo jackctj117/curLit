@@ -112,12 +112,16 @@ walk-forward backtest harness with a constrained shape:
     The strategy declares ``symbols=['EURUSD','USDJPY','DXY',...]``
     and the harness passes a DataFrame with each as a column (close
     prices). Cross-symbol signals are supported.
-  * **Single execution instrument.** P&L is computed on
-    ``execution_symbol`` (defaults to ``symbols[0]``). The strategy
-    can READ multiple symbols but TRADES one. This means:
-      * "Long DXY when EURUSD breaks below SMA" — supported.
-      * "Long top quintile / short bottom quintile of G10 carry" —
-        NOT supported; needs portfolio-of-positions output.
+  * **Two output modes (CL-40n2 v2):**
+      * **Single execution instrument** — ``generate_signals`` returns
+        a ``pd.Series``; P&L is computed on ``execution_symbol``
+        (defaults to ``symbols[0]``). Use for "long DXY when EURUSD
+        breaks below SMA" — read multiple, trade one.
+      * **Joint multi-asset** — ``generate_signals`` returns a
+        ``pd.DataFrame`` with columns per tradeable pair; portfolio
+        P&L is the sum-product of per-pair positions × per-pair
+        returns. Use for "long top quintile / short bottom quintile
+        of G10 carry" — read many, trade many.
   * **No OHLCV beyond close**. No volume, no high, no low, no open.
   * **No alternative-data columns**. No vix, no forward rates as
     their own series, no sentiment, no news, no IV surface.
@@ -128,8 +132,11 @@ If the paper's thesis fundamentally requires:
 
   * **Joint multi-asset positions** (long-short cross-sectional
     portfolios, equal-risk allocation across many pairs, hierarchical
-    clustering selection) — DECLINE. Single execution_symbol can't
-    represent this.
+    clustering selection) — **OK** (CL-40n2 v2). The implementer
+    declares ``execution_symbols`` listing the tradeable pairs, and
+    ``generate_signals`` returns a ``pd.DataFrame`` with one column
+    per pair holding position weights. Walk-forward aggregates to
+    portfolio P&L. Pure-FX cross-sectional research is supported.
   * **Volume / OHLC / microstructure features** (limit-order book,
     bid-ask spread series) — DECLINE.
   * **Alt-data not in close prices** (sentiment, options IV, forward

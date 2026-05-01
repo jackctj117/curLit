@@ -254,27 +254,33 @@ class MyStrategy:
 **What the harness can run:**
 
 - Single-asset time-series strategies (momentum, mean-reversion,
-  regime-switching, vol-targeting).
+  regime-switching, vol-targeting). `generate_signals` returns
+  `pd.Series`, position interpreted as weight on `execution_symbol`.
 - Cross-symbol signal strategies (read DXY + rates; trade EURUSD).
+- **Joint multi-asset / cross-sectional strategies (CL-40n2 v2):**
+  `generate_signals` returns a `pd.DataFrame` with one column per
+  tradeable pair holding position weights; walk-forward computes
+  per-symbol returns and aggregates to portfolio P&L. Use for
+  long-short cross-sectional, equal-risk allocation across pairs,
+  hierarchical clustering selection.
 - **Prediction-market-feature strategies (CL-3t4j v2):** declare
   ``symbols=['EURUSD', 'POLY:fed-cut-jun-2026']`` to read implied
   probabilities alongside FX prices. The market list is operator-
   curated in ``configs/polymarket_markets.yaml`` and seeded into
   the ``prices`` table via ``python -m scripts.seed_polymarket_history``.
-  Strategies use POLY columns as feature inputs (e.g.
-  ``data['POLY:fed-cut-jun-2026'] > 0.70``); execution_symbol must
-  remain a real FX pair.
+  POLY columns are read-only feature inputs; can be combined with
+  either Series or DataFrame signal output.
 
 **What the harness can't yet run** (idea agent DECLINEs at brief stage):
 
-- Joint multi-asset positions — long top quintile / short bottom
-  quintile across G10 carry, equal-risk allocation across many pairs,
-  hierarchical clustering selection. Tracked as CL-40n2 v2.
 - Anything needing OHLCV beyond close, vix, options IV, sentiment,
   news embedding, or other alt-data not in DataProvider.
 - Polymarket markets NOT in ``configs/polymarket_markets.yaml`` —
   operator must add the market entry + run the seed script before
   a strategy can use it.
+- Continuous rebalancing semantics with realistic per-pair costs —
+  the v2 portfolio P&L uses one cost_per_turn for all pairs; a v3
+  refinement could route per-pair via cost_model.get_cost_per_turn(symbol).
 
 The full contract spec lives in
 `configs/research_prompts/implementer.md`.

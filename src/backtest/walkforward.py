@@ -44,7 +44,7 @@ class WalkForwardRunner:
     ) -> WalkForwardResult:
         cfg = self.config
         folds: list[dict[str, Any]] = []
-        oos_signals_all: list[pd.Series] = []
+        oos_signals_all: list[pd.Series | pd.DataFrame] = []
         trades_all: list[pd.DataFrame] = []
 
         start = cfg.min_history
@@ -61,14 +61,15 @@ class WalkForwardRunner:
             signals = strategy.generate_signals(test)
             oos_signals_all.append(signals)
 
-            df = pd.DataFrame(index=signals.index)
-            df["signal"] = signals
-            df["position"] = signals.shift(1).fillna(0)
-            df["return"] = data.loc[df.index, "close"].pct_change().fillna(0) if "close" in data.columns else pd.Series(0, index=df.index)
-            df["strategy_return"] = df["position"] * df["return"]
-            df["position_change"] = df["position"].diff().abs().fillna(0)
-            df["cost"] = df["position_change"] * cost_model.cost_per_turn
-            df["net_return"] = df["strategy_return"] - df["cost"]
+            # CL-40n2 v2: signals can be either a single Series (single-
+            # asset strategy) OR a DataFrame with one column per symbol
+            # (joint multi-asset / cross-sectional). The trade-DataFrame
+            # builder below handles both cases — _trades_for_signals
+            # returns the same shape per fold so the OOS aggregation
+            # stays uniform.
+            df = self._trades_for_signals(
+                signals=signals, data=data, cost_model=cost_model,
+            )
             trades_all.append(df)
 
             # In-sample Sharpe must use STRATEGY RETURNS, not raw close
@@ -98,6 +99,112 @@ class WalkForwardRunner:
         )
 
     @staticmethod
+    def _trades_for_signals(
+        signals: pd.Series | pd.DataFrame,
+        data: pd.DataFrame,
+        cost_model: Any,
+    ) -> pd.DataFrame:
+        """Build the per-fold trades DataFrame from a strategy's signal
+        output. Two shapes accepted (CL-40n2 v2):
+
+          * Series: single-asset strategy. Use ``data['close']`` for
+            return computation (the existing v1 path). Output frame
+            has columns: signal, position, return, strategy_return,
+            position_change, cost, net_return.
+          * DataFrame: joint multi-asset. Each column is one symbol's
+            position weight. Returns are computed per column from the
+            corresponding column in ``data``; portfolio
+            ``strategy_return`` is the sum-product across symbols.
+            Cost is summed across per-symbol position changes. Output
+            frame has the same column names as the Series case so
+            downstream aggregation (oos_returns, fold_metrics) is
+            uniform.
+        """
+        if isinstance(signals, pd.DataFrame):
+            return WalkForwardRunner._trades_multi_asset(
+                signals=signals, data=data, cost_model=cost_model,
+            )
+        # Single-asset (Series) path — preserves the v1 behavior.
+        df = pd.DataFrame(index=signals.index)
+        df["signal"] = signals
+        df["position"] = signals.shift(1).fillna(0)
+        df["return"] = (
+            data.loc[df.index, "close"].pct_change().fillna(0)
+            if "close" in data.columns
+            else pd.Series(0, index=df.index)
+        )
+        df["strategy_return"] = df["position"] * df["return"]
+        df["position_change"] = df["position"].diff().abs().fillna(0)
+        df["cost"] = df["position_change"] * cost_model.cost_per_turn
+        df["net_return"] = df["strategy_return"] - df["cost"]
+        return df
+
+    @staticmethod
+    def _trades_multi_asset(
+        signals: pd.DataFrame,
+        data: pd.DataFrame,
+        cost_model: Any,
+    ) -> pd.DataFrame:
+        """Build the trades frame for a multi-asset strategy. Each
+        column of ``signals`` is one symbol's position weight; we
+        compute per-symbol returns from ``data``'s same-named columns
+        and aggregate to a portfolio return.
+
+        Cost: summed per-symbol position-change × cost_per_turn. This
+        is conservative — assumes each pair has the same cost. A
+        future refinement could route per-pair costs via
+        ``cost_model.get_cost_per_turn(symbol)`` if it exists.
+        """
+        # Cap to the symbols actually in the data (drop POLY: features
+        # and any unrecognized columns from the position frame; they
+        # can't carry P&L).
+        tradeable = [c for c in signals.columns if c in data.columns]
+        if not tradeable:
+            # No tradeable columns — return an empty-shaped trades frame
+            # with the expected columns so downstream concat works.
+            return pd.DataFrame(
+                {
+                    "signal": pd.Series(0.0, index=signals.index),
+                    "position": pd.Series(0.0, index=signals.index),
+                    "return": pd.Series(0.0, index=signals.index),
+                    "strategy_return": pd.Series(0.0, index=signals.index),
+                    "position_change": pd.Series(0.0, index=signals.index),
+                    "cost": pd.Series(0.0, index=signals.index),
+                    "net_return": pd.Series(0.0, index=signals.index),
+                },
+            )
+
+        # Build per-symbol position + return frames aligned to the
+        # signal index.
+        positions = signals[tradeable].shift(1).fillna(0)
+        prices = data.loc[positions.index, tradeable]
+        returns = prices.pct_change().fillna(0)
+
+        # Per-symbol P&L contributions
+        per_symbol_pnl = positions * returns
+        per_symbol_change = positions.diff().abs().fillna(0)
+        per_symbol_cost = per_symbol_change * cost_model.cost_per_turn
+
+        # Aggregate to portfolio
+        portfolio_return = per_symbol_pnl.sum(axis=1)
+        portfolio_change = per_symbol_change.sum(axis=1)
+        portfolio_cost = per_symbol_cost.sum(axis=1)
+
+        df = pd.DataFrame(index=positions.index)
+        # "signal" carries the average raw signal across symbols so
+        # the existing trades.position_change.astype(bool).sum()
+        # n_trades-counter still works (any non-zero position move
+        # counts as activity in some symbol).
+        df["signal"] = signals[tradeable].mean(axis=1)
+        df["position"] = positions.mean(axis=1)
+        df["return"] = returns.mean(axis=1)
+        df["strategy_return"] = portfolio_return
+        df["position_change"] = portfolio_change
+        df["cost"] = portfolio_cost
+        df["net_return"] = portfolio_return - portfolio_cost
+        return df
+
+    @staticmethod
     def _sharpe(returns: pd.Series, periods: int = 252) -> float:
         if len(returns) < 2 or returns.std() == 0:
             return 0.0
@@ -112,19 +219,20 @@ class WalkForwardRunner:
         """Compute in-sample Sharpe via an inner fit/test split (CL-u9rn).
         Splits ``train`` 80/20 — fit on the first 80%, generate signals
         on the last 20% (still in-sample), compute net strategy returns
-        on that slice, return Sharpe. Mirrors the OOS calculation so the
-        is_oos_sharpe_ratio metric is comparable.
+        on that slice, return Sharpe.
 
-        Falls back to 0.0 when the inner split is too short or when the
-        strategy can't fit / produces no signals — in those cases the
-        rule A.7 (is/oos ratio ≤ 2.5) ends up well-behaved by default."""
+        Handles both Series (single-asset) and DataFrame (multi-asset,
+        CL-40n2 v2) signal shapes by reusing ``_trades_for_signals``.
+        Falls back to 0.0 when the inner split is too short, the
+        strategy errors, or produces empty signals — keeps rule A.7
+        well-behaved by default."""
         n = len(train)
         if n < 50:
             return 0.0
         cut = int(n * 0.8)
         inner_train = train.iloc[:cut]
         inner_test = train.iloc[cut:]
-        if "close" not in train.columns or len(inner_test) < 5:
+        if len(inner_test) < 5:
             return 0.0
         try:
             inner_strategy = strategy_factory()
@@ -134,11 +242,10 @@ class WalkForwardRunner:
             return 0.0
         if inner_signals.empty:
             return 0.0
-        positions = inner_signals.shift(1).fillna(0)
-        returns = train.loc[positions.index, "close"].pct_change().fillna(0)
-        strategy_returns = positions * returns
-        position_change = positions.diff().abs().fillna(0)
-        net_returns = strategy_returns - (
-            position_change * cost_model.cost_per_turn
+        # Reuse the same trades-builder the OOS path uses — handles
+        # both Series (single-asset) and DataFrame (multi-asset)
+        # signal shapes uniformly.
+        df = WalkForwardRunner._trades_for_signals(
+            signals=inner_signals, data=train, cost_model=cost_model,
         )
-        return WalkForwardRunner._sharpe(net_returns)
+        return WalkForwardRunner._sharpe(df["net_return"])
