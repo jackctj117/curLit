@@ -7,6 +7,9 @@
 # ingest._FETCHER_REGISTRY. Tracked as separate beads under CL-h986.
 
 feeds:
+  # ============================================================== #
+  # Academic preprints (arXiv) — Atom 1.0
+  # ============================================================== #
   arxiv_qfin_pm:
     adapter: arxiv
     # arXiv API: portfolio-management category. Atom 1.0 response.
@@ -20,3 +23,64 @@ feeds:
     query_url: |
       http://export.arxiv.org/api/query?search_query=cat:q-fin.TR&max_results=25&sortBy=submittedDate&sortOrder=descending
     source_label: arXiv q-fin.TR
+
+  # ============================================================== #
+  # Quant / macro substacks + blogs (RSS 2.0)
+  # ============================================================== #
+  # Curation principle: small, specialized, signal-dense. Idea agent
+  # will DECLINE most posts (they're commentary, not falsifiable
+  # theses) — that's correct. The 1-in-50 quant blog post that's a
+  # genuine FX-applicable insight is what we're after.
+  alpha_architect:
+    adapter: rss
+    # Quant-research blog from Alpha Architect — published-paper
+    # summaries with practical applicability slants
+    query_url: https://alphaarchitect.com/feed/
+    source_label: Alpha Architect
+
+  newfound_research:
+    adapter: rss
+    # Flirting with Models — Corey Hoffstein's quant research blog
+    # (regime / trend / portfolio construction)
+    query_url: https://blog.thinknewfound.com/feed/
+    source_label: Newfound Research
+
+  doomberg:
+    adapter: rss
+    # Macro/energy/commodity contrarian takes; signal-dense substack
+    query_url: https://newsletter.doomberg.com/feed
+    source_label: Doomberg
+
+  the_diff:
+    adapter: rss
+    # Byrne Hobart's substack — capital-markets and technology essays;
+    # frequent FX/macro relevance
+    query_url: https://www.thediff.co/feed
+    source_label: The Diff
+
+  concoda:
+    adapter: rss
+    # Conor Sen Mac Eochaidh's macro/funding-markets substack
+    query_url: https://concoda.substack.com/feed
+    source_label: Concoda
+
+  macro_hive:
+    adapter: rss
+    # Bilal Hafeez's macro research feed — institutional-quality FX
+    # and rates commentary
+    query_url: https://macrohive.com/feed/
+    source_label: Macro Hive
+
+  # ============================================================== #
+  # Prediction markets — Polymarket Gamma API
+  # ============================================================== #
+  # Filtered to FX/macro keywords (fed/cpi/election/dollar/etc.) at
+  # fetch time so we don't burn extractor budget on sports/crypto
+  # markets that don't move FX. v1 surfaces market-implied
+  # probabilities as "extracts" the agents read; v2 (filed) would
+  # ingest the price time-series into DataProvider so strategies can
+  # use them as features.
+  polymarket_macro:
+    adapter: polymarket
+    query_url: https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=200
+    source_label: Polymarket (FX/macro)

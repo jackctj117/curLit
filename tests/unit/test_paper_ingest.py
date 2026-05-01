@@ -232,7 +232,18 @@ class TestLoadFeedConfigs:
         # Guard the actual configs/paper_streams.yaml against drift.
         feeds = load_feed_configs("configs/paper_streams.yaml")
         assert len(feeds) >= 1
-        assert all(f.adapter == "arxiv" for f in feeds)
+        # Every feed's adapter must be a known one. The set evolves
+        # as new sources land (arxiv, rss, polymarket) — assert each
+        # is registered in the runtime registry rather than pinning
+        # to a single value.
+        from src.research.ingest import _FETCHER_REGISTRY  # noqa: PLC0415
+        # Ensure self-registering modules (polymarket) ran
+        import src.research  # noqa: F401, PLC0415
+        for f in feeds:
+            assert f.adapter in _FETCHER_REGISTRY, (
+                f"feed {f.name!r} uses unknown adapter {f.adapter!r}; "
+                f"registered: {sorted(_FETCHER_REGISTRY)}"
+            )
 
 
 # ---------------------------------------------------------------------------- #

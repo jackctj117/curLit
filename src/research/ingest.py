@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 import xml.etree.ElementTree as ET
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -228,8 +229,103 @@ class ArxivFetcher:
             return None
 
 
+@dataclass
+class RSSFetcher:
+    """Generic RSS 2.0 fetcher for substack / quant blogs / news feeds.
+
+    RSS 2.0 uses ``<rss><channel><item>...`` rather than Atom's
+    ``<feed><entry>``. Each item has ``<title>``, ``<link>``,
+    ``<description>`` (and sometimes ``<content:encoded>`` for the
+    full body, which we strip to text-only summary), ``<pubDate>``,
+    and either ``<author>`` or ``<dc:creator>``.
+
+    The fetched body is passed through the same Paper record so the
+    rest of the pipeline (extractor → idea agent → debate) treats blog
+    posts as just another source. The paper_extractor prompt's four
+    sections (methodology / findings / FX trading applicability /
+    data sources / key citations) work fine on a tight blog summary
+    even though the source isn't peer-reviewed — the idea agent will
+    DECLINE most of them, which is correct: a blog post that doesn't
+    contain a falsifiable thesis isn't a hypothesis.
+    """
+
+    http_get: HttpGet = field(default=_default_http_get)
+
+    def fetch(self, feed: FeedConfig) -> list[Paper]:
+        try:
+            body = self.http_get(feed.query_url)
+        except Exception as exc:
+            logger.warning(
+                "feed %r fetch failed: %s: %s",
+                feed.name, type(exc).__name__, exc,
+            )
+            return []
+        try:
+            return self._parse(body, source_label=feed.source_label)
+        except ET.ParseError as exc:
+            logger.warning(
+                "feed %r XML parse failed: %s", feed.name, exc,
+            )
+            return []
+
+    @staticmethod
+    def _parse(xml_body: str, source_label: str) -> list[Paper]:
+        # RSS 2.0 has its own dc: namespace for author ("dc:creator")
+        # plus content: for the full HTML body. Register both.
+        ns = {
+            "dc": "http://purl.org/dc/elements/1.1/",
+            "content": "http://purl.org/rss/1.0/modules/content/",
+        }
+        root = ET.fromstring(xml_body)  # noqa: S314 — RSS feed, no DTD
+        # RSS 2.0 wraps items in <channel>; some atom-flavored RSS skips
+        # the channel wrapper. Try both.
+        items = root.findall(".//item")
+        out: list[Paper] = []
+        for item in items:
+            title = (item.findtext("title") or "").strip()
+            link = (item.findtext("link") or "").strip()
+            pub_date = item.findtext("pubDate") or ""
+            # Author: try dc:creator first (substack uses this), then
+            # the standard <author> tag.
+            author = (
+                (item.findtext("dc:creator", default="", namespaces=ns) or "")
+                or (item.findtext("author") or "")
+            ).strip()
+            # Description is the summary; some feeds put the full HTML
+            # body in content:encoded. Prefer the description for
+            # extract size; if missing, fall back to content:encoded
+            # stripped of HTML tags.
+            description = (item.findtext("description") or "").strip()
+            if not description:
+                content = item.findtext(
+                    "content:encoded", default="", namespaces=ns,
+                ) or ""
+                description = re.sub(r"<[^>]+>", " ", content).strip()
+            description = re.sub(r"\s+", " ", description)
+            out.append(Paper(
+                title=title,
+                authors=(author,) if author else (),
+                year=RSSFetcher._extract_year(pub_date),
+                url=link,
+                doi="",
+                abstract=description[:4000],  # cap so paper_hash is stable + extract size bounded
+                source_label=source_label,
+            ))
+        return out
+
+    @staticmethod
+    def _extract_year(pub_date: str) -> int | None:
+        # RSS 2.0 pubDate format: "Tue, 30 Apr 2026 14:00:00 GMT"
+        # Just look for a 4-digit year between 1990 and 2099.
+        match = re.search(r"\b(19[9]\d|20\d\d)\b", pub_date)
+        if match:
+            return int(match.group(1))
+        return None
+
+
 _FETCHER_REGISTRY: dict[str, Callable[[HttpGet], Any]] = {
     "arxiv": lambda http_get: ArxivFetcher(http_get=http_get),
+    "rss": lambda http_get: RSSFetcher(http_get=http_get),
 }
 
 
