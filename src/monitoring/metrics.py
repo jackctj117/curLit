@@ -213,6 +213,67 @@ portfolio_drawdown_pct = Gauge(
     "Current drawdown from peak equity",
 )
 
+# CL-8dq P&L attribution. Labels: strategy, kind. kind is one of
+# realized / unrealized (always emitted) and signal_alpha / spread_cost /
+# slippage_cost / swap_cost (CL-mdle decomposition; zero when TCA
+# components weren't recorded for that strategy's fills).
+strategy_attributed_pnl = Gauge(
+    "fx_strategy_attributed_pnl",
+    "Per-strategy attributed P&L by kind (realized, unrealized, signal_alpha, "
+    "spread_cost, slippage_cost, swap_cost)",
+    ["strategy", "kind"],
+)
+
+# CL-5lq portfolio-level monitoring metrics. Most labels factor out so
+# we don't proliferate gauges; see PortfolioMetrics in src/monitoring/
+# portfolio_metrics.py for the emission helper.
+portfolio_gross_leverage = Gauge(
+    "fx_portfolio_gross_leverage",
+    "Gross leverage = sum(|notional|) / equity",
+)
+portfolio_net_leverage = Gauge(
+    "fx_portfolio_net_leverage",
+    "Net leverage = sum(notional) / equity (longs - shorts, signed)",
+)
+strategy_allocation = Gauge(
+    "fx_strategy_allocation",
+    "Per-strategy allocation as fraction of equity (target weight)",
+    ["strategy"],
+)
+strategy_exposure_mult = Gauge(
+    "fx_strategy_exposure_mult",
+    "Per-strategy exposure multiplier from coordinator (regime + perf override)",
+    ["strategy"],
+)
+strategy_attributed_pnl_usd = Gauge(
+    "fx_strategy_attributed_pnl_usd",
+    "Per-strategy attributed P&L in USD (realized + unrealized)",
+    ["strategy"],
+)
+strategy_attributed_sharpe = Gauge(
+    "fx_strategy_attributed_sharpe",
+    "Per-strategy rolling Sharpe of attributed daily returns",
+    ["strategy"],
+)
+portfolio_conflicts_rate = Gauge(
+    "fx_portfolio_conflicts_rate",
+    "Rate of opposite-sign intent conflicts across strategies in the last "
+    "rebalance cycle (0..1, fraction of symbols with conflict)",
+)
+portfolio_correlation_max = Gauge(
+    "fx_portfolio_correlation_max",
+    "Max pairwise correlation across active strategies' attributed returns",
+)
+
+# CL-unlt: streak counter for clean reconciliation days. The mismatches
+# gauge itself is defined a bit further down (CL-bk7s pre-existing,
+# overloaded for both intra-engine position reconcile and CL-unlt's daily
+# fill reconcile — same metric semantically: "how many things don't match").
+reconciliation_clean_days = Counter(
+    "fx_reconciliation_clean_days",
+    "Total daily reconciliation runs with zero mismatches",
+)
+
 daily_pnl_usd = Gauge(
     "fx_daily_pnl_usd",
     "Today's realised + unrealised P&L",

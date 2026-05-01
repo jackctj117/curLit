@@ -62,32 +62,84 @@ class KillSwitchManager:
             KillSwitch(name="stale_prices",
                        condition=lambda ctx: ctx.get("max_price_age_sec", 0) > 600,
                        action="halt_new"),
+            # CL-7j9 portfolio-level switches.
+            #
+            # Correlation regime "crisis" comes from the correlation monitor —
+            # signals that historically uncorrelated strategies are now moving
+            # together (e.g. a crowded macro factor blew up). Halve gross
+            # exposure rather than halting outright; partial reduction lets us
+            # ride out short crises without forced liquidation slippage.
+            KillSwitch(name="portfolio_correlation_crisis",
+                       condition=lambda ctx: ctx.get("correlation_regime", "") == "crisis",
+                       action="reduce_50pct"),
+            # 0.9 pairwise corr across strategies means we effectively own one
+            # bet, not a portfolio. Reduce 50% — same logic as the regime
+            # version but driven directly off the live correlation matrix.
+            KillSwitch(name="strategy_correlation_spike",
+                       condition=lambda ctx: ctx.get("max_pair_corr", 0) > 0.9,
+                       action="reduce_50pct"),
+            # Single strategy at -25% DD: the portfolio still trades, but this
+            # particular strategy goes to halt. Action argument carries the
+            # offending strategy_id for the OMS to halt selectively.
+            KillSwitch(name="single_strategy_drawdown",
+                       condition=lambda ctx: any(
+                           dd <= -0.25
+                           for dd in (ctx.get("strategy_drawdowns") or {}).values()
+                       ),
+                       action="halt_strategy"),
         ]
 
     def check(self, context: dict[str, Any]) -> list[dict[str, Any]]:
         triggered = []
+        log_keys = (
+            "daily_pnl_pct", "portfolio_dd", "vix_level",
+            "correlation_regime", "max_pair_corr", "strategy_drawdowns",
+        )
         for sw in self.switches:
             if not sw.armed or sw.name in self._triggered_today:
                 continue
             try:
                 if sw.condition(context):
-                    logger.critical("KILL SWITCH: %s triggered — action=%s context=%s",
-                                     sw.name, sw.action,
-                                     {k: v for k, v in context.items() if k in ("daily_pnl_pct", "portfolio_dd", "vix_level")})
-                    self._execute_action(sw.action)
+                    log_ctx = {k: v for k, v in context.items() if k in log_keys}
+                    logger.critical(
+                        "KILL SWITCH: %s triggered — action=%s context=%s",
+                        sw.name, sw.action, log_ctx,
+                    )
+                    self._execute_action(sw.action, context)
                     self._triggered_today.add(sw.name)
-                    kill_switch_triggered.labels(switch_name=sw.name, action=sw.action).inc()
-                    triggered.append({"switch": sw.name, "action": sw.action, "context": context})
+                    kill_switch_triggered.labels(
+                        switch_name=sw.name, action=sw.action,
+                    ).inc()
+                    triggered.append({
+                        "switch": sw.name, "action": sw.action, "context": context,
+                    })
                 else:
                     logger.debug("Kill switch %s: OK (value=%s)", sw.name,
-                                  {k: v for k, v in context.items() if k in ("daily_pnl_pct", "portfolio_dd", "vix_level")})
+                                  {k: v for k, v in context.items() if k in log_keys})
             except Exception:
                 logger.exception("Kill switch %s check failed", sw.name)
         return triggered
 
-    def _execute_action(self, action: str) -> None:
+    def _execute_action(self, action: str, context: dict[str, Any]) -> None:
         if action == "halt_new":
             self.oms.halt_new_trades()
+        elif action == "halt_strategy":
+            # CL-7j9: surgical halt of just the offending strategies. The OMS
+            # is expected to expose halt_strategy(sid) — falls back to a
+            # logged warning when the broker integration isn't there yet.
+            offending = [
+                sid for sid, dd in (context.get("strategy_drawdowns") or {}).items()
+                if dd <= -0.25
+            ]
+            for sid in offending:
+                halt_fn = getattr(self.oms, "halt_strategy", None)
+                if callable(halt_fn):
+                    halt_fn(sid)
+                else:
+                    logger.warning(
+                        "halt_strategy not implemented on OMS — would halt %s",
+                        sid,
+                    )
         elif action in ("flatten_all", "reduce_50pct"):
             logger.warning("Action '%s' requires broker integration — stub", action)
 

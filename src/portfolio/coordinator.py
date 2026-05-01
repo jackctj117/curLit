@@ -883,6 +883,60 @@ class PortfolioCoordinator:
                 strategy_id,
             )
 
+    def promote_strategy_to_live(
+        self,
+        strategy_id: str,
+        initial_weight: float = 0.05,
+    ) -> None:
+        """Flip ``strategy_id`` from paper mode to live with ``initial_weight``.
+
+        Redistributes from existing strategies proportionally so the sum
+        of weights stays at 1.0. Triggers a forced rebalance to push the
+        new target through risk parity. Caller (CL-15r4 AllocationPolicy)
+        is responsible for deciding *whether* to promote and what the
+        initial weight should be.
+        """
+        if strategy_id not in self.allocations:
+            raise ValueError(f"Cannot promote {strategy_id}: not registered")
+        alloc = self.allocations[strategy_id]
+        if not alloc.paper_mode:
+            logger.warning(
+                "promote_strategy_to_live: %s already live, no-op",
+                strategy_id,
+            )
+            return
+
+        assert 0 < initial_weight <= 1, (
+            f"initial_weight must be in (0, 1], got {initial_weight}"
+        )
+
+        # Scale existing live weights down to make room for the new strategy.
+        live_ids = [
+            sid for sid, a in self.allocations.items()
+            if not a.paper_mode and sid != strategy_id
+        ]
+        if live_ids:
+            existing_total = sum(self.allocations[s].target_weight for s in live_ids)
+            if existing_total > 0:
+                scale = (1.0 - initial_weight) / existing_total
+                for sid in live_ids:
+                    self.allocations[sid].target_weight *= scale
+
+        alloc.paper_mode = False
+        alloc.target_weight = initial_weight
+        logger.info(
+            "Promoted %s to live at %.1f%% — %d existing strategies rescaled",
+            strategy_id, initial_weight * 100, len(live_ids),
+        )
+
+        try:
+            asyncio.get_running_loop()
+            asyncio.create_task(self.rebalance_allocations(force=True))
+        except RuntimeError:
+            logger.debug(
+                "No running event loop; rebalance after promotion deferred",
+            )
+
     # ------------------------------------------------------------------
     # Observability
     # ------------------------------------------------------------------
