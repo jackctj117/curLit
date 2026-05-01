@@ -4,6 +4,7 @@ import logging
 import os
 import time
 from datetime import datetime
+from typing import Any
 
 import pandas as pd
 from sqlalchemy import text
@@ -64,7 +65,7 @@ class FREDProvider:
         self._last_request = time.time()
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=30))
-    def _get(self, endpoint: str, params: dict) -> dict:
+    def _get(self, endpoint: str, params: dict[str, Any]) -> dict[str, Any]:
         self._throttle()
         params = {**params, "api_key": self.api_key, "file_type": "json"}
         resp = httpx.get(f"{self.BASE_URL}/{endpoint}", params=params, timeout=30)
@@ -72,13 +73,16 @@ class FREDProvider:
         return resp.json()  # type: ignore[no-any-return]
 
     def get_series(
-        self, series_id: str, start=None, end=None,
+        self,
+        series_id: str,
+        start: str | datetime | None = None,
+        end: str | datetime | None = None,
     ) -> pd.DataFrame:
         if isinstance(start, str):
             start = datetime.fromisoformat(start[:10])
         if isinstance(end, str):
             end = datetime.fromisoformat(end[:10])
-        params: dict = {"series_id": series_id}
+        params: dict[str, Any] = {"series_id": series_id}
         if start:
             params["observation_start"] = start.strftime("%Y-%m-%d")
         if end:

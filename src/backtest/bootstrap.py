@@ -1,5 +1,7 @@
 """Bootstrap confidence intervals for performance metrics."""
 
+from typing import Any
+
 import numpy as np
 import pandas as pd
 
@@ -30,7 +32,7 @@ def stationary_bootstrap(
     block_mean_len: int = 20,
     n_bootstrap: int = 10000,
     periods_per_year: int = 252,
-) -> np.ndarray:
+) -> np.ndarray[Any, Any]:
     n = len(returns)
     p = 1.0 / block_mean_len
     results = np.zeros(n_bootstrap)

@@ -1,7 +1,9 @@
 """Paper broker — simulated execution with cost model, full P&L tracking."""
 
 import logging
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime
+from typing import Any
 
 from .broker import Account, Broker, Order, OrderStatus, Position
 
@@ -14,7 +16,7 @@ class PaperBroker(Broker):
         self._equity = initial_capital
         self._peak_equity = initial_capital
         self._positions: dict[str, Position] = {}
-        self._trade_log: list[dict] = []
+        self._trade_log: list[dict[str, Any]] = []
         self._prices: dict[str, tuple[float, float]] = {}
 
     # -- Broker ABC ----------------------------------------------------
@@ -68,7 +70,9 @@ class PaperBroker(Broker):
     def get_price(self, symbol: str) -> tuple[float, float]:
         return self._prices.get(symbol, (1.1000, 1.1002))
 
-    async def stream_prices(self, symbols: list[str]):
+    async def stream_prices(
+        self, symbols: list[str],
+    ) -> AsyncIterator[dict[str, Any]]:
         import asyncio
         while True:
             for sym in symbols:

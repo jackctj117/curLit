@@ -3,6 +3,7 @@
 import contextlib
 import re
 from datetime import datetime
+from typing import Any
 
 from bs4 import BeautifulSoup
 
@@ -13,7 +14,7 @@ class BoEStatementScraper(CBScraper):
     cb_name = "boe"
     BASE = "https://www.bankofengland.co.uk/monetary-policy-summary-and-minutes"
 
-    def list_documents(self, since: datetime) -> list[dict]:
+    def list_documents(self, since: datetime) -> list[dict[str, Any]]:
         docs = []
         try:
             html = self.fetch_url(self.BASE)
@@ -22,7 +23,7 @@ class BoEStatementScraper(CBScraper):
                 link = item.find("a") if item.name != "a" else item
                 if link is None:
                     continue
-                href = link.get("href", "")
+                href = str(link.get("href") or "")
                 title = link.get_text(strip=True)
                 if "monetary policy" not in title.lower() and "mpc" not in title.lower():
                     continue
@@ -42,7 +43,7 @@ class BoEStatementScraper(CBScraper):
             pass
         return docs
 
-    def parse_document(self, html: str, meta: dict) -> Document:
+    def parse_document(self, html: str, meta: dict[str, Any]) -> Document:
         soup = BeautifulSoup(html, "html.parser")
         main = soup.find("main") or soup.find("div", class_="content") or soup.find("body")
         text = main.get_text(separator="\n", strip=True) if main else html[:2000]
@@ -54,13 +55,13 @@ class BoJStatementScraper(CBScraper):
     cb_name = "boj"
     BASE = "https://www.boj.or.jp/en/mopo/mpmsche_minu/index.htm"
 
-    def list_documents(self, since: datetime) -> list[dict]:
+    def list_documents(self, since: datetime) -> list[dict[str, Any]]:
         docs = []
         try:
             html = self.fetch_url(self.BASE)
             soup = BeautifulSoup(html, "html.parser")
             for link in soup.select("a[href*='mopo']"):
-                href = link.get("href", "")
+                href = str(link.get("href") or "")
                 title = link.get_text(strip=True)
                 d = datetime.utcnow()
                 m = re.search(r"(\d{4})", title)
@@ -75,7 +76,7 @@ class BoJStatementScraper(CBScraper):
             pass
         return docs
 
-    def parse_document(self, html: str, meta: dict) -> Document:
+    def parse_document(self, html: str, meta: dict[str, Any]) -> Document:
         soup = BeautifulSoup(html, "html.parser")
         main = soup.find("div", id="contents") or soup.find("main") or soup.find("body")
         text = main.get_text(separator="\n", strip=True) if main else html[:2000]
@@ -87,7 +88,7 @@ class BoCStatementScraper(CBScraper):
     cb_name = "boc"
     BASE = "https://www.bankofcanada.ca/news/"
 
-    def list_documents(self, since: datetime) -> list[dict]:
+    def list_documents(self, since: datetime) -> list[dict[str, Any]]:
         docs = []
         try:
             html = self.fetch_url(self.BASE)
@@ -99,7 +100,7 @@ class BoCStatementScraper(CBScraper):
                 title = link.get_text(strip=True)
                 if "rate" not in title.lower() and "monetary" not in title.lower():
                     continue
-                href = link.get("href", "")
+                href = str(link.get("href") or "")
                 date_el = item.find("time") or item.find("span", class_="date")
                 d = datetime.utcnow()
                 if date_el:
@@ -114,7 +115,7 @@ class BoCStatementScraper(CBScraper):
             pass
         return docs
 
-    def parse_document(self, html: str, meta: dict) -> Document:
+    def parse_document(self, html: str, meta: dict[str, Any]) -> Document:
         soup = BeautifulSoup(html, "html.parser")
         main = soup.find("article") or soup.find("div", class_="entry-content") or soup.find("body")
         text = main.get_text(separator="\n", strip=True) if main else html[:2000]

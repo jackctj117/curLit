@@ -1,6 +1,7 @@
 """FastAPI service for CB sentiment inference."""
 
 from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI
 from pydantic import BaseModel
@@ -24,19 +25,19 @@ def load_model() -> None:
 
 
 @app.post("/score")
-def score(req: ScoreRequest) -> list[dict]:
+def score(req: ScoreRequest) -> list[dict[str, Any]]:
     if model is None:
         return [{"error": "model not loaded"}]
     return model.predict(req.sentences)
 
 
 @app.post("/score_document")
-def score_document(req: ScoreRequest) -> dict:
+def score_document(req: ScoreRequest) -> dict[str, Any]:
     if model is None:
         return {"error": "model not loaded"}
     return model.predict_document(req.sentences)
 
 
 @app.get("/health")
-def health() -> dict:
+def health() -> dict[str, Any]:
     return {"status": "ok", "model_loaded": model is not None}

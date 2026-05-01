@@ -1,6 +1,7 @@
 """FastAPI backend — REST API wired to live engine state."""
 
 import os
+from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel
@@ -8,10 +9,12 @@ from pydantic import BaseModel
 app = FastAPI(title="curLit Web API", version="0.1.0")
 
 # Global state — set by run_engine at startup
-_runtime: dict = {"broker": None, "oms": None, "strategies": []}
+_runtime: dict[str, Any] = {"broker": None, "oms": None, "strategies": []}
 
 
-def set_runtime(broker, oms, strategies) -> None:
+def set_runtime(
+    broker: Any, oms: Any, strategies: list[Any],
+) -> None:
     _runtime["broker"] = broker
     _runtime["oms"] = oms
     _runtime["strategies"] = strategies
@@ -30,7 +33,7 @@ def verify_secret(secret: str = "") -> None:
 
 
 @app.get("/api/positions")
-def get_positions(_: str = Depends(verify_secret)) -> list[dict]:
+def get_positions(_: str = Depends(verify_secret)) -> list[dict[str, Any]]:
     broker = _runtime.get("broker")
     if broker is None:
         return []
@@ -40,7 +43,7 @@ def get_positions(_: str = Depends(verify_secret)) -> list[dict]:
 
 
 @app.delete("/api/positions/{symbol}")
-def close_position(symbol: str, _: str = Depends(verify_secret)) -> dict:
+def close_position(symbol: str, _: str = Depends(verify_secret)) -> dict[str, Any]:
     oms = _runtime.get("oms")
     if oms:
         from src.execution.oms import OrderIntent
@@ -49,12 +52,12 @@ def close_position(symbol: str, _: str = Depends(verify_secret)) -> dict:
 
 
 @app.get("/api/signals")
-def get_signals(_: str = Depends(verify_secret)) -> dict:
+def get_signals(_: str = Depends(verify_secret)) -> dict[str, Any]:
     return {"strategies": [{"id": s.id, "symbols": s.symbols} for s in _runtime.get("strategies", [])]}
 
 
 @app.get("/api/pnl")
-def get_pnl(_: str = Depends(verify_secret)) -> dict:
+def get_pnl(_: str = Depends(verify_secret)) -> dict[str, Any]:
     broker = _runtime.get("broker")
     if broker is None:
         return {"daily": 0, "weekly": 0, "monthly": 0}
@@ -63,7 +66,7 @@ def get_pnl(_: str = Depends(verify_secret)) -> dict:
 
 
 @app.get("/api/account")
-def get_account(_: str = Depends(verify_secret)) -> dict:
+def get_account(_: str = Depends(verify_secret)) -> dict[str, Any]:
     broker = _runtime.get("broker")
     if broker is None:
         return {"equity": 0, "margin_used": 0, "drawdown_pct": 0}
@@ -72,7 +75,7 @@ def get_account(_: str = Depends(verify_secret)) -> dict:
 
 
 @app.post("/api/trade")
-def manual_trade(req: TradeRequest, _: str = Depends(verify_secret)) -> dict:
+def manual_trade(req: TradeRequest, _: str = Depends(verify_secret)) -> dict[str, Any]:
     oms = _runtime.get("oms")
     if oms:
         from src.execution.oms import OrderIntent
@@ -82,19 +85,19 @@ def manual_trade(req: TradeRequest, _: str = Depends(verify_secret)) -> dict:
 
 
 @app.get("/api/config")
-def get_config(_: str = Depends(verify_secret)) -> dict:
+def get_config(_: str = Depends(verify_secret)) -> dict[str, Any]:
     return {"strategies": [{"id": s.id, "config": s.config.__dict__ if hasattr(s, "config") else {}}
             for s in _runtime.get("strategies", [])]}
 
 
 @app.get("/api/system")
-def system_status(_: str = Depends(verify_secret)) -> dict:
+def system_status(_: str = Depends(verify_secret)) -> dict[str, Any]:
     oms = _runtime.get("oms")
     return {"engine": "running", "oms_halted": getattr(oms, "_halted", True) if oms else True}
 
 
 @app.post("/api/system/halt")
-def halt_system(_: str = Depends(verify_secret)) -> dict:
+def halt_system(_: str = Depends(verify_secret)) -> dict[str, Any]:
     oms = _runtime.get("oms")
     if oms:
         oms.halt_new_trades()
@@ -102,7 +105,7 @@ def halt_system(_: str = Depends(verify_secret)) -> dict:
 
 
 @app.post("/api/system/resume")
-def resume_system(_: str = Depends(verify_secret)) -> dict:
+def resume_system(_: str = Depends(verify_secret)) -> dict[str, Any]:
     oms = _runtime.get("oms")
     if oms:
         oms.resume_trades()

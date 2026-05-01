@@ -2,6 +2,7 @@
 
 import logging
 from dataclasses import dataclass
+from typing import Any
 
 import pandas as pd
 
@@ -12,7 +13,7 @@ logger = logging.getLogger(__name__)
 class EventBacktestResult:
     trades: pd.DataFrame
     equity_curve: pd.Series
-    metrics: dict
+    metrics: dict[str, Any]
 
 
 class EventBacktester:
@@ -27,7 +28,7 @@ class EventBacktester:
         starting_equity: float = 100_000.0,
         cost_per_turn_bps: float = 1.0,
     ) -> EventBacktestResult:
-        trades: list[dict] = []
+        trades: list[dict[str, Any]] = []
         equity = starting_equity
 
         for idx, event in events.iterrows():
@@ -101,7 +102,7 @@ class EventBacktester:
         metrics = self._compute_metrics(trades_df, starting_equity, equity)
         return EventBacktestResult(trades_df, equity_curve, metrics)
 
-    def _compute_metrics(self, trades: pd.DataFrame, start_eq: float, end_eq: float) -> dict:
+    def _compute_metrics(self, trades: pd.DataFrame, start_eq: float, end_eq: float) -> dict[str, Any]:
         if len(trades) == 0:
             return {"n_trades": 0}
         years = max((trades["entry_ts"].max() - trades["entry_ts"].min()).days / 365.25, 0.01)

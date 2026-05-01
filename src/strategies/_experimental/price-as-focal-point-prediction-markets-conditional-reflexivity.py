@@ -149,9 +149,9 @@ def _rolling_percentile_rank(series: pd.Series, window: int) -> pd.Series:
     preceding `window` observations (exclusive of t itself to avoid look-ahead).
     Returns values in [0, 1].
     """
-    def _rank(arr):
+    def _rank(arr: np.ndarray) -> float:
         if len(arr) < 2:
-            return np.nan
+            return float(np.nan)
         val = arr[-1]
         hist = arr[:-1]
         finite = hist[np.isfinite(hist)]

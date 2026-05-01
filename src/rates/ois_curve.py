@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass, field
 from datetime import date, timedelta
+from typing import Any
 
 import numpy as np
 from scipy.interpolate import interp1d
@@ -52,7 +53,7 @@ class OISCurve:
         return curve
 
     @staticmethod
-    def _tenor_to_date(start: date, tenor: str, calendar) -> date:
+    def _tenor_to_date(start: date, tenor: str, calendar: Any) -> date:
         num = int("".join(c for c in tenor if c.isdigit()))
         unit = "".join(c for c in tenor if c.isalpha()).upper()
 

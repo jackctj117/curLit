@@ -2,6 +2,7 @@
 
 import logging
 from pathlib import Path
+from typing import Any
 
 import torch
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
@@ -30,7 +31,7 @@ class CBSentimentModel:
             self.temperature = float(torch.load(temp_path, map_location="cpu"))
 
     @torch.no_grad()
-    def predict(self, sentences: list[str], batch_size: int = 32) -> list[dict]:
+    def predict(self, sentences: list[str], batch_size: int = 32) -> list[dict[str, Any]]:
         results = []
         for i in range(0, len(sentences), batch_size):
             batch = sentences[i : i + batch_size]
@@ -50,7 +51,7 @@ class CBSentimentModel:
         return results
 
     @torch.no_grad()
-    def predict_document(self, sentences: list[str]) -> dict:
+    def predict_document(self, sentences: list[str]) -> dict[str, Any]:
         results = self.predict(sentences)
         scores = [r["hawkish_score"] for r in results]
         confs = [r["confidence"] for r in results]

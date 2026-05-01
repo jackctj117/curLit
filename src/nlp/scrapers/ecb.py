@@ -1,6 +1,7 @@
 """ECB scrapper — monetary policy statements, press conferences, and speeches."""
 
 from datetime import datetime
+from typing import Any
 
 from bs4 import BeautifulSoup
 
@@ -11,7 +12,7 @@ class ECBStatementScraper(CBScraper):
     cb_name = "ecb"
     PRESS_URL = "https://www.ecb.europa.eu/press/pr/date/html/index.en.html"
 
-    def list_documents(self, since: datetime) -> list[dict]:
+    def list_documents(self, since: datetime) -> list[dict[str, Any]]:
         html = self.fetch_url(self.PRESS_URL)
         soup = BeautifulSoup(html, "html.parser")
         docs = []
@@ -19,7 +20,7 @@ class ECBStatementScraper(CBScraper):
             link = item.find("a")
             if not link:
                 continue
-            href = link.get("href", "")
+            href = str(link.get("href") or "")
             title = link.get_text(strip=True)
             if "monetary policy" not in title.lower():
                 continue
@@ -34,7 +35,7 @@ class ECBStatementScraper(CBScraper):
             docs.append({"url": url, "date": d, "doc_type": "statement", "title": title})
         return docs
 
-    def parse_document(self, html: str, meta: dict) -> Document:
+    def parse_document(self, html: str, meta: dict[str, Any]) -> Document:
         soup = BeautifulSoup(html, "html.parser")
         main = soup.find("main") or soup.find("article") or soup.find("body")
         text = main.get_text(separator="\n", strip=True) if main else ""

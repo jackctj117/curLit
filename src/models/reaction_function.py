@@ -1,6 +1,7 @@
 """Reaction function models — Taylor-rule style for major central banks."""
 
 import logging
+from typing import Any
 
 import numpy as np
 
@@ -38,7 +39,7 @@ class FedReactionFunction:
         df = historical
         actual = np.array(df["fed_funds"])
 
-        def loss(params: np.ndarray) -> float:
+        def loss(params: np.ndarray[Any, Any]) -> float:
             self.w_core_pce, self.w_unemployment, self.w_fci = params
             pred = np.array([
                 self.implied_rate(pce, u, fci)

@@ -3,6 +3,7 @@
 import json
 import logging
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import text
 
@@ -10,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 
 class StrategyStateStore:
-    def __init__(self, engine) -> None:
+    def __init__(self, engine: Any) -> None:
         self.engine = engine
         self._create_tables()
 
@@ -34,7 +35,7 @@ class StrategyStateStore:
                 )
             """))
 
-    def record_signal(self, strategy_id: str, ts: datetime, signal: dict) -> None:
+    def record_signal(self, strategy_id: str, ts: datetime, signal: dict[str, Any]) -> None:
         with self.engine.begin() as conn:
             conn.execute(text("""
                 INSERT INTO strategy_signals (ts, strategy_id, signal_data)
@@ -44,7 +45,7 @@ class StrategyStateStore:
             """), {"ts": ts, "sid": strategy_id, "data": json.dumps(signal)})
 
     def record_entry(
-        self, strategy_id: str, ts: datetime, signal: dict, size: float,
+        self, strategy_id: str, ts: datetime, signal: dict[str, Any], size: float,
     ) -> None:
         with self.engine.begin() as conn:
             conn.execute(text("""
@@ -59,7 +60,7 @@ class StrategyStateStore:
                 VALUES (:ts, :sid, 'exit', :details)
             """), {"ts": ts, "sid": strategy_id, "details": json.dumps({"reason": reason})})
 
-    def get_current_position(self, strategy_id: str) -> dict | None:
+    def get_current_position(self, strategy_id: str) -> dict[str, Any] | None:
         """Return last entry if position is open, None if flat (crash recovery)."""
         with self.engine.connect() as conn:
             result = conn.execute(text("""

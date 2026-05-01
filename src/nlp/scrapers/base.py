@@ -7,6 +7,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import httpx
 from tenacity import retry, stop_after_attempt, wait_exponential
@@ -24,7 +25,7 @@ class Document:
     speaker: str | None = None
     raw_html: str = ""
     raw_text: str = ""
-    metadata: dict = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     @property
     def doc_id(self) -> str:
@@ -47,7 +48,7 @@ class CBScraper(ABC):
     def cb_name(self) -> str: ...
 
     @abstractmethod
-    def list_documents(self, since: datetime) -> list[dict]:
+    def list_documents(self, since: datetime) -> list[dict[str, Any]]:
         """Return list of {url, date, doc_type, title, speaker?} dicts."""
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=2, max=30))
@@ -57,7 +58,7 @@ class CBScraper(ABC):
         return resp.text
 
     @abstractmethod
-    def parse_document(self, html: str, meta: dict) -> Document: ...
+    def parse_document(self, html: str, meta: dict[str, Any]) -> Document: ...
 
     def save_document(self, doc: Document) -> Path:
         path = self.raw_dir / f"{doc.doc_id}.json"

@@ -1,6 +1,7 @@
 """Regime-aware position sizing — VIX, drawdown, and correlation multipliers."""
 
 from dataclasses import dataclass
+from typing import Any
 
 
 @dataclass
@@ -13,7 +14,7 @@ class SizingAdjustment:
 
 
 class RegimeAwareSizer:
-    def __init__(self, config: dict | None = None) -> None:
+    def __init__(self, config: dict[str, Any] | None = None) -> None:
         cfg = config or {}
         self.vix_thresholds: list[tuple[float, float]] = cfg.get(
             "vix_thresholds",

@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+from typing import Any
 
 SOCKET_PATH = "/run/fx-vault-agent.sock"
 
@@ -14,7 +15,7 @@ def derive_key(passphrase: str, salt: bytes) -> bytes:
     return hashlib.pbkdf2_hmac("sha256", passphrase.encode(), salt, 600_000, 32)
 
 
-def decrypt_vault(path: Path, key: bytes) -> dict:
+def decrypt_vault(path: Path, key: bytes) -> dict[str, Any]:
     data = json.loads(path.read_text())
     nonce = bytes.fromhex(data["nonce"])
     ct = bytes.fromhex(data["ciphertext"])
@@ -27,7 +28,7 @@ def decrypt_vault(path: Path, key: bytes) -> dict:
         return json.loads(AESGCM(key).decrypt(nonce, ct, None))
 
 
-async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, creds: dict) -> None:
+async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, creds: dict[str, Any]) -> None:
     try:
         data = await reader.read(4096)
         req = json.loads(data)

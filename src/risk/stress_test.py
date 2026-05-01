@@ -1,6 +1,7 @@
 """Scenario stress tester — run strategies through historical FX crises."""
 
 from datetime import date
+from typing import Any
 
 SCENARIOS = {
     "gfc_2008": (date(2008, 9, 1), date(2008, 12, 31)),
@@ -15,7 +16,9 @@ SCENARIOS = {
 }
 
 
-def run_stress_test(strategies, data_provider) -> dict:
+def run_stress_test(
+    strategies: list[Any], data_provider: Any,
+) -> dict[str, Any]:
     import pandas as pd
     results = {}
     for name, (start, end) in SCENARIOS.items():

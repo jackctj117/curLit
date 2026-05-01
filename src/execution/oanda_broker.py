@@ -1,6 +1,8 @@
 """OANDA broker — REST + streaming API v20."""
 
 import logging
+from collections.abc import AsyncIterator
+from typing import Any
 
 import httpx
 
@@ -84,7 +86,9 @@ class OandaBroker(Broker):
         p = resp.json()["prices"][0]
         return float(p["bids"][0]["price"]), float(p["asks"][0]["price"])
 
-    async def stream_prices(self, symbols: list[str]):
+    async def stream_prices(
+        self, symbols: list[str],
+    ) -> AsyncIterator[dict[str, Any]]:
         oanda_syms = ",".join(self._to_oanda(s) for s in symbols)
         base_url = self.STREAM_PRACTICE if "practice" in str(self.client.base_url) else self.STREAM_LIVE
         async with (

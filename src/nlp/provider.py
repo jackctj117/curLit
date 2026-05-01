@@ -2,6 +2,7 @@
 
 import logging
 from datetime import datetime, timedelta
+from typing import Any
 
 import pandas as pd
 from sqlalchemy import text
@@ -10,10 +11,10 @@ logger = logging.getLogger(__name__)
 
 
 class NLPDataProvider:
-    def __init__(self, engine) -> None:
+    def __init__(self, engine: Any) -> None:
         self.engine = engine
 
-    def get_recent_diff_events(self, since: datetime, cbs: list[str]) -> list[dict]:
+    def get_recent_diff_events(self, since: datetime, cbs: list[str]) -> list[dict[str, Any]]:
         try:
             query = text("""
                 SELECT ts, cb, doc_id, prev_doc_id, net_shift,

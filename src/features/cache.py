@@ -2,13 +2,16 @@
 
 import logging
 from datetime import datetime, timedelta
+from typing import Any
 
 import pandas as pd
 
 logger = logging.getLogger(__name__)
 
 
-def cache_features(engine, store, symbols: list[str], lookback_days: int = 756) -> int:
+def cache_features(
+    engine: Any, store: Any, symbols: list[str], lookback_days: int = 756,
+) -> int:
     """Compute all features from store and write to features table."""
     end = datetime.utcnow()
     start = end - timedelta(days=lookback_days)
@@ -28,6 +31,8 @@ def cache_features(engine, store, symbols: list[str], lookback_days: int = 756) 
     return total
 
 
-def _load_prices(engine, symbol: str, start: datetime, end: datetime) -> pd.DataFrame:
+def _load_prices(
+    engine: Any, symbol: str, start: datetime, end: datetime,
+) -> pd.DataFrame:
     query = "SELECT ts, close FROM prices WHERE symbol = :sym AND ts >= :start AND ts <= :end ORDER BY ts"
     return pd.read_sql(query, engine, params={"sym": symbol, "start": start, "end": end}, index_col="ts")

@@ -187,7 +187,7 @@ class OrderManager:
                 size_fraction = outcome.next_size_fraction
                 attempt += 1
 
-    def reconcile(self) -> dict[str, dict]:
+    def reconcile(self) -> dict[str, dict[str, Any]]:
         broker_pos = {p.symbol: p.quantity for p in self.broker.get_positions()}
         mismatches = {}
         for sym in broker_pos:

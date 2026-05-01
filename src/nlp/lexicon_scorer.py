@@ -61,7 +61,7 @@ class LexiconScorer:
         self._hedge_re = self._compile(HEDGES)
 
     @staticmethod
-    def _compile(terms: set[str]) -> re.Pattern:
+    def _compile(terms: set[str]) -> re.Pattern[str]:
         return re.compile(r"\b(" + "|".join(re.escape(t) for t in terms) + r")\b", re.IGNORECASE)
 
     def score_text(self, text: str) -> LexiconScores:

@@ -1,6 +1,7 @@
 """Cross-asset correlation monitor — rolling matrices, breakdown/flip detection."""
 
 import logging
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -21,7 +22,7 @@ class CorrelationMonitor:
 
     def check_pair(
         self, r1: pd.Series, r2: pd.Series, vix: pd.Series | None = None,
-    ) -> dict:
+    ) -> dict[str, Any]:
         aligned = pd.concat([r1.rename("a"), r2.rename("b")], axis=1).dropna()
         if len(aligned) < self.baseline:
             return {"regime": "unknown"}

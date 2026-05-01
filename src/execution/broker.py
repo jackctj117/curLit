@@ -1,9 +1,11 @@
 """Broker interface — abstract base class and dataclasses for orders, positions, accounts."""
 
 from abc import ABC, abstractmethod
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import Enum
+from typing import Any
 from uuid import uuid4
 
 
@@ -87,5 +89,7 @@ class Broker(ABC):
         ...
 
     @abstractmethod
-    async def stream_prices(self, symbols: list[str]):  # async generator
+    async def stream_prices(
+        self, symbols: list[str],
+    ) -> AsyncIterator[dict[str, Any]]:  # async generator
         ...

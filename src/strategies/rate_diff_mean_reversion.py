@@ -64,16 +64,16 @@ class RateDiffMRConfig:
 class RateDiffMRStrategy:
     def __init__(
         self,
-        config: RateDiffMRConfig = None,
-        data_provider=None,
-        state_store=None,
+        config: RateDiffMRConfig | None = None,
+        data_provider: Any = None,
+        state_store: Any = None,
         snapshot_store: FeatureSnapshotStore | None = None,
     ) -> None:
         self.config = config or RateDiffMRConfig()
         self.data = data_provider
         self.state = state_store
         self.snapshot_store = snapshot_store
-        self._model: dict | None = None
+        self._model: dict[str, Any] | None = None
         self._last_fit: datetime | None = None
         self._position_size: float = 0.0
         self._entry_z: float | None = None
@@ -209,7 +209,9 @@ class RateDiffMRStrategy:
             positions.append(pos)
         return pd.Series(positions, index=df.index, dtype=float)
 
-    async def generate_intents(self, prices: dict, broker) -> list[OrderIntent]:
+    async def generate_intents(
+        self, prices: dict[str, Any], broker: Any,
+    ) -> list[OrderIntent]:
         self._refit_if_stale()
         if self._model is None or self._model["r_squared"] < self.config.min_r_squared:
             r2 = self._model["r_squared"] if self._model else 0

@@ -3,6 +3,7 @@
 import re
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Any
 
 import spacy
 
@@ -16,7 +17,7 @@ class ProcessedDocument:
     sentences: list[str]
     paragraphs: list[str]
     word_count: int
-    metadata: dict
+    metadata: dict[str, Any]
 
 
 class TextPreprocessor:

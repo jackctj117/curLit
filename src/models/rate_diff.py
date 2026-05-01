@@ -2,6 +2,7 @@
 
 import logging
 from datetime import datetime
+from typing import Any
 
 import pandas as pd
 import statsmodels.api as sm
@@ -21,10 +22,10 @@ class RateDiffModel:
         self.spread_name = spread_name
         self.window_days = window_days
         self.min_r_squared = min_r_squared
-        self.result: dict | None = None
+        self.result: dict[str, Any] | None = None
         self.last_fit_date: datetime | None = None
 
-    def fit(self, df: pd.DataFrame) -> dict:
+    def fit(self, df: pd.DataFrame) -> dict[str, Any]:
         df = df.dropna()
         if len(df) < 100:
             logger.warning("Insufficient data for model fit (%d rows)", len(df))

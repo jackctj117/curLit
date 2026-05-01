@@ -3,6 +3,7 @@
 import logging
 import re
 from datetime import datetime
+from typing import Any
 
 from bs4 import BeautifulSoup
 
@@ -17,7 +18,7 @@ class FedStatementScraper(CBScraper):
     CALENDAR_URL = "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm"
     HISTORICAL_URL_FMT = "https://www.federalreserve.gov/monetarypolicy/fomchistorical{year}.htm"
 
-    def list_documents(self, since: datetime) -> list[dict]:
+    def list_documents(self, since: datetime) -> list[dict[str, Any]]:
         """List FOMC statement docs since `since` across current + historical pages.
 
         The current calendar page covers ~current + a couple recent years; older
@@ -27,7 +28,7 @@ class FedStatementScraper(CBScraper):
         URL since some years overlap between sources.
         """
         urls_seen: set[str] = set()
-        docs: list[dict] = []
+        docs: list[dict[str, Any]] = []
 
         # Pages to crawl: current calendar + each historical year page.
         pages: list[str] = [self.CALENDAR_URL]
@@ -46,7 +47,7 @@ class FedStatementScraper(CBScraper):
             # Match both /newsevents/pressreleases/monetaryYYYYMMDDa.htm (modern)
             # and historical /monetarypolicy/files/monetaryYYYYMMDDa.htm patterns.
             for link in soup.find_all("a", href=re.compile(r"monetary\d{8}a\.htm")):
-                href = link.get("href", "")
+                href = str(link.get("href") or "")
                 m = re.search(r"monetary(\d{8})a\.htm", href)
                 if not m:
                     continue
@@ -67,9 +68,14 @@ class FedStatementScraper(CBScraper):
 
         return docs
 
-    def parse_document(self, html: str, meta: dict) -> Document:
+    def parse_document(self, html: str, meta: dict[str, Any]) -> Document:
         soup = BeautifulSoup(html, "html.parser")
         content = soup.find("div", id="article") or soup.find("div", class_="col-md-8") or soup.find("body")
+        if content is None:
+            return Document(
+                cb="fed", doc_type=meta["doc_type"], title=meta["title"],
+                date=meta["date"], url=meta["url"], raw_html=html, raw_text="",
+            )
         for tag in content.find_all(["script", "style", "nav", "footer"]):
             tag.decompose()
         paragraphs = [

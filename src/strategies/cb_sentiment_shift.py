@@ -23,7 +23,7 @@ _FEATURE_SET_VERSION = "v1"
 
 @dataclass
 class CBSentimentConfig:
-    cb_to_pair: dict = field(default_factory=lambda: {
+    cb_to_pair: dict[str, Any] = field(default_factory=lambda: {
         "fed": ("EURUSD", "short"), "ecb": ("EURUSD", "long"),
         "boe": ("GBPUSD", "long"), "boj": ("USDJPY", "short"), "boc": ("USDCAD", "short"),
     })
@@ -55,10 +55,10 @@ class OpenPosition:
 class CBSentimentShiftStrategy:
     def __init__(
         self,
-        config: CBSentimentConfig = None,
-        data_provider=None,
-        nlp_provider=None,
-        state_store=None,
+        config: CBSentimentConfig | None = None,
+        data_provider: Any = None,
+        nlp_provider: Any = None,
+        state_store: Any = None,
         snapshot_store: FeatureSnapshotStore | None = None,
     ) -> None:
         self.config = config or CBSentimentConfig()
@@ -105,10 +105,10 @@ class CBSentimentShiftStrategy:
     def signal_interval_seconds(self) -> int:
         return self.config.signal_interval_seconds
 
-    def fit(self, train_data) -> None:
+    def fit(self, train_data: Any) -> None:
         pass
 
-    def generate_signals(self, data) -> None:
+    def generate_signals(self, data: Any) -> None:
         return None
 
     def _refresh_thresholds(self) -> None:
@@ -142,7 +142,7 @@ class CBSentimentShiftStrategy:
             max(hawkish, self.config.min_diff_score_abs),
         )
 
-    def _check_new_events(self) -> list[dict]:
+    def _check_new_events(self) -> list[dict[str, Any]]:
         if self.nlp is None:
             return []
         now = datetime.now(UTC)
@@ -171,7 +171,7 @@ class CBSentimentShiftStrategy:
                                 "shift": shift, "doc_id": event.get("doc_id", "")})
         return signals
 
-    def _update_trailing_stops(self, prices: dict) -> list[OrderIntent]:
+    def _update_trailing_stops(self, prices: dict[str, Any]) -> list[OrderIntent]:
         exits = []
         for symbol, pos in list(self.open_positions.items()):
             tick = prices.get(symbol)
@@ -223,7 +223,9 @@ class CBSentimentShiftStrategy:
                 del self.open_positions[symbol]
         return exits
 
-    async def generate_intents(self, prices: dict, broker) -> list[OrderIntent]:
+    async def generate_intents(
+        self, prices: dict[str, Any], broker: Any,
+    ) -> list[OrderIntent]:
         self._refresh_thresholds()
         intents = self._update_trailing_stops(prices)
 

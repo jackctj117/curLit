@@ -1,6 +1,7 @@
 """Position sizing — volatility-targeted, Kelly fraction, risk-parity."""
 
 import logging
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -105,13 +106,13 @@ class PositionSizer:
         n = len(cov_matrix)
         cov_values = cov_matrix.values
 
-        def _risk_contribution(w: np.ndarray, cov: np.ndarray) -> np.ndarray:
+        def _risk_contribution(w: np.ndarray[Any, Any], cov: np.ndarray[Any, Any]) -> np.ndarray[Any, Any]:
             portfolio_var = w @ cov @ w
             assert portfolio_var > 0, f"zero portfolio variance with weights {w}"
             marginal = cov @ w
             return w * marginal / np.sqrt(portfolio_var)
 
-        def _objective(w: np.ndarray) -> float:
+        def _objective(w: np.ndarray[Any, Any]) -> float:
             rc = _risk_contribution(w, cov_values)
             target = 1.0 / n
             return float(((rc - target) ** 2).sum())

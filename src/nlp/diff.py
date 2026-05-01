@@ -2,6 +2,7 @@
 
 import difflib
 from dataclasses import dataclass
+from typing import Any
 
 
 @dataclass
@@ -16,7 +17,11 @@ class StatementDiff:
 
 
 class StatementDiffer:
-    def __init__(self, lexicon_scorer=None, similarity_threshold: float = 0.6) -> None:
+    def __init__(
+        self,
+        lexicon_scorer: Any = None,
+        similarity_threshold: float = 0.6,
+    ) -> None:
         if lexicon_scorer is None:
             from src.nlp.lexicon_scorer import LexiconScorer
             lexicon_scorer = LexiconScorer()

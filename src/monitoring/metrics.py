@@ -6,6 +6,7 @@ Centralised gauge, counter, and histogram registry with utility decorators.
 from collections.abc import Callable
 from functools import wraps
 from time import time
+from typing import Any
 
 from prometheus_client import (
     Counter,
@@ -301,10 +302,10 @@ errors_total = Counter(
 
 def track_duration(
     histogram: Histogram, **labels: str,
-) -> Callable[[Callable], Callable]:
+) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Decorator that observes function duration in *histogram*."""
 
-    def decorator(func: Callable) -> Callable:
+    def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
         @wraps(func)
         def wrapper(*args: object, **kwargs: object) -> object:
             start = time()
@@ -318,10 +319,10 @@ def track_duration(
 
 def track_errors(
     service_name: str, category: str = "unknown",
-) -> Callable[[Callable], Callable]:
+) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Decorator that increments fx_errors_total on exception."""
 
-    def decorator(func: Callable) -> Callable:
+    def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
         @wraps(func)
         def wrapper(*args: object, **kwargs: object) -> object:
             try:

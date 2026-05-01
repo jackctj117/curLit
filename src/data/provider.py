@@ -2,6 +2,7 @@
 
 import logging
 from datetime import datetime
+from typing import Any
 
 import pandas as pd
 from sqlalchemy import text
@@ -10,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 
 class DataProvider:
-    def __init__(self, engine) -> None:
+    def __init__(self, engine: Any) -> None:
         self.engine = engine
 
     def get_aligned_series(
