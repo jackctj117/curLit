@@ -89,7 +89,10 @@ class Broker(ABC):
         ...
 
     @abstractmethod
-    async def stream_prices(
+    def stream_prices(
         self, symbols: list[str],
-    ) -> AsyncIterator[dict[str, Any]]:  # async generator
+    ) -> AsyncIterator[dict[str, Any]]:
+        # Implementations are async generators (`async def ... yield`).
+        # ABC uses non-async `def` so the declared return type is
+        # AsyncIterator directly, not Coroutine[..., AsyncIterator].
         ...

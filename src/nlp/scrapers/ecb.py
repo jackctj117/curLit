@@ -24,7 +24,7 @@ class ECBStatementScraper(CBScraper):
             title = link.get_text(strip=True)
             if "monetary policy" not in title.lower():
                 continue
-            date_str = item.get("data-date") or ""
+            date_str = str(item.get("data-date") or "")
             try:
                 d = datetime.fromisoformat(date_str[:10]) if date_str else datetime.utcnow()
             except ValueError:

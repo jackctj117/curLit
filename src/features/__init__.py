@@ -1,6 +1,8 @@
 """Feature computation — signal engineering for FX strategies."""
 
+from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -10,7 +12,7 @@ import pandas as pd
 class FeatureSpec:
     name: str
     dependencies: list[str]
-    compute_fn: callable
+    compute_fn: Callable[..., Any]
     lookback_days: int
 
 
@@ -40,7 +42,10 @@ class FeatureStore:
         def visit(name: str) -> None:
             if name in resolved:
                 return
-            for dep in self.specs.get(name, FeatureSpec(name, [], None, 0)).dependencies:
+            spec = self.specs.get(name)
+            if spec is None:
+                return
+            for dep in spec.dependencies:
                 if dep not in resolved and dep in self.specs:
                     visit(dep)
             resolved.add(name)

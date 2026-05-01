@@ -22,10 +22,10 @@ def decrypt_vault(path: Path, key: bytes) -> dict[str, Any]:
     try:
         from wolfcrypt.ciphers import MODE_GCM, Aes
         aes = Aes(key, MODE_GCM, nonce)
-        return json.loads(aes.decrypt(ct, bytes.fromhex(data.get("tag", ""))))
+        return json.loads(aes.decrypt(ct, bytes.fromhex(data.get("tag", ""))))  # type: ignore[no-any-return]
     except ImportError:
         from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-        return json.loads(AESGCM(key).decrypt(nonce, ct, None))
+        return json.loads(AESGCM(key).decrypt(nonce, ct, None))  # type: ignore[no-any-return]
 
 
 async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, creds: dict[str, Any]) -> None:

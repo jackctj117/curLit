@@ -3,6 +3,7 @@
 import logging
 from abc import ABC, abstractmethod
 from datetime import datetime
+from typing import Any
 
 import pandas as pd
 from sqlalchemy import create_engine, text
@@ -54,7 +55,7 @@ class BaseIngester(ABC):
 
     @staticmethod
     def _upsert_dataframe(
-        df: pd.DataFrame, table_name: str, engine: object, key_cols: list[str],
+        df: pd.DataFrame, table_name: str, engine: Any, key_cols: list[str],
     ) -> int:
         """Generic COPY + ON CONFLICT upsert."""
         if df.empty:

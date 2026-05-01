@@ -26,7 +26,7 @@ class OISCurve:
     quotes: list[OISQuote]
     day_count: DayCountConvention
     discount_factors: dict[date, float] = field(default_factory=dict)
-    _interpolator: object = field(default=None, init=False)
+    _interpolator: Any = field(default=None, init=False)
 
     # -- factory --------------------------------------------------------
 
@@ -80,7 +80,8 @@ class OISCurve:
         else:
             raise ValueError(f"Unknown tenor unit: {unit}")
 
-        return calendar.adjust(raw, BusinessDayConvention.MODIFIED_FOLLOWING)
+        adjusted: date = calendar.adjust(raw, BusinessDayConvention.MODIFIED_FOLLOWING)
+        return adjusted
 
     # -- bootstrapping --------------------------------------------------
 
@@ -189,7 +190,7 @@ class OISCurve:
         tau = year_fraction(d1, d2, dc)
         if tau <= 0:
             return 0.0
-        return (df1 / df2 - 1) / tau  # type: ignore[no-any-return]
+        return (df1 / df2 - 1) / tau
 
     def implied_rate_at_meeting(self, meeting_date: date, meeting_gap_days: int = 42) -> float:
         calendar = CALENDARS[self.currency]

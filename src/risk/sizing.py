@@ -110,7 +110,7 @@ class PositionSizer:
             portfolio_var = w @ cov @ w
             assert portfolio_var > 0, f"zero portfolio variance with weights {w}"
             marginal = cov @ w
-            return w * marginal / np.sqrt(portfolio_var)
+            return np.asarray(w * marginal / np.sqrt(portfolio_var))
 
         def _objective(w: np.ndarray[Any, Any]) -> float:
             rc = _risk_contribution(w, cov_values)

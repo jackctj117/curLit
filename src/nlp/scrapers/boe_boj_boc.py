@@ -30,7 +30,7 @@ class BoEStatementScraper(CBScraper):
                 date_str = ""
                 date_el = item.find("time") or item.find("span", class_="date")
                 if date_el:
-                    date_str = date_el.get("datetime", "") or date_el.get_text(strip=True)
+                    date_str = str(date_el.get("datetime", "") or date_el.get_text(strip=True))
                 try:
                     d = datetime.fromisoformat(date_str[:10]) if date_str else datetime.utcnow()
                 except ValueError:
@@ -104,7 +104,7 @@ class BoCStatementScraper(CBScraper):
                 date_el = item.find("time") or item.find("span", class_="date")
                 d = datetime.utcnow()
                 if date_el:
-                    date_str = date_el.get("datetime", "") or date_el.get_text(strip=True)
+                    date_str = str(date_el.get("datetime", "") or date_el.get_text(strip=True))
                     with contextlib.suppress(ValueError):
                         d = datetime.fromisoformat(date_str[:10])
                 if d < since:

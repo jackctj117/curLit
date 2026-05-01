@@ -24,7 +24,7 @@ class VaultClient:
             resp = json.loads(data)
             if not resp.get("ok"):
                 raise KeyError(f"Credential '{name}': {resp.get('error', 'unknown')}")
-            return resp["value"]
+            return str(resp["value"])
         except FileNotFoundError as exc:
             raise KeyError(
                 f"Vault agent not running (socket {self.socket_path} not found)",
@@ -40,6 +40,6 @@ class VaultClient:
             sock.sendall(json.dumps({"action": "list"}).encode())
             data = sock.recv(4096)
             resp = json.loads(data)
-            return resp.get("names", [])
+            return [str(n) for n in resp.get("names", [])]
         finally:
             sock.close()

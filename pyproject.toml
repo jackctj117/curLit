@@ -147,7 +147,13 @@ strict = true
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true
-exclude = ["tests/", "notebooks/", "labeling/"]
+exclude = [
+    "tests/", "notebooks/", "labeling/",
+    # Auto-generated experimental strategies — outputs of the research
+    # pipeline, not human-edited. Strict typing here would block the
+    # research loop on every new candidate.
+    "src/strategies/_experimental/",
+]
 
 [[tool.mypy.overrides]]
 module = [
@@ -160,6 +166,10 @@ module = [
     "scipy",
     "scipy.*",
     "yaml",
+    "statsmodels.*",
+    "sklearn.*",
+    "yfinance.*",
+    "wolfcrypt.*",
 ]
 ignore_missing_imports = true
 

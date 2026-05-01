@@ -165,7 +165,7 @@ class RateDiffMRStrategy:
         if self._model is None:
             return None
         fair = self._model["alpha"] + self._model["beta"] * spread
-        return (price - fair) / self._model["residual_std"]
+        return float((price - fair) / self._model["residual_std"])
 
     def fit(self, train_data: pd.DataFrame) -> None:
         import statsmodels.api as sm

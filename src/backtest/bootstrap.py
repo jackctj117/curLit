@@ -39,7 +39,7 @@ def stationary_bootstrap(
 
     values = returns.values
     for b in range(n_bootstrap):
-        indices = []
+        indices: list[int] = []
         i = np.random.randint(n)
         while len(indices) < n:
             indices.append(i)

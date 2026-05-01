@@ -189,7 +189,7 @@ class OrderManager:
 
     def reconcile(self) -> dict[str, dict[str, Any]]:
         broker_pos = {p.symbol: p.quantity for p in self.broker.get_positions()}
-        mismatches = {}
+        mismatches: dict[str, dict[str, Any]] = {}
         for sym in broker_pos:
             if abs(broker_pos[sym]) > 1e-6:
                 mismatches.setdefault(sym, {})

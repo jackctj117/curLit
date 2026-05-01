@@ -20,14 +20,14 @@ def run_stress_test(
     strategies: list[Any], data_provider: Any,
 ) -> dict[str, Any]:
     import pandas as pd
-    results = {}
+    results: dict[str, dict[str, float]] = {}
     for name, (start, end) in SCENARIOS.items():
         try:
             data = data_provider.get_range(start, end) if hasattr(data_provider, "get_range") else pd.DataFrame()
         except Exception:
             data = pd.DataFrame()
         if data.empty:
-            results[name] = {"total_return": 0, "max_drawdown": 0, "worst_day": 0}
+            results[name] = {"total_return": 0.0, "max_drawdown": 0.0, "worst_day": 0.0}
             continue
         returns = pd.Series(0.0, index=data.index)
         for strategy in strategies:

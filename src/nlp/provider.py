@@ -24,7 +24,7 @@ class NLPDataProvider:
                 ORDER BY ts DESC
             """)
             df = pd.read_sql(query, self.engine, params={"since": since, "cbs": cbs})
-            return df.to_dict("records")
+            return [dict(r) for r in df.to_dict("records")]
         except Exception:
             logger.debug("No diff events available (table may not exist yet)")
             return []

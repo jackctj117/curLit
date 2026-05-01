@@ -1,6 +1,7 @@
 """Kill switch manager — automatic circuit breakers for risk protection."""
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -12,7 +13,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class KillSwitch:
     name: str
-    condition: callable
+    condition: Callable[[dict[str, Any]], bool]
     action: str
     armed: bool = True
 
