@@ -219,8 +219,14 @@ class CarryVolFilterStrategy:
                 continue
             try:
                 rate = self.data.get_latest_value(series_id, as_of)
-            except Exception:
-                logger.exception("get_latest_value failed for %s", series_id)
+            except Exception as exc:
+                # Use logger.warning (not exception) in tight loops —
+                # logger.exception retains traceback frames + locals,
+                # which can leak slowly under repeated errors (CL-2yta).
+                logger.warning(
+                    "get_latest_value failed for %s: %s: %s",
+                    series_id, type(exc).__name__, exc,
+                )
                 continue
             if rate is not None:
                 rates[ccy] = float(rate)
@@ -276,8 +282,12 @@ class CarryVolFilterStrategy:
             vol_series = self.data.get_series(
                 self.config.vol_index_series, start, end,
             )
-        except Exception:
-            logger.exception("get_series failed for %s", self.config.vol_index_series)
+        except Exception as exc:
+            logger.warning(
+                "get_series failed for %s: %s: %s",
+                self.config.vol_index_series,
+                type(exc).__name__, exc,
+            )
             return 0.0
         if vol_series is None or len(vol_series) < self.config.vol_lookback_days * 0.8:
             return 0.0

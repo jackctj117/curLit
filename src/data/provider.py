@@ -1,10 +1,10 @@
 """Data provider — query aligned time-series data from the database."""
 
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 
 import pandas as pd
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 
 logger = logging.getLogger(__name__)
 
@@ -123,3 +123,97 @@ class DataProvider:
             return df
         df["ts"] = pd.to_datetime(df["ts"])
         return df.pivot_table(index="ts", columns="symbol", values="close", aggfunc="last")
+
+    def get_latest_value(
+        self, series_id: str, as_of: datetime,
+    ) -> float | None:
+        """Return the most recent value of ``series_id`` at or before
+        ``as_of``. Looks in ``macro_data`` first (FRED-style series) then
+        falls back to ``prices`` (price-like series). Returns None if
+        no value exists in either table at or before the cutoff.
+
+        Added for CL-9eli — carry_vol_filter was logging errors every
+        signal interval because this method didn't exist; the missing
+        methods produced 33 errors over 24h and were a candidate for
+        the memory leak in CL-2yta (logger.exception retains traceback
+        objects in tight loops)."""
+        try:
+            with self.engine.connect() as conn:
+                # macro_data.observation_date + value
+                row = conn.execute(
+                    text("""
+                        SELECT value FROM macro_data
+                        WHERE series_id = :sid
+                          AND observation_date <= :as_of
+                        ORDER BY observation_date DESC, release_date DESC
+                        LIMIT 1
+                    """),
+                    {"sid": series_id, "as_of": as_of.date()},
+                ).fetchone()
+                if row is not None and row[0] is not None:
+                    return float(row[0])
+                # Fall back to prices table
+                row = conn.execute(
+                    text("""
+                        SELECT close FROM prices
+                        WHERE symbol = :sid AND ts <= :as_of
+                        ORDER BY ts DESC LIMIT 1
+                    """),
+                    {"sid": series_id, "as_of": as_of},
+                ).fetchone()
+                if row is not None and row[0] is not None:
+                    return float(row[0])
+        except Exception as exc:
+            logger.warning(
+                "get_latest_value(%s, %s) failed: %s: %s",
+                series_id, as_of, type(exc).__name__, exc,
+            )
+        return None
+
+    def get_series(
+        self, series_id: str, start: datetime, end: datetime,
+    ) -> pd.Series:
+        """Return a time-indexed Series of ``series_id`` between
+        ``start`` and ``end``. Same fallback rule as
+        ``get_latest_value`` — macro_data first, prices second.
+        Empty Series if no data found."""
+        try:
+            with self.engine.connect() as conn:
+                df = pd.read_sql(
+                    text("""
+                        SELECT observation_date AS ts, value AS v
+                        FROM macro_data
+                        WHERE series_id = :sid
+                          AND observation_date >= :start
+                          AND observation_date <= :end
+                        ORDER BY observation_date
+                    """),
+                    conn,
+                    params={
+                        "sid": series_id,
+                        "start": start.date(), "end": end.date(),
+                    },
+                )
+                if df.empty:
+                    df = pd.read_sql(
+                        text("""
+                            SELECT ts, close AS v FROM prices
+                            WHERE symbol = :sid
+                              AND ts >= :start AND ts <= :end
+                            ORDER BY ts
+                        """),
+                        conn,
+                        params={
+                            "sid": series_id, "start": start, "end": end,
+                        },
+                    )
+        except Exception as exc:
+            logger.warning(
+                "get_series(%s) failed: %s: %s",
+                series_id, type(exc).__name__, exc,
+            )
+            return pd.Series(dtype=float)
+        if df.empty:
+            return pd.Series(dtype=float)
+        df["ts"] = pd.to_datetime(df["ts"])
+        return df.set_index("ts")["v"].astype(float)
