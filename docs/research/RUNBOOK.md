@@ -489,29 +489,52 @@ ls -t data/research/runs/ | head -1 | xargs -I{} cat data/research/runs/{}
 
 ## Cron entry (currently installed)
 
-```cron
-0 3 * * * /path/to/.venv/bin/python -m scripts.research_loop \
-    >> /path/to/logs/research_loop_cron.log 2>&1
+Daily at 3 AM local, three steps chained sequentially:
+
+```
+(1) discover_polymarket_markets  → refresh polymarket_markets.yaml
+(2) seed_polymarket_history       → pull probability history (rolling 2y)
+(3) research_loop                 → ingest → idea → debate pipeline
 ```
 
-Daily at 3 AM local. Verify on this machine with `crontab -l`. The
-auto-loader at `src/dotenv_bootstrap.py` reads `.env` from the
-project root so the cron job inherits credentials without sourcing.
+Verify on this machine with `crontab -l`. The auto-loader at
+`src/dotenv_bootstrap.py` reads `.env` from the project root so the
+cron job inherits credentials without sourcing.
 
-What fires per cron run (no operator action):
-- Ingest: hits all 9 feeds, dedupes against `data/research/extracts/`.
-  New papers cost ~$0.01 each via DeepSeek extractor.
-- Idea: ideates new extracts via DeepSeek. Most DECLINE; PROPOSED ones
-  fire **Pushover/Telegram alert** and hold at GATE 1.
+### What each step does
 
-What does NOT fire automatically:
-- Implementer + Bull/Bear debate — only run after operator approves
-  at GATE 1.
+**(1) discover_polymarket_markets** (no LLM cost)
+- Hits Polymarket Gamma `/markets`, filters to FX/macro keywords +
+  min volume threshold, ranks by volume
+- Updates `configs/polymarket_markets.yaml`: replaces `PLACEHOLDER_*`
+  tokens with real CLOB token_ids; operator-edited entries are preserved
+- Output: `logs/polymarket_discover_cron.log`
+
+**(2) seed_polymarket_history** (no LLM cost)
+- Pulls per-market probability history via Polymarket CLOB API for
+  every market in the YAML, upserts to Postgres `prices` table with
+  symbols `POLY:<slug>`
+- `--verify` flag prints per-symbol counts after seeding
+- Output: `logs/polymarket_seed_cron.log`
+
+**(3) research_loop** (DeepSeek tokens)
+- Hits all 9 feeds (arXiv + substacks + Polymarket research extracts),
+  dedupes against `data/research/extracts/`. New items cost ~$0.01
+  each via DeepSeek extractor.
+- Idea agent ideates new extracts via DeepSeek. Most DECLINE; PROPOSED
+  ones fire **Pushover/Telegram alert** and hold at GATE 1.
+- Output: `logs/research_loop_cron.log`
+
+### What does NOT fire automatically
+
+- Implementer + Bull/Bear debate (Claude tokens) — only run after
+  operator approves at GATE 1.
 - Paper-shadow registrar — only after operator approves at GATE 2.
 
 **Per-day automatic spend cap:** ≈ $0.50 worst case (50 new items ×
 extract + idea). Implementer + debate spend (~$0.20–0.50/candidate)
-is bounded by your engagement.
+is bounded by your engagement. Polymarket discovery + seed cost $0
+(both APIs are free).
 
 The loop is idempotent — extra runs are cheap (each phase short-
 circuits on already-processed work) and safe (state writes are

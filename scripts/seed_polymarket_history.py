@@ -76,6 +76,12 @@ def main(argv: list[str] | None = None) -> int:
         help="ISO date for the upper bound (e.g. 2026-05-01)",
     )
     parser.add_argument(
+        "--verify", action="store_true",
+        help="After seeding, query Postgres for per-symbol counts + "
+             "latest probability. Useful as the operator sanity-check "
+             "step from the runbook.",
+    )
+    parser.add_argument(
         "-v", "--verbose", action="store_true",
         help="Enable DEBUG-level logging",
     )
@@ -103,11 +109,43 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
 
-    ingester = PolymarketHistoryIngester(
-        db_url=_build_db_url(), markets=markets,
-    )
+    db_url = _build_db_url()
+    ingester = PolymarketHistoryIngester(db_url=db_url, markets=markets)
     rows = ingester.run(start=args.start, end=args.end)
     print(f"polymarket: wrote {rows} rows for {len(markets)} markets")
+
+    # Verification (step 5 of the operator workflow): query Postgres
+    # for current per-symbol counts and the latest probability so the
+    # operator can sanity-check at a glance after seeding.
+    if args.verify:
+        from sqlalchemy import create_engine, text  # noqa: PLC0415
+        engine = create_engine(db_url)
+        with engine.connect() as conn:
+            result = conn.execute(text("""
+                SELECT symbol,
+                       COUNT(*) AS n,
+                       MAX(ts) AS latest_ts,
+                       (
+                           SELECT close FROM prices p2
+                           WHERE p2.symbol = p1.symbol
+                           ORDER BY ts DESC LIMIT 1
+                       ) AS latest_prob
+                FROM prices p1
+                WHERE symbol LIKE 'POLY:%'
+                GROUP BY symbol
+                ORDER BY n DESC
+            """)).fetchall()
+        if not result:
+            print("(verification: no POLY:* rows in prices table)")
+        else:
+            print(f"\nPOLY:* rows in prices ({len(result)} symbols):")
+            print(f"  {'symbol':<50s} {'n':>5s}  {'latest':>10s}  {'prob':>6s}")
+            for row in result:
+                print(
+                    f"  {str(row[0]):<50s} {row[1]:>5d}  "
+                    f"{str(row[2])[:10]:>10s}  "
+                    f"{float(row[3]):>6.3f}",
+                )
     return 0
 
 
