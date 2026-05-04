@@ -1,0 +1,116 @@
+{
+  "rows": [
+    {
+      "prompt_name": "carry_extract",
+      "provider": "claude",
+      "model": "claude-opus-4-7",
+      "text": "```json\n{\n  \"pair\": \"G10 carry basket (long top-3 yield, short bottom-3 yield)\",\n  \"side\": \"long high-yield / short low-yield, scaled by inverse global FX vol\",\n  \"signal\": \"lagged global FX volatility (cross-sectional avg of |daily FX returns| across G10, monthly); reduce/flip carry exposure when vol is in top quintile or rising MoM\",\n  \"evidence\": \"Menkhoff et al. (2012): unconditional carry SR ~0.7; vol-conditioned SR ~1.1, 1983-2010 G10 monthly. High-yield FX loads negatively on global FX vol innovations (priced risk factor).\",\n  \"costs\": \"G10 spot bid-ask ~1-3bps; monthly rebalance ~5-10bps RT; swap points embedded in carry; capacity high. Net SR uplift ~0.3-0.4 post-cost plausible.\",\n  \"decline_reason\": null\n}\n```",
+      "input_tokens": 280,
+      "output_tokens": 333,
+      "usd_cost": 0.029175,
+      "elapsed_sec": 7.381136894226074,
+      "quality": {
+        "structure": 0.5,
+        "density": 0.9835390946502057,
+        "keyword_presence": 1.0,
+        "weighted": 0.7950617283950617
+      }
+    },
+    {
+      "prompt_name": "carry_extract",
+      "provider": "deepseek",
+      "model": "deepseek-reasoner",
+      "text": "{\n  \"pair\": \"G10 carry basket (short high-yield, long low-yield)\",\n  \"side\": \"short\",\n  \"signal\": \"lagged global FX volatility increases\",\n  \"evidence\": \"Conditional Sharpe ratio of 1.1 vs unconditional 0.7; high-yield currencies underperform low-yield currencies in periods of rising global FX volatility (1983-2010, monthly G10 data)\",\n  \"costs\": \"monthly trading frequency; transaction costs may reduce net returns\",\n  \"decline_reason\": null\n}",
+      "input_tokens": 164,
+      "output_tokens": 257,
+      "usd_cost": 0.0006530300000000001,
+      "elapsed_sec": 4.7717180252075195,
+      "quality": {
+        "structure": 1.0,
+        "density": 0.9730941704035875,
+        "keyword_presence": 1.0,
+        "weighted": 0.9919282511210763
+      }
+    },
+    {
+      "prompt_name": "rate_diff_debate",
+      "provider": "claude",
+      "model": "claude-opus-4-7",
+      "text": "Here's a critique:\n\n- **Economic mechanism is thin and regime-dependent.** Rate differentials *do* explain EUR/USD over some windows but the relationship is unstable: 2015-19 was ECB-NIRP/Fed-hiking, 2020-21 was COVID liquidity, 2022-23 was the energy/terms-of-trade shock that decoupled EUR from rates entirely. An R\u00b2 floor of 0.10 is extremely permissive \u2014 you're effectively saying \"trade whenever rates explain >10% of FX,\" which is barely above noise and lets you trade through regime breaks rather than sit out. A two-factor extension (terms-of-trade, relative equity flows, or risk-on proxy) would make the mechanism more defensible.\n\n- **Statistical soundness is weak on several axes.** (i) Two-year rolling OLS with weekly refit on overlapping daily data has serial correlation in residuals \u2014 your z-score's \"sigma\" is understated, so 1.5\u03c3 entries fire more often than the Gaussian assumption implies. (ii) You haven't reported whether the residual is actually stationary (ADF/KPSS on the rolling residual, or half-life estimate); without a half-life materially shorter than 252 days, mean-reversion is assumed not demonstrated. (iii) Sharpe 0.6 over 10 years on one currency pair with one mechanism is not robust \u2014 what's the deflated Sharpe after accounting for the parameter search over (window, entry, exit, stop, R\u00b2 floor)? (iv) No walk-forward / out-of-sample split is mentioned.\n\n- **Costs are likely understated.** 2bp round-trip is fine for top-of-book EUR/USD spot in calm conditions, but mean-reversion entries by construction trigger when price has *moved against fair value* \u2014 i.e. during stress, news, or one-sided flow, exactly when spreads widen and slippage spikes. Realistic all-in including slippage on stops is closer to 3-5bp; that probably knocks Sharpe to 0.3-0.4.\n\n- **Capacity is high but not the binding constraint \u2014 alpha decay is.** EUR/USD spot can absorb hundreds of millions per clip, so notional capacity is not the issue. The real constraint is that this is a well-known carry/value factor; crowding means the edge is small and crowded de-risking events (e.g. Aug 2015, Mar 2020) will hit you simultaneously with everyone else running similar models.\n\n- **Live failure mode is a slow-bleed regime change followed by a stop-out.** The model will keep adding to a \"cheap EUR vs rates\" position while a structural driver (energy shock, balance-of-payments shift, divergent fiscal path) pushes the residual wider. Weekly refits will *partially* absorb the new regime into the fair value, which paradoxically can flip your signal near the worst point. The 3.5\u03c3 hard stop, given understated sigma and gappy FX moves around ECB/FOMC/CPI, will realize as a >3.5\u03c3 loss \u2014 expect the true left-tail trade to be 1.5-2x the \"hard stop\" size. Max DD of 12% in-sample is optimistic; plan for 18-25% live.",
+      "input_tokens": 270,
+      "output_tokens": 1061,
+      "usd_cost": 0.083625,
+      "elapsed_sec": 23.649410009384155,
+      "quality": {
+        "structure": 1.0,
+        "density": 0.9982338396326387,
+        "keyword_presence": 0.75,
+        "weighted": 0.9244701518897916
+      }
+    },
+    {
+      "prompt_name": "rate_diff_debate",
+      "provider": "deepseek",
+      "model": "deepseek-reasoner",
+      "text": "**Critique of EUR/USD Mean-Reversion Strategy**\n\n- **Economic mechanism is weak and unstable.** The strategy assumes a simple linear relationship between EUR/USD and the 2-year rate differential (US\u2013DE), but FX rates are driven by complex factors including risk appetite, growth differentials, and central bank policy shifts. An R\u00b2 floor of 0.10 means 90% of variance is unexplained, so the \u201cfair value\u201d is essentially noise. The long 252-day lookback may capture a spurious cointegrating relationship that breaks down during regime changes (e.g., post-2022 rate hiking cycles where yield differentials moved dramatically without proportional FX moves).\n\n- **Backtest statistical soundness is questionable despite modest Sharpe.** The 2015\u20132025 period includes multiple regimes (low rates, tapering, COVID, aggressive tightening), so 0.6 Sharpe net of 2bp costs is not impressive. The model uses a weekly retrained 2-year window, reducing look-ahead but still prone to overfitting \u2013 the entry/exit thresholds (1.5\u03c3/0.3\u03c3) and hard stop (3.5\u03c3) likely were tuned in-sample. No mention of out-of-sample testing or bootstrapped confidence intervals for the Sharpe ratio. The low R\u00b2 gate may simply avoid trading in regimes where the model has no edge, inflating backtest Sharpe by cherry-picking quiet periods.\n\n- **Capacity is large but alpha decay is a risk.** EUR/USD is the most liquid FX pair, so the strategy can absorb significant capital without market impact. However, mean-reversion signals based on a single publicly observable factor (rate differential) are widely exploited by high-frequency and systematic funds. As more capital chases the same trade, the reversion speed increases and the edge erodes. The 2bp round-trip cost is realistic, but if the strategy trades frequently (e.g., multiple times per year), net returns may degrade faster than backtest suggests.\n\n- **Live failure mode: persistent deviation and stop-outs.** The biggest risk is a structural break in the EUR/USD\u2013rate differential relationship (e.g., a currency crisis or divergence in monetary policy frameworks). In such a scenario, the residual could exceed 3.5\u03c3 quickly, triggering a hard stop loss. Conversely, during trending markets (e.g., 2015\u20132016 EUR weakness despite rising rates), the strategy might repeatedly enter mean-reversion trades that are stopped out, generating a string of small losses that accumulate into a drawdown larger than the 12% backtest maximum. The weekly re-estimation cannot adapt fast enough to a regime shift, and the R\u00b2 gate may remain open if the fit remains above 0.10 even when the relationship is misleading.",
+      "input_tokens": 176,
+      "output_tokens": 1473,
+      "usd_cost": 0.0033226700000000002,
+      "elapsed_sec": 21.626014947891235,
+      "quality": {
+        "structure": 1.0,
+        "density": 0.991254752851711,
+        "keyword_presence": 0.5,
+        "weighted": 0.8473764258555133
+      }
+    },
+    {
+      "prompt_name": "decline_check",
+      "provider": "claude",
+      "model": "claude-opus-4-7",
+      "text": "{\"tradable\": false, \"reason\": \"Pure-theory paper with no empirical implementation, dataset, or testable trading signal\u2014only derives Euler conditions under habit-formation utility.\"}",
+      "input_tokens": 142,
+      "output_tokens": 65,
+      "usd_cost": 0.007005,
+      "elapsed_sec": 2.351591110229492,
+      "quality": {
+        "structure": 1.0,
+        "density": 1.0,
+        "keyword_presence": 0.5,
+        "weighted": 0.85
+      }
+    },
+    {
+      "prompt_name": "decline_check",
+      "provider": "deepseek",
+      "model": "deepseek-reasoner",
+      "text": "{\n  \"tradable\": false,\n  \"reason\": \"The paper is a pure theoretical model with no empirical section, deriving Euler conditions under habit-formation utility. It lacks any empirical testing or trading strategy, making it unsuitable for trading purposes.\"\n}",
+      "input_tokens": 79,
+      "output_tokens": 149,
+      "usd_cost": 0.00036976,
+      "elapsed_sec": 2.8342700004577637,
+      "quality": {
+        "structure": 1.0,
+        "density": 0.984313725490196,
+        "keyword_presence": 1.0,
+        "weighted": 0.9952941176470589
+      }
+    }
+  ],
+  "summary": {
+    "claude": {
+      "n_prompts": 3,
+      "total_usd": 0.119805,
+      "avg_quality": 0.857,
+      "avg_latency_sec": 11.13,
+      "usd_per_quality": 0.046625
+    },
+    "deepseek": {
+      "n_prompts": 3,
+      "total_usd": 0.004345,
+      "avg_quality": 0.945,
+      "avg_latency_sec": 9.74,
+      "usd_per_quality": 0.001533
+    }
+  }
+}

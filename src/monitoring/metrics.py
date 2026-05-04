@@ -293,6 +293,16 @@ clock_drift_seconds = Gauge(
     "Local clock offset from NTP reference, in seconds (signed)",
 )
 
+# CL-47j: Airflow DAG-level outcome counter. Wired from
+# src/monitoring/airflow_callbacks.py via DAG default_args. Lets a
+# single Grafana panel show success-rate trend per DAG without
+# scraping Airflow's own metrics endpoint.
+dag_runs = Counter(
+    "fx_dag_runs_total",
+    "Airflow DAG runs by terminal status",
+    ["dag_id", "status"],
+)
+
 daily_pnl_usd = Gauge(
     "fx_daily_pnl_usd",
     "Today's realised + unrealised P&L",

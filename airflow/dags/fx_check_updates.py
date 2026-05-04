@@ -11,7 +11,16 @@ def check_updates() -> None:
     logger.info("check_updates — stub (wire to scripts/check_updates.py)")
 
 
-default_args = {"owner": "curlit", "retries": 1}
+try:
+    from src.monitoring.airflow_callbacks import on_dag_failure, on_dag_success
+except Exception:  # noqa: BLE001
+    on_dag_success = on_dag_failure = None  # type: ignore[assignment]
+
+default_args = {
+    "owner": "curlit", "retries": 1,
+    "on_success_callback": on_dag_success,
+    "on_failure_callback": on_dag_failure,
+}
 
 with DAG(
     "fx_check_updates",

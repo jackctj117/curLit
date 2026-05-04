@@ -70,10 +70,17 @@ def compute_cot_features() -> None:
     logger.info("COT features computed for %d symbols", len(df["symbol"].unique()))
 
 
+try:
+    from src.monitoring.airflow_callbacks import on_dag_failure, on_dag_success
+except Exception:  # noqa: BLE001
+    on_dag_success = on_dag_failure = None  # type: ignore[assignment]
+
 default_args = {
     "owner": "curlit",
     "retries": 3,
     "retry_delay": timedelta(minutes=30),
+    "on_success_callback": on_dag_success,
+    "on_failure_callback": on_dag_failure,
 }
 
 with DAG(

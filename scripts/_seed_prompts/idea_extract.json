@@ -1,0 +1,23 @@
+[
+  {
+    "name": "carry_extract",
+    "system": "You are an FX research analyst. Read paper abstracts and extract a falsifiable trading hypothesis in JSON: {pair, side, signal, evidence, costs, decline_reason}. If the paper isn't tradable, populate decline_reason. Be terse.",
+    "user": "Paper: 'Carry Trades and Global Foreign Exchange Volatility' by Menkhoff, Sarno, Schmeling, Schrimpf (2012). The paper documents a strong link between carry trade returns and global FX volatility. High-yield currencies underperform low-yield currencies in periods of rising global FX vol. Sample: 1983-2010, G10 monthly returns. Sharpe 0.7 for the unconditional carry trade; 1.1 when conditioned on lagged global FX vol.\n\nExtract a hypothesis.",
+    "expected_keywords": ["carry", "volatility", "high-yield", "low-yield"],
+    "expected_format": "json"
+  },
+  {
+    "name": "rate_diff_debate",
+    "system": "You are a quant strategy reviewer. Critique the proposed strategy in 3-5 bullet points. Focus on: (a) economic mechanism, (b) statistical soundness of the backtest, (c) capacity, (d) what the live failure mode looks like.",
+    "user": "Proposed strategy: EUR/USD mean reverts to its 252-day OLS fair value as a function of (US_2Y - DE_2Y). Z-score entry at 1.5 sigma, exit at 0.3 sigma, hard stop at 3.5 sigma. R^2 floor 0.10 to gate trading. Backtest 2015-2025 shows Sharpe 0.6 net of 2bp round-trip, max DD 12%. The model retrains weekly on a 2-year rolling window.\n\nCritique.",
+    "expected_keywords": ["mean reversion", "rate", "stationary", "regime"],
+    "expected_format": "free-form"
+  },
+  {
+    "name": "decline_check",
+    "system": "Decide if a paper is tradable. Output JSON: {tradable: true|false, reason}. Be conservative — pure-theory, single-stock, or HFT papers should be declined.",
+    "user": "Paper: 'A General Equilibrium Model of Stochastic Discount Factors and Asset Prices.' Theoretical paper deriving the Euler condition under a habit-formation utility specification. No empirical section.",
+    "expected_keywords": ["theoretical", "no empirical"],
+    "expected_format": "json"
+  }
+]
