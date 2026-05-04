@@ -1,0 +1,349 @@
+{
+  "title": "curLit — Portfolio",
+  "uid": "curlit-portfolio",
+  "tags": ["curlit", "portfolio"],
+  "timezone": "utc",
+  "schemaVersion": 38,
+  "refresh": "30s",
+  "time": {"from": "now-24h", "to": "now"},
+  "templating": {
+    "list": [
+      {
+        "name": "strategy",
+        "type": "query",
+        "datasource": {"type": "prometheus", "uid": "Prometheus"},
+        "query": "label_values(fx_strategy_attributed_pnl_usd, strategy)",
+        "includeAll": true,
+        "multi": true,
+        "current": {"text": "All", "value": "$__all"},
+        "label": "Strategy"
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "row",
+      "title": "System health (CL-9eli, CL-gnhu, CL-unlt, CL-7us)",
+      "collapsed": false,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 0}
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Engine up",
+      "description": "fx_service_up — 1 = engine alive + heartbeat fresh, 0 = dead.",
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "targets": [{"expr": "fx_service_up{service=\"live_engine\"}", "refId": "A"}],
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {"type": "value", "options": {"0": {"text": "DOWN", "color": "red"}, "1": {"text": "UP", "color": "green"}}}
+          ],
+          "thresholds": {"mode": "absolute", "steps": [{"value": null, "color": "red"}, {"value": 1, "color": "green"}]}
+        }
+      },
+      "options": {"colorMode": "background", "graphMode": "none", "textMode": "value"},
+      "gridPos": {"h": 4, "w": 4, "x": 0, "y": 1}
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Source drift",
+      "description": "fx_engine_source_drift — 1 means the running engine is on stale code vs working tree (CL-9eli post-mortem). Restart to clear.",
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "targets": [{"expr": "fx_engine_source_drift", "refId": "A"}],
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {"type": "value", "options": {"0": {"text": "FRESH", "color": "green"}, "1": {"text": "STALE — RESTART", "color": "red"}}}
+          ],
+          "thresholds": {"mode": "absolute", "steps": [{"value": null, "color": "green"}, {"value": 1, "color": "red"}]}
+        }
+      },
+      "options": {"colorMode": "background", "graphMode": "none", "textMode": "value"},
+      "gridPos": {"h": 4, "w": 4, "x": 4, "y": 1}
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Clock drift (s)",
+      "description": "fx_clock_drift_seconds — local clock vs NTP. |0.1s| triggers WARN; reconciliation tolerates 30s window. Persistent drift means VM time-stop or chrony failure.",
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "targets": [{"expr": "fx_clock_drift_seconds", "refId": "A"}],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 3,
+          "thresholds": {"mode": "absolute", "steps": [{"value": null, "color": "green"}, {"value": 0.1, "color": "orange"}, {"value": 1.0, "color": "red"}]}
+        }
+      },
+      "options": {"colorMode": "background", "graphMode": "area", "textMode": "value_and_name"},
+      "gridPos": {"h": 4, "w": 4, "x": 8, "y": 1}
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Reconciliation mismatches",
+      "description": "fx_reconciliation_mismatches — daily OANDA-vs-internal-journal diff (CL-unlt). Any non-zero halts the morning checklist.",
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "targets": [{"expr": "fx_reconciliation_mismatches", "refId": "A"}],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {"mode": "absolute", "steps": [{"value": null, "color": "green"}, {"value": 1, "color": "red"}]}
+        }
+      },
+      "options": {"colorMode": "background", "graphMode": "none", "textMode": "value"},
+      "gridPos": {"h": 4, "w": 4, "x": 12, "y": 1}
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "Clean recon days",
+      "description": "fx_reconciliation_clean_days_total — counter of zero-mismatch daily reconciliations. Treat the streak break as the alert.",
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "targets": [{"expr": "fx_reconciliation_clean_days_total", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "short"}},
+      "options": {"colorMode": "value", "graphMode": "area", "textMode": "value"},
+      "gridPos": {"h": 4, "w": 4, "x": 16, "y": 1}
+    },
+    {
+      "id": 7,
+      "type": "stat",
+      "title": "Account equity",
+      "description": "fx_account_equity_usd — total NAV.",
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "targets": [{"expr": "fx_account_equity_usd", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "currencyUSD", "decimals": 0}},
+      "options": {"colorMode": "value", "graphMode": "area", "textMode": "value"},
+      "gridPos": {"h": 4, "w": 4, "x": 20, "y": 1}
+    },
+
+    {
+      "id": 10,
+      "type": "row",
+      "title": "Portfolio (CL-5lq, CL-2yta)",
+      "collapsed": false,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 5}
+    },
+    {
+      "id": 11,
+      "type": "gauge",
+      "title": "Drawdown",
+      "description": "fx_portfolio_drawdown_pct — peak-to-trough %. -20% = drawdown_limit kill switch fires.",
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "targets": [{"expr": "fx_portfolio_drawdown_pct", "refId": "A"}],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit", "min": -0.30, "max": 0,
+          "thresholds": {"mode": "absolute", "steps": [{"value": null, "color": "red"}, {"value": -0.20, "color": "orange"}, {"value": -0.10, "color": "yellow"}, {"value": -0.03, "color": "green"}]}
+        }
+      },
+      "options": {"showThresholdLabels": false, "showThresholdMarkers": true},
+      "gridPos": {"h": 7, "w": 6, "x": 0, "y": 6}
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "Leverage",
+      "description": "Gross = sum(|notional|)/equity, Net = sum(notional)/equity. Gross >2× → review.",
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "targets": [
+        {"expr": "fx_portfolio_gross_leverage", "refId": "A", "legendFormat": "gross"},
+        {"expr": "fx_portfolio_net_leverage", "refId": "B", "legendFormat": "net"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "short", "custom": {"drawStyle": "line", "lineWidth": 2}}},
+      "gridPos": {"h": 7, "w": 9, "x": 6, "y": 6}
+    },
+    {
+      "id": 13,
+      "type": "timeseries",
+      "title": "Daily P&L",
+      "description": "fx_daily_pnl_usd — per day. Negative spike beyond -3% triggers daily_loss_limit (halt_new).",
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "targets": [{"expr": "fx_daily_pnl_usd", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "currencyUSD", "custom": {"drawStyle": "bars"}}},
+      "gridPos": {"h": 7, "w": 9, "x": 15, "y": 6}
+    },
+
+    {
+      "id": 20,
+      "type": "row",
+      "title": "Allocation + regime (CL-5lq, CL-7j9, CL-15r4)",
+      "collapsed": false,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 13}
+    },
+    {
+      "id": 21,
+      "type": "piechart",
+      "title": "Allocation by strategy",
+      "description": "fx_strategy_allocation — target weight per strategy from PortfolioCoordinator. Sum should equal 1.0 across live strategies.",
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "targets": [{"expr": "fx_strategy_allocation{strategy=~\"$strategy\"}", "refId": "A", "legendFormat": "{{strategy}}"}],
+      "options": {"pieType": "donut", "legend": {"displayMode": "table", "placement": "right", "values": ["value", "percent"]}},
+      "fieldConfig": {"defaults": {"unit": "percentunit"}},
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 14}
+    },
+    {
+      "id": 22,
+      "type": "timeseries",
+      "title": "Exposure multiplier",
+      "description": "fx_strategy_exposure_mult — coordinator's runtime override (regime + perf override). 1.0 = full size, 0.5 = half (e.g. correlation crisis).",
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "targets": [{"expr": "fx_strategy_exposure_mult{strategy=~\"$strategy\"}", "refId": "A", "legendFormat": "{{strategy}}"}],
+      "fieldConfig": {"defaults": {"unit": "short", "min": 0, "max": 1.5}},
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 14}
+    },
+    {
+      "id": 23,
+      "type": "stat",
+      "title": "Correlation regime",
+      "description": "fx_correlation_regime — 0=normal, 1=stressed (75% exposure), 2=crisis (50% + reduce_50pct kill switch).",
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "targets": [{"expr": "fx_correlation_regime", "refId": "A"}],
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {"type": "value", "options": {"0": {"text": "NORMAL", "color": "green"}, "1": {"text": "STRESSED", "color": "orange"}, "2": {"text": "CRISIS", "color": "red"}}}
+          ]
+        }
+      },
+      "options": {"colorMode": "background", "graphMode": "none", "textMode": "value"},
+      "gridPos": {"h": 4, "w": 8, "x": 16, "y": 14}
+    },
+    {
+      "id": 24,
+      "type": "timeseries",
+      "title": "Max pairwise correlation",
+      "description": "fx_portfolio_correlation_max — when this exceeds 0.9, strategy_correlation_spike kill switch fires (reduce_50pct).",
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "targets": [{"expr": "fx_portfolio_correlation_max", "refId": "A"}],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short", "min": 0, "max": 1,
+          "thresholds": {"mode": "absolute", "steps": [{"value": null, "color": "green"}, {"value": 0.85, "color": "orange"}, {"value": 0.9, "color": "red"}]},
+          "custom": {"thresholdsStyle": {"mode": "line"}}
+        }
+      },
+      "gridPos": {"h": 4, "w": 8, "x": 16, "y": 18}
+    },
+
+    {
+      "id": 30,
+      "type": "row",
+      "title": "Attribution table (CL-8dq, CL-mdle)",
+      "collapsed": false,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 22}
+    },
+    {
+      "id": 31,
+      "type": "table",
+      "title": "Per-strategy attributed P&L",
+      "description": "fx_strategy_attributed_pnl{kind=...} — realized vs unrealized vs the CL-mdle decomposition (signal alpha, spread, slippage, swap). Sum of components ≈ realized + unrealized when TCA was recorded.",
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "targets": [
+        {"expr": "fx_strategy_attributed_pnl{strategy=~\"$strategy\"}", "refId": "A", "format": "table", "instant": true}
+      ],
+      "transformations": [
+        {"id": "merge"},
+        {"id": "organize", "options": {
+          "excludeByName": {"Time": true, "__name__": true, "instance": true, "job": true},
+          "indexByName": {"strategy": 0, "kind": 1, "Value": 2}
+        }},
+        {"id": "groupingToMatrix", "options": {"columnField": "kind", "rowField": "strategy", "valueField": "Value"}}
+      ],
+      "fieldConfig": {
+        "defaults": {"unit": "currencyUSD", "decimals": 2},
+        "overrides": [
+          {"matcher": {"id": "byName", "options": "strategy\\kind"}, "properties": [{"id": "displayName", "value": "Strategy"}]}
+        ]
+      },
+      "gridPos": {"h": 8, "w": 16, "x": 0, "y": 23}
+    },
+    {
+      "id": 32,
+      "type": "timeseries",
+      "title": "Per-strategy rolling Sharpe",
+      "description": "fx_strategy_attributed_sharpe — annualized Sharpe of attributed daily returns. Below 0.3 over a quarter → review for retirement.",
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "targets": [{"expr": "fx_strategy_attributed_sharpe{strategy=~\"$strategy\"}", "refId": "A", "legendFormat": "{{strategy}}"}],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short", "decimals": 2,
+          "thresholds": {"mode": "absolute", "steps": [{"value": null, "color": "red"}, {"value": 0.3, "color": "orange"}, {"value": 0.7, "color": "green"}]}
+        }
+      },
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 23}
+    },
+
+    {
+      "id": 40,
+      "type": "row",
+      "title": "Risk + ops (CL-7j9, CL-47j)",
+      "collapsed": false,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 31}
+    },
+    {
+      "id": 41,
+      "type": "state-timeline",
+      "title": "Kill switch armed/triggered",
+      "description": "fx_kill_switch_state — 1 = armed (ready), 0 = triggered/disarmed. Each row is one switch.",
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "targets": [{"expr": "fx_kill_switch_state", "refId": "A", "legendFormat": "{{switch_name}}"}],
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {"type": "value", "options": {"0": {"text": "TRIGGERED", "color": "red"}, "1": {"text": "armed", "color": "green"}}}
+          ]
+        }
+      },
+      "options": {"alignValue": "left", "rowHeight": 0.7, "showValue": "auto"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 32}
+    },
+    {
+      "id": 42,
+      "type": "timeseries",
+      "title": "Kill switches triggered (rate)",
+      "description": "rate(fx_kill_switch_triggered_total[1h]) — any non-zero spike is news.",
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "targets": [{"expr": "increase(fx_kill_switch_triggered_total[1h])", "refId": "A", "legendFormat": "{{switch_name}}/{{action}}"}],
+      "fieldConfig": {"defaults": {"unit": "short", "custom": {"drawStyle": "bars"}}},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 32}
+    },
+    {
+      "id": 43,
+      "type": "timeseries",
+      "title": "Conflicts rate",
+      "description": "fx_portfolio_conflicts_rate — fraction of intent collisions per rebalance cycle. Persistent >0.1 means strategies are crowding.",
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "targets": [{"expr": "fx_portfolio_conflicts_rate", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1}},
+      "gridPos": {"h": 6, "w": 8, "x": 0, "y": 40}
+    },
+    {
+      "id": 44,
+      "type": "timeseries",
+      "title": "Ingestion success rate",
+      "description": "rate(fx_ingestion_runs_total{status=\"success\"})/total — should hover near 1. Drops mean upstream API failure (FRED, yfinance).",
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "targets": [{"expr": "sum by(source) (rate(fx_ingestion_runs_total{status=\"success\"}[1h])) / sum by(source) (rate(fx_ingestion_runs_total[1h]))", "refId": "A", "legendFormat": "{{source}}"}],
+      "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1.05}},
+      "gridPos": {"h": 6, "w": 8, "x": 8, "y": 40}
+    },
+    {
+      "id": 45,
+      "type": "timeseries",
+      "title": "Data freshness",
+      "description": "fx_data_freshness_seconds{symbol=\"_all\"} per source — how long since last successful ingest. >24h means a daily run failed silently.",
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "targets": [{"expr": "fx_data_freshness_seconds{symbol=\"_all\"}", "refId": "A", "legendFormat": "{{source}}"}],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s", "decimals": 0,
+          "thresholds": {"mode": "absolute", "steps": [{"value": null, "color": "green"}, {"value": 86400, "color": "orange"}, {"value": 172800, "color": "red"}]}
+        }
+      },
+      "gridPos": {"h": 6, "w": 8, "x": 16, "y": 40}
+    }
+  ]
+}
