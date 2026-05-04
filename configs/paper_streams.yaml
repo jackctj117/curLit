@@ -72,6 +72,44 @@ feeds:
     source_label: Macro Hive
 
   # ============================================================== #
+  # NBER working papers (CL-kxcs) — RSS 2.0
+  # ============================================================== #
+  # NBER's "new working papers" feed; covers all programs, IFM and
+  # Asset Pricing are the relevant ones for FX. The idea agent
+  # filters out the rest at extract time.
+  nber_new:
+    adapter: rss
+    query_url: https://www.nber.org/rss/new.xml
+    source_label: NBER Working Papers
+
+  # ============================================================== #
+  # Fed FRBSF Economic Letter (CL-kxcs) — RSS 2.0
+  # ============================================================== #
+  frbsf_econletter:
+    adapter: rss
+    query_url: https://www.frbsf.org/economic-research/publications/economic-letter/feed/
+    source_label: FRBSF Economic Letter
+
+  # ============================================================== #
+  # BIS working papers (CL-kxcs) — Atom-style RSS
+  # ============================================================== #
+  bis_wp:
+    adapter: rss
+    query_url: https://www.bis.org/doclist/wppubls.rss
+    source_label: BIS Working Papers
+
+  # ============================================================== #
+  # SSRN financial markets eJournal (CL-kxcs) — custom adapter
+  # ============================================================== #
+  # SSRN doesn't expose a public RSS feed for browsing networks;
+  # we use a project-specific fetcher that hits their listing page
+  # and parses the abstract list.
+  ssrn_finmarkets:
+    adapter: ssrn
+    query_url: https://papers.ssrn.com/sol3/JELJOUR_Results.cfm?form_name=journalBrowse&journal_id=2596228
+    source_label: SSRN Financial Markets eJournal
+
+  # ============================================================== #
   # Prediction markets — Polymarket Gamma API
   # ============================================================== #
   # Filtered to FX/macro keywords (fed/cpi/election/dollar/etc.) at

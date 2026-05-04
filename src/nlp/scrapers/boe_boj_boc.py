@@ -13,11 +13,23 @@ from .base import CBScraper, Document
 class BoEStatementScraper(CBScraper):
     cb_name = "boe"
     BASE = "https://www.bankofengland.co.uk/monetary-policy-summary-and-minutes"
+    # CL-qdns: per-year archives. BoE uses a query-string filter for
+    # historical years on the same listing page.
+    HISTORICAL_URL_FMT = "https://www.bankofengland.co.uk/monetary-policy-summary-and-minutes?Year={year}"
 
     def list_documents(self, since: datetime) -> list[dict[str, Any]]:
-        docs = []
-        try:
-            html = self.fetch_url(self.BASE)
+        urls_seen: set[str] = set()
+        docs: list[dict[str, Any]] = []
+        pages = [self.BASE]
+        current_year = datetime.utcnow().year
+        for year in range(since.year, current_year):
+            pages.append(self.HISTORICAL_URL_FMT.format(year=year))
+
+        for page_url in pages:
+            try:
+                html = self.fetch_url(page_url)
+            except Exception:
+                continue
             soup = BeautifulSoup(html, "html.parser")
             for item in soup.select("li.list-item, a[href*='monetary-policy'], article"):
                 link = item.find("a") if item.name != "a" else item
@@ -38,9 +50,10 @@ class BoEStatementScraper(CBScraper):
                 if d < since:
                     continue
                 url = f"https://www.bankofengland.co.uk{href}" if href.startswith("/") else href
+                if url in urls_seen:
+                    continue
+                urls_seen.add(url)
                 docs.append({"url": url, "date": d, "doc_type": "minutes", "title": title})
-        except Exception:
-            pass
         return docs
 
     def parse_document(self, html: str, meta: dict[str, Any]) -> Document:
@@ -54,11 +67,22 @@ class BoEStatementScraper(CBScraper):
 class BoJStatementScraper(CBScraper):
     cb_name = "boj"
     BASE = "https://www.boj.or.jp/en/mopo/mpmsche_minu/index.htm"
+    # CL-qdns: BoJ archives by year — separate page per calendar year.
+    HISTORICAL_URL_FMT = "https://www.boj.or.jp/en/mopo/mpmsche_minu/minu_{year}/index.htm"
 
     def list_documents(self, since: datetime) -> list[dict[str, Any]]:
-        docs = []
-        try:
-            html = self.fetch_url(self.BASE)
+        urls_seen: set[str] = set()
+        docs: list[dict[str, Any]] = []
+        pages = [self.BASE]
+        current_year = datetime.utcnow().year
+        for year in range(since.year, current_year):
+            pages.append(self.HISTORICAL_URL_FMT.format(year=year))
+
+        for page_url in pages:
+            try:
+                html = self.fetch_url(page_url)
+            except Exception:
+                continue
             soup = BeautifulSoup(html, "html.parser")
             for link in soup.select("a[href*='mopo']"):
                 href = str(link.get("href") or "")
@@ -71,9 +95,10 @@ class BoJStatementScraper(CBScraper):
                     continue
                 if href.startswith("/"):
                     href = f"https://www.boj.or.jp{href}"
+                if href in urls_seen:
+                    continue
+                urls_seen.add(href)
                 docs.append({"url": href, "date": d, "doc_type": "statement", "title": title})
-        except Exception:
-            pass
         return docs
 
     def parse_document(self, html: str, meta: dict[str, Any]) -> Document:
@@ -87,11 +112,22 @@ class BoJStatementScraper(CBScraper):
 class BoCStatementScraper(CBScraper):
     cb_name = "boc"
     BASE = "https://www.bankofcanada.ca/news/"
+    # CL-qdns: BoC archives via year query parameter on news listing.
+    HISTORICAL_URL_FMT = "https://www.bankofcanada.ca/news/?mtm_search_filter=monetary-policy&date_year={year}"
 
     def list_documents(self, since: datetime) -> list[dict[str, Any]]:
-        docs = []
-        try:
-            html = self.fetch_url(self.BASE)
+        urls_seen: set[str] = set()
+        docs: list[dict[str, Any]] = []
+        pages = [self.BASE]
+        current_year = datetime.utcnow().year
+        for year in range(since.year, current_year):
+            pages.append(self.HISTORICAL_URL_FMT.format(year=year))
+
+        for page_url in pages:
+            try:
+                html = self.fetch_url(page_url)
+            except Exception:
+                continue
             soup = BeautifulSoup(html, "html.parser")
             for item in soup.select("article, .post, li.news-item"):
                 link = item.find("a")
@@ -109,10 +145,11 @@ class BoCStatementScraper(CBScraper):
                         d = datetime.fromisoformat(date_str[:10])
                 if d < since:
                     continue
-                docs.append({"url": href if href.startswith("http") else f"https://www.bankofcanada.ca{href}",
-                              "date": d, "doc_type": "statement", "title": title})
-        except Exception:
-            pass
+                url = href if href.startswith("http") else f"https://www.bankofcanada.ca{href}"
+                if url in urls_seen:
+                    continue
+                urls_seen.add(url)
+                docs.append({"url": url, "date": d, "doc_type": "statement", "title": title})
         return docs
 
     def parse_document(self, html: str, meta: dict[str, Any]) -> Document:

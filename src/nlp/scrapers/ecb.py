@@ -11,28 +11,51 @@ from .base import CBScraper, Document
 class ECBStatementScraper(CBScraper):
     cb_name = "ecb"
     PRESS_URL = "https://www.ecb.europa.eu/press/pr/date/html/index.en.html"
+    # ECB historical archives by year — same shape as the current
+    # press page just per-year. CL-qdns adds the archive walk so the
+    # cb_diff_events corpus has 10y of statements, not just current.
+    HISTORICAL_URL_FMT = "https://www.ecb.europa.eu/press/pr/date/{year}/html/index.en.html"
 
     def list_documents(self, since: datetime) -> list[dict[str, Any]]:
-        html = self.fetch_url(self.PRESS_URL)
-        soup = BeautifulSoup(html, "html.parser")
-        docs = []
-        for item in soup.select("div.date, dt, .doc-title"):
-            link = item.find("a")
-            if not link:
-                continue
-            href = str(link.get("href") or "")
-            title = link.get_text(strip=True)
-            if "monetary policy" not in title.lower():
-                continue
-            date_str = str(item.get("data-date") or "")
+        # Current press page covers most-recent statements; historical
+        # year pages each cover one calendar year. Walk every year from
+        # since.year through current-year-1 to avoid double-counting
+        # the current year (which lives on PRESS_URL).
+        urls_seen: set[str] = set()
+        docs: list[dict[str, Any]] = []
+        pages = [self.PRESS_URL]
+        current_year = datetime.utcnow().year
+        for year in range(since.year, current_year):
+            pages.append(self.HISTORICAL_URL_FMT.format(year=year))
+
+        for page_url in pages:
             try:
-                d = datetime.fromisoformat(date_str[:10]) if date_str else datetime.utcnow()
-            except ValueError:
+                html = self.fetch_url(page_url)
+            except Exception:
                 continue
-            if d < since:
-                continue
-            url = f"https://www.ecb.europa.eu{href}" if href.startswith("/") else href
-            docs.append({"url": url, "date": d, "doc_type": "statement", "title": title})
+            soup = BeautifulSoup(html, "html.parser")
+            for item in soup.select("div.date, dt, .doc-title"):
+                link = item.find("a")
+                if not link:
+                    continue
+                href = str(link.get("href") or "")
+                title = link.get_text(strip=True)
+                if "monetary policy" not in title.lower():
+                    continue
+                date_str = str(item.get("data-date") or "")
+                try:
+                    d = datetime.fromisoformat(date_str[:10]) if date_str else datetime.utcnow()
+                except ValueError:
+                    continue
+                if d < since:
+                    continue
+                url = (
+                    f"https://www.ecb.europa.eu{href}" if href.startswith("/") else href
+                )
+                if url in urls_seen:
+                    continue
+                urls_seen.add(url)
+                docs.append({"url": url, "date": d, "doc_type": "statement", "title": title})
         return docs
 
     def parse_document(self, html: str, meta: dict[str, Any]) -> Document:

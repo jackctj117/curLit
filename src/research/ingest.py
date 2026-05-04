@@ -323,9 +323,81 @@ class RSSFetcher:
         return None
 
 
+@dataclass
+class SSRNFetcher:
+    """SSRN listing-page scraper (CL-kxcs).
+
+    SSRN has no public RSS for browsing networks. We fetch a journal-
+    listing HTML page and parse abstract entries from the table. Per-
+    abstract pages then resolve to ssrn.com/abstract={id} which the
+    extractor downloads downstream.
+
+    Limited by SSRN ToS: we hit one listing page per ingest run, with a
+    polite User-Agent, and nothing more. Anything heavier needs SSRN
+    membership / API access.
+    """
+
+    http_get: HttpGet = field(default=_default_http_get)
+
+    def fetch(self, feed: FeedConfig) -> list[Paper]:
+        try:
+            body = self.http_get(feed.query_url)
+        except Exception as exc:
+            logger.warning(
+                "feed %r fetch failed: %s: %s",
+                feed.name, type(exc).__name__, exc,
+            )
+            return []
+        return self._parse(body, source_label=feed.source_label)
+
+    @staticmethod
+    def _parse(html: str, source_label: str) -> list[Paper]:
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(html, "html.parser")
+        out: list[Paper] = []
+        # SSRN listing items live in <div class="trow"> with a title
+        # link, "Number of pages: N", and abstract in nested divs.
+        # Schema can drift; we defensively pull what we can.
+        for row in soup.select("div.trow, .description-text, .abstractContent"):
+            title_el = row.select_one("a.title, h3 a, .description-text a")
+            if not title_el:
+                continue
+            title = title_el.get_text(strip=True)
+            url = str(title_el.get("href") or "")
+            if url and url.startswith("/"):
+                url = f"https://papers.ssrn.com{url}"
+            abstract_el = row.select_one(
+                "div.abstract, .abstractText, .description-text",
+            )
+            abstract = (
+                abstract_el.get_text(strip=True)[:4000] if abstract_el else ""
+            )
+            # Authors live in a separate paragraph, comma-separated.
+            authors_el = row.select_one(".authors, .by-authors, .author-list")
+            authors_str = authors_el.get_text(strip=True) if authors_el else ""
+            authors = tuple(
+                a.strip() for a in re.split(r"[,;&]", authors_str) if a.strip()
+            )
+            # Year often appears as "Last revised: <date>"; just look
+            # for a 4-digit year in the row.
+            year_match = re.search(r"\b(20\d\d)\b", row.get_text())
+            year = int(year_match.group(1)) if year_match else None
+            out.append(Paper(
+                title=title,
+                authors=authors,
+                year=year,
+                url=url,
+                doi="",
+                abstract=abstract,
+                source_label=source_label,
+            ))
+        return out
+
+
 _FETCHER_REGISTRY: dict[str, Callable[[HttpGet], Any]] = {
     "arxiv": lambda http_get: ArxivFetcher(http_get=http_get),
     "rss": lambda http_get: RSSFetcher(http_get=http_get),
+    "ssrn": lambda http_get: SSRNFetcher(http_get=http_get),
 }
 
 

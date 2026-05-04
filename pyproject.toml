@@ -140,6 +140,8 @@ known-first-party = ["src"]
 "src/strategies/rate_diff_mean_reversion.py" = ["N806"]
 "src/strategies/_experimental/*" = ["N806"]
 "src/models/rate_diff.py" = ["N806"]
+"src/models/gp_rate_diff.py" = ["N806"]
+"src/models/hmm_regime.py" = ["N806"]
 
 [tool.mypy]
 python_version = "3.11"
@@ -170,6 +172,8 @@ module = [
     "sklearn.*",
     "yfinance.*",
     "wolfcrypt.*",
+    "pypdf.*",
+    "hmmlearn.*",
 ]
 ignore_missing_imports = true
 
