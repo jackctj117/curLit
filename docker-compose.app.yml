@@ -88,6 +88,38 @@ services:
       postgres:
         condition: service_healthy
 
+  research_dashboard:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile
+    image: curlit-app:latest
+    container_name: curlit-research-dashboard
+    restart: unless-stopped
+    networks: [observability]
+    # CL-28j: paper triage Streamlit. Reads research_papers + writes
+    # status / priority / notes back. Mount the dashboard file rather
+    # than rebuild the image on every UI tweak.
+    command: streamlit run /opt/curlit/research/dashboard.py --server.port 8501 --server.address 0.0.0.0 --server.headless true
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_DB: ${POSTGRES_DB:-fx}
+      POSTGRES_USER: ${POSTGRES_USER:-fx}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ./research:/opt/curlit/research:ro
+    ports:
+      - "127.0.0.1:8501:8501"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "-o", "/dev/null", "http://localhost:8501/_stcore/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
   web:
     build:
       context: .
