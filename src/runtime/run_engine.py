@@ -401,6 +401,16 @@ async def run_engine(broker_mode: str = "paper") -> None:
         with contextlib.suppress(NotImplementedError):
             loop.add_signal_handler(sig, _handler, sig)
 
+    # CL-9eli post-mortem hook: snapshot critical source files now and
+    # warn if they change under us. Catches the "engine running stale
+    # code because nobody restarted after a fix" failure mode.
+    try:
+        from src.runtime.source_drift import SourceDriftWatcher
+        watcher = SourceDriftWatcher()
+        loop.create_task(watcher.run_forever())
+    except Exception:
+        logger.exception("SourceDriftWatcher failed to start (non-fatal)")
+
     logger.info("Starting curLit live engine (broker=%s)", broker_mode)
     await engine.run()
 

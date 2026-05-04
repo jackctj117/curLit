@@ -274,6 +274,17 @@ reconciliation_clean_days = Counter(
     "Total daily reconciliation runs with zero mismatches",
 )
 
+# CL-9eli post-mortem (2026-05-04 incident): when an engine boots before
+# a fix lands and never restarts, the running process keeps using stale
+# code. This gauge is set to 1 by SourceDriftWatcher when it detects a
+# divergence between the on-disk source and the snapshot it captured at
+# engine boot. Latches at 1 until a fresh restart re-baselines.
+engine_source_drift = Gauge(
+    "fx_engine_source_drift",
+    "1 when the running engine's source files diverge from the working "
+    "tree — restart to reload (CL-9eli post-mortem)",
+)
+
 daily_pnl_usd = Gauge(
     "fx_daily_pnl_usd",
     "Today's realised + unrealised P&L",
