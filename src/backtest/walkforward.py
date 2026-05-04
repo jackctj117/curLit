@@ -32,6 +32,11 @@ class WalkForwardConfig:
     # Same 756-day floor as is_window — refuse to run if there isn't
     # enough history for even one fold.
     min_history: int = 756
+    # CL-nt0c: optional TradabilityFilter — when set, columns of `data`
+    # are filtered per-instrument to drop bars before first_tradable_date
+    # and after last_tradable_date. Default None = no filter (legacy
+    # behavior, treats every column as universally tradable).
+    tradability_filter: Any = None
 
 
 @dataclass
@@ -54,6 +59,14 @@ class WalkForwardRunner:
         cost_model: Any,
     ) -> WalkForwardResult:
         cfg = self.config
+        # CL-nt0c: when a tradability filter is configured, mask any
+        # bar where any instrument is non-tradable BEFORE folding. The
+        # mask is applied by setting the cell to NaN; downstream signal
+        # generation already skips NaN rows. We don't drop the row
+        # outright because dropping would shift OOS window indices.
+        if cfg.tradability_filter is not None:
+            data = self._apply_tradability(data, cfg.tradability_filter)
+
         folds: list[dict[str, Any]] = []
         oos_signals_all: list[pd.Series | pd.DataFrame] = []
         trades_all: list[pd.DataFrame] = []
@@ -108,6 +121,30 @@ class WalkForwardRunner:
             trades=pd.concat(trades_all) if trades_all else pd.DataFrame(),
             fold_metrics=pd.DataFrame(folds),
         )
+
+    @staticmethod
+    def _apply_tradability(
+        data: pd.DataFrame, tf: Any,
+    ) -> pd.DataFrame:
+        """Mask out non-tradable cells per CL-nt0c.
+
+        For each column treated as an instrument, set values to NaN on
+        dates outside ``[first_tradable_date, last_tradable_date]``.
+        Strategies see NaN and skip — no need to compress the index.
+        """
+        out = data.copy()
+        for sym in out.columns:
+            meta = tf.registry.get(str(sym))
+            if meta is None:
+                continue
+            idx = pd.to_datetime(out.index)
+            first = pd.Timestamp(meta.first_tradable_date)
+            mask = idx >= first
+            if meta.last_tradable_date is not None:
+                last = pd.Timestamp(meta.last_tradable_date)
+                mask = mask & (idx <= last)
+            out.loc[~mask, sym] = float("nan")
+        return out
 
     @staticmethod
     def _trades_for_signals(
@@ -189,7 +226,11 @@ class WalkForwardRunner:
         # signal index.
         positions = signals[tradeable].shift(1).fillna(0)
         prices = data.loc[positions.index, tradeable]
-        returns = prices.pct_change().fillna(0)
+        # fill_method=None so pct_change does NOT pad across NaN gaps
+        # (e.g. instruments masked-out by TradabilityFilter post-CL-nt0c).
+        # The default 'pad' would synthesize zero-return continuations,
+        # which silently fakes tradability across delistings.
+        returns = prices.pct_change(fill_method=None).fillna(0)
 
         # Per-symbol P&L contributions
         per_symbol_pnl = positions * returns

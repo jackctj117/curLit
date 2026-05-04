@@ -83,12 +83,16 @@ feeds:
     source_label: NBER Working Papers
 
   # ============================================================== #
-  # Fed FRBSF Economic Letter (CL-kxcs) — RSS 2.0
+  # FRBSF (CL-kxcs) — RSS 2.0
   # ============================================================== #
-  frbsf_econletter:
+  # The dedicated economic-letter feed URL changed when the site
+  # was rebuilt (2024); the site-wide feed is the surviving stable
+  # URL. The idea agent filters per-paper relevance downstream so
+  # the broader stream is fine.
+  frbsf:
     adapter: rss
-    query_url: https://www.frbsf.org/economic-research/publications/economic-letter/feed/
-    source_label: FRBSF Economic Letter
+    query_url: https://www.frbsf.org/feed/
+    source_label: FRBSF
 
   # ============================================================== #
   # BIS working papers (CL-kxcs) — Atom-style RSS
@@ -99,15 +103,22 @@ feeds:
     source_label: BIS Working Papers
 
   # ============================================================== #
-  # SSRN financial markets eJournal (CL-kxcs) — custom adapter
+  # SSRN — DISABLED (CL-kxcs follow-up)
   # ============================================================== #
-  # SSRN doesn't expose a public RSS feed for browsing networks;
-  # we use a project-specific fetcher that hits their listing page
-  # and parses the abstract list.
-  ssrn_finmarkets:
-    adapter: ssrn
-    query_url: https://papers.ssrn.com/sol3/JELJOUR_Results.cfm?form_name=journalBrowse&journal_id=2596228
-    source_label: SSRN Financial Markets eJournal
+  # SSRN sits behind Akamai bot protection (HTTP 403 to httpx, curl,
+  # and even a browser User-Agent without JS execution + signed UA
+  # client hints). Per-paper extraction works (papers.ssrn.com/abstract=N
+  # is open) but listing pages are gated. To re-enable, swap the
+  # fetcher to a Playwright-driven path that runs JS + accepts the
+  # browser fingerprint. Tracked under the SSRN-specific follow-up.
+  # The SSRNFetcher class in src/research/ingest.py stays — it's the
+  # parsing surface ready for a working transport.
+  #
+  # Uncomment after browser-automation transport lands:
+  # ssrn_finmarkets:
+  #   adapter: ssrn
+  #   query_url: https://papers.ssrn.com/sol3/JELJOUR_Results.cfm?form_name=journalBrowse&journal_id=2596228
+  #   source_label: SSRN Financial Markets eJournal
 
   # ============================================================== #
   # Prediction markets — Polymarket Gamma API

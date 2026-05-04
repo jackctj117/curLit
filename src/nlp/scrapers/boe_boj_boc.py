@@ -13,9 +13,16 @@ from .base import CBScraper, Document
 class BoEStatementScraper(CBScraper):
     cb_name = "boe"
     BASE = "https://www.bankofengland.co.uk/monetary-policy-summary-and-minutes"
-    # CL-qdns: per-year archives. BoE uses a query-string filter for
-    # historical years on the same listing page.
-    HISTORICAL_URL_FMT = "https://www.bankofengland.co.uk/monetary-policy-summary-and-minutes?Year={year}"
+    # CL-qdns: per-year archives. The summary-and-minutes URL doesn't
+    # accept a Year query param (returns 302→404). The /news/news
+    # endpoint with the "Monetary Policy" Taxonomies GUID does — same
+    # listing data, different route. Verified live 2026-05-04.
+    HISTORICAL_URL_FMT = (
+        "https://www.bankofengland.co.uk/news/news"
+        "?Taxonomies=ce90163e489841e0b66d06243d35d5cb"
+        "&NewsTypes=ce90163e489841e0b66d06243d35d5cb"
+        "&Direction=Latest&InfiniteScrolling=False&Page=1&Year={year}"
+    )
 
     def list_documents(self, since: datetime) -> list[dict[str, Any]]:
         urls_seen: set[str] = set()

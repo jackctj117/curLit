@@ -32,6 +32,8 @@ dependencies = [
     "statsmodels>=0.14",
     "scikit-learn>=1.3",
     "scipy>=1.11",
+    "hmmlearn>=0.3",       # CL-rsv regime detection
+    "pypdf>=4.0",          # CL-sy32 PDF text extraction
     # NLP
     "spacy>=3.6",
     "transformers>=4.30",

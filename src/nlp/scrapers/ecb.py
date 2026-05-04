@@ -10,11 +10,17 @@ from .base import CBScraper, Document
 
 class ECBStatementScraper(CBScraper):
     cb_name = "ecb"
-    PRESS_URL = "https://www.ecb.europa.eu/press/pr/date/html/index.en.html"
-    # ECB historical archives by year — same shape as the current
-    # press page just per-year. CL-qdns adds the archive walk so the
-    # cb_diff_events corpus has 10y of statements, not just current.
-    HISTORICAL_URL_FMT = "https://www.ecb.europa.eu/press/pr/date/{year}/html/index.en.html"
+    # ECB site rebuild (2024): the old /press/pr/date/ path 301→ to
+    # /press/pubbydate/. The new page accepts a year= query param,
+    # which is what we use for the historical walk.
+    PRESS_URL = (
+        "https://www.ecb.europa.eu/press/pubbydate/html/index.en.html"
+        "?name_of_publication=Press%20release"
+    )
+    HISTORICAL_URL_FMT = (
+        "https://www.ecb.europa.eu/press/pubbydate/html/index.en.html"
+        "?name_of_publication=Press%20release&year={year}"
+    )
 
     def list_documents(self, since: datetime) -> list[dict[str, Any]]:
         # Current press page covers most-recent statements; historical

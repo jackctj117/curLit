@@ -64,6 +64,45 @@ class PositionSizer:
         return size
 
     @staticmethod
+    def adjust_for_liquidity(
+        base_size: float,
+        symbol: str,
+        ts: Any,
+        observed_spread_bps: float,
+        profile: Any,
+    ) -> float:
+        """CL-4wi5: scale ``base_size`` by the liquidity-window multiplier.
+
+        ``profile`` is a ``LiquidityProfile`` (or anything with the same
+        ``size_multiplier(symbol, ts, observed_spread_bps)`` shape).
+        Returns the size-adjusted notional. The multiplier is in
+        [0.0, 1.0] — 0 means refuse the entry; 0.5 is a thin window;
+        1.0 is normal.
+
+        Strategies wire this in front of every new entry:
+
+            base = PositionSizer.fixed_fractional(...)
+            adj  = PositionSizer.adjust_for_liquidity(
+                base, symbol, ts, spread_bps, liquidity_profile,
+            )
+            if adj > 0:
+                submit_intent(adj)
+        """
+        if profile is None:
+            return base_size
+        try:
+            multiplier = profile.size_multiplier(
+                symbol, ts, observed_spread_bps,
+            )
+        except Exception:
+            logger.warning(
+                "liquidity_window: profile.size_multiplier raised; "
+                "using full size", exc_info=True,
+            )
+            return base_size
+        return float(base_size * multiplier)
+
+    @staticmethod
     def kelly(edge: float, odds: float, kelly_fraction: float = 0.25) -> float:
         """Kelly-inspired position sizing fraction, clamped to [0, 1].
 
