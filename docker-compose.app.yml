@@ -1,0 +1,111 @@
+# App-services overlay for docker-compose.yml (CL-mz7).
+#
+# Run alongside the base infra stack:
+#   docker compose -f docker-compose.yml -f docker-compose.app.yml up -d
+#
+# Contains the curLit application processes themselves: live engine,
+# watchdog, NLP service, web UI. The infra services in docker-compose.yml
+# (Postgres, Prometheus, Grafana, Loki, Airflow) keep working unchanged
+# for development workflows that don't need the app containers.
+#
+# Notes on shape:
+#   - All app services build from the same Dockerfile (deploy/Dockerfile)
+#     for image cache reuse.
+#   - The engine reads .env via dotenv_bootstrap; we mount the file
+#     read-only so secrets aren't baked into the image.
+#   - host.docker.internal works on Docker Desktop (Mac/Windows). Linux
+#     hosts need `--add-host` or networking via the existing observability
+#     bridge — already configured.
+
+services:
+  engine:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile
+    image: curlit-app:latest
+    container_name: curlit-engine
+    restart: unless-stopped
+    networks: [observability]
+    command: python -m src.runtime.run_engine --broker ${BROKER_MODE:-paper}
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_DB: ${POSTGRES_DB:-fx}
+      POSTGRES_USER: ${POSTGRES_USER:-fx}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      OANDA_API_KEY: ${OANDA_API_KEY}
+      OANDA_ACCOUNT_ID: ${OANDA_ACCOUNT_ID}
+      WEB_API_SECRET: ${WEB_API_SECRET:-curlit-dev}
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ./logs:/opt/curlit/logs
+      - ./reports:/opt/curlit/reports
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8200:8200"   # web API
+      - "127.0.0.1:8099:8099"   # prometheus metrics
+    healthcheck:
+      test: ["CMD", "curl", "-f", "-o", "/dev/null", "http://localhost:8099/metrics"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  watchdog:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile
+    image: curlit-app:latest
+    container_name: curlit-watchdog
+    restart: unless-stopped
+    networks: [observability]
+    command: python -m scripts.soak_monitor --watch-engine engine:8099
+    environment:
+      PYTHONUNBUFFERED: "1"
+    depends_on:
+      engine:
+        condition: service_healthy
+
+  nlp:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile
+    image: curlit-app:latest
+    container_name: curlit-nlp
+    restart: unless-stopped
+    networks: [observability]
+    command: uvicorn src.nlp.service:app --host 0.0.0.0 --port 8400
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_DB: ${POSTGRES_DB:-fx}
+      POSTGRES_USER: ${POSTGRES_USER:-fx}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      PYTHONUNBUFFERED: "1"
+    ports:
+      - "127.0.0.1:8400:8400"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  web:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile
+    image: curlit-app:latest
+    container_name: curlit-web
+    restart: unless-stopped
+    networks: [observability]
+    # Standalone Web API container is redundant when engine is running
+    # (engine embeds the same FastAPI). This profile is for read-only
+    # dashboards / API consumers that don't run the engine.
+    profiles: ["web-only"]
+    command: uvicorn src.web.api:app --host 0.0.0.0 --port 8201
+    environment:
+      WEB_API_SECRET: ${WEB_API_SECRET:-curlit-dev}
+      PYTHONUNBUFFERED: "1"
+    ports:
+      - "127.0.0.1:8201:8201"
+    depends_on:
+      postgres:
+        condition: service_healthy

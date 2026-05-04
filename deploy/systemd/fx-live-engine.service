@@ -1,0 +1,44 @@
+[Unit]
+Description=curLit live trading engine
+Documentation=https://github.com/jackctj117/curLit/blob/main/docs/STARTUP.md
+# Engine needs vault (credentials) + ingestion (so DB has fresh data when
+# it starts). Postgres comes up via the ingestion service's compose stack.
+After=fx-vault-agent.service fx-ingestion.service network-online.target
+Requires=fx-vault-agent.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=fx-engine
+Group=fx-engine
+WorkingDirectory=/opt/curlit
+EnvironmentFile=-/etc/curlit/curlit.env
+
+# Default to OANDA practice; flip to oanda-live + --confirm-live in the
+# environment file when promoting to real-money trading. NEVER hardcode
+# `oanda-live` in this unit — make the operator step through curlit.env.
+ExecStart=/opt/curlit/.venv/bin/python -m src.runtime.run_engine \
+    --broker ${CURLIT_BROKER_MODE}
+
+# Graceful shutdown via SIGTERM — engine.graceful_shutdown drains the
+# OMS retry queue. 60s allows for typical broker reconciliation.
+KillSignal=SIGTERM
+TimeoutStopSec=60
+
+# Sandboxing — the engine talks to OANDA + Postgres + writes logs. Lock
+# everything else down.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/log/curlit /opt/curlit/logs /opt/curlit/reports
+
+# Restart always, but with backoff so we don't hammer broker auth on a
+# config bug. After 3 fails in 60s, give up — wait for the operator.
+Restart=on-failure
+RestartSec=15
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+[Install]
+WantedBy=multi-user.target

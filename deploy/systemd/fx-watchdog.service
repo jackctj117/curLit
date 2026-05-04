@@ -1,0 +1,31 @@
+[Unit]
+Description=curLit engine watchdog — restarts engine on hang/crash
+Documentation=https://github.com/jackctj117/curLit/blob/main/docs/STARTUP.md
+# Watchdog must start AFTER the engine, so it can sample its metrics
+# endpoint. systemd's BindsTo means the watchdog stops if the engine
+# stops permanently — no zombie watchdog.
+After=fx-live-engine.service
+BindsTo=fx-live-engine.service
+
+[Service]
+Type=simple
+User=fx-engine
+Group=fx-engine
+WorkingDirectory=/opt/curlit
+EnvironmentFile=-/etc/curlit/curlit.env
+
+ExecStart=/opt/curlit/.venv/bin/python -m scripts.soak_monitor \
+    --watch-engine localhost:8099 \
+    --restart-on-stale-sec 120
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/log/curlit
+
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

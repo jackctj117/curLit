@@ -285,6 +285,14 @@ engine_source_drift = Gauge(
     "tree — restart to reload (CL-9eli post-mortem)",
 )
 
+# CL-gnhu: clock drift vs NTP. Positive = local clock behind, negative
+# = local clock ahead. Alert above |0.1s| (the reconciliation matcher
+# tolerates 30s window so we want to alert well before that breaks).
+clock_drift_seconds = Gauge(
+    "fx_clock_drift_seconds",
+    "Local clock offset from NTP reference, in seconds (signed)",
+)
+
 daily_pnl_usd = Gauge(
     "fx_daily_pnl_usd",
     "Today's realised + unrealised P&L",

@@ -1,0 +1,27 @@
+[Unit]
+Description=curLit data ingestion (Airflow scheduler)
+Documentation=https://github.com/jackctj117/curLit/blob/main/docs/STARTUP.md
+After=fx-vault-agent.service docker.service network-online.target
+Requires=fx-vault-agent.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=fx-operator
+Group=docker
+WorkingDirectory=/opt/curlit
+EnvironmentFile=-/etc/curlit/curlit.env
+
+# Bring up the Airflow stack defined in docker-compose.yml. The base
+# stack covers Postgres + Airflow scheduler + webserver + DB exporter.
+ExecStartPre=/usr/bin/docker compose -f docker-compose.yml pull airflow-scheduler airflow-webserver postgres
+ExecStart=/usr/bin/docker compose -f docker-compose.yml up airflow-scheduler airflow-webserver
+ExecStop=/usr/bin/docker compose -f docker-compose.yml stop airflow-scheduler airflow-webserver
+
+TimeoutStartSec=180
+TimeoutStopSec=60
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

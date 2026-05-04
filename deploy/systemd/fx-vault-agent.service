@@ -1,0 +1,46 @@
+[Unit]
+Description=curLit credential vault agent
+Documentation=https://github.com/jackctj117/curLit/blob/main/docs/SECURITY.md
+# Vault agent is the foundation — every other unit depends on it for secrets.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+User=fx-vault
+Group=fx-vault
+WorkingDirectory=/opt/curlit
+EnvironmentFile=-/etc/curlit/vault-agent.env
+
+# Vault socket lives at /run/fx-vault-agent.sock; RuntimeDirectory
+# manages permissions so the engine user can read it but nobody else.
+RuntimeDirectory=fx-vault-agent
+RuntimeDirectoryMode=0750
+
+ExecStart=/opt/curlit/.venv/bin/python -m src.security.vault_agent
+
+# Tighten the sandbox — vault holds the keys, so anything that reduces
+# the blast radius of a compromise here is worth the boilerplate.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+ReadWritePaths=/run/fx-vault-agent /var/log/curlit
+
+# 30-second SIGTERM grace before SIGKILL. Vault should finish flushing
+# any in-flight credential request before exiting.
+TimeoutStopSec=30
+
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
