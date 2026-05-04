@@ -23,9 +23,13 @@ RAW_DIR = Path("data/raw")
 
 
 def run_scrapers() -> None:
-    from src.nlp.scrapers.fed import FedStatementScraper
+    from src.nlp.scrapers.boe_boj_boc import (
+        BoCStatementScraper,
+        BoEStatementScraper,
+        BoJStatementScraper,
+    )
     from src.nlp.scrapers.ecb import ECBStatementScraper
-    from src.nlp.scrapers.boe_boj_boc import BoEStatementScraper, BoJStatementScraper, BoCStatementScraper
+    from src.nlp.scrapers.fed import FedStatementScraper
 
     since = datetime.utcnow() - timedelta(days=7)
     scrapers = [
@@ -83,6 +87,7 @@ def preprocess() -> None:
 
 def score_lexicon() -> None:
     from sqlalchemy import create_engine, text
+
     from src.nlp.lexicon_scorer import LexiconScorer
 
     engine = create_engine(DB_URL)
@@ -107,6 +112,7 @@ def score_lexicon() -> None:
 
 def compute_diffs() -> None:
     from sqlalchemy import create_engine, text
+
     from src.nlp.diff import StatementDiffer
 
     engine = create_engine(DB_URL)

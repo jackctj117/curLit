@@ -1,6 +1,7 @@
 """Airflow DAG — weekly update check, bd issue creation, Pushover notification."""
 
-from datetime import datetime, timedelta
+from datetime import datetime
+
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 

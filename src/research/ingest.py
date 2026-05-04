@@ -514,26 +514,118 @@ class IngestRunSummary:
     papers_skipped_duplicate: int = 0
     papers_extracted: int = 0
     papers_extract_failed: int = 0
+    papers_db_inserted: int = 0  # CL-28j follow-up: rows new to research_papers
+    papers_db_failed: int = 0
     extract_paths: list[Path] = field(default_factory=list)
+
+
+def _insert_paper_row(
+    engine: Any, paper: Paper, relevance_scorer: Any | None = None,
+) -> bool:
+    """Insert one paper into ``research_papers``. Returns True if a new
+    row was added (False on conflict — already there).
+
+    When ``relevance_scorer`` is given, calls
+    ``score_and_update`` after the insert so the dashboard sees a real
+    relevance_score on first read instead of the schema default of 0.
+
+    The dialect dispatch handles Postgres (JSONB cast) + sqlite
+    (TEXT) so tests on a sqlite shim work without a Postgres instance.
+    """
+    import json as _json
+
+    from sqlalchemy import text
+
+    pid = paper_hash(paper)
+    payload = {
+        "pid": pid,
+        "src": paper.source_label,
+        "ttl": paper.title,
+        "auth": _json.dumps(list(paper.authors)),
+        "abs": paper.abstract,
+        "url": paper.url,
+        "pdf": None,
+        "year": paper.year,
+    }
+
+    dialect = engine.dialect.name
+    if dialect == "postgresql":
+        # Postgres: JSONB cast, ON CONFLICT DO NOTHING. The RETURNING
+        # clause tells us whether we actually inserted (vs hit the
+        # conflict path) so the summary reflects truth.
+        sql = text("""
+            INSERT INTO research_papers
+                (paper_id, source, title, authors, abstract, url, pdf_url,
+                 published_date, ingested_at, read_status,
+                 implementation_priority, relevance_score)
+            VALUES (:pid, :src, :ttl, CAST(:auth AS JSONB), :abs, :url, :pdf,
+                    NULL, NOW(), 'unread', 0, 0)
+            ON CONFLICT (paper_id) DO NOTHING
+            RETURNING paper_id
+        """)
+    else:
+        # sqlite (test): same shape, no JSONB cast, OR IGNORE for dedup.
+        sql = text("""
+            INSERT OR IGNORE INTO research_papers
+                (paper_id, source, title, authors, abstract, url, pdf_url,
+                 published_date, ingested_at, read_status,
+                 implementation_priority, relevance_score)
+            VALUES (:pid, :src, :ttl, :auth, :abs, :url, :pdf,
+                    NULL, CURRENT_TIMESTAMP, 'unread', 0, 0)
+        """)
+
+    try:
+        with engine.begin() as conn:
+            result = conn.execute(sql, payload)
+            if dialect == "postgresql":
+                inserted = result.fetchone() is not None
+            else:
+                inserted = bool(result.rowcount)
+    except Exception:
+        logger.exception("research_papers insert failed for %s", pid)
+        return False
+
+    if inserted and relevance_scorer is not None:
+        try:
+            relevance_scorer.score_and_update(engine, pid, paper)
+        except Exception:
+            # Scoring failure shouldn't block ingestion. The row is in;
+            # operator can re-score later via a backfill script.
+            logger.warning(
+                "relevance scoring failed for %s — row inserted with default score",
+                pid, exc_info=True,
+            )
+    return inserted
 
 
 class IngestRunner:
     """Wires fetchers + extractor + store for one ingest pass.
 
     Each ``run`` call iterates the supplied feed configs, fetches each,
-    dedups via the store, runs the LLM extractor on the new ones, and
-    writes the resulting extract. Returns a summary suitable for cron-
-    log inspection."""
+    dedups via the store, optionally writes a row to research_papers
+    (when ``db_engine`` is supplied), runs the LLM extractor on new
+    papers, and writes the disk extract. Returns a summary suitable
+    for cron-log inspection.
+
+    The DB write is opt-in via ``db_engine`` so unit tests + dry-runs
+    can exercise the rest of the pipeline without a Postgres instance.
+    Production cron passes the engine; CI tests pass a sqlite shim or
+    None.
+    """
 
     def __init__(
         self,
         extractor: PaperExtractor,
         store: ExtractStore | None = None,
         http_get: HttpGet | None = None,
+        db_engine: Any | None = None,
+        relevance_scorer: Any | None = None,
     ) -> None:
         self.extractor = extractor
         self.store = store or ExtractStore()
         self.http_get = http_get or _default_http_get
+        self.db_engine = db_engine
+        self.relevance_scorer = relevance_scorer
 
     def run(self, feed_configs: list[FeedConfig]) -> IngestRunSummary:
         summary = IngestRunSummary(feeds_total=len(feed_configs))
@@ -553,17 +645,35 @@ class IngestRunner:
                 continue
             for paper in papers:
                 summary.papers_seen += 1
+
+                # CL-28j bridge: write to Postgres BEFORE the LLM
+                # extract step. Reasoning: the dashboard becomes
+                # useful immediately on a fresh paper even if extract
+                # later fails; and a failed extract no longer hides
+                # the paper from the operator's triage queue.
+                if self.db_engine is not None:
+                    try:
+                        if _insert_paper_row(
+                            self.db_engine, paper, self.relevance_scorer,
+                        ):
+                            summary.papers_db_inserted += 1
+                    except Exception:
+                        logger.exception(
+                            "DB insert error for %r from %r",
+                            paper.title, feed.name,
+                        )
+                        summary.papers_db_failed += 1
+
                 if self.store.has(paper):
                     summary.papers_skipped_duplicate += 1
                     continue
                 try:
                     body = self.extractor.extract(paper)
-                except Exception as exc:
+                except Exception:
                     logger.exception(
                         "extraction failed for paper %r from %r",
                         paper.title, feed.name,
                     )
-                    _ = exc  # suppress unused-name in ruff under noqa-friendly form
                     summary.papers_extract_failed += 1
                     continue
                 path = self.store.write(paper, body)

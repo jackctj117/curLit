@@ -62,6 +62,14 @@ def _build_parser() -> argparse.ArgumentParser:
         help="List new papers without extracting",
     )
     p.add_argument(
+        "--no-db",
+        action="store_true",
+        help=(
+            "Skip writing rows to research_papers (CL-28j bridge). "
+            "Useful when iterating on extractor prompts."
+        ),
+    )
+    p.add_argument(
         "-v", "--verbose", action="store_true", help="Enable DEBUG logging",
     )
     return p
@@ -112,7 +120,32 @@ def main(argv: list[str] | None = None) -> int:
     extractor = cast(PaperExtractor, PaperExtractor.from_config(
         name="paper_extractor", research_config=research_config,
     ))
-    runner = IngestRunner(extractor=extractor, store=store)
+
+    # CL-28j bridge: optionally write each paper to research_papers
+    # so the triage dashboard sees them. Default is on; pass
+    # --no-db to skip (e.g. when iterating on extractor prompts and
+    # don't want to pollute the table).
+    db_engine = None
+    relevance_scorer = None
+    if not args.no_db:
+        try:
+            from src.research.relevance_scorer import RelevanceScorer
+            from src.runtime.run_engine import _build_db_engine
+
+            db_engine = _build_db_engine()
+            relevance_scorer = RelevanceScorer()
+        except Exception:
+            logging.exception(
+                "DB engine + scorer build failed — running disk-only "
+                "(papers won't appear in triage dashboard)",
+            )
+
+    runner = IngestRunner(
+        extractor=extractor,
+        store=store,
+        db_engine=db_engine,
+        relevance_scorer=relevance_scorer,
+    )
     summary = runner.run(feeds)
 
     print(
@@ -121,7 +154,9 @@ def main(argv: list[str] | None = None) -> int:
         f"papers_seen={summary.papers_seen} "
         f"skipped_dup={summary.papers_skipped_duplicate} "
         f"extracted={summary.papers_extracted} "
-        f"extract_failed={summary.papers_extract_failed}",
+        f"extract_failed={summary.papers_extract_failed} "
+        f"db_inserted={summary.papers_db_inserted} "
+        f"db_failed={summary.papers_db_failed}",
     )
     for path in summary.extract_paths:
         print(f"  wrote {path}")
