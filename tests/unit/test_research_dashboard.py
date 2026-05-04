@@ -168,3 +168,38 @@ class TestStatusVocabulary:
         # Must include the operator's full triage vocabulary so
         # filters + buttons can both reference the same constants.
         assert {"unread", "skim_later", "read", "discarded", "for_implementation"} <= set(_ALL_STATUSES)
+
+
+class TestRenderDetailContract:
+    """Regression test for the KeyError that hit the live UI:
+    main() does df.set_index('paper_id') before slicing, which makes
+    'paper_id' a Series.name rather than an indexable column. The
+    detail renderer must not assume paper['paper_id'] resolves."""
+
+    def test_paper_series_after_set_index_does_not_have_paper_id_key(self) -> None:
+        df = pd.DataFrame([
+            {"paper_id": "p1", "title": "Foo", "abstract": "x",
+             "source": "S", "authors": "[]", "url": "u", "pdf_url": None,
+             "relevance_score": 1.0, "read_status": "unread",
+             "implementation_priority": 0, "my_notes": ""},
+        ])
+        paper = df.set_index("paper_id").loc["p1"]
+        with pytest.raises(KeyError):
+            _ = paper["paper_id"]
+        # The fix: paper.name carries the index value, and the public
+        # signature passes paper_id explicitly.
+        assert paper.name == "p1"
+
+    def test_render_detail_signature_takes_paper_id_separately(self) -> None:
+        # Locking the public contract: paper_id is a required first
+        # arg. Reverting to the buggy "find paper_id inside paper"
+        # pattern would change the signature, which this test catches.
+        import inspect
+
+        from research.dashboard import _render_detail
+
+        sig = inspect.signature(_render_detail)
+        params = list(sig.parameters)
+        assert params == ["paper_id", "paper"], (
+            f"_render_detail signature regressed: {params}"
+        )

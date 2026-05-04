@@ -276,8 +276,15 @@ def _render_queue(df: pd.DataFrame) -> str | None:
     return str(display.iloc[rows[0]]["paper_id"])
 
 
-def _render_detail(paper: pd.Series) -> None:
-    """Right column — single-paper detail pane with action buttons."""
+def _render_detail(paper_id: str, paper: pd.Series) -> None:
+    """Right column — single-paper detail pane with action buttons.
+
+    ``paper_id`` is passed explicitly because the caller does
+    ``df.set_index("paper_id")`` before slicing, which removes
+    paper_id from the Series's column-key axis (it becomes the
+    Series .name). Passing it in is more robust than relying on
+    the index identity.
+    """
     st.subheader(paper["title"])
     st.caption(
         f"**{paper.get('source') or 'unknown'}** · "
@@ -306,8 +313,8 @@ def _render_detail(paper: pd.Series) -> None:
         ("Reset", _STATUS_UNREAD, cols[4]),
     ]
     for label, target_status, col in actions:
-        if col.button(label, key=f"act_{target_status}_{paper['paper_id']}"):
-            update_paper_status(str(paper["paper_id"]), target_status)
+        if col.button(label, key=f"act_{target_status}_{paper_id}"):
+            update_paper_status(paper_id, target_status)
             st.toast(f"Status → {target_status}")
             st.rerun()
 
@@ -317,11 +324,11 @@ def _render_detail(paper: pd.Series) -> None:
         "Implementation priority",
         options=list(_PRIORITIES),
         index=current_prio if current_prio in _PRIORITIES else 0,
-        key=f"prio_{paper['paper_id']}",
+        key=f"prio_{paper_id}",
         help="0=unranked, 1=top of queue, 5=backlog.",
     )
     if new_prio != current_prio:
-        update_paper_priority(str(paper["paper_id"]), int(new_prio))
+        update_paper_priority(paper_id, int(new_prio))
         st.toast(f"Priority → {new_prio}")
 
     # Notes — debounced via st.text_area; commits on blur (Streamlit reruns).
@@ -329,14 +336,14 @@ def _render_detail(paper: pd.Series) -> None:
         "Notes",
         value=paper.get("my_notes") or "",
         height=140,
-        key=f"notes_{paper['paper_id']}",
+        key=f"notes_{paper_id}",
         help=(
             "Why this paper got the status it got. The MetaLearner reads "
             "these into evaluation_data over time so don't be cryptic."
         ),
     )
     if notes != (paper.get("my_notes") or ""):
-        update_paper_notes(str(paper["paper_id"]), notes)
+        update_paper_notes(paper_id, notes)
         st.toast("Notes saved")
 
 
@@ -372,7 +379,7 @@ def main() -> None:
     with col_detail:
         if selected_id is not None and not df.empty:
             paper = df.set_index("paper_id").loc[selected_id]
-            _render_detail(paper)
+            _render_detail(selected_id, paper)
         else:
             st.info("Select a paper from the queue to view + triage.")
 
