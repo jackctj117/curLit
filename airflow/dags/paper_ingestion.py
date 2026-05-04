@@ -49,6 +49,23 @@ def ingest_papers() -> None:
         raise RuntimeError(msg)
 
 
+def promote_for_impl_papers() -> None:
+    """Run IdeaGenerator on operator-flagged papers (CL-28j wire).
+
+    Picks up rows where read_status='for_implementation' and runs them
+    through the IdeaGenerator. PROPOSED → writes hypothesis brief +
+    transitions to 'in_pipeline'. DECLINED → transitions to
+    'idea_declined' so we don't re-run on every tick. Cost-bounded
+    to 10 papers/night by default.
+    """
+    from scripts.promote_papers_to_idea_agent import main as promote_main
+
+    rc = promote_main([])
+    if rc != 0:
+        msg = f"promote_papers_to_idea_agent exited with code {rc}"
+        raise RuntimeError(msg)
+
+
 def backfill_scores() -> None:
     """Re-score papers whose relevance_score is at the schema default.
 
@@ -136,9 +153,17 @@ with DAG(
         task_id="ingest_papers",
         python_callable=ingest_papers,
     )
+    t_promote = PythonOperator(
+        task_id="promote_for_impl_papers",
+        python_callable=promote_for_impl_papers,
+    )
     t_backfill = PythonOperator(
         task_id="backfill_scores",
         python_callable=backfill_scores,
     )
 
-    t_ingest >> t_backfill
+    # ingest creates new rows; promote consumes operator-flagged rows
+    # from the prior run; backfill scores stragglers. promote and
+    # backfill are independent — they could run in parallel — but
+    # serializing keeps Airflow logs easier to read.
+    t_ingest >> t_promote >> t_backfill

@@ -48,10 +48,19 @@ _STATUS_SKIM_LATER: str = "skim_later"
 _STATUS_READ: str = "read"
 _STATUS_DISCARDED: str = "discarded"
 _STATUS_FOR_IMPLEMENTATION: str = "for_implementation"
+# Set by the auto-promotion script (scripts/promote_papers_to_idea_agent.py)
+# after the IdeaGenerator successfully writes a hypothesis brief. Operator
+# views these as "awaiting Bull/Bear debate."
+_STATUS_IN_PIPELINE: str = "in_pipeline"
+# Set when IdeaGenerator declined to produce a hypothesis (e.g. the
+# paper is too thin / theoretical). Distinct from operator-discarded so
+# the source can be distinguished in MetaLearner rollups.
+_STATUS_IDEA_DECLINED: str = "idea_declined"
 
 _ALL_STATUSES: tuple[str, ...] = (
     _STATUS_UNREAD, _STATUS_SKIM_LATER, _STATUS_READ,
     _STATUS_DISCARDED, _STATUS_FOR_IMPLEMENTATION,
+    _STATUS_IN_PIPELINE, _STATUS_IDEA_DECLINED,
 )
 
 # Implementation priorities. 0 = unranked. 1-5 are user-set on
