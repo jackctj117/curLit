@@ -72,6 +72,30 @@ agents:
     prompt_path: configs/research_prompts/paper_extractor.md
     max_tokens: 1024
 
+  # CL-l0x: Bayesian modeling council. The Modeler proposes a structured
+  # PyMC spec from a hypothesis; the fit-runner tool actually fits;
+  # the Fit Evaluator passes/iterates/rejects based on MCMC diagnostics
+  # + posterior-predictive checks.
+
+  # Modeler — produces a JSON model spec. Reasoning quality matters
+  # (it's basically translating a thesis into Bayesian primitives) →
+  # Claude. Sonnet handles this fine; Opus is overkill.
+  modeler:
+    provider: claude
+    role: modeler
+    prompt_path: configs/research_prompts/modeler.md
+    max_tokens: 2048
+
+  # Fit evaluator — adversarial reviewer for MCMC diagnostics +
+  # posterior-predictive checks. Same provider rationale as the bear
+  # reviewer: needs to argue against shipping unless the evidence is
+  # there.
+  fit_evaluator:
+    provider: claude
+    role: fit_evaluator
+    prompt_path: configs/research_prompts/fit_evaluator.md
+    max_tokens: 2048
+
 debates:
   # The default promotion-review debate. Bull + Bear go through 4 rounds
   # culminating in a verdict. Adding a different debate type (e.g. a
@@ -93,3 +117,15 @@ debates:
         type: sequential
       - name: final_position
         type: parallel
+
+  # CL-l0x: Bayesian modeling council — NOT a YAML-defined debate.
+  # Orchestrated programmatically in
+  # src/research/agents/bayesian_council.py because it interleaves
+  # agent calls with a tool call (PyMC fit), which the parallel /
+  # sequential / per_agent_async round vocabulary used by
+  # promotion_review can't express.
+  #
+  # The two participating agents (modeler + fit_evaluator) ARE
+  # registered in the agents: section above so the orchestrator
+  # can construct them via Agent.from_config like any other agent.
+  # The orchestration loop lives in code.
