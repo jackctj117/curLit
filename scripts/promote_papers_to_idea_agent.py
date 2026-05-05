@@ -105,6 +105,101 @@ def _find_extract_path(paper_id: str, extract_root: Path) -> Path | None:
     return candidate if candidate.exists() else None
 
 
+def _fetch_paper_row(engine: Any, paper_id: str) -> dict[str, Any] | None:
+    """Pull the full research_papers row for synthesizing a stub extract.
+
+    Returns None when the paper_id isn't in the table — caller treats
+    that as a hard skip (the row was deleted between SELECT and now,
+    a corner-case nobody should hit but the script shouldn't crash).
+    """
+    with engine.connect() as conn:
+        row = conn.execute(
+            text("""
+                SELECT title, authors, abstract, url, source, published_date
+                FROM research_papers
+                WHERE paper_id = :pid
+            """),
+            {"pid": paper_id},
+        ).fetchone()
+    if row is None:
+        return None
+    return {
+        "title": row[0] or "",
+        "authors": row[1],
+        "abstract": row[2] or "",
+        "url": row[3] or "",
+        "source": row[4] or "",
+        "published_date": row[5],
+    }
+
+
+def _synthesize_extract(
+    paper_id: str, paper_row: dict[str, Any], extract_root: Path,
+) -> Path:
+    """Build a minimal extract markdown from DB fields and write it.
+
+    Used when the operator promotes a paper that never went through the
+    LLM extract step (e.g. extract failed on ingest, OR the paper was
+    seeded directly into the table without an ingest run). The shape
+    mirrors what ExtractStore.write produces so downstream consumers
+    (IdeaGenerator, KnowledgeRetriever) can't tell the difference.
+
+    The body is intentionally low-fidelity — the abstract goes into the
+    Methodology and Findings sections verbatim. The IdeaGenerator
+    handles thin extracts gracefully: it'll usually DECLINE because
+    there isn't enough material for a falsifiable hypothesis, which is
+    correct behavior. Synthesizing the extract just gets the paper INTO
+    the agent's gate rather than leaving it stuck in limbo.
+    """
+    import json as _json
+
+    authors = paper_row.get("authors")
+    if isinstance(authors, str):
+        try:
+            authors = _json.loads(authors)
+        except (TypeError, ValueError):
+            authors = [authors]
+    if not isinstance(authors, list):
+        authors = []
+    authors_line = ", ".join(str(a) for a in authors) if authors else "(unknown)"
+
+    year = ""
+    pub = paper_row.get("published_date")
+    if pub:
+        try:
+            year = str(pub)[:4]
+        except Exception:  # noqa: BLE001
+            year = ""
+
+    abstract = paper_row.get("abstract") or "(no abstract available)"
+
+    body = (
+        f"# {paper_row.get('title') or '(untitled)'}\n\n"
+        f"- **authors**: {authors_line}\n"
+        f"- **year**: {year or '(unknown)'}\n"
+        f"- **url**: {paper_row.get('url') or '(none)'}\n"
+        f"- **source**: {paper_row.get('source') or '(unknown)'}\n"
+        f"- **paper_hash**: `{paper_id}`\n"
+        f"- **note**: synthesized from DB row — original LLM extract "
+        f"unavailable\n\n"
+        f"---\n\n"
+        f"## Methodology\n\n"
+        f"{abstract}\n\n"
+        f"## Findings\n\n"
+        f"{abstract}\n\n"
+        f"## FX trading applicability\n\n"
+        f"(not extracted — IdeaGenerator should infer from the abstract above)\n\n"
+        f"## Data sources\n\n"
+        f"(not extracted)\n\n"
+        f"## Key citations\n\n"
+        f"(not extracted)\n"
+    )
+    extract_root.mkdir(parents=True, exist_ok=True)
+    out_path = extract_root / f"{paper_id}.md"
+    out_path.write_text(body)
+    return out_path
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument(
@@ -180,13 +275,24 @@ def main(argv: list[str] | None = None) -> int:
         paper_id = p_row["paper_id"]
         extract = _find_extract_path(paper_id, extract_root)
         if extract is None:
-            logger.warning(
-                "[%s] no extract on disk at %s/%s.md — skipping; will retry "
-                "next run after the LLM extract step catches up",
-                paper_id[:8], extract_root, paper_id,
+            # Synthesize a stub extract from the DB row. This handles
+            # both demo-seeded rows AND papers whose original LLM
+            # extract step failed transiently. The IdeaGenerator gets
+            # to read SOMETHING; if it's too thin, it'll DECLINE
+            # honestly. Stuck-in-limbo is the worse outcome.
+            db_row = _fetch_paper_row(engine, paper_id)
+            if db_row is None:
+                logger.warning(
+                    "[%s] DB row vanished between SELECT and synthesis — "
+                    "skipping", paper_id[:8],
+                )
+                n_skipped += 1
+                continue
+            extract = _synthesize_extract(paper_id, db_row, extract_root)
+            logger.info(
+                "[%s] no extract on disk — synthesized %s from DB row",
+                paper_id[:8], extract,
             )
-            n_skipped += 1
-            continue
 
         try:
             result = idea_agent.ideate(

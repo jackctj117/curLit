@@ -150,15 +150,19 @@ class TestEndToEndCycle:
             ])
 
         assert rc == 0
-        # hash_a had an extract → should transition to in_pipeline.
-        # hash_b had no extract → should be skipped, stays for_implementation.
+        # hash_a had an extract → ideate ran → in_pipeline.
+        # hash_b had NO extract → script synthesized one from the DB
+        # row, ideate ran on the stub → in_pipeline (mock returns
+        # PROPOSED for both calls, so both transition together).
         with papers_engine.connect() as conn:
             states = dict(conn.execute(text(
                 "SELECT paper_id, read_status FROM research_papers"
             )).fetchall())
         assert states["hash_a"] == "in_pipeline"
-        assert states["hash_b"] == "for_implementation"  # skipped — no extract
-        assert states["hash_c"] == "read"                # untouched
+        assert states["hash_b"] == "in_pipeline"  # synthesized + processed
+        assert states["hash_c"] == "read"          # untouched
+        # Synthesized extract should now exist on disk under hash_b.md
+        assert (extract_root / "hash_b.md").exists()
 
     def test_declined_transitions_to_idea_declined(
         self, papers_engine, extract_root: Path, tmp_path: Path,
@@ -213,6 +217,34 @@ class TestEndToEndCycle:
                 "SELECT read_status FROM research_papers WHERE paper_id='hash_a'",
             )).scalar()
         assert v == "for_implementation"
+
+    def test_synthesize_extract_uses_abstract(
+        self, papers_engine, tmp_path: Path,
+    ) -> None:  # type: ignore[no-untyped-def]
+        """Direct test of the synthesis helper: an extract built from a
+        DB row should contain the title, abstract, and a stable
+        synthesized-from-DB note so audit can tell it apart from a real
+        LLM extract."""
+        from scripts.promote_papers_to_idea_agent import (
+            _fetch_paper_row, _synthesize_extract,
+        )
+
+        # Add abstract to hash_b so we have something to synthesize from.
+        with papers_engine.begin() as conn:
+            conn.execute(text("""
+                UPDATE research_papers
+                SET abstract = 'A real abstract about volatility risk premium.',
+                    url = 'https://example.com/vrp'
+                WHERE paper_id = 'hash_b'
+            """))
+
+        row = _fetch_paper_row(papers_engine, "hash_b")
+        assert row is not None
+        path = _synthesize_extract("hash_b", row, tmp_path)
+        body = path.read_text()
+        assert "Volatility risk premium" in body          # title
+        assert "real abstract about volatility" in body   # abstract content
+        assert "synthesized from DB row" in body          # provenance marker
 
     def test_dry_run_doesnt_call_llm_or_transition(
         self, papers_engine, extract_root: Path,
