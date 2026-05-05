@@ -65,7 +65,15 @@ def load_config(path: Path) -> dict[str, Any]:
 #                       account state survives engine restarts.
 #   "oanda-live"     — OandaBroker against api-fxtrade.oanda.com.
 #                       REAL MONEY. Requires --confirm-live.
-BROKER_MODES = ("paper", "oanda-practice", "oanda-live")
+BROKER_MODES = (
+    "paper", "oanda-practice", "oanda-live",
+    # CL-poly-2: paper broker against live Polymarket order books.
+    "polymarket-paper",
+    # CL-poly-3: testnet (Amoy) — full sign + submit chain, no real money.
+    "polymarket-amoy",
+    # CL-poly-3: mainnet — REAL MONEY. HARD-GATED until preflight passes.
+    "polymarket-mainnet",
+)
 
 
 def build_broker(mode: str) -> Any:
@@ -84,6 +92,55 @@ def build_broker(mode: str) -> Any:
             oanda_key, oanda_id,
             practice=(mode == "oanda-practice"),
         )
+    if mode == "polymarket-paper":
+        # Paper-only — no wallet, no chain, no signer. CL-poly-2.
+        from src.execution.polymarket_paper_broker import PolymarketPaperBroker
+        return PolymarketPaperBroker()
+    if mode == "polymarket-amoy":
+        # Testnet — full chain wiring, no real money. CL-poly-3 scaffold.
+        from src.execution.polymarket_broker import PolymarketBroker
+        from src.execution.polymarket_preflight import run as preflight_run
+        # Testnet preflight is permissive about the vault path (env
+        # vars are fine for dev smoke).
+        failures = preflight_run("amoy", require_vault=False)
+        if failures:
+            msg = (
+                "polymarket-amoy preflight failed:\n  - "
+                + "\n  - ".join(failures)
+            )
+            raise RuntimeError(msg)
+        return PolymarketBroker(env="amoy")
+    if mode == "polymarket-mainnet":
+        # HARD GATE — see CL-poly-3 acceptance for the unlock checklist.
+        # The override env var POLYMARKET_MAINNET_UNLOCK is the one
+        # documented gate to flip this on, and it logs WARNING when set
+        # so any audit log reflects the unlock.
+        if os.environ.get("POLYMARKET_MAINNET_UNLOCK") != "1":
+            msg = (
+                "polymarket-mainnet is HARD-GATED. Real-money trading on "
+                "Polymarket is disabled until the CL-poly-3 acceptance "
+                "criteria are satisfied (see bd show CL-poly-3). To "
+                "explicitly unlock after operator-validated bringup, set "
+                "POLYMARKET_MAINNET_UNLOCK=1 in the environment. Until then "
+                "use polymarket-amoy (testnet) or polymarket-paper (no "
+                "chain at all)."
+            )
+            raise RuntimeError(msg)
+        logger.warning(
+            "POLYMARKET_MAINNET_UNLOCK=1 — real-money mode active. "
+            "Operator must have completed CL-poly-3 acceptance gates.",
+        )
+        from src.execution.polymarket_broker import PolymarketBroker
+        from src.execution.polymarket_preflight import run as preflight_run
+        # Mainnet preflight is strict — vault path required.
+        failures = preflight_run("mainnet", require_vault=True)
+        if failures:
+            msg = (
+                "polymarket-mainnet preflight failed:\n  - "
+                + "\n  - ".join(failures)
+            )
+            raise RuntimeError(msg)
+        return PolymarketBroker(env="mainnet")
     msg = f"unknown broker mode: {mode!r} (must be one of {BROKER_MODES})"
     raise ValueError(msg)
 

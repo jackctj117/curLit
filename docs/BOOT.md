@@ -41,6 +41,35 @@ docker compose up -d --wait && \
   python -m src.runtime.run_engine --broker oanda-live --confirm-live >/tmp/curlit-engine.log 2>&1 &
 ```
 
+## Startup — Polymarket paper (CL-poly-2)
+
+```bash
+docker compose up -d --wait && \
+  source .venv/bin/activate && \
+  python -m src.runtime.run_engine --broker polymarket-paper >/tmp/curlit-engine.log 2>&1 &
+```
+
+## Startup — Polymarket Amoy testnet (CL-poly-3)
+
+Requires `pip install '.[polymarket]'` and the `POLYMARKET_AMOY_*` env
+vars (or vault entries under `secret/trading/polymarket/amoy/`).
+
+```bash
+pip install '.[polymarket]'    # installs py-clob-client + web3 + eth-account
+python -m src.runtime.run_engine --broker polymarket-amoy >/tmp/curlit-engine.log 2>&1 &
+```
+
+## Startup — Polymarket mainnet (HARD-GATED)
+
+Real-money on Polymarket. Run only after CL-poly-3 acceptance gates
+pass — see `docs/runbooks/PolymarketTrading.md` and `bd show CL-poly-3`.
+
+```bash
+export POLYMARKET_MAINNET_UNLOCK=1
+python -m src.runtime.run_engine \
+    --broker polymarket-mainnet --confirm-live >/tmp/curlit-engine.log 2>&1 &
+```
+
 ## Verify healthy
 
 ```bash
@@ -89,5 +118,7 @@ rm -rf data/             # local artifacts
 | Stale prices kill switch fired            | `docker compose ps` for stream-side health      |
 | Reconciliation alert                      | `reports/reconciliation/YYYY-MM-DD.json`        |
 | Strategy not trading                      | `bd show <strategy bead>` + paper_mode flag     |
+| Polymarket mainnet refused to start       | `bd show CL-poly-3` — mainnet is hard-gated     |
+| Polymarket Amoy preflight fails           | check vault entries / RPC URL / chain id        |
 
 For each-symptom-deeper-investigation, see `docs/OPERATOR.md`.

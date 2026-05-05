@@ -134,6 +134,17 @@ check the source provider (FRED rate limit, yfinance ban, etc).
 
 ---
 
+## Polymarket trading
+
+Polymarket integration ships in three phases. Read-only data flows
+through DataProvider as `POLY:` symbols. Paper trading runs via
+`--broker polymarket-paper`. Live trading is hard-gated until the
+CL-poly-3 acceptance gates pass — see
+[`docs/runbooks/PolymarketTrading.md`](runbooks/PolymarketTrading.md).
+**Polymarket positions are categorically different from FX:** no
+stop-losses, max loss = position cost, Kelly sizing not vol-target.
+Read the runbook before placing real money.
+
 ## Configuration locations
 
 - Strategies: `configs/strategies.yaml` and per-strategy dataclasses in

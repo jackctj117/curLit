@@ -83,6 +83,12 @@ viz = [
     "seaborn>=0.12",
     "plotly>=5.15",
 ]
+polymarket = [
+    # CL-poly-3 — install for Amoy / mainnet trading. Heavy EVM stack.
+    "py-clob-client>=0.10",
+    "web3>=6.0",
+    "eth-account>=0.10",
+]
 ibkr = [
     "ib-insync>=0.9",
 ]
@@ -179,6 +185,10 @@ module = [
     "hmmlearn.*",
     "pymc.*",
     "arviz.*",
+    "py_clob_client.*",
+    "web3.*",
+    "eth_account.*",
+    "eth_utils.*",
 ]
 ignore_missing_imports = true
 
