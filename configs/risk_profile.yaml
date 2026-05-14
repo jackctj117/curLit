@@ -1,0 +1,142 @@
+# Risk-profile configuration
+#
+# A single toggle that scales the system's risk posture without
+# touching strategy code. Strategies and risk managers read the active
+# profile at boot via ``src.risk.risk_profile.load_active_profile()``.
+#
+# How to switch profiles:
+#   export CURLIT_RISK_PROFILE=aggressive
+#   python -m src.runtime.run_engine --broker paper
+#
+# Default is "conservative" — preserves the existing curLit defaults
+# (vol-target sizing, -3% daily kill, -20% drawdown kill, 0.5 Sharpe
+# floor for paper-to-live promotion).
+#
+# "aggressive" lowers acceptance thresholds (more signals get through
+# to the strategy/agent layer), increases sizing, loosens the kill
+# switches. Still educated — not "size 100% on any signal" — but
+# willing to take real drawdowns for tail upside.
+#
+# IMPORTANT: aggressive profile does NOT modify the Polymarket mainnet
+# gate (CL-poly-3 acceptance gates are independent of risk profile).
+# Real-money Polymarket still requires POLYMARKET_MAINNET_UNLOCK=1 plus
+# the operator-validated bringup checklist.
+
+active: conservative   # operator default — override via CURLIT_RISK_PROFILE env
+
+profiles:
+
+  # --------------------------------------------------------------- #
+  # conservative — preserves existing curLit defaults
+  # --------------------------------------------------------------- #
+  conservative:
+    sizing:
+      # Quarter-Kelly default mirrors the FX vol-target floor in
+      # src/risk/sizing.py:kelly() — capital preservation first.
+      kelly_fraction: 0.25
+      # Vol-target = 10% annualized per leg. (Arch §5.1)
+      volatility_target_pct: 0.10
+      # 20% per position. (Arch §5.2)
+      max_position_pct: 0.20
+      # 5% per Polymarket — Kelly applies + this hard floor.
+      max_polymarket_market_fraction: 0.05
+      # 3pp edge floor on Polymarket — below this, signal can't
+      # overcome spread + gas.
+      polymarket_min_edge: 0.03
+
+    kill_switches:
+      # Daily loss before halt_new. (Arch §5.5)
+      daily_loss_limit_pct: -0.03
+      # Drawdown before flatten_all.
+      drawdown_limit_pct: -0.20
+      # Single-strategy DD before halt_strategy.
+      single_strategy_dd_pct: -0.25
+      # Max pairwise strategy correlation before reduce_50pct.
+      strategy_correlation_spike: 0.90
+
+    strategy_gates:
+      # Model R² floor for rate-diff strategy to trade. Below this,
+      # the model has no edge.
+      min_r_squared: 0.10
+      # Z-score entry threshold (sigma units).
+      entry_z_threshold: 1.5
+      # Min relevance score for a paper to enter the IdeaGenerator
+      # pipeline.
+      paper_relevance_floor: 5.0
+      # Min paper Sharpe to promote paper-mode → live (CL-15r4).
+      min_paper_sharpe: 0.5
+      # Min paper-mode duration in days before promotion is allowed.
+      min_paper_days: 90
+
+    holding:
+      # Default max holding period (days) — past this, exit even on
+      # un-signaled positions. Mean-reversion is path-bounded.
+      max_holding_days: 30
+
+  # --------------------------------------------------------------- #
+  # aggressive — lower thresholds, larger size, faster cycle
+  # --------------------------------------------------------------- #
+  aggressive:
+    sizing:
+      # Half-Kelly — still bounded growth-vs-DD tradeoff, but double
+      # the conservative quarter-Kelly.
+      kelly_fraction: 0.50
+      # 25% annualized vol per leg. 2.5x conservative.
+      volatility_target_pct: 0.25
+      # 40% per position — concentrates conviction.
+      max_position_pct: 0.40
+      # 15% per Polymarket — 3x conservative.
+      max_polymarket_market_fraction: 0.15
+      # 1.5pp edge floor — accept thinner signals.
+      polymarket_min_edge: 0.015
+
+    kill_switches:
+      # -10% daily before halt — accept bigger one-day losses.
+      daily_loss_limit_pct: -0.10
+      # -40% drawdown before flatten. The system is allowed to lose
+      # a lot before the brake hits.
+      drawdown_limit_pct: -0.40
+      # Single strategy DD: -40% before halt_strategy.
+      single_strategy_dd_pct: -0.40
+      # Looser correlation threshold — we're willing to crowd more.
+      strategy_correlation_spike: 0.95
+
+    strategy_gates:
+      # R² floor halved — accept noisier model fits.
+      min_r_squared: 0.05
+      # Z-score 1.0 (vs 1.5) — 2x as many signal fires expected.
+      # At 1.0σ, two-tailed normal CDF says signal ~32% of days
+      # (vs 13% at 1.5σ).
+      entry_z_threshold: 1.0
+      # Drop paper relevance floor — let the LLM agents triage more.
+      paper_relevance_floor: 1.0
+      # Promote earlier on weaker paper track. NOT zero — still
+      # requires some evidence the strategy isn't broken.
+      min_paper_sharpe: 0.2
+      # 30-day paper track minimum (was 90).
+      min_paper_days: 30
+
+    holding:
+      # Short-term bias — 5-day max holding. Encourages quick turnover,
+      # matches the "shorts + puts super short term" framing.
+      max_holding_days: 5
+
+  # --------------------------------------------------------------- #
+  # aggressive_short — aggressive + bias toward short-side positions
+  # --------------------------------------------------------------- #
+  # Same risk dials as aggressive, but the strategy_advisor flips
+  # bias so positions skew short. Operator-explicit choice — invokes
+  # CURLIT_RISK_PROFILE=aggressive_short.
+  aggressive_short:
+    inherits: aggressive
+    bias:
+      # Per-asset bias multiplier applied AT THE PORTFOLIO
+      # COORDINATOR. +1.0 = unbiased; +0.5 = halve long signal
+      # strength; +0.0 = ignore longs; -1.0 = flip longs into shorts.
+      # 0.0 = take only the short half of any signal distribution.
+      long_signal_multiplier: 0.0
+      short_signal_multiplier: 1.0
+      # Polymarket NO bias — when both YES and NO sides pass the
+      # Kelly edge filter, prefer NO (treat YES as the over-priced
+      # side absent other signal).
+      prefer_polymarket_no: true

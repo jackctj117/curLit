@@ -89,6 +89,11 @@ polymarket = [
     "web3>=6.0",
     "eth-account>=0.10",
 ]
+social = [
+    # CL-risk-profile — Reddit + extended social-source ingest.
+    # PRAW is the only dep (4chan / lainchan / HN / Twitter use stdlib + httpx).
+    "praw>=7.7",
+]
 ibkr = [
     "ib-insync>=0.9",
 ]
@@ -189,6 +194,7 @@ module = [
     "web3.*",
     "eth_account.*",
     "eth_utils.*",
+    "praw.*",
 ]
 ignore_missing_imports = true
 

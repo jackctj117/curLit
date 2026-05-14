@@ -121,6 +121,69 @@ feeds:
   #   source_label: SSRN Financial Markets eJournal
 
   # ============================================================== #
+  # Social — Reddit (PRAW; requires REDDIT_CLIENT_ID + SECRET)
+  # ============================================================== #
+  # Aggressive-profile addition. The MetaLearner (CL-fsj) will
+  # downweight these over time if they don't produce winners.
+  reddit_finance:
+    adapter: reddit
+    query_url: wallstreetbets,forex,options,maxjustrisk,daytrading,stocks
+    source_label: Reddit (finance)
+
+  reddit_crypto:
+    adapter: reddit
+    query_url: cryptocurrency,cryptomarkets,bitcoin
+    source_label: Reddit (crypto)
+
+  # ============================================================== #
+  # Hacker News (Algolia API, free)
+  # ============================================================== #
+  hackernews_front:
+    adapter: hackernews
+    query_url: front     # special token; pulls front-page items
+    source_label: Hacker News (front page)
+
+  # ============================================================== #
+  # 4chan — LOW-SIGNAL, operator-explicit opt-in
+  # ============================================================== #
+  # Signal-to-noise is genuinely poor for trading purposes. The
+  # "(low-signal)" suffix in source_label lets the dashboard filter
+  # them out and the MetaLearner downweight over time.
+  fourchan_biz:
+    adapter: fourchan
+    query_url: biz
+    source_label: 4chan /biz/ (low-signal)
+
+  # ============================================================== #
+  # lainchan — operator-explicit opt-in
+  # ============================================================== #
+  lainchan_tech:
+    adapter: lainchan
+    query_url: tech
+    source_label: lainchan /tech/ (low-signal)
+
+  # ============================================================== #
+  # Twitter / X — buzzword search, recent only (paid API required)
+  # ============================================================== #
+  # Skips gracefully when TWITTER_BEARER_TOKEN is missing. Three
+  # separate buzzword queries so a single v2 search-recent rate-limit
+  # bucket isn't consumed by one feed.
+  twitter_fed:
+    adapter: twitter
+    query_url: '("fed cut" OR "fomc" OR "rate hike" OR "powell") -is:retweet lang:en'
+    source_label: Twitter (Fed buzzwords)
+
+  twitter_fx:
+    adapter: twitter
+    query_url: '(EURUSD OR USDJPY OR GBPUSD OR "dollar index" OR DXY) -is:retweet lang:en'
+    source_label: Twitter (FX buzzwords)
+
+  twitter_macro:
+    adapter: twitter
+    query_url: '("recession" OR "inflation" OR "CPI print" OR "yield curve") -is:retweet lang:en'
+    source_label: Twitter (macro buzzwords)
+
+  # ============================================================== #
   # Prediction markets — Polymarket Gamma API
   # ============================================================== #
   # Filtered to FX/macro keywords (fed/cpi/election/dollar/etc.) at
