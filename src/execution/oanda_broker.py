@@ -23,8 +23,17 @@ class OandaBroker(Broker):
         base = self.PRACTICE_URL if practice else self.LIVE_URL
         stream = self.STREAM_PRACTICE if practice else self.STREAM_LIVE
         self.headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-        self.client = httpx.Client(base_url=base, headers=self.headers, timeout=10.0)
-        self.stream_client = httpx.AsyncClient(base_url=stream, headers=self.headers, timeout=None)
+        # OANDA's edge 307-redirects some requests back to the same
+        # path; httpx doesn't follow redirects by default, which turns
+        # those into HTTPStatusError on raise_for_status.
+        self.client = httpx.Client(
+            base_url=base, headers=self.headers, timeout=10.0,
+            follow_redirects=True,
+        )
+        self.stream_client = httpx.AsyncClient(
+            base_url=stream, headers=self.headers, timeout=None,
+            follow_redirects=True,
+        )
 
     def place_order(self, order: Order) -> Order:
         body = {
