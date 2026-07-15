@@ -1,0 +1,173 @@
+{
+  "ran_at": "2026-07-14T23:06:05.589104+00:00",
+  "config": {
+    "meetings": [
+      "20260617",
+      "20260429",
+      "20260318"
+    ],
+    "minutes": 15.0,
+    "whisper_model": "base.en"
+  },
+  "pressers": [
+    {
+      "meeting": "20260617",
+      "video_name": null,
+      "analyzed_minutes": 15.0,
+      "transcript_words": 2155,
+      "transcript_head": "Good day. It's an honor, a true honor to be back at the Federal Reserve and to take up this duty at a time of such consequence. I've been especially heartened by the warm welcome of old friends and new colleagues both. And I've listened closely to my fellow FOMC members, per lot of new ideas, new th",
+      "features": {
+        "pitch_mean_hz": 144.15770340682047,
+        "pitch_std_hz": 37.31101386902719,
+        "pitch_range_hz": 82.49870599905296,
+        "voiced_fraction": 0.6142359382777501,
+        "pause_count": 259.0,
+        "pauses_per_min": 17.284488895216402,
+        "pause_mean_s": 0.7298223938223938,
+        "pause_fraction": 0.21024345102505695,
+        "speech_seconds": 646.96,
+        "span_seconds": 899.072,
+        "n_words": 2155.0,
+        "wpm_speech": 199.85779646345986,
+        "wpm_total": 143.81495586560365,
+        "rms_cv": 0.6908074617385864,
+        "text_hawkish": 2.0,
+        "text_dovish": 2.0,
+        "text_net": 0.0,
+        "text_uncertainty": 7.0
+      },
+      "statement_net_shift_db": null,
+      "market": {
+        "meeting": "20260617",
+        "reaction_pct": -0.3582984727815375,
+        "reaction_window": "5m_post_statement",
+        "pre_px": 1.1599582433700562,
+        "post_px": 1.1558021306991577,
+        "presser_30m_pct": -0.0807948754439014
+      }
+    },
+    {
+      "meeting": "20260429",
+      "video_name": null,
+      "analyzed_minutes": 15.0,
+      "transcript_words": 2506,
+      "transcript_head": "Good afternoon. My colleagues and I remain squarely focused on achieving our dual mandate goals of maximum employment and stable prices for the benefits benefit of the American people. The U.S. economy has been expanding at a solid pace. While job gains have remained low, the unemployment rate has b",
+      "features": {
+        "pitch_mean_hz": 113.13447378315868,
+        "pitch_std_hz": 28.30886689281903,
+        "pitch_range_hz": 56.845267220283574,
+        "voiced_fraction": 0.377942117613596,
+        "pause_count": 231.0,
+        "pauses_per_min": 15.459088069956277,
+        "pause_mean_s": 0.5633939393939394,
+        "pause_fraction": 0.14515927545284196,
+        "speech_seconds": 665.552,
+        "span_seconds": 896.5600000000001,
+        "n_words": 2506.0,
+        "wpm_speech": 225.91773445200374,
+        "wpm_total": 167.70768269831353,
+        "rms_cv": 0.48584288358688354,
+        "text_hawkish": 4.0,
+        "text_dovish": 8.0,
+        "text_net": -0.3076923076923077,
+        "text_uncertainty": 11.0
+      },
+      "statement_net_shift_db": null,
+      "market": {
+        "meeting": "20260429",
+        "reaction_pct": -0.12844883804679075,
+        "reaction_window": "60m_post_statement",
+        "pre_px": 1.1691803932189941,
+        "post_px": 1.1676785945892334
+      }
+    },
+    {
+      "meeting": "20260318",
+      "video_name": null,
+      "analyzed_minutes": 15.0,
+      "transcript_words": 2487,
+      "transcript_head": "Good afternoon. My colleagues and I remain squarely focused on achieving our dual mandate goals of maximum employment and stable prices for the benefit of the American people. The U.S. economy has been expanding at a solid pace. While job gains have remained low, the unemployment rate has been littl",
+      "features": {
+        "pitch_mean_hz": 120.27760675789861,
+        "pitch_std_hz": 37.32919053153418,
+        "pitch_range_hz": 91.3956914737385,
+        "voiced_fraction": 0.24955557135746284,
+        "pause_count": 97.0,
+        "pauses_per_min": 6.498204619754541,
+        "pause_mean_s": 0.38944329896907215,
+        "pause_fraction": 0.042178037408221236,
+        "speech_seconds": 730.592,
+        "span_seconds": 895.6320000000001,
+        "n_words": 2487.0,
+        "wpm_speech": 204.24532433971353,
+        "wpm_total": 166.60860710649015,
+        "rms_cv": 0.39415934681892395,
+        "text_hawkish": 1.0,
+        "text_dovish": 10.0,
+        "text_net": -0.75,
+        "text_uncertainty": 14.0
+      },
+      "statement_net_shift_db": 0.0,
+      "market": {
+        "meeting": "20260318",
+        "reaction_pct": -0.3215090019001998,
+        "reaction_window": "60m_post_statement",
+        "pre_px": 1.1519410610198975,
+        "post_px": 1.1482374668121338
+      }
+    }
+  ],
+  "correlations": {
+    "pitch_mean_hz": {
+      "pearson_r": -0.7800785495760457,
+      "spearman_r": -1.0,
+      "n": 3
+    },
+    "pitch_std_hz": {
+      "pearson_r": -0.9885766850063459,
+      "spearman_r": -0.5,
+      "n": 3
+    },
+    "pitch_range_hz": {
+      "pearson_r": -0.9210094006957816,
+      "spearman_r": -0.5,
+      "n": 3
+    },
+    "pauses_per_min": {
+      "pearson_r": 0.21363019124074076,
+      "spearman_r": -0.5,
+      "n": 3
+    },
+    "pause_mean_s": {
+      "pearson_r": -0.1363637927218755,
+      "spearman_r": -0.5,
+      "n": 3
+    },
+    "pause_fraction": {
+      "pearson_r": -0.02008847333268704,
+      "spearman_r": -0.5,
+      "n": 3
+    },
+    "wpm_speech": {
+      "pearson_r": 0.999965259585952,
+      "spearman_r": 1.0,
+      "n": 3
+    },
+    "wpm_total": {
+      "pearson_r": 0.6547864077017395,
+      "spearman_r": 1.0,
+      "n": 3
+    },
+    "rms_cv": {
+      "pearson_r": -0.35839641932575905,
+      "spearman_r": -0.5,
+      "n": 3
+    },
+    "text_net": {
+      "pearson_r": -0.04627346932965762,
+      "spearman_r": -0.5,
+      "n": 3
+    }
+  },
+  "verdict": "On this n=3 sample the strongest prosody correlate of the EUR/USD post-statement move is `wpm_speech` (r=+1.00) vs text-sentiment baseline |r|=0.05. Tone features look additive to text sentiment here \u2014 but n=2-3 is anecdotal: one degree of freedom, no p-values, and the reaction windows mix granularities (5m vs 60m). Treat this strictly as a pipeline proof and a hypothesis to test on 20+ pressers, not as signal."
+}
