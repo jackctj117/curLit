@@ -103,22 +103,29 @@ feeds:
     source_label: BIS Working Papers
 
   # ============================================================== #
-  # SSRN — DISABLED (CL-kxcs follow-up)
+  # SSRN (CL-nj2h) — Playwright browser transport
   # ============================================================== #
-  # SSRN sits behind Akamai bot protection (HTTP 403 to httpx, curl,
-  # and even a browser User-Agent without JS execution + signed UA
-  # client hints). Per-paper extraction works (papers.ssrn.com/abstract=N
-  # is open) but listing pages are gated. To re-enable, swap the
-  # fetcher to a Playwright-driven path that runs JS + accepts the
-  # browser fingerprint. Tracked under the SSRN-specific follow-up.
-  # The SSRNFetcher class in src/research/ingest.py stays — it's the
-  # parsing surface ready for a working transport.
+  # SSRN listing pages sit behind Akamai/Cloudflare bot protection
+  # (HTTP 403 to httpx/curl — the challenge wants JS execution + signed
+  # UA client hints), so the ssrn adapter defaults to the headless-
+  # Chromium transport in src/research/browser_transport.py. Requires
+  # the optional extra:  pip install 'curlit[browser]'
+  #                      playwright install chromium
+  # Without it the feed logs a clear install hint and is skipped — the
+  # rest of the ingest run is unaffected.
   #
-  # Uncomment after browser-automation transport lands:
-  # ssrn_finmarkets:
-  #   adapter: ssrn
-  #   query_url: https://papers.ssrn.com/sol3/JELJOUR_Results.cfm?form_name=journalBrowse&journal_id=2596228
-  #   source_label: SSRN Financial Markets eJournal
+  # Journal choice: SSRN migrated to a client-side SPA that renders
+  # papers from api.ssrn.com. As of 2026-07-14 the originally spec'd
+  # "Financial Markets eJournal" (journal_id=2596228) returns zero
+  # papers via JELJOUR_Results — only network-root ids still populate —
+  # so we point at the Financial Economics Network (FEN, journal_id=203,
+  # ~272k papers). It's a broad finance firehose; the idea agent filters
+  # per-paper FX relevance downstream, same as the NBER/FRBSF streams.
+  # Swap journal_id if a tighter populated eJournal surfaces.
+  ssrn_fen:
+    adapter: ssrn
+    query_url: https://papers.ssrn.com/sol3/JELJOUR_Results.cfm?form_name=journalBrowse&journal_id=203
+    source_label: SSRN Financial Economics Network
 
   # ============================================================== #
   # Social — Reddit (PRAW; requires REDDIT_CLIENT_ID + SECRET)

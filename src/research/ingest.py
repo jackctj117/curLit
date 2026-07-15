@@ -323,18 +323,38 @@ class RSSFetcher:
         return None
 
 
+def _browser_http_get(url: str) -> str:
+    """Playwright-driven transport (CL-nj2h) — SSRN's default.
+
+    SSRN listing pages 403 plain HTTP (Akamai bot protection wants JS
+    execution + signed UA client hints), so the ssrn adapter's default
+    transport is a real headless browser. Lazy import keeps playwright
+    optional: without the ``[browser]`` extra this raises a
+    RuntimeError with install instructions, which the fetcher's
+    catch-and-log turns into a skipped feed, not a dead run.
+    """
+    from src.research.browser_transport import browser_http_get  # noqa: PLC0415
+    return browser_http_get(url)
+
+
 @dataclass
 class SSRNFetcher:
-    """SSRN listing-page scraper (CL-kxcs).
+    """SSRN listing-page scraper (CL-kxcs; browser transport CL-nj2h).
 
     SSRN has no public RSS for browsing networks. We fetch a journal-
     listing HTML page and parse abstract entries from the table. Per-
     abstract pages then resolve to ssrn.com/abstract={id} which the
     extractor downloads downstream.
 
+    Transport: listing pages sit behind Akamai bot protection (403 to
+    httpx/curl even with a browser UA), so ``build_fetcher`` wires this
+    fetcher to the Playwright transport in
+    ``src/research/browser_transport.py`` by default. Tests inject a
+    canned-HTML ``http_get`` as usual.
+
     Limited by SSRN ToS: we hit one listing page per ingest run, with a
-    polite User-Agent, and nothing more. Anything heavier needs SSRN
-    membership / API access.
+    realistic browser fingerprint, and nothing more. Anything heavier
+    needs SSRN membership / API access.
     """
 
     http_get: HttpGet = field(default=_default_http_get)
@@ -355,11 +375,26 @@ class SSRNFetcher:
         from bs4 import BeautifulSoup
         soup = BeautifulSoup(html, "html.parser")
         out: list[Paper] = []
-        # SSRN listing items live in <div class="trow"> with a title
-        # link, "Number of pages: N", and abstract in nested divs.
-        # Schema can drift; we defensively pull what we can.
-        for row in soup.select("div.trow, .description-text, .abstractContent"):
-            title_el = row.select_one("a.title, h3 a, .description-text a")
+        # Current SSRN markup (verified 2026-07-14): the listing is a
+        # client-side SPA that renders results into
+        #   <div id="network-papers"><ol><li><div class="paper">…</li>
+        # Each paper carries a title link (abstract_id in the href),
+        # a <div class="stats"> with "Posted <date>", and a
+        # <div class="authors"> of nested <a> tags. Abstracts are NOT
+        # in the listing — the per-paper page (open, no bot wall)
+        # supplies them for the downstream extractor.
+        #
+        # The legacy <div class="trow"> markup (CL-kxcs) is kept as a
+        # fallback in the selector union so an SSRN rollback doesn't
+        # silently break parsing.
+        rows = soup.select(
+            "#network-papers ol li div.paper, div.trow, "
+            ".description-text, .abstractContent",
+        )
+        for row in rows:
+            title_el = row.select_one(
+                "div.title a, a.title, h3 a, .description-text a",
+            )
             if not title_el:
                 continue
             title = title_el.get_text(strip=True)
@@ -372,15 +407,13 @@ class SSRNFetcher:
             abstract = (
                 abstract_el.get_text(strip=True)[:4000] if abstract_el else ""
             )
-            # Authors live in a separate paragraph, comma-separated.
-            authors_el = row.select_one(".authors, .by-authors, .author-list")
-            authors_str = authors_el.get_text(strip=True) if authors_el else ""
-            authors = tuple(
-                a.strip() for a in re.split(r"[,;&]", authors_str) if a.strip()
-            )
-            # Year often appears as "Last revised: <date>"; just look
-            # for a 4-digit year in the row.
-            year_match = re.search(r"\b(20\d\d)\b", row.get_text())
+            authors = SSRNFetcher._parse_authors(row)
+            # Year appears in the stats line ("Posted 14 Jul 2026" /
+            # "Last revised: <date>"). The SPA concatenates spans with
+            # no whitespace ("…2026Publication Status…"), so a trailing
+            # \b never lands; use digit-boundary lookarounds instead so
+            # we match "2026" but not a run inside a longer number.
+            year_match = re.search(r"(?<!\d)(20\d\d)(?!\d)", row.get_text())
             year = int(year_match.group(1)) if year_match else None
             out.append(Paper(
                 title=title,
@@ -393,6 +426,28 @@ class SSRNFetcher:
             ))
         return out
 
+    @staticmethod
+    def _parse_authors(row: Any) -> tuple[str, ...]:
+        """Pull author names from a listing row. Current markup nests
+        one <a> per author inside <div class="authors">; legacy markup
+        used a single comma/semicolon-separated string."""
+        authors_el = row.select_one(
+            "div.authors, .authors, .by-authors, .author-list",
+        )
+        if authors_el is None:
+            return ()
+        # New markup: nested <a> per author.
+        links = authors_el.select("a")
+        if links:
+            return tuple(
+                a.get_text(strip=True) for a in links if a.get_text(strip=True)
+            )
+        # Legacy markup: comma/semicolon/ampersand-separated string.
+        authors_str = authors_el.get_text(strip=True)
+        return tuple(
+            a.strip() for a in re.split(r"[,;&]", authors_str) if a.strip()
+        )
+
 
 _FETCHER_REGISTRY: dict[str, Callable[[HttpGet], Any]] = {
     "arxiv": lambda http_get: ArxivFetcher(http_get=http_get),
@@ -400,10 +455,21 @@ _FETCHER_REGISTRY: dict[str, Callable[[HttpGet], Any]] = {
     "ssrn": lambda http_get: SSRNFetcher(http_get=http_get),
 }
 
+# Adapters whose default transport is NOT plain httpx. Only consulted
+# when the caller didn't inject an http_get — an explicit injection
+# (tests, dry-runs) always wins, browser or not.
+_DEFAULT_TRANSPORTS: dict[str, HttpGet] = {
+    "ssrn": _browser_http_get,  # Akamai-gated; needs JS execution (CL-nj2h)
+}
+
 
 def build_fetcher(adapter: str, http_get: HttpGet | None = None) -> Any:
     """Look up the fetcher class for an adapter name. Future SSRN/NBER
-    adapters register here with no other plumbing changes."""
+    adapters register here with no other plumbing changes.
+
+    When ``http_get`` is None the adapter's default transport applies:
+    plain httpx for most feeds, the Playwright browser transport for
+    bot-gated ones (currently just ssrn)."""
     if adapter not in _FETCHER_REGISTRY:
         msg = (
             f"unknown feed adapter {adapter!r}; "
@@ -411,7 +477,9 @@ def build_fetcher(adapter: str, http_get: HttpGet | None = None) -> Any:
         )
         raise KeyError(msg)
     factory = _FETCHER_REGISTRY[adapter]
-    return factory(http_get or _default_http_get)
+    if http_get is None:
+        http_get = _DEFAULT_TRANSPORTS.get(adapter, _default_http_get)
+    return factory(http_get)
 
 
 # --------------------------------------------------------------------------- #
@@ -623,7 +691,11 @@ class IngestRunner:
     ) -> None:
         self.extractor = extractor
         self.store = store or ExtractStore()
-        self.http_get = http_get or _default_http_get
+        # Kept as None when not injected so build_fetcher can apply
+        # per-adapter default transports (plain httpx for most feeds,
+        # the Playwright browser transport for ssrn). An injected
+        # http_get (tests, dry-runs) still overrides every adapter.
+        self.http_get = http_get
         self.db_engine = db_engine
         self.relevance_scorer = relevance_scorer
 
