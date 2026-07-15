@@ -89,10 +89,30 @@ polymarket = [
     "web3>=6.0",
     "eth-account>=0.10",
 ]
+altdata = [
+    # CL-6sp — alternative data ingestion. Google Trends needs pytrends;
+    # ENTSO-E uses the raw REST API via httpx (core dep), no extra needed.
+    "pytrends>=4.9",
+]
+audio = [
+    # CL-68e — FOMC presser audio prosody prototype (scripts/analyze_cb_audio.py).
+    "openai-whisper>=20250625",
+    "librosa>=0.11",
+    "soundfile>=0.13",
+    # Bundled ffmpeg binary — dev hosts have no system ffmpeg; used for
+    # MP4 → 16 kHz WAV extraction (whisper itself is fed numpy arrays).
+    "imageio-ffmpeg>=0.5",
+]
 social = [
     # CL-risk-profile — Reddit + extended social-source ingest.
     # PRAW is the only dep (4chan / lainchan / HN / Twitter use stdlib + httpx).
     "praw>=7.7",
+]
+browser = [
+    # CL-nj2h — Playwright transport for bot-gated feeds (SSRN listing
+    # pages sit behind Akamai). After pip install, fetch the engine:
+    #   playwright install chromium
+    "playwright>=1.49",
 ]
 ibkr = [
     "ib-insync>=0.9",
@@ -195,6 +215,12 @@ module = [
     "eth_account.*",
     "eth_utils.*",
     "praw.*",
+    "pytrends.*",
+    "playwright.*",
+    "whisper.*",
+    "librosa.*",
+    "soundfile.*",
+    "imageio_ffmpeg.*",
 ]
 ignore_missing_imports = true
 
