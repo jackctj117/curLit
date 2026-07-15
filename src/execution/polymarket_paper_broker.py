@@ -33,7 +33,7 @@ broker that actually signs EIP-712 and reads on-chain events.
 from __future__ import annotations
 
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
@@ -52,6 +52,10 @@ from src.execution.polymarket_cost_model import PolymarketCostModel
 from src.execution.polymarket_data_source import (
     OrderBookSnapshot,
     PolymarketDataSource,
+)
+from src.risk.polymarket_loss_caps import (
+    LossCapConfig,
+    PolymarketLossCapTracker,
 )
 
 logger = logging.getLogger(__name__)
@@ -78,11 +82,22 @@ class PolymarketPaperBroker(Broker):
         data_source: PolymarketDataSource | None = None,
         cost_model: PolymarketCostModel | None = None,
         initial_capital_usdc: Decimal = _DEFAULT_INITIAL_USDC,
+        loss_cap_tracker: PolymarketLossCapTracker | None = None,
+        market_key_fn: Callable[[str], str] | None = None,
     ) -> None:
         self._data = data_source or PolymarketDataSource()
         self._cost = cost_model or PolymarketCostModel()
         self._cash: Decimal = initial_capital_usdc
         self._initial: Decimal = initial_capital_usdc
+        # Per-market + per-day loss caps (CL-983f). Paper runs exercise
+        # the SAME gate the live broker uses; fills are recorded
+        # automatically in _record_fill. market_key_fn maps token_id ->
+        # market key (default identity; pass a condition_id resolver to
+        # pool YES/NO tokens of one market).
+        self._loss_caps = loss_cap_tracker or PolymarketLossCapTracker(
+            config=LossCapConfig.from_active_profile(),
+        )
+        self._market_key_fn = market_key_fn or (lambda token_id: token_id)
         # Positions keyed by token_id. Polymarket positions are share
         # counts at an avg price; net_long means we hold YES shares.
         self._positions: dict[str, Position] = {}
@@ -103,6 +118,13 @@ class PolymarketPaperBroker(Broker):
         # Ensure the symbol resolves; raise loud on bad symbols so the
         # strategy can be fixed.
         token_id = self._data.resolve_symbol(order.symbol)
+
+        # Loss-cap gate (CL-983f): refuse NEW risk when the market or
+        # the UTC day has burned its cap. Raises LossCapExceededError —
+        # handled upstream like any other pre-trade rejection.
+        self._loss_caps.check_order_allowed(
+            self._market_key_fn(token_id), side=order.side,
+        )
 
         try:
             book = self._data.get_book(token_id)
@@ -216,6 +238,12 @@ class PolymarketPaperBroker(Broker):
                 }
             await _asyncio.sleep(1.0)
 
+    @property
+    def loss_caps(self) -> PolymarketLossCapTracker:
+        """Loss-cap tracker (CL-983f). Exposed so the engine can record
+        external marks (``record_mark``) and ops can read P&L."""
+        return self._loss_caps
+
     # --- Internals ---------------------------------------------------
 
     @staticmethod
@@ -298,8 +326,14 @@ class PolymarketPaperBroker(Broker):
         qty: Decimal,
         cost: Decimal,
     ) -> None:
-        """Update positions, cash, fills list."""
+        """Update positions, cash, fills list, loss-cap tracker."""
         signed_qty = qty if order.side == "buy" else -qty
+
+        # Feed the loss-cap tracker (CL-983f) — realized P&L on
+        # reductions, fees against the day, mark = fill price.
+        self._loss_caps.record_fill(
+            self._market_key_fn(token_id), order.side, qty, price, fee=cost,
+        )
 
         # Cash delta: a buy at p costs p × qty; a sell at p credits p × qty.
         notional = price * qty

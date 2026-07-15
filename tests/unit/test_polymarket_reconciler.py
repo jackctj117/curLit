@@ -19,12 +19,19 @@ from src.execution.polymarket_reconciler import (
 )
 
 
+# Valid 20-byte hex addresses — eth_utils (present when the [polymarket]
+# extra is installed) checksum-validates these; short strings like
+# "0xfunder" raise ValueError.
+_FUNDER = "0x" + "fa" * 20
+_OTHER = "0x" + "0b" * 20
+
+
 def _fake_event(
     order_hash: str = "0xdead",
     block_number: int = 100,
     tx_hash: str = "0xbeef",
-    maker: str = "0xfunder",
-    taker: str = "0xother",
+    maker: str = _FUNDER,
+    taker: str = _OTHER,
 ):  # type: ignore[no-untyped-def]
     """Test factory. Both order_hash and tx_hash must use hex-only chars
     after the 0x prefix (we pad to 64 nybbles = 32 bytes)."""
@@ -82,7 +89,7 @@ class TestReconcile:
         journal = [{"order_hash": ev["args"]["orderHash"].hex()}]
         summary = reconcile(
             w3=w3,
-            funder_address="0xfunder",
+            funder_address=_FUNDER,
             journal_fills=journal,
             since_block=100,
         )
@@ -97,7 +104,7 @@ class TestReconcile:
         # Empty journal — all on-chain fills are unaccounted-for.
         summary = reconcile(
             w3=w3,
-            funder_address="0xfunder",
+            funder_address=_FUNDER,
             journal_fills=[],
             since_block=100,
         )
@@ -109,7 +116,7 @@ class TestReconcile:
         w3 = self._w3_with([])  # no on-chain logs
         summary = reconcile(
             w3=w3,
-            funder_address="0xfunder",
+            funder_address=_FUNDER,
             journal_fills=[{"order_hash": "0xabsentfromchain"}],
             since_block=100,
         )

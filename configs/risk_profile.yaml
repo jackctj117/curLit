@@ -53,6 +53,12 @@ profiles:
       single_strategy_dd_pct: -0.25
       # Max pairwise strategy correlation before reduce_50pct.
       strategy_correlation_spike: 0.90
+      # Polymarket absolute loss caps in USD (CL-983f). Realized +
+      # mark-to-market; new orders in a market are refused once it has
+      # lost $25, all new Polymarket orders once the UTC day has lost
+      # $50. Sized against the $100 initial mainnet cap.
+      polymarket_per_market_loss_cap_usd: 25
+      polymarket_per_day_loss_cap_usd: 50
 
     strategy_gates:
       # Model R² floor for rate-diff strategy to trade. Below this,
@@ -100,6 +106,10 @@ profiles:
       single_strategy_dd_pct: -0.40
       # Looser correlation threshold — we're willing to crowd more.
       strategy_correlation_spike: 0.95
+      # Polymarket loss caps doubled vs conservative (CL-983f) — still
+      # absolute USD brakes, still small next to the FX book.
+      polymarket_per_market_loss_cap_usd: 50
+      polymarket_per_day_loss_cap_usd: 100
 
     strategy_gates:
       # R² floor halved — accept noisier model fits.

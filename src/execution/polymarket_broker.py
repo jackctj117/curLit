@@ -37,7 +37,7 @@ Until those land, ``--broker polymarket-mainnet`` raises in run_engine.
 from __future__ import annotations
 
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from decimal import Decimal
 from typing import Any
 
@@ -50,6 +50,10 @@ from src.execution.broker import (
     Position,
 )
 from src.execution.polymarket_secrets import load_polymarket_creds
+from src.risk.polymarket_loss_caps import (
+    LossCapConfig,
+    PolymarketLossCapTracker,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +88,8 @@ class PolymarketBroker(Broker):
         self,
         env: str = "mainnet",
         signature_type: int = _DEFAULT_SIGNATURE_TYPE,
+        loss_cap_tracker: PolymarketLossCapTracker | None = None,
+        market_key_fn: Callable[[str], str] | None = None,
     ) -> None:
         if env not in _HOSTS:
             msg = f"unknown polymarket env: {env}"
@@ -115,6 +121,16 @@ class PolymarketBroker(Broker):
         # a secure path (CL-poly-3 acceptance).
         self._client.set_api_creds(self._client.create_or_derive_api_creds())
         self._env = env
+        # Per-market + per-day loss caps (CL-983f acceptance gate).
+        # place_order refuses new risk once a cap is burned. Fills are
+        # async on the CLOB, so the fill/reconciliation loop feeds the
+        # tracker via ``self.loss_caps.record_fill`` / ``record_mark``.
+        # market_key_fn maps token_id -> market key (default identity;
+        # pass a condition_id resolver to pool YES/NO tokens).
+        self._loss_caps = loss_cap_tracker or PolymarketLossCapTracker(
+            config=LossCapConfig.from_active_profile(),
+        )
+        self._market_key_fn = market_key_fn or (lambda token_id: token_id)
 
     # --- Broker ABC --------------------------------------------------
 
@@ -131,6 +147,14 @@ class PolymarketBroker(Broker):
         from py_clob_client.clob_types import OrderType as ClobOrderType
 
         self._validate_order(order)
+
+        # Loss-cap gate (CL-983f): refuse NEW risk when this market or
+        # the UTC day has burned its cap. Raises LossCapExceededError BEFORE
+        # anything is signed — handled upstream like any other
+        # pre-trade rejection (RejectionHandler -> ABORT, no retry).
+        self._loss_caps.check_order_allowed(
+            self._market_key_fn(order.symbol), side=order.side,
+        )
 
         args = OrderArgs(
             token_id=order.symbol,
@@ -212,6 +236,13 @@ class PolymarketBroker(Broker):
                     "ts": _dt.now(_UTC).isoformat(),
                 }
             await _asyncio.sleep(2.0)
+
+    @property
+    def loss_caps(self) -> PolymarketLossCapTracker:
+        """Loss-cap tracker (CL-983f). CLOB fills are async, so the
+        fill/reconciliation loop records them here (``record_fill``)
+        and streams marks (``record_mark``); place_order reads it."""
+        return self._loss_caps
 
     # --- Internals ---------------------------------------------------
 

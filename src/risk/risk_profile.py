@@ -53,6 +53,11 @@ class KillSwitchConfig:
     drawdown_limit_pct: float = -0.20
     single_strategy_dd_pct: float = -0.25
     strategy_correlation_spike: float = 0.90
+    # Polymarket absolute loss caps in USD (CL-983f) — consumed by
+    # src/risk/polymarket_loss_caps.py. Sized against the $100 initial
+    # mainnet cap: one market can burn at most $25, one UTC day $50.
+    polymarket_per_market_loss_cap_usd: float = 25.0
+    polymarket_per_day_loss_cap_usd: float = 50.0
 
 
 @dataclass(frozen=True)
