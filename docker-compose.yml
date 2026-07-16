@@ -252,8 +252,12 @@ services:
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
       AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW_SECRET_KEY:-change-me-to-random}
       PYTHONPATH: /opt/curlit/src:/opt/curlit
-      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-fx}:${POSTGRES_PASSWORD:-changeme}@postgres:5432/${POSTGRES_DB:-fx}
-      POSTGRES_HOST: postgres
+      # Ingestion writes to the HOST-side postgres (curlit-postgres-soak,
+      # published on 127.0.0.1:5432) — the same DB the engine reads.
+      # Pointing at the in-network `postgres` service split the data:
+      # fresh rows landed in a DB the engine never sees.
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-fx}:${POSTGRES_PASSWORD:-changeme}@host.docker.internal:5432/${POSTGRES_DB:-fx}
+      POSTGRES_HOST: host.docker.internal
       POSTGRES_DB: ${POSTGRES_DB:-fx}
       POSTGRES_USER: ${POSTGRES_USER:-fx}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
@@ -285,8 +289,12 @@ services:
       AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
       PYTHONPATH: /opt/curlit/src:/opt/curlit
-      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-fx}:${POSTGRES_PASSWORD:-changeme}@postgres:5432/${POSTGRES_DB:-fx}
-      POSTGRES_HOST: postgres
+      # Ingestion writes to the HOST-side postgres (curlit-postgres-soak,
+      # published on 127.0.0.1:5432) — the same DB the engine reads.
+      # Pointing at the in-network `postgres` service split the data:
+      # fresh rows landed in a DB the engine never sees.
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-fx}:${POSTGRES_PASSWORD:-changeme}@host.docker.internal:5432/${POSTGRES_DB:-fx}
+      POSTGRES_HOST: host.docker.internal
       POSTGRES_DB: ${POSTGRES_DB:-fx}
       POSTGRES_USER: ${POSTGRES_USER:-fx}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
