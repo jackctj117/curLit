@@ -201,8 +201,10 @@ class TestRealConfig:
         for the YAML the operator actually edits."""
         cfg = load_config("configs/research_agents.yaml")
         assert "claude" in cfg.providers
-        assert "deepseek" in cfg.providers
         assert "grok" in cfg.providers
+        assert cfg.providers["claude"].default_model == "claude-fable-5"
+        # The dot matters: "grok-4-5" is a 404 at the xAI API.
+        assert cfg.providers["grok"].default_model == "grok-4.5"
         assert "bull_reviewer" in cfg.agents
         assert "bear_reviewer" in cfg.agents
         assert "promotion_review" in cfg.debates

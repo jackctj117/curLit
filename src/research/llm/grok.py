@@ -4,10 +4,12 @@
 xAI's Grok serves the OpenAI chat-completions API at
 ``https://api.x.ai/v1`` with bearer auth, so the driver is the shared
 ``_OpenAICompatDriver`` from ``src/research/llm/client.py`` with the
-xAI base URL set. Models: ``grok-4``, ``grok-3``, ``grok-3-mini``;
-pricing lives in ``client.py:_PRICING_USD_PER_MTOK`` (operator should
-verify against the current xAI rate card before trusting the cost
-column on production runs).
+xAI base URL set. Models: ``grok-4.5`` (pipeline default since
+2026-07-17 — note the DOT in the id; ``grok-4-5`` 404s), ``grok-4``,
+``grok-3``, ``grok-3-mini``; pricing lives in
+``client.py:_PRICING_USD_PER_MTOK`` (operator should verify against
+the current xAI rate card before trusting the cost column on
+production runs).
 
 Why a separate provider when DeepSeek is also OpenAI-compatible:
 

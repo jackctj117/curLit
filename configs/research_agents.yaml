@@ -8,25 +8,25 @@
 providers:
   claude:
     api_key_env: ANTHROPIC_API_KEY
-    # claude-opus-4-7 deprecated the `temperature` parameter; the LLM
-    # client passes it on every call, so requests against opus-4-7
-    # 400 with "temperature is deprecated for this model". Pin to
-    # sonnet-4-6 until the driver is updated to drop temperature for
-    # opus models. Sonnet is cheaper anyway ($3/$15 per Mtok vs
-    # $15/$75) and still strong on code generation.
-    default_model: claude-sonnet-4-6
-  deepseek:
-    api_key_env: DEEPSEEK_API_KEY
-    default_model: deepseek-v4-pro
+    # Fable 5 ($10/$50 per MTok). The driver drops `temperature` for
+    # Fable/Opus-4.7+ models (they 400 on sampling params), opts into
+    # the server-side refusal fallback (rescued by opus-4-8), and
+    # fails loud on a whole-chain refusal.
+    default_model: claude-fable-5
+  # deepseek retired as a pipeline provider 2026-07-17 (operator
+  # request) — the driver is still registered in client.py for the
+  # comparison harness (scripts/compare_llm_providers.py).
   grok:
     api_key_env: XAI_API_KEY
-    default_model: grok-4
+    # NOTE the dot: "grok-4.5" is the API model id; "grok-4-5" 404s.
+    # $2/$6 per MTok. Requires XAI_API_KEY in .env.
+    default_model: grok-4.5
 
 agents:
   # Reads paper extracts (data/research/extracts/*.md) and emits
-  # pre-registered hypothesis briefs. Cheap repetitive task → DeepSeek.
+  # pre-registered hypothesis briefs. Cheap repetitive task → Grok.
   idea_generator:
-    provider: deepseek
+    provider: grok
     role: idea_generator
     prompt_path: configs/research_prompts/idea_generator.md
     max_tokens: 4096
@@ -47,27 +47,27 @@ agents:
     max_tokens: 4096
 
   # Bear reviewer — adversarial; argues REJECT, hunts for failure modes.
-  # Could be Grok for distinct training distribution → genuine viewpoint
-  # diversity vs Claude-Bull. Switch to grok by changing this one line.
+  # Grok: distinct training distribution → genuine viewpoint diversity
+  # vs Claude-Bull (the switch this comment always anticipated).
   bear_reviewer:
-    provider: claude
+    provider: grok
     role: bear
     prompt_path: configs/research_prompts/bear_reviewer.md
     max_tokens: 4096
 
   # Routes smart-questions to code/agent/human; bounces ESR-violators.
-  # Mostly format-checking + tool-calling → DeepSeek.
+  # Mostly format-checking + tool-calling → Grok.
   question_resolver:
-    provider: deepseek
+    provider: grok
     role: resolver
     prompt_path: configs/research_prompts/question_resolver.md
     max_tokens: 2048
 
   # Reads paper metadata + abstract → produces the four-section markdown
   # extract that the Idea Agent consumes. High-volume, cost-sensitive
-  # → DeepSeek.
+  # → Grok.
   paper_extractor:
-    provider: deepseek
+    provider: grok
     role: paper_extractor
     prompt_path: configs/research_prompts/paper_extractor.md
     max_tokens: 1024

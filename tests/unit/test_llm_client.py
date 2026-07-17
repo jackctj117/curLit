@@ -49,20 +49,21 @@ class _StubDriver(Driver):
 
 class TestCostHelper:
     def test_known_model_priced(self) -> None:
-        # Opus 4.7: $15/Mtok in, $75/Mtok out
-        cost = _cost_usd("claude-opus-4-7", 1_000_000, 1_000_000)
-        assert cost == pytest.approx(15.0 + 75.0)
+        # Fable 5: $10/Mtok in, $50/Mtok out
+        cost = _cost_usd("claude-fable-5", 1_000_000, 1_000_000)
+        assert cost == pytest.approx(10.0 + 50.0)
 
     def test_unknown_model_zero_cost(self) -> None:
         # Unknown model returns 0 — caller can decide to log/warn
         assert _cost_usd("not-a-real-model", 1000, 1000) == 0.0
 
-    def test_deepseek_meaningfully_cheaper_than_claude(self) -> None:
-        # Sanity check: DeepSeek-chat should be much cheaper for the same
-        # token volume (this is one rationale for mixed-provider routing)
-        deepseek = _cost_usd("deepseek-chat", 100_000, 100_000)
-        opus = _cost_usd("claude-opus-4-7", 100_000, 100_000)
-        assert deepseek * 50 < opus  # at least 50x cheaper
+    def test_grok_meaningfully_cheaper_than_fable(self) -> None:
+        # Sanity check: grok-4.5 should be much cheaper for the same
+        # token volume (this is the rationale for routing the bulk
+        # roles — extractor / idea / resolver — to Grok)
+        grok = _cost_usd("grok-4.5", 100_000, 100_000)
+        fable = _cost_usd("claude-fable-5", 100_000, 100_000)
+        assert grok * 5 < fable  # at least 5x cheaper
 
 
 # =============================================================================
