@@ -37,8 +37,8 @@ Until those land, ``--broker polymarket-mainnet`` raises in run_engine.
 from __future__ import annotations
 
 import logging
-from collections.abc import AsyncIterator, Callable
-from decimal import Decimal
+from collections.abc import AsyncIterator, Callable, Iterable
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from src.execution.broker import (
@@ -49,6 +49,7 @@ from src.execution.broker import (
     OrderType,
     Position,
 )
+from src.execution.polymarket_reconciler import OnchainFill
 from src.execution.polymarket_secrets import load_polymarket_creds
 from src.risk.polymarket_loss_caps import (
     LossCapConfig,
@@ -56,6 +57,21 @@ from src.risk.polymarket_loss_caps import (
 )
 
 logger = logging.getLogger(__name__)
+
+# USDC.e (collateral) has asset id 0 in CTFExchange OrderFilled events;
+# both USDC and CTF outcome tokens carry 6 decimals on Polygon.
+_COLLATERAL_ASSET_ID: int = 0
+_TOKEN_DECIMALS: Decimal = Decimal(10**6)
+
+# Unfed-tracker warning cadence: warn on the first offending order and
+# then every Nth so a runaway loop doesn't spam WARNING per order.
+_UNFED_WARN_EVERY: int = 25
+
+
+def _norm_hash(h: str) -> str:
+    """Case-fold a tx/order hash and strip any 0x prefix so keys from
+    the CLOB REST response and web3 logs compare equal."""
+    return h.lower().removeprefix("0x")
 
 
 # Polymarket CLOB hosts. Amoy host changes when the testnet is
@@ -121,16 +137,28 @@ class PolymarketBroker(Broker):
         # a secure path (CL-poly-3 acceptance).
         self._client.set_api_creds(self._client.create_or_derive_api_creds())
         self._env = env
+        self._funder = creds.funder_address
         # Per-market + per-day loss caps (CL-983f acceptance gate).
-        # place_order refuses new risk once a cap is burned. Fills are
-        # async on the CLOB, so the fill/reconciliation loop feeds the
-        # tracker via ``self.loss_caps.record_fill`` / ``record_mark``.
-        # market_key_fn maps token_id -> market key (default identity;
-        # pass a condition_id resolver to pool YES/NO tokens).
+        # place_order refuses new risk once a cap is burned. The tracker
+        # is fed from three sources (see the runtime contract on the
+        # ``loss_caps`` property):
+        #   1. Immediate CLOB matches recorded by place_order itself.
+        #   2. ``ingest_reconciled_fills`` — the runtime loop pushes
+        #      on-chain OrderFilled events (idempotent, safe to replay).
+        #   3. Marks: place_order records the current book mid before
+        #      gating; the runtime price loop should also stream
+        #      ``loss_caps.record_mark`` between orders.
+        # market_key_fn maps token_id -> CAP bucket only (position books
+        # stay per-token); pass a condition_id resolver to pool YES/NO
+        # tokens of one market. It is honored only when the broker builds
+        # its own tracker — an injected tracker brings its own key fn.
         self._loss_caps = loss_cap_tracker or PolymarketLossCapTracker(
             config=LossCapConfig.from_active_profile(),
+            market_key_fn=market_key_fn or (lambda token_id: token_id),
         )
-        self._market_key_fn = market_key_fn or (lambda token_id: token_id)
+        # Orders placed while the tracker had no fills/marks despite
+        # existing exposure — see _warn_if_tracker_unfed.
+        self._unfed_order_count = 0
 
     # --- Broker ABC --------------------------------------------------
 
@@ -148,12 +176,18 @@ class PolymarketBroker(Broker):
 
         self._validate_order(order)
 
+        # Refresh the mark from the live book BEFORE gating so the gate
+        # sees current unrealized P&L, then fail loud if we're trading
+        # with an unfed tracker (CL-983f).
+        self._record_book_mark(order.symbol)
+        self._warn_if_tracker_unfed()
+
         # Loss-cap gate (CL-983f): refuse NEW risk when this market or
         # the UTC day has burned its cap. Raises LossCapExceededError BEFORE
         # anything is signed — handled upstream like any other
         # pre-trade rejection (RejectionHandler -> ABORT, no retry).
         self._loss_caps.check_order_allowed(
-            self._market_key_fn(order.symbol), side=order.side,
+            order.symbol, side=order.side, quantity=order.quantity,
         )
 
         args = OrderArgs(
@@ -171,10 +205,13 @@ class PolymarketBroker(Broker):
             return order
 
         order.order_id = str(resp["orderID"])
-        order.status = OrderStatus.PENDING  # CLOB orders are async-fill
+        # Immediate matches are booked into the tracker right here;
+        # anything that fills later arrives via ingest_reconciled_fills.
+        self._record_immediate_fill(order, resp)
         logger.info(
-            "polymarket order placed: id=%s side=%s qty=%s @ %s",
+            "polymarket order placed: id=%s side=%s qty=%s @ %s status=%s",
             order.order_id, order.side, order.quantity, order.limit_price,
+            order.status,
         )
         return order
 
@@ -239,12 +276,216 @@ class PolymarketBroker(Broker):
 
     @property
     def loss_caps(self) -> PolymarketLossCapTracker:
-        """Loss-cap tracker (CL-983f). CLOB fills are async, so the
-        fill/reconciliation loop records them here (``record_fill``)
-        and streams marks (``record_mark``); place_order reads it."""
+        """Loss-cap tracker (CL-983f).
+
+        RUNTIME CONTRACT — what the engine loop must call:
+          * ``broker.ingest_reconciled_fills(fills)`` with the
+            ``OnchainFill`` list from ``polymarket_reconciler.
+            fetch_onchain_fills`` on every reconcile pass. Idempotent —
+            overlapping block ranges / re-runs cannot double-count.
+          * ``broker.loss_caps.record_mark(token_id, price)`` from its
+            price feed for every open-position token, so unrealized
+            losses trip the caps BETWEEN orders (place_order refreshes
+            the mark for its own token, but only when an order is sent).
+        The broker records immediate CLOB matches itself. Tracker state
+        persists across restarts (see ``LossCapConfig.state_path``).
+        Until the loop is wired, place_order logs a WARNING (rate
+        limited) whenever it runs with an unfed tracker despite open
+        orders/positions existing — the cap gate cannot see losses it
+        was never told about.
+        """
         return self._loss_caps
 
+    def ingest_reconciled_fills(self, fills: Iterable[OnchainFill]) -> int:
+        """Book on-chain ``OrderFilled`` events into the loss-cap tracker.
+
+        The runtime reconcile loop calls this with the output of
+        ``polymarket_reconciler.fetch_onchain_fills``. Each fill is
+        keyed by ``tx_hash:order_hash`` for idempotency (persisted), so
+        re-reconciling an overlapping block range is safe; fills already
+        booked as immediate matches by place_order are skipped too.
+        Returns the number of fills newly booked.
+        """
+        funder = self._funder.lower()
+        booked = 0
+        for f in fills:
+            order_hash = _norm_hash(f.order_hash)
+            key = f"{_norm_hash(f.tx_hash)}:{order_hash}"
+            if self._loss_caps.has_recorded_fill(key) or (
+                self._loss_caps.has_recorded_fill(f"order:{order_hash}")
+            ):
+                continue
+            parsed = self._parse_onchain_fill(f, funder)
+            if parsed is None:
+                logger.warning(
+                    "polymarket loss caps: cannot interpret onchain fill "
+                    "tx=%s order=%s (maker=%s taker=%s assets=%s/%s) — "
+                    "NOT booked",
+                    f.tx_hash, f.order_hash, f.maker, f.taker,
+                    f.maker_asset_id, f.taker_asset_id,
+                )
+                continue
+            token_id, side, qty, price, fee = parsed
+            if self._loss_caps.record_fill(
+                token_id, side, qty, price, fee=fee, fill_id=key,
+            ):
+                booked += 1
+        if booked:
+            logger.info(
+                "polymarket loss caps: booked %d reconciled fill(s)", booked,
+            )
+        return booked
+
     # --- Internals ---------------------------------------------------
+
+    @staticmethod
+    def _parse_onchain_fill(
+        f: OnchainFill, funder_lower: str,
+    ) -> tuple[str, str, Decimal, Decimal, Decimal] | None:
+        """Map an OrderFilled event to (token_id, side, qty, price, fee)
+        from the funder's perspective. Returns None when the fill does
+        not involve the funder or isn't a token<->collateral trade.
+
+        The named maker gives makerAsset / receives takerAsset; the
+        named taker the mirror. Asset id 0 is USDC.e collateral; both
+        legs carry 6 decimals on Polygon.
+        """
+        if f.maker.lower() == funder_lower:
+            gave = (f.maker_asset_id, f.maker_amount_filled)
+            got = (f.taker_asset_id, f.taker_amount_filled)
+        elif f.taker.lower() == funder_lower:
+            gave = (f.taker_asset_id, f.taker_amount_filled)
+            got = (f.maker_asset_id, f.maker_amount_filled)
+        else:
+            return None
+
+        if gave[0] == _COLLATERAL_ASSET_ID and got[0] != _COLLATERAL_ASSET_ID:
+            # Paid USDC, received outcome tokens — a buy.
+            side, token_id = "buy", str(got[0])
+            qty = Decimal(got[1]) / _TOKEN_DECIMALS
+            notional = Decimal(gave[1]) / _TOKEN_DECIMALS
+        elif got[0] == _COLLATERAL_ASSET_ID and gave[0] != _COLLATERAL_ASSET_ID:
+            # Gave outcome tokens, received USDC — a sell.
+            side, token_id = "sell", str(gave[0])
+            qty = Decimal(gave[1]) / _TOKEN_DECIMALS
+            notional = Decimal(got[1]) / _TOKEN_DECIMALS
+        else:
+            return None
+        if qty <= 0:
+            return None
+        return (
+            token_id,
+            side,
+            qty,
+            notional / qty,
+            Decimal(f.fee) / _TOKEN_DECIMALS,
+        )
+
+    def _record_immediate_fill(
+        self, order: Order, resp: dict[str, Any],
+    ) -> None:
+        """Book a fill reported as matched by the post_order response.
+
+        Sets order.status: matched -> FILLED (or PARTIAL when the CLOB
+        reports a smaller matched size), otherwise PENDING (async fill —
+        reconciliation will book it). Dedup keys are aligned with the
+        reconciler's ``tx_hash:order_hash`` scheme via the response's
+        ``transactionsHashes`` so the same match cannot be booked twice.
+        """
+        status = str(resp.get("status") or "").lower()
+        if status != "matched":
+            order.status = OrderStatus.PENDING  # CLOB orders are async-fill
+            return
+
+        qty = Decimal(str(order.quantity))
+        price = Decimal(str(order.limit_price))
+        try:
+            making = Decimal(str(resp["makingAmount"]))
+            taking = Decimal(str(resp["takingAmount"]))
+            m_qty, m_notional = (
+                (taking, making) if order.side == "buy" else (making, taking)
+            )
+            if m_qty > 0 and m_notional > 0:
+                qty, price = m_qty, m_notional / m_qty
+        except (KeyError, InvalidOperation, TypeError):
+            # No/garbled size info — assume the full order matched at
+            # the limit price; reconciliation trues it up on-chain.
+            logger.debug(
+                "polymarket: matched response without parsable amounts "
+                "(%s) — booking full order size", resp,
+            )
+
+        order_hash = _norm_hash(order.order_id)
+        txs = [t for t in (resp.get("transactionsHashes") or []) if t]
+        keys = [f"{_norm_hash(tx)}:{order_hash}" for tx in txs] or [
+            f"order:{order_hash}",
+        ]
+        self._loss_caps.record_fill(
+            order.symbol, order.side, qty, price, fill_id=keys[0],
+        )
+        for extra in keys[1:]:
+            self._loss_caps.register_processed_fill(extra)
+        order.status = (
+            OrderStatus.FILLED
+            if qty >= Decimal(str(order.quantity))
+            else OrderStatus.PARTIAL
+        )
+        logger.info(
+            "polymarket immediate fill: %s %s %s @ %s (order %s)",
+            order.side, qty, order.symbol, price, order.order_id,
+        )
+
+    def _record_book_mark(self, token_id: str) -> None:
+        """Best-effort mark from the current order book so the cap gate
+        prices unrealized P&L off fresh data. Skips one-sided/empty
+        books (0.0 bid / 1.0 ask are get_price's empty sentinels)."""
+        try:
+            bid, ask = self.get_price(token_id)
+        except Exception:
+            logger.debug(
+                "polymarket: book-mark fetch failed for %s", token_id,
+                exc_info=True,
+            )
+            return
+        if not (bid > 0.0 and 0.0 < ask < 1.0):
+            return
+        mid = (Decimal(str(bid)) + Decimal(str(ask))) / 2
+        self._loss_caps.record_mark(token_id, mid)
+
+    def _warn_if_tracker_unfed(self) -> None:
+        """Fail-loud on the known wiring gap (CL-983f): placing orders
+        while the tracker has NEVER seen a fill or mark even though open
+        orders/positions exist means the loss-cap gate is flying blind.
+        Logged at WARNING with a counter (first offense + every
+        ``_UNFED_WARN_EVERY``th), not per-order spam."""
+        if self._loss_caps.has_activity:
+            return
+        try:
+            exposed = bool(self._client.get_orders()) or bool(
+                self._client.get_positions(),
+            )
+        except Exception:
+            logger.debug(
+                "polymarket: unfed-tracker exposure probe failed",
+                exc_info=True,
+            )
+            return
+        if not exposed:
+            return
+        self._unfed_order_count += 1
+        if (
+            self._unfed_order_count == 1
+            or self._unfed_order_count % _UNFED_WARN_EVERY == 0
+        ):
+            logger.warning(
+                "polymarket loss caps: %d order(s) placed while the "
+                "tracker has received no fills or marks despite existing "
+                "open orders/positions — the loss-cap gate cannot see "
+                "prior losses. Wire the runtime loop to "
+                "ingest_reconciled_fills() and loss_caps.record_mark() "
+                "(see PolymarketBroker.loss_caps).",
+                self._unfed_order_count,
+            )
 
     @staticmethod
     def _validate_order(order: Order) -> None:

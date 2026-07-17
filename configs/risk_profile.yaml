@@ -56,7 +56,10 @@ profiles:
       # Polymarket absolute loss caps in USD (CL-983f). Realized +
       # mark-to-market; new orders in a market are refused once it has
       # lost $25, all new Polymarket orders once the UTC day has lost
-      # $50. Sized against the $100 initial mainnet cap.
+      # $50. Sized against the $100 initial mainnet cap. Live cap state
+      # persists across restarts in data/polymarket_loss_caps_state.json
+      # (see LossCapConfig.state_path) — a burned market/day does NOT
+      # get a fresh budget on redeploy.
       polymarket_per_market_loss_cap_usd: 25
       polymarket_per_day_loss_cap_usd: 50
 

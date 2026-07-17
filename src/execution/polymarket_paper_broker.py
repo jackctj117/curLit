@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import AsyncIterator, Callable
+from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
@@ -91,16 +92,22 @@ class PolymarketPaperBroker(Broker):
         self._initial: Decimal = initial_capital_usdc
         # Per-market + per-day loss caps (CL-983f). Paper runs exercise
         # the SAME gate the live broker uses; fills are recorded
-        # automatically in _record_fill. market_key_fn maps token_id ->
-        # market key (default identity; pass a condition_id resolver to
-        # pool YES/NO tokens of one market).
+        # automatically in _record_fill and marks whenever a book is
+        # observed (_observe_book). market_key_fn maps token_id -> CAP
+        # bucket only — position books stay per-token; pass a
+        # condition_id resolver to pool YES/NO tokens of one market. It
+        # is honored only when the broker builds its own tracker.
+        # The default tracker is in-memory (state_path=None): the paper
+        # bankroll resets every run, so persisting caps across restarts
+        # would gate a fresh bankroll on a previous run's losses. Inject
+        # a tracker with a state_path for multi-day paper soaks.
         self._loss_caps = loss_cap_tracker or PolymarketLossCapTracker(
-            config=LossCapConfig.from_active_profile(),
+            config=replace(LossCapConfig.from_active_profile(), state_path=None),
+            market_key_fn=market_key_fn or (lambda token_id: token_id),
         )
-        self._market_key_fn = market_key_fn or (lambda token_id: token_id)
-        # Positions keyed by token_id. Polymarket positions are share
-        # counts at an avg price; net_long means we hold YES shares.
-        self._positions: dict[str, Position] = {}
+        # The POSITION BOOK lives in the loss-cap tracker (per-token qty
+        # / weighted-avg / realized) — get_positions derives its view
+        # from it, so cap math and reported positions cannot diverge.
         # Fills + open orders for the broker's get_* methods.
         self._fills: list[Fill] = []
         self._open_orders: dict[str, Order] = {}
@@ -123,7 +130,7 @@ class PolymarketPaperBroker(Broker):
         # the UTC day has burned its cap. Raises LossCapExceededError —
         # handled upstream like any other pre-trade rejection.
         self._loss_caps.check_order_allowed(
-            self._market_key_fn(token_id), side=order.side,
+            token_id, side=order.side, quantity=order.quantity,
         )
 
         try:
@@ -135,6 +142,10 @@ class PolymarketPaperBroker(Broker):
             )
             order.status = OrderStatus.REJECTED
             return order
+
+        # Every observed book feeds the mark-to-market leg of the caps
+        # so adverse moves arm the gate for subsequent orders.
+        self._observe_book(token_id, book)
 
         fill_price, fill_qty = self._simulate_fill(order, book)
 
@@ -176,15 +187,24 @@ class PolymarketPaperBroker(Broker):
         raise KeyError(msg)
 
     def get_positions(self) -> list[Position]:
-        return list(self._positions.values())
+        # Derived from the loss-cap tracker's per-token book — the ONE
+        # position book (CL-983f). No parallel qty/avg bookkeeping.
+        return [
+            Position(
+                symbol=token_id,
+                quantity=float(st.qty),
+                avg_price=float(st.avg_price),
+                unrealized_pnl=float(st.unrealized),
+                realized_pnl=float(st.realized),
+            )
+            for token_id, st in self._loss_caps.open_positions().items()
+        ]
 
     def get_account(self) -> Account:
-        # Position fields are float on the existing dataclass; coerce
-        # to Decimal explicitly so we don't cross-multiply types.
         equity = self._cash + sum(
             (
-                Decimal(str(p.quantity)) * Decimal(str(p.avg_price))
-                for p in self._positions.values()
+                st.qty * st.avg_price
+                for st in self._loss_caps.open_positions().values()
             ),
             start=Decimal("0"),
         )
@@ -203,6 +223,7 @@ class PolymarketPaperBroker(Broker):
         (mid, mid) when one side is empty."""
         token_id = self._data.resolve_symbol(symbol)
         book = self._data.get_book(token_id)
+        self._observe_book(token_id, book)
         bid = book.top_bid.price if book.top_bid else Decimal("0")
         ask = book.top_ask.price if book.top_ask else Decimal("1")
         return float(bid), float(ask)
@@ -228,6 +249,7 @@ class PolymarketPaperBroker(Broker):
                         sym, exc_info=True,
                     )
                     continue
+                self._observe_book(token_id, book)
                 bid_lvl = book.top_bid
                 ask_lvl = book.top_ask
                 yield {
@@ -240,11 +262,28 @@ class PolymarketPaperBroker(Broker):
 
     @property
     def loss_caps(self) -> PolymarketLossCapTracker:
-        """Loss-cap tracker (CL-983f). Exposed so the engine can record
-        external marks (``record_mark``) and ops can read P&L."""
+        """Loss-cap tracker (CL-983f). The broker feeds it itself —
+        fills in ``_record_fill``, marks whenever it observes a book
+        (place_order / get_price / stream_prices). Exposed so the engine
+        can record external marks (``record_mark``) and ops can read
+        P&L. It also owns the per-token position book that
+        ``get_positions`` reports."""
         return self._loss_caps
 
     # --- Internals ---------------------------------------------------
+
+    def _observe_book(
+        self, token_id: str, book: OrderBookSnapshot,
+    ) -> None:
+        """Feed the book midpoint to the loss-cap tracker as a mark.
+
+        This is the choke point where quotes enter the paper broker, so
+        unrealized losses on open positions are visible to the cap gate
+        between trades — not only at fill time. One-sided/empty books
+        are skipped (no meaningful mid)."""
+        mid = book.mid
+        if mid is not None:
+            self._loss_caps.record_mark(token_id, mid)
 
     @staticmethod
     def _validate_order(order: Order) -> None:
@@ -326,54 +365,21 @@ class PolymarketPaperBroker(Broker):
         qty: Decimal,
         cost: Decimal,
     ) -> None:
-        """Update positions, cash, fills list, loss-cap tracker."""
-        signed_qty = qty if order.side == "buy" else -qty
-
-        # Feed the loss-cap tracker (CL-983f) — realized P&L on
-        # reductions, fees against the day, mark = fill price.
+        """Update cash + fills list and book the fill into the loss-cap
+        tracker, which owns the position book (qty / weighted-avg /
+        realized) — one source of truth for gate math AND
+        ``get_positions`` (CL-983f)."""
+        # Realized P&L on reductions, WAC on adds, flip-through-zero
+        # re-bases at the fill price, fees against the day, mark = fill
+        # price. All position bookkeeping happens here.
         self._loss_caps.record_fill(
-            self._market_key_fn(token_id), order.side, qty, price, fee=cost,
+            token_id, order.side, qty, price, fee=cost,
         )
 
         # Cash delta: a buy at p costs p × qty; a sell at p credits p × qty.
         notional = price * qty
         self._cash -= notional if order.side == "buy" else -notional
         self._cash -= cost  # fees + gas + slippage estimate
-
-        existing = self._positions.get(token_id)
-        if existing is None:
-            self._positions[token_id] = Position(
-                symbol=token_id,
-                quantity=float(signed_qty),
-                avg_price=float(price),
-                unrealized_pnl=0.0,
-                realized_pnl=0.0,
-            )
-        else:
-            new_qty = Decimal(str(existing.quantity)) + signed_qty
-            if new_qty == 0:
-                # Closed out — pop the position.
-                self._positions.pop(token_id)
-            else:
-                # Weighted-average cost for adds; preserve avg on partial
-                # closes (no realized P&L tracking in v1).
-                same_side = (existing.quantity > 0) == (signed_qty > 0)
-                if same_side:
-                    total_cost = (
-                        Decimal(str(existing.quantity))
-                        * Decimal(str(existing.avg_price))
-                        + signed_qty * price
-                    )
-                    new_avg = total_cost / new_qty
-                else:
-                    new_avg = Decimal(str(existing.avg_price))
-                self._positions[token_id] = Position(
-                    symbol=token_id,
-                    quantity=float(new_qty),
-                    avg_price=float(new_avg),
-                    unrealized_pnl=0.0,
-                    realized_pnl=existing.realized_pnl,
-                )
 
         self._fills.append(Fill(
             order_id=order.order_id,
