@@ -27,12 +27,16 @@ class LiveEngine:
         broker: Any,
         coordinator: Any | None = None,
         cold_start_reconciler: Any | None = None,
+        kill_switch_manager: Any | None = None,
     ) -> None:
         self.strategies = strategies
         self.oms = oms
         self.broker = broker
         self.coordinator = coordinator
         self.cold_start_reconciler = cold_start_reconciler
+        # CL-ep0c: KillSwitchManager, evaluated on the health tick. None
+        # preserves pre-CL-ep0c behavior (no automated kill switches).
+        self.kill_switch_manager = kill_switch_manager
         self.running = False
         self._last_prices: dict[str, dict[str, Any]] = {}
         self._last_signal_times: dict[str, datetime] = {}
@@ -202,6 +206,11 @@ class LiveEngine:
             try:
                 account = self.broker.get_account()
                 logger.debug("Health: equity=%.2f", account.equity)
+                # CL-ep0c: kill-switch context. Only equity comes from
+                # here — the CL-ep0c switches pull positions/prices
+                # themselves via broker + data_provider.
+                if self.kill_switch_manager is not None:
+                    self.kill_switch_manager.check({"equity": account.equity})
             except Exception:
                 logger.exception("Health check error")
 

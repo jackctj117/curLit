@@ -369,6 +369,42 @@ def build_coordinator(
     return coordinator
 
 
+def build_kill_switch_manager(broker: Any, oms: OrderManager) -> Any | None:
+    """CL-ep0c: construct the KillSwitchManager for the live engine.
+
+    Config comes from the active risk profile's kill_switches block; the
+    DataProvider feeds the open_position_correlation switch (None-safe —
+    if the DB is unreachable that switch simply never fires). Returns
+    None on failure so the engine still starts, mirroring the other
+    builders here.
+    """
+    try:
+        from dataclasses import asdict  # noqa: PLC0415
+
+        from src.risk.kill_switches import KillSwitchManager  # noqa: PLC0415
+        from src.risk.risk_profile import load_active_profile  # noqa: PLC0415
+
+        data_provider: DataProvider | None = None
+        try:
+            data_provider = DataProvider(_build_db_engine())
+        except Exception:
+            logger.exception(
+                "DataProvider unavailable for kill switches — "
+                "open_position_correlation switch disabled",
+            )
+        return KillSwitchManager(
+            broker, oms,
+            config=asdict(load_active_profile().kill_switches),
+            data_provider=data_provider,
+        )
+    except Exception:
+        logger.exception(
+            "Failed to construct KillSwitchManager; engine runs without "
+            "automated kill switches",
+        )
+        return None
+
+
 def build_cold_start_reconciler(
     config: dict[str, Any],
     strategies: list[Any],
@@ -422,10 +458,12 @@ async def run_engine(broker_mode: str = "paper") -> None:
     reconciler = build_cold_start_reconciler(
         config, strategies, oms, broker, journal=journal,
     )
+    kill_switch_manager = build_kill_switch_manager(broker, oms)
     engine = LiveEngine(
         strategies, oms, broker,
         coordinator=coordinator,
         cold_start_reconciler=reconciler,
+        kill_switch_manager=kill_switch_manager,
     )
 
     # Wire web API to live state

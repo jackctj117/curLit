@@ -149,6 +149,31 @@ class TestRealConfig:
         assert agg.strategy_gates.min_r_squared < cons.strategy_gates.min_r_squared
         assert agg.strategy_gates.entry_z_threshold < cons.strategy_gates.entry_z_threshold
         assert agg.holding.max_holding_days < cons.holding.max_holding_days
+        # CL-ep0c: trailing stop + open-position correlation looser too.
+        assert agg.kill_switches.trailing_stop_pct > cons.kill_switches.trailing_stop_pct
+        assert (
+            agg.kill_switches.trailing_stop_cooldown_days
+            < cons.kill_switches.trailing_stop_cooldown_days
+        )
+        assert (
+            agg.kill_switches.open_position_corr_threshold
+            > cons.kill_switches.open_position_corr_threshold
+        )
+
+    def test_cl_ep0c_keys_present_in_both_profiles(self) -> None:
+        """CL-ep0c config keys ship with explicit values in the yaml."""
+        with patch.dict(os.environ, {"CURLIT_RISK_PROFILE": "conservative"}):
+            cons = load_active_profile().kill_switches
+        with patch.dict(os.environ, {"CURLIT_RISK_PROFILE": "aggressive"}):
+            agg = load_active_profile().kill_switches
+        assert cons.trailing_stop_pct == 0.10
+        assert cons.trailing_stop_cooldown_days == 7
+        assert cons.open_position_corr_threshold == 0.85
+        assert cons.open_position_corr_lookback_days == 60
+        assert agg.trailing_stop_pct == 0.20
+        assert agg.trailing_stop_cooldown_days == 3
+        assert agg.open_position_corr_threshold == 0.92
+        assert agg.open_position_corr_lookback_days == 60
 
     def test_aggressive_short_inherits_and_biases(self) -> None:
         with patch.dict(os.environ, {"CURLIT_RISK_PROFILE": "aggressive_short"}):

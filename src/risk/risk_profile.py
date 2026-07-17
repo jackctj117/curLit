@@ -58,6 +58,17 @@ class KillSwitchConfig:
     # mainnet cap: one market can burn at most $25, one UTC day $50.
     polymarket_per_market_loss_cap_usd: float = 25.0
     polymarket_per_day_loss_cap_usd: float = 50.0
+    # CL-ep0c equity-curve trailing stop — consumed by
+    # src/risk/kill_switches.py. Halt new trades once equity falls
+    # trailing_stop_pct below its persisted peak; the halt persists for
+    # trailing_stop_cooldown_days across restarts (state under data/).
+    trailing_stop_pct: float = 0.10
+    trailing_stop_cooldown_days: float = 7
+    # CL-ep0c open-position correlation kill — with >=2 open positions,
+    # fire reduce_50pct when the mean direction-adjusted pairwise return
+    # correlation (daily closes over the lookback) exceeds the threshold.
+    open_position_corr_threshold: float = 0.85
+    open_position_corr_lookback_days: int = 60
 
 
 @dataclass(frozen=True)

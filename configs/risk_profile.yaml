@@ -62,6 +62,19 @@ profiles:
       # get a fresh budget on redeploy.
       polymarket_per_market_loss_cap_usd: 25
       polymarket_per_day_loss_cap_usd: 50
+      # CL-ep0c equity-curve trailing stop: halt new trades once equity
+      # is 10% below its persisted peak; stay halted 7 days ACROSS
+      # restarts (state in data/equity_trailing_stop_state.json). The
+      # peak resets only after the cooldown expires AND equity has been
+      # marked-to-market again.
+      trailing_stop_pct: 0.10
+      trailing_stop_cooldown_days: 7
+      # CL-ep0c open-position correlation: with >=2 open positions, if
+      # the mean direction-adjusted pairwise correlation of their daily
+      # returns (60d lookback) exceeds 0.85, reduce_50pct fires (today:
+      # halt new + CRITICAL page with the matrix — see kill_switches.py).
+      open_position_corr_threshold: 0.85
+      open_position_corr_lookback_days: 60
 
     strategy_gates:
       # Model R² floor for rate-diff strategy to trade. Below this,
@@ -113,6 +126,16 @@ profiles:
       # absolute USD brakes, still small next to the FX book.
       polymarket_per_market_loss_cap_usd: 50
       polymarket_per_day_loss_cap_usd: 100
+      # CL-ep0c trailing stop, looser: -20% from peak before halt, and
+      # only a 3-day cooldown before trading may resume.
+      trailing_stop_pct: 0.20
+      trailing_stop_cooldown_days: 3
+      # CL-ep0c open-position correlation, looser: tolerate a more
+      # crowded book before reduce_50pct. Same 60d lookback — the
+      # statistical validity of the estimate doesn't scale with risk
+      # appetite.
+      open_position_corr_threshold: 0.92
+      open_position_corr_lookback_days: 60
 
     strategy_gates:
       # R² floor halved — accept noisier model fits.
