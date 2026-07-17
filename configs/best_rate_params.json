@@ -1,0 +1,44 @@
+{
+  "strategy": "rate_diff_mr",
+  "pair": "EURUSD",
+  "best_params": {
+    "lookback_days": 148,
+    "entry_z_threshold": 1.9256219891445008,
+    "exit_z_threshold": 0.5146901982034298,
+    "stop_loss_z": 2.5929008254399957,
+    "max_holding_days": 31,
+    "momentum_lookback_days": 4,
+    "regime_max_vol_z": 1.130103185970559,
+    "carry_filter_enabled": true,
+    "momentum_filter_enabled": false,
+    "regime_filter_enabled": true
+  },
+  "best_score": 0.07631355670780471,
+  "best_trial_number": 2,
+  "best_trial_attrs": {
+    "hit_rate": 0.37236533957845436,
+    "max_drawdown": -0.08952447193517488,
+    "n_trades": 236,
+    "profit_factor": 1.0765751777564232,
+    "sharpe": 0.21060026461056702
+  },
+  "objective": "sharpe - 1.5*abs(max_drawdown); score=-10.0 if n_trades < 8",
+  "metadata": {
+    "window": {
+      "start": "2018-01-01",
+      "end": "2026-07-17"
+    },
+    "n_obs_aligned": 2142,
+    "trials_in_study": 12,
+    "trials_this_run": 12,
+    "walkforward": {
+      "is_window_days": 756,
+      "oos_window_days": 63,
+      "step_days": 63
+    },
+    "study_db": "data/optuna/rate_diff_mr.db",
+    "study_name": "rate_diff_mr_eurusd",
+    "git_rev": "66a7569",
+    "generated_at": "2026-07-17T20:45:51.563164+00:00"
+  }
+}

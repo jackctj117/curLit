@@ -77,6 +77,7 @@ train = [
     "datasets>=2.14",
     "evaluate>=0.4",
     "tensorboard>=2.13",
+    "optuna>=4.0",         # CL-4nnr walk-forward hyperparameter search
 ]
 viz = [
     "matplotlib>=3.7",
