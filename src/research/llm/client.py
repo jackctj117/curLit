@@ -109,7 +109,12 @@ class Driver(ABC):
     SDK client and translate ``Message`` lists to the provider's payload.
     """
 
-    name: str  # 'claude' | 'deepseek' | 'grok' | future…
+    name: str  # 'claude' | 'deepseek' | 'grok' | 'claude-code' | future…
+
+    #: Drivers that authenticate out-of-band (e.g. the claude-code
+    #: driver rides the CLI's subscription login) set this False and
+    #: get_client skips the key requirement.
+    requires_api_key: bool = True
 
     def __init__(self, api_key: str) -> None:
         if not api_key:
@@ -385,6 +390,11 @@ def get_client(
     if provider not in _DRIVERS:
         msg = f"unknown LLM provider {provider!r}; available: {sorted(_DRIVERS)}"
         raise ValueError(msg)
+    driver_cls = _DRIVERS[provider]
+    if not driver_cls.requires_api_key:
+        # Out-of-band auth (e.g. claude-code rides the CLI's stored
+        # subscription login) — no key wanted, none checked.
+        return LLMClient(driver=driver_cls(api_key=""))
     if api_key is None:
         env_var = api_key_env or _DEFAULT_API_KEY_ENV.get(provider, "")
         api_key = os.environ.get(env_var, "")
@@ -394,5 +404,4 @@ def get_client(
             f"(checked env var {api_key_env or _DEFAULT_API_KEY_ENV.get(provider)})"
         )
         raise ValueError(msg)
-    driver_cls = _DRIVERS[provider]
     return LLMClient(driver=driver_cls(api_key=api_key))

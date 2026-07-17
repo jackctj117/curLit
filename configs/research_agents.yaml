@@ -6,12 +6,21 @@
 # in src/research/llm/client.py:_DRIVERS.
 
 providers:
+  # Claude via the operator's SUBSCRIPTION (headless `claude -p`) —
+  # no API billing. api_key_env is schema-required but unused for
+  # auth; the driver strips API keys from the subprocess env so the
+  # CLI's stored login always wins. Quota is shared with interactive
+  # Claude Code sessions.
+  claude-code:
+    api_key_env: ANTHROPIC_API_KEY
+    default_model: claude-fable-5
+  # Claude via the API org (SDK, usage-billed) — kept registered as
+  # the fallback path if subscription limits bite. The driver drops
+  # `temperature` for Fable/Opus-4.7+ models, opts into the
+  # server-side refusal fallback (rescued by opus-4-8), and fails
+  # loud on a whole-chain refusal.
   claude:
     api_key_env: ANTHROPIC_API_KEY
-    # Fable 5 ($10/$50 per MTok). The driver drops `temperature` for
-    # Fable/Opus-4.7+ models (they 400 on sampling params), opts into
-    # the server-side refusal fallback (rescued by opus-4-8), and
-    # fails loud on a whole-chain refusal.
     default_model: claude-fable-5
   # deepseek retired as a pipeline provider 2026-07-17 (operator
   # request) — the driver is still registered in client.py for the
@@ -34,14 +43,14 @@ agents:
   # Writes strategy code from a hypothesis brief and runs the backtest.
   # Code-generation reasoning quality matters → Claude.
   implementer:
-    provider: claude
+    provider: claude-code
     role: implementer
     prompt_path: configs/research_prompts/implementer.md
     max_tokens: 8192
 
   # Bull reviewer — argues PROMOTE with evidence cited from REVIEW_RULES.md.
   bull_reviewer:
-    provider: claude
+    provider: claude-code
     role: bull
     prompt_path: configs/research_prompts/bull_reviewer.md
     max_tokens: 4096
@@ -81,7 +90,7 @@ agents:
   # (it's basically translating a thesis into Bayesian primitives) →
   # Claude. Sonnet handles this fine; Opus is overkill.
   modeler:
-    provider: claude
+    provider: claude-code
     role: modeler
     prompt_path: configs/research_prompts/modeler.md
     max_tokens: 2048
@@ -91,7 +100,7 @@ agents:
   # reviewer: needs to argue against shipping unless the evidence is
   # there.
   fit_evaluator:
-    provider: claude
+    provider: claude-code
     role: fit_evaluator
     prompt_path: configs/research_prompts/fit_evaluator.md
     max_tokens: 2048

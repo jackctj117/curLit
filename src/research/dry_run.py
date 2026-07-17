@@ -188,6 +188,7 @@ def install_dry_run_driver() -> None:
     provider each agent declared. The original drivers stay registered
     too — overwrite is intentional for the duration of a dry run."""
     register_driver("claude", DryRunDriver)
+    register_driver("claude-code", DryRunDriver)
     register_driver("deepseek", DryRunDriver)
     register_driver("grok", DryRunDriver)
     register_driver("dry-run", DryRunDriver)
