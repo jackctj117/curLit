@@ -434,13 +434,17 @@ class ResearchLoop:
         body_preview = (
             result.raw_text[:600] if result.raw_text else "(no preview)"
         )
+        # Short id for the Telegram approval bot (CL-b1l6) — a prefix
+        # of the extract hash; the bot resolves any unambiguous prefix.
+        short_id = extract_hash[:6]
         message = (
             f"New hypothesis pending operator GO/SKIP.\n\n"
             f"Slug: {result.strategy_slug}\n"
             f"Extract: {extract_hash}\n"
             f"Hypothesis: {result.hypothesis_path}\n\n"
             f"--- preview ---\n{body_preview}\n"
-            f"\nApprove via:\n"
+            f"\nReply: approve {short_id} | reject {short_id}\n"
+            f"Or approve via:\n"
             f"  python -m scripts.research_approve --slug {result.strategy_slug} "
             f"--action GO\n"
             f"Or SKIP with --action SKIP --reason 'why'."
@@ -802,7 +806,8 @@ class ResearchLoop:
             f"NOTE: paper-shadow registration starts at allocation=0 so "
             f"there is no real-money risk. This gate is operator-awareness, "
             f"not financial-loss prevention.\n\n"
-            f"Approve via:\n"
+            f"Reply: approve {slug} | reject {slug}\n"
+            f"Or approve via:\n"
             f"  python -m scripts.research_approve --gate=2 --slug {slug} "
             f"--action GO\n"
             f"Reject with --action SKIP --reason 'why'."

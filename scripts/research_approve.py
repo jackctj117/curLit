@@ -16,25 +16,30 @@ The loop holds PROPOSED hypotheses at PENDING_OPERATOR_APPROVAL in
 ``data/research/state.json`` (CL-0hr3). This script is the CLI fallback
 for the soak-dashboard panel (CL-7t8d) — both mutate the same state
 file. Either approval path is valid; the dashboard is just nicer UX.
+
+The actual gate transitions live in ``src.research.approvals``
+(CL-b1l6) — shared with the Telegram approval bot
+(``scripts/telegram_approval_bot.py``) so both frontends apply
+identical mutations and write the state file atomically.
 """
 
 from __future__ import annotations
 
 import argparse
 import sys
-from pathlib import Path
 from typing import Any
 
+from src.research.approvals import (
+    act_gate1,
+    act_gate2,
+    find_gate1_hash_by_slug,
+    gate1_pending,
+    gate2_pending,
+    save_state_atomic,
+)
 from src.research.loop import (
     DEFAULT_STATE_PATH,
-    GATE1_APPROVED_STATUS,
-    GATE1_PENDING_STATUS,
-    GATE1_SKIPPED_STATUS,
-    GATE2_APPROVED_STATUS,
-    GATE2_PENDING_STATUS,
-    GATE2_REJECTED_STATUS,
     load_state,
-    save_state,
 )
 
 
@@ -96,7 +101,7 @@ def main(argv: list[str] | None = None) -> int:
     else:
         rc = _act_gate2(state, args.slug, args.action, args.reason)
     if rc == 0:
-        save_state(state, Path(args.state))
+        save_state_atomic(state, args.state)
     return rc
 
 
@@ -106,10 +111,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _list_gate1(state: Any) -> int:
-    pending = [
-        (h, e) for h, e in state.ideas_processed.items()
-        if e.get("status") == GATE1_PENDING_STATUS
-    ]
+    pending = gate1_pending(state)
     if not pending:
         print("No GATE 1 entries pending.")
         return 0
@@ -126,34 +128,18 @@ def _list_gate1(state: Any) -> int:
 
 
 def _act_gate1(state: Any, slug: str, action: str, reason: str) -> int:
-    target_hash: str | None = None
-    for h, e in state.ideas_processed.items():
-        if e.get("slug") == slug:
-            target_hash = h
-            break
+    target_hash = find_gate1_hash_by_slug(state, slug)
     if target_hash is None:
         print(f"ERROR: no entry found with slug={slug!r}", file=sys.stderr)
         return 2
 
-    entry = state.ideas_processed[target_hash]
-    if entry.get("status") != GATE1_PENDING_STATUS:
-        print(
-            f"ERROR: entry for slug={slug!r} is in status "
-            f"{entry.get('status')!r}, not {GATE1_PENDING_STATUS!r}; "
-            f"refusing to act",
-            file=sys.stderr,
-        )
+    result = act_gate1(
+        state, target_hash, approve=(action == "GO"), reason=reason,
+    )
+    if not result.ok:
+        print(f"ERROR: {result.message}", file=sys.stderr)
         return 2
-
-    if action == "GO":
-        entry["status"] = GATE1_APPROVED_STATUS
-        if reason:
-            entry["reason"] = reason
-        print(f"APPROVED: {slug}")
-    else:
-        entry["status"] = GATE1_SKIPPED_STATUS
-        entry["reason"] = reason or "skipped by operator"
-        print(f"SKIPPED: {slug} — {entry['reason']}")
+    print(result.message)
     return 0
 
 
@@ -163,10 +149,7 @@ def _act_gate1(state: Any, slug: str, action: str, reason: str) -> int:
 
 
 def _list_gate2(state: Any) -> int:
-    pending = [
-        (slug, e) for slug, e in state.debates_completed.items()
-        if e.get("deploy_status") == GATE2_PENDING_STATUS
-    ]
+    pending = gate2_pending(state)
     if not pending:
         print("No GATE 2 entries pending.")
         return 0
@@ -184,29 +167,11 @@ def _list_gate2(state: Any) -> int:
 
 
 def _act_gate2(state: Any, slug: str, action: str, reason: str) -> int:
-    if slug not in state.debates_completed:
-        print(
-            f"ERROR: no debate entry for slug={slug!r}", file=sys.stderr,
-        )
+    result = act_gate2(state, slug, approve=(action == "GO"), reason=reason)
+    if not result.ok:
+        print(f"ERROR: {result.message}", file=sys.stderr)
         return 2
-    entry = state.debates_completed[slug]
-    if entry.get("deploy_status") != GATE2_PENDING_STATUS:
-        print(
-            f"ERROR: entry for slug={slug!r} has deploy_status="
-            f"{entry.get('deploy_status')!r}, not {GATE2_PENDING_STATUS!r}; "
-            f"refusing to act",
-            file=sys.stderr,
-        )
-        return 2
-    if action == "GO":
-        entry["deploy_status"] = GATE2_APPROVED_STATUS
-        if reason:
-            entry["deploy_reason"] = reason
-        print(f"DEPLOY_APPROVED: {slug}")
-    else:
-        entry["deploy_status"] = GATE2_REJECTED_STATUS
-        entry["deploy_reason"] = reason or "rejected by operator"
-        print(f"DEPLOY_REJECTED: {slug} — {entry['deploy_reason']}")
+    print(result.message)
     return 0
 
 
