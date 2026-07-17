@@ -411,9 +411,13 @@ class SSRNFetcher:
             # Year appears in the stats line ("Posted 14 Jul 2026" /
             # "Last revised: <date>"). The SPA concatenates spans with
             # no whitespace ("…2026Publication Status…"), so a trailing
-            # \b never lands; use digit-boundary lookarounds instead so
-            # we match "2026" but not a run inside a longer number.
-            year_match = re.search(r"(?<!\d)(20\d\d)(?!\d)", row.get_text())
+            # \b never lands. Allow a letter AFTER the year (that's the
+            # concatenation) but no alphanumeric BEFORE it — otherwise
+            # tokens like "abstract2026" match — and never an adjacent
+            # digit (runs inside longer numbers).
+            year_match = re.search(
+                r"(?<![0-9A-Za-z])(20\d\d)(?!\d)", row.get_text(),
+            )
             year = int(year_match.group(1)) if year_match else None
             out.append(Paper(
                 title=title,

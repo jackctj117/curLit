@@ -435,16 +435,24 @@ def _yf_close_series(ticker: str, start: str, end: str, interval: str) -> Any:
     return close.dropna()
 
 
-def _bar_close_at(close: Any, label: datetime) -> float | None:
-    """Close of the bar labeled ``label`` (bar start), asof-fallback within
-    one bar to tolerate missing bars."""
+def _bar_close_at(
+    close: Any, label: datetime, bar: timedelta,
+) -> float | None:
+    """Close of the bar labeled ``label`` (bar start), asof-fallback
+    bounded to one bar interval — a fallback that reaches further back
+    than ``bar`` silently substitutes stale prices, so return None
+    instead and let the caller drop the granularity."""
     import pandas as pd  # noqa: PLC0415
 
     ts = pd.Timestamp(label)
     if ts in close.index:
         return float(close.loc[ts])
     prior = close.loc[:ts]
-    return float(prior.iloc[-1]) if len(prior) else None
+    if not len(prior):
+        return None
+    if (ts - prior.index[-1]) > pd.Timedelta(bar):
+        return None
+    return float(prior.iloc[-1])
 
 
 def eurusd_reaction(meeting: str) -> dict[str, Any]:
@@ -472,16 +480,16 @@ def eurusd_reaction(meeting: str) -> dict[str, Any]:
         logger.info("yfinance 5m unavailable for %s: %s", meeting, exc)
         close = None
     if close is not None and len(close):
-        pre = _bar_close_at(close, stmt - timedelta(minutes=5))
-        post = _bar_close_at(close, stmt)
+        pre = _bar_close_at(close, stmt - timedelta(minutes=5), timedelta(minutes=5))
+        post = _bar_close_at(close, stmt, timedelta(minutes=5))
         if pre and post:
             out.update(
                 reaction_pct=(post / pre - 1.0) * 100.0,
                 reaction_window="5m_post_statement",
                 pre_px=pre, post_px=post,
             )
-            p_pre = _bar_close_at(close, presser - timedelta(minutes=5))
-            p_post = _bar_close_at(close, presser + timedelta(minutes=25))
+            p_pre = _bar_close_at(close, presser - timedelta(minutes=5), timedelta(minutes=5))
+            p_post = _bar_close_at(close, presser + timedelta(minutes=25), timedelta(minutes=5))
             if p_pre and p_post:
                 out["presser_30m_pct"] = (p_post / p_pre - 1.0) * 100.0
             return out
@@ -493,8 +501,8 @@ def eurusd_reaction(meeting: str) -> dict[str, Any]:
         logger.info("yfinance 60m unavailable for %s: %s", meeting, exc)
         close = None
     if close is not None and len(close):
-        pre = _bar_close_at(close, stmt - timedelta(hours=1))
-        post = _bar_close_at(close, stmt)
+        pre = _bar_close_at(close, stmt - timedelta(hours=1), timedelta(hours=1))
+        post = _bar_close_at(close, stmt, timedelta(hours=1))
         if pre and post:
             out.update(
                 reaction_pct=(post / pre - 1.0) * 100.0,

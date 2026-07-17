@@ -262,6 +262,10 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-fx}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
       FRED_API_KEY: ${FRED_API_KEY}
+    extra_hosts:
+      # host.docker.internal only auto-resolves on Docker Desktop;
+      # Linux Docker Engine needs the host-gateway mapping.
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./airflow/dags:/opt/airflow/dags:ro
       - ./src:/opt/curlit/src:ro
@@ -299,6 +303,10 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-fx}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
       FRED_API_KEY: ${FRED_API_KEY}
+    extra_hosts:
+      # host.docker.internal only auto-resolves on Docker Desktop;
+      # Linux Docker Engine needs the host-gateway mapping.
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./airflow/dags:/opt/airflow/dags:ro
       - ./src:/opt/curlit/src:ro

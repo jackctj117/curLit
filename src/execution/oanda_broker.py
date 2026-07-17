@@ -24,16 +24,43 @@ class OandaBroker(Broker):
         stream = self.STREAM_PRACTICE if practice else self.STREAM_LIVE
         self.headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
         # OANDA's edge 307-redirects some requests back to the same
-        # path; httpx doesn't follow redirects by default, which turns
-        # those into HTTPStatusError on raise_for_status.
+        # path. Blanket follow_redirects is NOT safe here: on 301/302/303
+        # httpx re-issues a POST as a GET, which for the orders endpoint
+        # silently turns "place order" into "list orders". GETs may
+        # follow freely; writes go through _send_following_307 so only
+        # method-preserving redirects (307/308) are retried and anything
+        # else fails closed.
         self.client = httpx.Client(
             base_url=base, headers=self.headers, timeout=10.0,
             follow_redirects=True,
+        )
+        self.write_client = httpx.Client(
+            base_url=base, headers=self.headers, timeout=10.0,
+            follow_redirects=False,
         )
         self.stream_client = httpx.AsyncClient(
             base_url=stream, headers=self.headers, timeout=None,
             follow_redirects=True,
         )
+
+    _MAX_307_HOPS = 3
+
+    def _post_following_307(self, url: str, json_body: dict) -> httpx.Response:
+        """POST that follows only method-preserving redirects (307/308).
+
+        Any other 3xx raises instead of letting httpx downgrade the
+        POST to a GET — for order placement a silent method change is
+        worse than a hard failure.
+        """
+        for _ in range(self._MAX_307_HOPS):
+            resp = self.write_client.post(url, json=json_body)
+            if resp.status_code in (307, 308) and resp.headers.get("location"):
+                url = resp.headers["location"]
+                continue
+            resp.raise_for_status()
+            return resp
+        msg = f"OANDA POST {url}: exceeded {self._MAX_307_HOPS} redirect hops"
+        raise httpx.TooManyRedirects(msg)
 
     def place_order(self, order: Order) -> Order:
         body = {
@@ -44,8 +71,7 @@ class OandaBroker(Broker):
                 "timeInForce": "FOK",
             }
         }
-        resp = self.client.post(f"/v3/accounts/{self.account_id}/orders", json=body)
-        resp.raise_for_status()
+        resp = self._post_following_307(f"/v3/accounts/{self.account_id}/orders", body)
         data = resp.json()
         txn = data.get("orderFillTransaction") or data.get("orderCreateTransaction", {})
         order.order_id = str(txn.get("id", ""))
