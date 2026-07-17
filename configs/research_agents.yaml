@@ -22,20 +22,16 @@ providers:
   claude:
     api_key_env: ANTHROPIC_API_KEY
     default_model: claude-fable-5
-  # deepseek retired as a pipeline provider 2026-07-17 (operator
-  # request) — the driver is still registered in client.py for the
-  # comparison harness (scripts/compare_llm_providers.py).
-  grok:
-    api_key_env: XAI_API_KEY
-    # NOTE the dot: "grok-4.5" is the API model id; "grok-4-5" 404s.
-    # $2/$6 per MTok. Requires XAI_API_KEY in .env.
-    default_model: grok-4.5
+  # deepseek + grok retired as pipeline providers 2026-07-17
+  # (operator request) — both drivers stay registered in client.py /
+  # grok.py for the comparison harness
+  # (scripts/compare_llm_providers.py).
 
 agents:
   # Reads paper extracts (data/research/extracts/*.md) and emits
-  # pre-registered hypothesis briefs. Cheap repetitive task → Grok.
+  # pre-registered hypothesis briefs.
   idea_generator:
-    provider: grok
+    provider: claude-code
     role: idea_generator
     prompt_path: configs/research_prompts/idea_generator.md
     max_tokens: 4096
@@ -56,27 +52,29 @@ agents:
     max_tokens: 4096
 
   # Bear reviewer — adversarial; argues REJECT, hunts for failure modes.
-  # Grok: distinct training distribution → genuine viewpoint diversity
-  # vs Claude-Bull (the switch this comment always anticipated).
+  # All-Claude debate since 2026-07-17 (operator dropped xAI): the
+  # asymmetric bull/bear prompts carry the adversarial structure;
+  # re-add a second provider here if cross-vendor diversity is wanted
+  # again.
   bear_reviewer:
-    provider: grok
+    provider: claude-code
     role: bear
     prompt_path: configs/research_prompts/bear_reviewer.md
     max_tokens: 4096
 
   # Routes smart-questions to code/agent/human; bounces ESR-violators.
-  # Mostly format-checking + tool-calling → Grok.
   question_resolver:
-    provider: grok
+    provider: claude-code
     role: resolver
     prompt_path: configs/research_prompts/question_resolver.md
     max_tokens: 2048
 
   # Reads paper metadata + abstract → produces the four-section markdown
-  # extract that the Idea Agent consumes. High-volume, cost-sensitive
-  # → Grok.
+  # extract that the Idea Agent consumes. High-volume — consider a
+  # per-role `model: claude-haiku-4-5-20251001` override if Fable 5
+  # burns subscription quota too fast on big ingest sweeps.
   paper_extractor:
-    provider: grok
+    provider: claude-code
     role: paper_extractor
     prompt_path: configs/research_prompts/paper_extractor.md
     max_tokens: 1024
