@@ -1,10 +1,18 @@
-"""Strategy 1: Rate differential mean reversion on EUR/USD."""
+"""Strategy 1: Rate differential mean reversion on EUR/USD.
+
+CL-x50g: carry / momentum / vol-regime entry filters. Each filter is
+individually toggleable and gates NEW entries only — exits and stops are
+never blocked. Disabling all three reproduces the pre-filter behavior
+exactly, in both the backtest path (generate_signals) and the live path
+(generate_intents).
+"""
 
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 from src.execution.oms import OrderIntent
@@ -13,6 +21,7 @@ from src.models.feature_versioning import (
     FeatureSnapshotStore,
     attach_snapshot_payload,
 )
+from src.strategies.vol_regime import compute_vol_z_score, rolling_vol_z
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +67,39 @@ class RateDiffMRConfig:
     # with 30-day holding period. Hourly check catches regime break early
     # without unnecessary compute. (Arch §7.1)
     signal_interval_seconds: int = 3600
+
+    # ---- CL-x50g entry filters ------------------------------------------
+    # Each filter is individually toggleable and gates NEW entries only —
+    # exits/stops are never blocked. Defaults ON for new deployments;
+    # disabling all three reproduces pre-CL-x50g behavior exactly.
+    carry_filter_enabled: bool = True
+    momentum_filter_enabled: bool = True
+    regime_filter_enabled: bool = True
+    # Carry proxy = carry_quote_rate_series MINUS carry_base_rate_series
+    # (USD_3M_OIS - EUR_3M_ESTR_OIS for EURUSD). SIGN CONVENTION: a POSITIVE
+    # US-minus-EUR short-rate spread favors USD strength → EURUSD downside,
+    # so SHORT entries require carry >= 0 (carry must not oppose the short).
+    # Mirror for longs: LONG entries require carry <= 0 (negative spread
+    # favors EUR strength / EURUSD upside). Missing OIS data fails OPEN:
+    # the filter passes with a WARNING logged once per gap, so a data
+    # outage never silently disables the strategy.
+    carry_quote_rate_series: str = "USD_3M_OIS"
+    carry_base_rate_series: str = "EUR_3M_ESTR_OIS"
+    # Short-horizon momentum from daily closes: p_t / p_{t-k} - 1. The
+    # entry must not fade a strong move against it: entering SHORT requires
+    # k-day momentum <= momentum_max_opposing; entering LONG requires
+    # momentum >= -momentum_max_opposing. Default 0.0 = momentum must not
+    # oppose the trade direction at all.
+    momentum_lookback_days: int = 5
+    momentum_max_opposing: float = 0.0
+    # Regime filter: block entries when the vol-index z-score (vs its
+    # rolling baseline, same definition as carry_vol_filter / CL-c77)
+    # exceeds this. Mean-reversion entries in vol blowouts are the classic
+    # whipsaw — 2.0σ keeps entries out of crisis regimes only.
+    regime_max_vol_z: float = 2.0
+    vol_index_series: str = "CVIX"
+    vol_lookback_days: int = 120
+
     id: str = "eurusd_rate_diff_mr"
 
 
@@ -78,6 +120,10 @@ class RateDiffMRStrategy:
         self._position_size: float = 0.0
         self._entry_z: float | None = None
         self._entry_ts: datetime | None = None
+        # CL-x50g: True while an OIS data gap is active — the missing-carry
+        # warning is logged once per gap (reset when data returns), not per
+        # tick, so an outage doesn't flood the logs.
+        self._carry_gap_active: bool = False
 
     def _emit_snapshot(self, values: dict[str, Any]) -> dict[str, Any]:
         """Build, persist, and return a snapshot-reference payload.
@@ -180,6 +226,107 @@ class RateDiffMRStrategy:
                         "r_squared": float(ols.rsquared), "residual_std": float(ols.resid.std())}
         self._last_fit = datetime.now(UTC)
 
+    def _any_filter_enabled(self) -> bool:
+        """CL-x50g: True when at least one entry filter is switched on."""
+        c = self.config
+        return bool(
+            c.carry_filter_enabled
+            or c.momentum_filter_enabled
+            or c.regime_filter_enabled,
+        )
+
+    def _entry_filter_masks(
+        self, df: pd.DataFrame,
+    ) -> tuple[np.ndarray, np.ndarray] | None:
+        """CL-x50g: per-row entry-permission masks for the backtest path.
+
+        Returns ``(allow_long, allow_short)`` boolean arrays aligned to
+        ``df``'s rows, or None when every filter is disabled (caller then
+        skips filtering entirely — byte-identical to pre-filter behavior).
+
+        NO LOOKAHEAD: every row's filter value uses data up to and
+        including that row only — carry is the row's own OIS spread,
+        momentum is ``p_t / p_{t-k} - 1``, and the vol z-score baseline is
+        strictly prior rows (see :func:`rolling_vol_z`).
+
+        Fail-open contract: rows where a filter's inputs are missing/NaN
+        (data outage, warmup) PASS that filter. Missing OIS data logs a
+        WARNING once per generate_signals call (one summary per gap, not
+        one line per row).
+        """
+        if not self._any_filter_enabled():
+            return None
+        c = self.config
+        n = len(df)
+        allow_long = np.ones(n, dtype=bool)
+        allow_short = np.ones(n, dtype=bool)
+
+        if c.carry_filter_enabled:
+            quote = df.get(c.carry_quote_rate_series)
+            base = df.get(c.carry_base_rate_series)
+            if quote is None or base is None:
+                logger.warning(
+                    "Carry filter: OIS series missing from backtest frame "
+                    "(%s present=%s, %s present=%s) — filter passes (fail-open)",
+                    c.carry_quote_rate_series, quote is not None,
+                    c.carry_base_rate_series, base is not None,
+                )
+            else:
+                carry = (
+                    pd.to_numeric(quote, errors="coerce")
+                    - pd.to_numeric(base, errors="coerce")
+                )
+                known = carry.notna().to_numpy()
+                if not known.all():
+                    logger.warning(
+                        "Carry filter: %d/%d rows missing OIS data — those "
+                        "rows pass (fail-open)",
+                        int((~known).sum()), n,
+                    )
+                vals = carry.to_numpy(dtype=float)
+                # Positive US-minus-EUR spread favors USD strength → pair
+                # downside: shorts need carry >= 0, longs need carry <= 0.
+                allow_short &= ~known | (vals >= 0.0)
+                allow_long &= ~known | (vals <= 0.0)
+
+        if c.momentum_filter_enabled:
+            if c.pair not in df.columns:
+                logger.warning(
+                    "Momentum filter: close column %s missing from backtest "
+                    "frame — filter passes (fail-open)", c.pair,
+                )
+            else:
+                closes = pd.to_numeric(df[c.pair], errors="coerce")
+                mom = closes.pct_change(
+                    periods=c.momentum_lookback_days, fill_method=None,
+                )
+                known = mom.notna().to_numpy()
+                vals = mom.to_numpy(dtype=float)
+                # Don't fade a strong move against the trade: shorts need
+                # momentum <= max_opposing, longs need >= -max_opposing.
+                allow_short &= ~known | (vals <= c.momentum_max_opposing)
+                allow_long &= ~known | (vals >= -c.momentum_max_opposing)
+
+        if c.regime_filter_enabled:
+            vol = df.get(c.vol_index_series)
+            if vol is None:
+                logger.debug(
+                    "Regime filter: vol series %s missing from backtest "
+                    "frame — filter passes (fail-open)", c.vol_index_series,
+                )
+            else:
+                vol_z = rolling_vol_z(
+                    pd.to_numeric(vol, errors="coerce"), c.vol_lookback_days,
+                )
+                known = vol_z.notna().to_numpy()
+                vals = vol_z.to_numpy(dtype=float)
+                # Direction-agnostic: vol blowouts whipsaw both sides.
+                ok = ~known | (vals <= c.regime_max_vol_z)
+                allow_short &= ok
+                allow_long &= ok
+
+        return allow_long, allow_short
+
     def generate_signals(self, data: pd.DataFrame) -> pd.Series:
         if self._model is None:
             self.fit(data)
@@ -189,15 +336,20 @@ class RateDiffMRStrategy:
         df["spread"] = df.get(self.config.rate_spread_series, 0)
         df["fair"] = self._model["alpha"] + self._model["beta"] * df["spread"]
         df["z"] = (df[self.config.pair] - df["fair"]) / self._model["residual_std"]
+        # CL-x50g: entry filters gate NEW entries only; None = all disabled.
+        masks = self._entry_filter_masks(df)
         positions = []
         pos = 0.0
         entry_i = 0
         for i, z in enumerate(df["z"]):
             if abs(pos) < 0.001:
                 if z < -self.config.entry_z_threshold:
-                    pos = 1.0
-                    entry_i = i
-                elif z > self.config.entry_z_threshold:
+                    if masks is None or masks[0][i]:
+                        pos = 1.0
+                        entry_i = i
+                elif z > self.config.entry_z_threshold and (
+                    masks is None or masks[1][i]
+                ):
                     pos = -1.0
                     entry_i = i
             else:
@@ -208,6 +360,114 @@ class RateDiffMRStrategy:
                     pos = 0.0
             positions.append(pos)
         return pd.Series(positions, index=df.index, dtype=float)
+
+    def _compute_live_momentum(self, now: datetime) -> float | None:
+        """CL-x50g: point-in-time k-day close momentum for the live path.
+
+        ``p_t / p_{t-k} - 1`` over the last ``momentum_lookback_days``
+        trading rows from get_aligned_series. None when the provider is
+        missing or history is too short (caller fails open).
+        """
+        if self.data is None:
+            return None
+        lookback = self.config.momentum_lookback_days
+        # 3× calendar buffer + slack covers weekends/holidays for k trading rows.
+        start = now - timedelta(days=lookback * 3 + 5)
+        try:
+            df = self.data.get_aligned_series([self.config.pair], start, now)
+        except Exception as exc:
+            logger.warning(
+                "Momentum filter: get_aligned_series failed for %s: %s: %s",
+                self.config.pair, type(exc).__name__, exc,
+            )
+            return None
+        if df is None or self.config.pair not in df.columns:
+            return None
+        closes = df[self.config.pair].dropna()
+        if len(closes) < lookback + 1:
+            return None
+        return float(closes.iloc[-1] / closes.iloc[-(lookback + 1)] - 1.0)
+
+    def _evaluate_entry_filters_live(
+        self, direction: int, now: datetime,
+    ) -> tuple[bool, dict[str, Any]]:
+        """CL-x50g: point-in-time entry-filter evaluation for the live path.
+
+        ``direction`` is +1 (long the pair) or -1 (short). Returns
+        ``(allowed, diagnostics)``; diagnostics records per-filter
+        enabled/passed/value and is attached to the intent snapshot so the
+        journal shows exactly which filters blocked or passed.
+
+        Fail-open contract: missing data passes the filter. Missing OIS
+        data logs a WARNING once per gap (``_carry_gap_active``), so a
+        data outage never silently disables the strategy — nor floods logs.
+        """
+        c = self.config
+        diag: dict[str, Any] = {}
+        allowed = True
+
+        # Carry: positive quote-minus-base (US-minus-EUR) short-rate spread
+        # favors USD strength → EURUSD downside. Shorts need carry >= 0,
+        # longs need carry <= 0 (carry must not oppose the trade).
+        if c.carry_filter_enabled:
+            quote = base = None
+            if self.data is not None:
+                try:
+                    quote = self.data.get_latest_value(c.carry_quote_rate_series, now)
+                    base = self.data.get_latest_value(c.carry_base_rate_series, now)
+                except Exception:
+                    quote = base = None  # treated as a data gap below
+            carry: float | None = None
+            passed = True
+            if quote is None or base is None:
+                if not self._carry_gap_active:
+                    logger.warning(
+                        "Carry filter: OIS data unavailable (%s=%s, %s=%s) — "
+                        "filter passes (fail-open); suppressing repeat "
+                        "warnings until data returns",
+                        c.carry_quote_rate_series, quote,
+                        c.carry_base_rate_series, base,
+                    )
+                    self._carry_gap_active = True
+            else:
+                if self._carry_gap_active:
+                    logger.info("Carry filter: OIS data restored")
+                    self._carry_gap_active = False
+                carry = float(quote) - float(base)
+                passed = carry >= 0.0 if direction < 0 else carry <= 0.0
+            diag["carry"] = {"enabled": True, "passed": passed, "value": carry}
+            allowed = allowed and passed
+        else:
+            diag["carry"] = {"enabled": False, "passed": True, "value": None}
+
+        # Momentum: don't fade a strong move against the trade.
+        if c.momentum_filter_enabled:
+            mom = self._compute_live_momentum(now)
+            if mom is None:
+                passed = True  # fail-open on missing history
+            elif direction < 0:
+                passed = mom <= c.momentum_max_opposing
+            else:
+                passed = mom >= -c.momentum_max_opposing
+            diag["momentum"] = {"enabled": True, "passed": passed, "value": mom}
+            allowed = allowed and passed
+        else:
+            diag["momentum"] = {"enabled": False, "passed": True, "value": None}
+
+        # Regime: no fresh mean-reversion entries into a vol blowout.
+        if c.regime_filter_enabled:
+            vol_z = compute_vol_z_score(
+                self.data, c.vol_index_series, c.vol_lookback_days, now,
+            )
+            passed = vol_z <= c.regime_max_vol_z
+            diag["regime"] = {
+                "enabled": True, "passed": passed, "value": float(vol_z),
+            }
+            allowed = allowed and passed
+        else:
+            diag["regime"] = {"enabled": False, "passed": True, "value": None}
+
+        return allowed, diag
 
     async def generate_intents(
         self, prices: dict[str, Any], broker: Any,
@@ -312,6 +572,32 @@ class RateDiffMRStrategy:
             assert self._model is not None
             assert self._position_size == 0.0, f"entry with existing pos {self._position_size}"
             direction = -1 if z > 0 else 1
+            # CL-x50g: entry filters gate NEW entries only — exits above are
+            # never blocked. Snapshot records which filters blocked/passed.
+            filters_ok, filter_diag = self._evaluate_entry_filters_live(
+                direction, datetime.now(UTC),
+            )
+            if not filters_ok:
+                blocked = [
+                    name for name, d in filter_diag.items()
+                    if d["enabled"] and not d["passed"]
+                ]
+                logger.info(
+                    "Entry blocked by filters %s: z=%.2f dir=%d",
+                    blocked, z, direction,
+                )
+                signals_generated.labels(
+                    strategy_id=self.id, action="entry_blocked",
+                ).inc()
+                self._emit_snapshot({
+                    "trigger": "entry_blocked",
+                    "z": float(z),
+                    "direction": int(direction),
+                    "price": float(current_price),
+                    "spread": float(current_spread),
+                    "filters": filter_diag,
+                })
+                return []
             account = broker.get_account()
             equity = account.equity
             assert equity > 0, f"non-positive equity {equity}"
@@ -336,6 +622,8 @@ class RateDiffMRStrategy:
                 "vol": float(vol),
                 "size": float(size),
                 "entry_z_threshold": self.config.entry_z_threshold,
+                # CL-x50g: per-filter enabled/passed/value at entry time.
+                "filters": filter_diag,
             })
             return [OrderIntent(
                 strategy_id=self.id, symbol=self.config.pair,

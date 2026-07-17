@@ -18,6 +18,31 @@ strategies:
       max_position_pct: 0.20
       min_r_squared: 0.25
       signal_interval_seconds: 3600
+      # ---- CL-x50g entry filters ------------------------------------
+      # Each filter is individually toggleable and gates NEW entries
+      # only — exits/stops are never blocked. Set all three to false to
+      # reproduce pre-CL-x50g behavior exactly.
+      carry_filter_enabled: true
+      momentum_filter_enabled: true
+      regime_filter_enabled: true
+      # Carry proxy = carry_quote_rate_series - carry_base_rate_series
+      # (USD 3M OIS minus EUR 3M ESTR OIS). Sign convention: POSITIVE
+      # US-minus-EUR spread favors USD strength / EURUSD downside, so
+      # SHORT entries need carry >= 0; LONG entries need carry <= 0.
+      # Missing OIS data fails OPEN (filter passes; warning logged once
+      # per gap) — a data outage must not silently disable the strategy.
+      carry_quote_rate_series: USD_3M_OIS
+      carry_base_rate_series: EUR_3M_ESTR_OIS
+      # Momentum must not oppose the entry (don't fade a strong move):
+      # shorts need k-day momentum <= momentum_max_opposing, longs need
+      # momentum >= -momentum_max_opposing.
+      momentum_lookback_days: 5
+      momentum_max_opposing: 0.0
+      # Block entries when the CVIX z-score vs its 120d rolling baseline
+      # exceeds this — no fresh mean-reversion entries into vol blowouts.
+      regime_max_vol_z: 2.0
+      vol_index_series: CVIX
+      vol_lookback_days: 120
 
   - id: cb_sentiment_shift
     class: src.strategies.cb_sentiment_shift.CBSentimentShiftStrategy

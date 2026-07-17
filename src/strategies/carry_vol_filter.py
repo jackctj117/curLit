@@ -17,10 +17,8 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime
 from typing import Any
-
-import numpy as np
 
 from src.execution.oms import OrderIntent
 from src.models.feature_versioning import (
@@ -28,6 +26,7 @@ from src.models.feature_versioning import (
     FeatureSnapshotStore,
     attach_snapshot_payload,
 )
+from src.strategies.vol_regime import compute_vol_z_score
 
 _FEATURE_SET_NAME = "carry_vol_filter"
 _FEATURE_SET_VERSION = "v1"
@@ -272,41 +271,16 @@ class CarryVolFilterStrategy:
         Falls back to 0 (no scaling) when the data provider is missing or
         returns insufficient history. This makes the strategy safely degrade
         rather than fail when the fx_volatility table isn't yet populated.
+
+        CL-x50g: logic extracted to src/strategies/vol_regime.py so the
+        rate-diff entry filters share the identical z-score definition.
         """
-        if self.data is None:
-            return 0.0
-        end = as_of
-        # Pull 2× lookback to allow the rolling stats to warm up.
-        start = end - timedelta(days=self.config.vol_lookback_days * 2)
-        try:
-            vol_series = self.data.get_series(
-                self.config.vol_index_series, start, end,
-            )
-        except Exception as exc:
-            logger.warning(
-                "get_series failed for %s: %s: %s",
-                self.config.vol_index_series,
-                type(exc).__name__, exc,
-            )
-            return 0.0
-        if vol_series is None or len(vol_series) < self.config.vol_lookback_days * 0.8:
-            return 0.0
-        # Use the last lookback_days as the rolling window.
-        recent = np.asarray(vol_series, dtype=float)[-self.config.vol_lookback_days :]
-        if len(recent) < 2:
-            return 0.0
-        mean = float(np.mean(recent[:-1]))
-        sd = float(np.std(recent[:-1], ddof=1))
-        if sd <= 0:
-            # Flat baseline — any deviation is "infinitely surprising". Return
-            # a synthetic large z so the exposure filter still kicks in. Sign
-            # matches the direction of the deviation; magnitude (10) is enough
-            # to push past every configured threshold and zero out exposure.
-            delta = float(recent[-1] - mean)
-            if abs(delta) < 1e-9:
-                return 0.0
-            return 10.0 if delta > 0 else -10.0
-        return float((recent[-1] - mean) / sd)
+        return compute_vol_z_score(
+            self.data,
+            self.config.vol_index_series,
+            self.config.vol_lookback_days,
+            as_of,
+        )
 
     def _exposure_multiplier(self, vol_z: float) -> float:
         """Step function from |vol_z| to exposure scaler per config thresholds."""
