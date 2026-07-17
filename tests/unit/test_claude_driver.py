@@ -24,9 +24,12 @@ def _fake_response(text: str = "ok") -> Any:
     """Build an object that quacks like an Anthropic ``Messages.create``
     response — content blocks + usage."""
     text_block = MagicMock()
+    text_block.type = "text"  # real API blocks always carry .type
     text_block.text = text
     resp = MagicMock()
     resp.content = [text_block]
+    resp.stop_reason = "end_turn"
+    resp.model = None  # driver falls back to the requested model
     resp.usage = MagicMock(input_tokens=10, output_tokens=20)
     return resp
 
@@ -71,7 +74,7 @@ class TestTemperatureDeprecationRetry:
 
         resp = driver.complete(
             messages=[Message(role="user", content="hi")],
-            model="claude-opus-4-7",
+            model="claude-sonnet-4-6",
             max_tokens=100,
             temperature=0.0,
         )
