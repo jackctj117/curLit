@@ -10,8 +10,10 @@ import json
 import subprocess
 from collections.abc import Mapping
 from datetime import UTC, datetime
+from datetime import time as dt_time
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -21,6 +23,7 @@ from src.data.x_monitor import (
     IDLE_LINE_API,
     IDLE_LINE_CLI,
     KNOWN_CATEGORIES,
+    ActiveHours,
     ApiTransport,
     CliTransport,
     Post,
@@ -33,6 +36,7 @@ from src.data.x_monitor import (
     build_batch_message,
     build_post_message,
     build_transport,
+    is_within_window,
     load_watchlist,
 )
 
@@ -49,10 +53,11 @@ def _account(
     category: str = "financial_flow",
     priority: str = "high",
     keywords: tuple[str, ...] = (),
+    active_hours: ActiveHours | None = None,
 ) -> WatchAccount:
     return WatchAccount(
         handle=handle, category=category, note="test", priority=priority,
-        keywords=keywords,
+        keywords=keywords, active_hours=active_hours,
     )
 
 
@@ -975,3 +980,378 @@ class TestCliPacing:
         monitor._shuffle = lambda seq: shuffled.append(list(seq))
         monitor.poll_cycle()
         assert len(shuffled) == 1  # order was randomized once this cycle
+
+
+# --------------------------------------------------------------------- #
+# Active-hours windows (CL-6t7v)
+# --------------------------------------------------------------------- #
+
+
+def _hours(
+    start: str, end: str, tz: str = "America/New_York",
+    days: frozenset[int] = frozenset(range(7)),
+) -> ActiveHours:
+    sh, sm = (int(x) for x in start.split(":"))
+    eh, em = (int(x) for x in end.split(":"))
+    return ActiveHours(
+        start=dt_time(sh, sm), end=dt_time(eh, em),
+        tz=ZoneInfo(tz), days=days,
+    )
+
+
+class TestIsWithinWindow:
+    def test_no_window_is_always_on(self) -> None:
+        acct = _account()  # no active_hours
+        # Any instant, including one far outside any plausible window.
+        assert is_within_window(acct, datetime(2026, 7, 20, 3, 0, tzinfo=UTC))
+
+    def test_inside_same_day_window(self) -> None:
+        # 17:30-20:30 ET; 2026-07-20 is a Monday. 18:00 ET = 22:00 UTC (EDT).
+        acct = _account(active_hours=_hours("17:30", "20:30"))
+        now = datetime(2026, 7, 20, 22, 0, tzinfo=UTC)  # 18:00 EDT
+        assert is_within_window(acct, now)
+
+    def test_outside_same_day_window(self) -> None:
+        acct = _account(active_hours=_hours("17:30", "20:30"))
+        # 12:00 UTC = 08:00 EDT — well before the window opens.
+        now = datetime(2026, 7, 20, 12, 0, tzinfo=UTC)
+        assert not is_within_window(acct, now)
+
+    def test_end_is_exclusive(self) -> None:
+        acct = _account(active_hours=_hours("17:30", "20:30"))
+        # Exactly 20:30 EDT = 00:30 UTC next day → excluded ([start, end)).
+        at_end = datetime(2026, 7, 21, 0, 30, tzinfo=UTC)
+        assert not is_within_window(acct, at_end)
+        # One minute before end is included.
+        before_end = datetime(2026, 7, 21, 0, 29, tzinfo=UTC)
+        assert is_within_window(acct, before_end)
+
+    def test_start_is_inclusive(self) -> None:
+        acct = _account(active_hours=_hours("17:30", "20:30"))
+        # Exactly 17:30 EDT = 21:30 UTC → included.
+        at_start = datetime(2026, 7, 20, 21, 30, tzinfo=UTC)
+        assert is_within_window(acct, at_start)
+
+    def test_midnight_crossing_before_and_after(self) -> None:
+        # Overnight window 22:00-02:00 ET (start > end).
+        acct = _account(active_hours=_hours("22:00", "02:00"))
+        w = acct.active_hours
+        assert w is not None and w.crosses_midnight
+        # 23:00 EDT Mon = 03:00 UTC Tue → inside (opening leg).
+        assert is_within_window(
+            acct, datetime(2026, 7, 21, 3, 0, tzinfo=UTC),
+        )
+        # 01:00 EDT Tue = 05:00 UTC Tue → inside (past-midnight leg).
+        assert is_within_window(
+            acct, datetime(2026, 7, 21, 5, 0, tzinfo=UTC),
+        )
+        # 12:00 EDT Tue = 16:00 UTC → outside.
+        assert not is_within_window(
+            acct, datetime(2026, 7, 21, 16, 0, tzinfo=UTC),
+        )
+
+    def test_midnight_crossing_weekday_applies_to_opening_day(self) -> None:
+        # Overnight window only on Fridays (opening day). Fri 2026-07-24.
+        acct = _account(active_hours=_hours(
+            "22:00", "02:00", days=frozenset({4}),
+        ))
+        # Fri 23:00 EDT = Sat 03:00 UTC → inside (opened Friday).
+        assert is_within_window(
+            acct, datetime(2026, 7, 25, 3, 0, tzinfo=UTC),
+        )
+        # Sat 01:00 EDT = Sat 05:00 UTC → still inside (opened Friday).
+        assert is_within_window(
+            acct, datetime(2026, 7, 25, 5, 0, tzinfo=UTC),
+        )
+        # Sat 23:00 EDT = Sun 03:00 UTC → outside (Saturday not allowed).
+        assert not is_within_window(
+            acct, datetime(2026, 7, 26, 3, 0, tzinfo=UTC),
+        )
+
+    def test_weekday_filter_excludes_weekend(self) -> None:
+        acct = _account(active_hours=_hours(
+            "17:30", "20:30", days=frozenset({0, 1, 2, 3, 4}),
+        ))
+        # 2026-07-25 is a Saturday. 18:00 ET local, inside time-of-day.
+        sat = datetime(2026, 7, 25, 22, 0, tzinfo=UTC)  # 18:00 EDT Sat
+        assert not is_within_window(acct, sat)
+        # 2026-07-24 Friday at the same wall-clock time → allowed.
+        fri = datetime(2026, 7, 24, 22, 0, tzinfo=UTC)
+        assert is_within_window(acct, fri)
+
+    def test_tz_conversion_et_vs_utc(self) -> None:
+        # A window expressed in ET must be evaluated in ET, not UTC.
+        acct = _account(active_hours=_hours("17:30", "20:30"))
+        # 18:00 UTC would be inside a naive UTC read, but it is 14:00 EDT
+        # — outside the ET window. Confirms tz conversion actually runs.
+        assert not is_within_window(
+            acct, datetime(2026, 7, 20, 18, 0, tzinfo=UTC),
+        )
+
+    def test_dst_boundary_sanity_winter_vs_summer(self) -> None:
+        # Same ET wall-clock (18:00) maps to different UTC across DST.
+        acct = _account(active_hours=_hours("17:30", "20:30"))
+        # Summer (EDT, UTC-4): 18:00 EDT = 22:00 UTC.
+        assert is_within_window(
+            acct, datetime(2026, 7, 20, 22, 0, tzinfo=UTC),
+        )
+        # Winter (EST, UTC-5): 18:00 EST = 23:00 UTC. zoneinfo shifts the
+        # offset, so the SAME 22:00 UTC is now 17:00 EST — before the
+        # window — while 23:00 UTC is inside. 2026-01-20 is a Tuesday.
+        assert not is_within_window(
+            acct, datetime(2026, 1, 20, 22, 0, tzinfo=UTC),
+        )
+        assert is_within_window(
+            acct, datetime(2026, 1, 20, 23, 0, tzinfo=UTC),
+        )
+
+    def test_naive_datetime_assumed_utc(self) -> None:
+        acct = _account(active_hours=_hours("17:30", "20:30"))
+        naive = datetime(2026, 7, 20, 22, 0)  # no tzinfo → treated as UTC
+        assert is_within_window(acct, naive)
+
+
+@pytest.mark.usefixtures("token_env")
+class TestPollCycleWindowFilter:
+    def test_out_of_window_account_dropped_windowless_kept(
+        self, tmp_path: Path,
+    ) -> None:
+        fake = FakeApi()
+        fake.users = {"news": "1", "trader": "2"}
+        fake.timelines = {"1": [], "2": []}
+        # 12:00 UTC = 08:00 EDT — trader window (17:30-20:30 ET) is closed.
+        clock = {"now": datetime(2026, 7, 20, 12, 0, tzinfo=UTC)}
+        news = _account("news", priority="high")
+        trader = _account(
+            "trader", category="small_traders", priority="high",
+            active_hours=_hours("17:30", "20:30"),
+        )
+        monitor, _ = _monitor(
+            tmp_path, [news, trader], fake, now_fn=lambda: clock["now"],
+        )
+        monitor.poll_cycle()
+        timeline_calls = [c for c in fake.calls if c[0].endswith("/tweets")]
+        polled_uids = {c[0].rsplit("/", 2)[-2] for c in timeline_calls}
+        assert "1" in polled_uids   # windowless news polled
+        assert "2" not in polled_uids  # out-of-window trader skipped
+
+    def test_in_window_account_is_polled(self, tmp_path: Path) -> None:
+        fake = FakeApi()
+        fake.users = {"trader": "2"}
+        fake.timelines = {"2": []}
+        # 22:00 UTC = 18:00 EDT — inside 17:30-20:30 ET.
+        clock = {"now": datetime(2026, 7, 20, 22, 0, tzinfo=UTC)}
+        trader = _account(
+            "trader", category="small_traders", priority="high",
+            active_hours=_hours("17:30", "20:30"),
+        )
+        monitor, _ = _monitor(
+            tmp_path, [trader], fake, now_fn=lambda: clock["now"],
+        )
+        monitor.poll_cycle()
+        timeline_calls = [c for c in fake.calls if c[0].endswith("/tweets")]
+        assert len(timeline_calls) == 1  # polled while in-window
+
+    def test_windowless_accounts_never_filtered(self, tmp_path: Path) -> None:
+        fake = FakeApi()
+        fake.users = {"a": "1", "b": "2"}
+        fake.timelines = {"1": [], "2": []}
+        # An hour that is outside every plausible trader window.
+        clock = {"now": datetime(2026, 7, 20, 8, 0, tzinfo=UTC)}
+        accts = [_account("a"), _account("b")]  # both windowless
+        monitor, _ = _monitor(
+            tmp_path, accts, fake, now_fn=lambda: clock["now"],
+        )
+        monitor.poll_cycle()
+        timeline_calls = [c for c in fake.calls if c[0].endswith("/tweets")]
+        assert len(timeline_calls) == 2  # both all-day accounts polled
+
+    def test_skip_logged_at_debug(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        fake = FakeApi()
+        fake.users = {"trader": "2"}
+        fake.timelines = {"2": []}
+        clock = {"now": datetime(2026, 7, 20, 12, 0, tzinfo=UTC)}  # closed
+        trader = _account(
+            "trader", category="small_traders", priority="high",
+            active_hours=_hours("17:30", "20:30"),
+        )
+        monitor, _ = _monitor(
+            tmp_path, [trader], fake, now_fn=lambda: clock["now"],
+        )
+        with caplog.at_level("DEBUG"):
+            monitor.poll_cycle()
+        assert any(
+            "active-hours" in r.getMessage() and "@trader" in r.getMessage()
+            for r in caplog.records
+        )
+
+
+# --------------------------------------------------------------------- #
+# active_hours YAML parsing (CL-6t7v)
+# --------------------------------------------------------------------- #
+
+
+class TestActiveHoursParsing:
+    def _load_one(self, tmp_path: Path, active_hours_block: str) -> WatchAccount:
+        p = tmp_path / "w.yaml"
+        p.write_text(
+            "categories:\n  small_traders:\n    accounts:\n"
+            "      - handle: t\n        note: x\n        priority: low\n"
+            + active_hours_block,
+        )
+        accts = load_watchlist(p)
+        assert len(accts) == 1
+        return accts[0]
+
+    def test_parses_full_block(self, tmp_path: Path) -> None:
+        acct = self._load_one(
+            tmp_path,
+            "        active_hours:\n"
+            "          days: weekdays\n"
+            "          start: \"17:30\"\n"
+            "          end: \"20:30\"\n"
+            "          tz: America/New_York\n",
+        )
+        w = acct.active_hours
+        assert w is not None
+        assert w.start == dt_time(17, 30)
+        assert w.end == dt_time(20, 30)
+        assert w.tz == ZoneInfo("America/New_York")
+        assert w.days == frozenset({0, 1, 2, 3, 4})
+
+    def test_days_default_is_all(self, tmp_path: Path) -> None:
+        acct = self._load_one(
+            tmp_path,
+            "        active_hours:\n"
+            "          start: \"09:00\"\n"
+            "          end: \"17:00\"\n"
+            "          tz: UTC\n",
+        )
+        assert acct.active_hours is not None
+        assert acct.active_hours.days == frozenset(range(7))
+
+    def test_days_list_of_names(self, tmp_path: Path) -> None:
+        acct = self._load_one(
+            tmp_path,
+            "        active_hours:\n"
+            "          days: [Mon, wednesday, FRI]\n"
+            "          start: \"09:00\"\n"
+            "          end: \"17:00\"\n"
+            "          tz: UTC\n",
+        )
+        assert acct.active_hours is not None
+        assert acct.active_hours.days == frozenset({0, 2, 4})
+
+    def test_no_active_hours_is_none(self, tmp_path: Path) -> None:
+        acct = self._load_one(tmp_path, "")
+        assert acct.active_hours is None
+
+    def test_bad_tz_fails_loud(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError, match="not a valid IANA"):
+            self._load_one(
+                tmp_path,
+                "        active_hours:\n"
+                "          start: \"09:00\"\n"
+                "          end: \"17:00\"\n"
+                "          tz: Mars/Olympus_Mons\n",
+            )
+
+    def test_bad_time_format_fails_loud(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError, match="not 'HH:MM'"):
+            self._load_one(
+                tmp_path,
+                "        active_hours:\n"
+                "          start: \"9am\"\n"
+                "          end: \"17:00\"\n"
+                "          tz: UTC\n",
+            )
+
+    def test_out_of_range_time_fails_loud(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError, match="out of range"):
+            self._load_one(
+                tmp_path,
+                "        active_hours:\n"
+                "          start: \"25:00\"\n"
+                "          end: \"17:00\"\n"
+                "          tz: UTC\n",
+            )
+
+    def test_missing_start_or_end_fails_loud(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError, match="both 'start' and 'end'"):
+            self._load_one(
+                tmp_path,
+                "        active_hours:\n"
+                "          start: \"09:00\"\n"
+                "          tz: UTC\n",
+            )
+
+    def test_missing_tz_fails_loud(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError, match="needs 'tz'"):
+            self._load_one(
+                tmp_path,
+                "        active_hours:\n"
+                "          start: \"09:00\"\n"
+                "          end: \"17:00\"\n",
+            )
+
+    def test_bad_weekday_name_fails_loud(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError, match="not a weekday name"):
+            self._load_one(
+                tmp_path,
+                "        active_hours:\n"
+                "          days: [Mon, Funday]\n"
+                "          start: \"09:00\"\n"
+                "          end: \"17:00\"\n"
+                "          tz: UTC\n",
+            )
+
+    def test_equal_start_end_fails_loud(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError, match="equal"):
+            self._load_one(
+                tmp_path,
+                "        active_hours:\n"
+                "          start: \"09:00\"\n"
+                "          end: \"09:00\"\n"
+                "          tz: UTC\n",
+            )
+
+
+class TestRepoWatchlistWindows:
+    """The shipped watchlist: only the 6 traders are windowed (CL-6t7v)."""
+
+    def test_only_small_traders_are_windowed(self) -> None:
+        accts = load_watchlist(REPO_WATCHLIST)
+        windowed = [a for a in accts if a.active_hours is not None]
+        assert {a.handle for a in windowed} == {
+            "Fun_Trades1", "timeframeking", "prosperousguy",
+            "StocksniperTeam", "Simply0DTE", "TT_stocks_",
+        }
+        assert all(a.category == "small_traders" for a in windowed)
+
+    def test_news_accounts_are_windowless(self) -> None:
+        accts = load_watchlist(REPO_WATCHLIST)
+        non_traders = [a for a in accts if a.category != "small_traders"]
+        assert len(non_traders) == 31
+        assert all(a.active_hours is None for a in non_traders)
+
+    def test_seeded_trader_windows_match_operator_table(self) -> None:
+        accts = {a.handle: a for a in load_watchlist(REPO_WATCHLIST)}
+        et = ZoneInfo("America/New_York")
+        for h in ("timeframeking", "prosperousguy", "StocksniperTeam",
+                  "TT_stocks_"):
+            w = accts[h].active_hours
+            assert w is not None, h
+            assert w.tz == et
+            assert w.start == dt_time(17, 30)
+            assert w.end == dt_time(20, 30)
+            assert w.days == frozenset({0, 1, 2, 3, 4})
+        fun = accts["Fun_Trades1"].active_hours
+        assert fun is not None
+        assert fun.tz == ZoneInfo("Europe/Berlin")
+        assert fun.start == dt_time(20, 0) and fun.end == dt_time(23, 59)
+        odte = accts["Simply0DTE"].active_hours
+        assert odte is not None
+        assert odte.tz == ZoneInfo("Europe/Rome")
+        assert odte.start == dt_time(19, 0) and odte.end == dt_time(23, 0)

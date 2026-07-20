@@ -33,6 +33,13 @@ cap survives the whole month (~90 min effective interval at defaults)
 and HARD-STOPS polling — with a single Telegram warning — if the cap
 is ever exhausted early.
 
+Active-hours windows (CL-6t7v): an account may carry an OPTIONAL,
+timezone-aware ``active_hours`` window; the monitor then only polls it
+inside that window (see :func:`is_within_window`). This composes with
+the cadence gate — both must pass. Accounts with no window are always-on
+(the default), which is deliberate for breaking-news / flow / OSINT /
+mining accounts. Only day-recap trader accounts get EOD windows.
+
 State (``data/x_monitor_state.json``, atomic tmp+replace writes, same
 pattern as ``src.research.telegram_approvals.save_offset``): per-handle
 ``since_id``, cycle counter, month spend, rate-limit backoff, and
@@ -57,8 +64,10 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from datetime import time as dt_time
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 import yaml
@@ -116,10 +125,55 @@ _BATCH_MAX_LISTED = 10
 #: Cap on per-account failure cooldown (in cycles).
 _MAX_FAILURE_COOLDOWN_CYCLES = 16
 
+#: Weekday name → Python weekday() index (Mon=0 .. Sun=6). Accepts full
+#: names and 3-letter abbreviations, case-insensitive.
+_WEEKDAY_INDEX: Mapping[str, int] = {
+    "monday": 0, "mon": 0,
+    "tuesday": 1, "tue": 1, "tues": 1,
+    "wednesday": 2, "wed": 2,
+    "thursday": 3, "thu": 3, "thur": 3, "thurs": 3,
+    "friday": 4, "fri": 4,
+    "saturday": 5, "sat": 5,
+    "sunday": 6, "sun": 6,
+}
+
+#: Convenience day-set keywords for active_hours.days.
+_WEEKDAYS = frozenset({0, 1, 2, 3, 4})  # Mon-Fri
+_ALL_DAYS = frozenset(range(7))
+
 
 # --------------------------------------------------------------------- #
 # Watchlist config
 # --------------------------------------------------------------------- #
+
+
+@dataclass(frozen=True)
+class ActiveHours:
+    """An optional per-account polling window (CL-6t7v).
+
+    When an account carries active_hours the monitor only polls it while
+    "now" (converted to ``tz``) falls in ``[start, end)`` on an allowed
+    weekday. A window is timezone-aware (``tz`` is an IANA name, so DST
+    is handled by :mod:`zoneinfo`) and may cross midnight: when
+    ``start > end`` the window is treated as overnight and the weekday
+    check is applied to the day on which the window *starts*.
+
+    KEY DESIGN: this is opt-in. Accounts with NO active_hours poll
+    all-day (the always-on default) — that is deliberate for breaking-
+    news / flow / OSINT / mining accounts. Only day-recap trader
+    accounts get EOD windows. All fields here are already validated by
+    :func:`load_watchlist`.
+    """
+
+    start: dt_time
+    end: dt_time
+    tz: ZoneInfo
+    #: Allowed weekday indices (Mon=0 .. Sun=6). Default = every day.
+    days: frozenset[int] = _ALL_DAYS
+
+    @property
+    def crosses_midnight(self) -> bool:
+        return self.start > self.end
 
 
 @dataclass(frozen=True)
@@ -131,6 +185,134 @@ class WatchAccount:
     note: str
     priority: str  # high | normal | low
     keywords: tuple[str, ...] = ()  # empty = notify on all posts
+    #: OPTIONAL polling window; None = always-on (all-day, the default).
+    active_hours: ActiveHours | None = None
+
+
+def _parse_hhmm(value: Any, ctx: str) -> dt_time:
+    """Parse an 'HH:MM' string into a time. Fails loud (CL-6t7v)."""
+    text = str(value).strip()
+    m = re.fullmatch(r"(\d{1,2}):(\d{2})", text)
+    if not m:
+        raise ValueError(
+            f"{ctx}: active_hours time {value!r} is not 'HH:MM'",
+        )
+    hh, mm = int(m.group(1)), int(m.group(2))
+    if not (0 <= hh <= 23 and 0 <= mm <= 59):
+        raise ValueError(
+            f"{ctx}: active_hours time {value!r} out of range (00:00..23:59)",
+        )
+    return dt_time(hour=hh, minute=mm)
+
+
+def _parse_days(value: Any, ctx: str) -> frozenset[int]:
+    """Parse active_hours.days into a set of weekday indices (Mon=0).
+
+    Accepts the keywords 'all' / 'weekdays', or a list of weekday names
+    (full or 3-letter abbreviations). Fails loud on anything else.
+    """
+    if value is None:
+        return _ALL_DAYS
+    if isinstance(value, str):
+        key = value.strip().lower()
+        if key == "all":
+            return _ALL_DAYS
+        if key in ("weekdays", "weekday"):
+            return _WEEKDAYS
+        # A bare day name is allowed as a convenience.
+        if key in _WEEKDAY_INDEX:
+            return frozenset({_WEEKDAY_INDEX[key]})
+        raise ValueError(
+            f"{ctx}: active_hours.days {value!r} unknown "
+            "(use 'all', 'weekdays', or a list of weekday names)",
+        )
+    if isinstance(value, list):
+        if not value:
+            raise ValueError(f"{ctx}: active_hours.days list is empty")
+        days: set[int] = set()
+        for item in value:
+            key = str(item).strip().lower()
+            if key not in _WEEKDAY_INDEX:
+                raise ValueError(
+                    f"{ctx}: active_hours.days entry {item!r} is not a "
+                    "weekday name",
+                )
+            days.add(_WEEKDAY_INDEX[key])
+        return frozenset(days)
+    raise ValueError(
+        f"{ctx}: active_hours.days must be a string keyword or a list",
+    )
+
+
+def _parse_active_hours(raw: Any, ctx: str) -> ActiveHours | None:
+    """Parse the optional active_hours block for one account (CL-6t7v).
+
+    Returns None when unset (always-on). Fails loud on a bad tz, a bad
+    time format, or a missing start/end — an operator typo must not
+    silently widen or narrow a window.
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError(f"{ctx}: active_hours must be a mapping")
+    if "start" not in raw or "end" not in raw:
+        raise ValueError(f"{ctx}: active_hours needs both 'start' and 'end'")
+    if "tz" not in raw:
+        raise ValueError(
+            f"{ctx}: active_hours needs 'tz' (an IANA name, "
+            "e.g. 'America/New_York')",
+        )
+    tz_name = str(raw["tz"]).strip()
+    try:
+        tz = ZoneInfo(tz_name)
+    except (ZoneInfoNotFoundError, ValueError) as exc:
+        raise ValueError(
+            f"{ctx}: active_hours tz {tz_name!r} is not a valid IANA "
+            "timezone",
+        ) from exc
+    start = _parse_hhmm(raw["start"], ctx)
+    end = _parse_hhmm(raw["end"], ctx)
+    if start == end:
+        raise ValueError(
+            f"{ctx}: active_hours start and end are equal ({raw['start']!r}) "
+            "— a zero-width window would never poll",
+        )
+    days = _parse_days(raw.get("days"), ctx)
+    return ActiveHours(start=start, end=end, tz=tz, days=days)
+
+
+def is_within_window(account: WatchAccount, now_utc: datetime) -> bool:
+    """True if ``account`` may be polled at ``now_utc`` (CL-6t7v).
+
+    An account with no active_hours is always-on → always True. Otherwise
+    ``now_utc`` is converted into the window's timezone (so DST is honored
+    by :mod:`zoneinfo`) and the local time must fall in ``[start, end)`` on
+    an allowed weekday. Windows that cross midnight (``start > end``) are
+    handled as overnight, with the weekday check applied to the day the
+    window *opens*.
+
+    ``now_utc`` should be timezone-aware; a naive datetime is assumed UTC.
+    """
+    window = account.active_hours
+    if window is None:
+        return True
+    if now_utc.tzinfo is None:
+        now_utc = now_utc.replace(tzinfo=UTC)
+    local = now_utc.astimezone(window.tz)
+    now_t = local.time()
+    weekday = local.weekday()
+    if window.crosses_midnight:
+        # Overnight window, e.g. 22:00..02:00. Two half-open pieces:
+        #   [start, midnight)  on the opening weekday
+        #   [midnight, end)    on the following weekday
+        if now_t >= window.start:
+            return weekday in window.days
+        if now_t < window.end:
+            # We are past midnight; the window opened "yesterday".
+            return ((weekday - 1) % 7) in window.days
+        return False
+    # Same-day window: [start, end) on an allowed weekday.
+    return weekday in window.days and window.start <= now_t < window.end
 
 
 def load_watchlist(path: Path | str = DEFAULT_WATCHLIST_PATH) -> list[WatchAccount]:
@@ -177,12 +359,16 @@ def load_watchlist(path: Path | str = DEFAULT_WATCHLIST_PATH) -> list[WatchAccou
             if not isinstance(kw_raw, list):
                 raise ValueError(f"{p}: @{handle} 'keywords' must be a list")
             keywords = tuple(str(k).strip() for k in kw_raw if str(k).strip())
+            active_hours = _parse_active_hours(
+                entry.get("active_hours"), f"{p}: @{handle}",
+            )
             accounts.append(WatchAccount(
                 handle=handle,
                 category=category,
                 note=note,
                 priority=priority,
                 keywords=keywords,
+                active_hours=active_hours,
             ))
     return accounts
 
@@ -905,6 +1091,19 @@ class XWatchlistMonitor:
             if cycle % CADENCE[a.priority] == 0
             and not self._in_cooldown(a.handle, cycle)
         ]
+        # Active-hours filter (CL-6t7v): drop accounts outside their
+        # window. Windowless accounts are always-on and always pass, so
+        # this composes with — never replaces — the cadence/cooldown
+        # gate above. Only day-recap traders carry windows; breaking-news
+        # accounts stay all-day.
+        windowed_out = [a for a in due if not is_within_window(a, now)]
+        if windowed_out:
+            due = [a for a in due if is_within_window(a, now)]
+            logger.debug(
+                "active-hours: skipping %d account(s) outside their window: %s",
+                len(windowed_out),
+                ", ".join("@" + a.handle for a in windowed_out),
+            )
         # CLI backend: randomize order so polling isn't a fixed sweep.
         if not metered and self.config.cli_shuffle and due:
             self._shuffle(due)

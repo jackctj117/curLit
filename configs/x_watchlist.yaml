@@ -16,6 +16,14 @@
 #           keywords: [..]      # OPTIONAL — notify only on posts containing
 #                               # any keyword (case-insensitive substring).
 #                               # Omit for all posts (the default).
+#           active_hours:       # OPTIONAL (CL-6t7v) — poll this account
+#             days: weekdays    #   ONLY inside a timezone-aware window.
+#             start: "17:30"    #   days: 'all' (default) | 'weekdays' | a
+#             end: "20:30"      #     list of weekday names; start/end are
+#             tz: America/New_York  # 'HH:MM'; tz is an IANA name (DST-aware).
+#                               #   start > end means the window crosses
+#                               #   midnight. Omit active_hours entirely for
+#                               #   ALWAYS-ON polling (the default).
 #
 # small_traders is operator-requested; performance claims from these
 # accounts are UNVERIFIED — treat as entertainment, not signal. Their
@@ -126,23 +134,63 @@ categories:
 
   # Operator-requested; performance claims from these accounts are
   # UNVERIFIED — treat as entertainment, not signal.
+  #
+  # ACTIVE-HOURS DESIGN (CL-6t7v): these are the ONLY accounts that carry
+  # active_hours windows. They post day-RECAPS (entries/exits after the
+  # session), so polling them all day is low-signal and inflates bird-call
+  # volume. News / flow / OSINT / mining accounts above have NO window on
+  # purpose — breaking news at any hour is the whole point; do NOT window
+  # them. The windows below are HEURISTIC and freely editable: the traders
+  # are anonymous, so their timezones are GUESSES seeded from the
+  # operator's table (US traders ~EOD ET, European traders their evenings).
+  # Widen/narrow/retz them as you learn each account's real posting rhythm.
   small_traders:
     accounts:
       - handle: Fun_Trades1
         note: "Small-account options trader; posts entries/exits. UNVERIFIED."
         priority: low
+        active_hours:  # heuristic — guessed CEST; edit freely
+          days: weekdays
+          start: "20:00"
+          end: "23:59"
+          tz: Europe/Berlin
       - handle: timeframeking
         note: "Day-trading setups. UNVERIFIED."
         priority: low
+        active_hours:  # heuristic — guessed ET EOD; edit freely
+          days: weekdays
+          start: "17:30"
+          end: "20:30"
+          tz: America/New_York
       - handle: prosperousguy
         note: "Swing / options trade posts. UNVERIFIED."
         priority: low
+        active_hours:  # heuristic — guessed ET EOD; edit freely
+          days: weekdays
+          start: "17:30"
+          end: "20:30"
+          tz: America/New_York
       - handle: StocksniperTeam
         note: "Trade-alert account. UNVERIFIED."
         priority: low
+        active_hours:  # heuristic — guessed ET EOD; edit freely
+          days: weekdays
+          start: "17:30"
+          end: "20:30"
+          tz: America/New_York
       - handle: Simply0DTE
         note: "0DTE options trades. UNVERIFIED."
         priority: low
+        active_hours:  # heuristic — guessed CEST; edit freely
+          days: weekdays
+          start: "19:00"
+          end: "23:00"
+          tz: Europe/Rome
       - handle: TT_stocks_
         note: "Momentum stock picks. UNVERIFIED."
         priority: low
+        active_hours:  # heuristic — guessed ET EOD; edit freely
+          days: weekdays
+          start: "17:30"
+          end: "20:30"
+          tz: America/New_York
