@@ -43,6 +43,7 @@ import sys
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -98,6 +99,17 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Run the relative-volume scanner over the equity watch "
              "universe each cycle, before the digest (default on; "
              "--no-scan to disable)",
+    )
+    p.add_argument(
+        "--poly", action=argparse.BooleanOptionalAction, default=True,
+        help="Poll tracked geopolitical Polymarket markets each cycle, "
+             "persist YES probs, and Telegram-alert on rapid shifts "
+             "(default on; --no-poly to disable)",
+    )
+    p.add_argument(
+        "--poly-config", default="configs/polymarket_geo_markets.yaml",
+        help="Path to the theme-tagged geo markets config polled by "
+             "the --poly step",
     )
     p.add_argument(
         "--digest-min-urgency", type=int, metavar="N", default=None,
@@ -193,6 +205,39 @@ def _enrich_and_persist(engine: object, results: list) -> tuple[dict, dict]:
     return prices, seen_ats
 
 
+def _poly_step(args: argparse.Namespace) -> Any:
+    """Poll tracked geopolitical Polymarket markets, persist YES probs,
+    detect rapid shifts, and Telegram-alert on them (CL-r1ep).
+
+    Fail-soft BY DESIGN: prediction markets are advisory corroboration,
+    not pipeline plumbing — any failure (Gamma outage, missing table,
+    empty config) logs and returns, never kills the cycle. Returns the
+    constructed :class:`PolymarketSignal` (or None on failure) so the
+    caller can hand it to the digest for per-theme corroboration.
+    """
+    from sqlalchemy import create_engine  # noqa: PLC0415
+
+    from src.events.polymarket_signal import (  # noqa: PLC0415
+        PolymarketSignal,
+        load_tracked_markets,
+    )
+
+    engine = create_engine(_db_url())
+    signal = PolymarketSignal(engine)
+    markets = load_tracked_markets(args.poly_config)
+    if not markets:
+        logger.info("poly: no tracked geo markets configured; skipping poll")
+        return signal
+    signal.poll_probabilities(markets)
+    shifts = signal.detect_shifts()
+    if shifts:
+        sent = signal.notify_shifts(shifts)
+        logger.info("poly: %d shift(s) detected, %d alerted", len(shifts), sent)
+    else:
+        logger.info("poly: %d markets polled, no shifts", len(markets))
+    return signal
+
+
 def _cycle(args: argparse.Namespace) -> None:
     if args.ingest:
         from src.data.gdelt import GdeltIngester  # noqa: PLC0415
@@ -254,6 +299,16 @@ def _cycle(args: argparse.Namespace) -> None:
         # Idea ledger + one price batch per cycle (CL-mgcp) — fail-soft.
         prices, seen_ats = _enrich_and_persist(engine, results)
 
+        # Prediction-market poll (CL-r1ep) runs after assess so the
+        # digest can cite fresh per-theme probs as corroboration. A poly
+        # failure NEVER kills the cycle — it's advisory, not plumbing.
+        poly_signal = None
+        if args.poly:
+            try:
+                poly_signal = _poly_step(args)
+            except Exception:
+                logger.exception("poly step failed; continuing")
+
         if args.digest:
             from src.events.digest import (  # noqa: PLC0415
                 fetch_volume_marks,
@@ -270,6 +325,7 @@ def _cycle(args: argparse.Namespace) -> None:
                 disp = send_digest(
                     results, min_urgency=args.digest_min_urgency,
                     volume_marks=marks, prices=prices, seen_ats=seen_ats,
+                    poly_signal=poly_signal,
                 )
             except Exception:
                 logger.exception("digest dispatch failed; continuing")
@@ -279,6 +335,13 @@ def _cycle(args: argparse.Namespace) -> None:
                         "digest: sent (telegram ok=%s)",
                         disp.telegram_succeeded,
                     )
+    elif args.poly:
+        # --poly without --assess: still poll + alert on shifts (the
+        # notifications are the point), just no digest corroboration.
+        try:
+            _poly_step(args)
+        except Exception:
+            logger.exception("poly step failed; continuing")
 
 
 def main(argv: list[str] | None = None) -> int:

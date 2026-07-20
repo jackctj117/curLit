@@ -249,6 +249,7 @@ class TestMainEntry:
         )
         from scripts.discover_polymarket_markets import main
         rc = main([
+            "--mode", "fx",
             "--config", str(cfg),
             "--limit", "5",
             "--min-volume", "1000",
@@ -280,6 +281,7 @@ class TestMainEntry:
         )
         from scripts.discover_polymarket_markets import main
         rc = main([
+            "--mode", "fx",
             "--config", str(cfg),
             "--limit", "5",
             "--min-volume", "1000",
@@ -307,5 +309,203 @@ class TestMainEntry:
             boom,
         )
         from scripts.discover_polymarket_markets import main
-        rc = main(["--config", str(cfg)])
+        rc = main(["--mode", "fx", "--config", str(cfg)])
         assert rc == 1
+
+
+# ---------------------------------------------------------------------- #
+# Geopolitical discovery (CL-r1ep)
+# ---------------------------------------------------------------------- #
+
+from scripts.discover_polymarket_markets import (  # noqa: E402
+    discover_geo_markets,
+    extract_yes_prob,
+    match_theme,
+    merge_geo_config,
+)
+
+_THEME_TERMS = {
+    "energy_chokepoint": ("strait of hormuz", "hormuz closure", "tanker attacked"),
+    "taiwan_semiconductor": ("taiwan strait", "taiwan blockade", "taiwan invasion"),
+    "russia_ukraine": ("kerch bridge", "ceasefire talks", "crimea"),
+    "africa_power_shift": ("military coup", "coup attempt", "junta"),
+}
+
+
+class TestMatchTheme:
+    def test_matches_hormuz(self) -> None:
+        m = {"question": "Will the Strait of Hormuz be closed in 2026?",
+             "slug": "hormuz-closed-2026"}
+        matched = match_theme(m, _THEME_TERMS)
+        assert matched is not None
+        assert matched[0] == "energy_chokepoint"
+        assert matched[1] == "strait of hormuz"
+
+    def test_matches_slug_when_question_generic(self) -> None:
+        m = {"question": "Big geopolitical event?", "slug": "taiwan-blockade-q4"}
+        matched = match_theme(m, _THEME_TERMS)
+        assert matched is not None
+        assert matched[0] == "taiwan_semiconductor"
+
+    def test_no_match_returns_none(self) -> None:
+        m = {"question": "Will Bitcoin hit 200k?", "slug": "btc-200k"}
+        assert match_theme(m, _THEME_TERMS) is None
+
+    def test_best_score_wins_on_multiple_hits(self) -> None:
+        # Two terms from russia_ukraine, one from africa_power_shift.
+        m = {"question": "Crimea ceasefire talks and a coup?", "slug": "x"}
+        matched = match_theme(m, _THEME_TERMS)
+        assert matched is not None
+        assert matched[0] == "russia_ukraine"
+
+    def test_empty_haystack(self) -> None:
+        assert match_theme({"question": "", "slug": ""}, _THEME_TERMS) is None
+
+
+class TestExtractYesProb:
+    def test_json_string(self) -> None:
+        assert extract_yes_prob({"outcomePrices": json.dumps(["0.63", "0.37"])}) == pytest.approx(0.63)
+
+    def test_native_list(self) -> None:
+        assert extract_yes_prob({"outcomePrices": [0.2, 0.8]}) == pytest.approx(0.2)
+
+    def test_missing(self) -> None:
+        assert extract_yes_prob({}) is None
+
+    def test_unparseable(self) -> None:
+        assert extract_yes_prob({"outcomePrices": "nope"}) is None
+
+
+class TestDiscoverGeoMarkets:
+    def test_filters_and_tags_theme(self) -> None:
+        markets = [
+            {"slug": "hormuz-closed", "question": "Will the Strait of Hormuz close?",
+             "clobTokenIds": json.dumps(["y1", "n1"]),
+             "outcomePrices": json.dumps(["0.18", "0.82"]),
+             "volumeNum": 80000, "endDate": "2026-12-31"},
+            {"slug": "sports", "question": "Will the Lakers win?",
+             "clobTokenIds": json.dumps(["y2", "n2"]), "volumeNum": 500000},
+            {"slug": "low-vol", "question": "Taiwan blockade?",
+             "clobTokenIds": json.dumps(["y3", "n3"]), "volumeNum": 100},
+            {"slug": "no-token", "question": "Taiwan invasion?", "volumeNum": 99999},
+        ]
+        out = discover_geo_markets(markets, _THEME_TERMS, min_volume_usd=5000, limit=10)
+        # Only the hormuz market: sports has no theme, low-vol below floor,
+        # no-token lacks a clobTokenId.
+        assert len(out) == 1
+        e = out[0]
+        assert e["slug"] == "hormuz-closed"
+        assert e["theme"] == "energy_chokepoint"
+        assert e["yes_token_id"] == "y1"
+        assert e["yes_prob"] == pytest.approx(0.18)
+        assert e["end_date"] == "2026-12-31"
+        assert "discovered_at" in e
+
+    def test_sorts_by_volume(self) -> None:
+        markets = [
+            {"slug": "a", "question": "Hormuz closure?",
+             "clobTokenIds": ["ya", "na"], "volumeNum": 10000},
+            {"slug": "b", "question": "Taiwan blockade?",
+             "clobTokenIds": ["yb", "nb"], "volumeNum": 90000},
+        ]
+        out = discover_geo_markets(markets, _THEME_TERMS, min_volume_usd=0, limit=10)
+        assert [e["slug"] for e in out] == ["b", "a"]
+
+    def test_limit_caps(self) -> None:
+        markets = [
+            {"slug": f"coup-{i}", "question": "military coup?",
+             "clobTokenIds": ["y", "n"], "volumeNum": float(100000 - i)}
+            for i in range(10)
+        ]
+        out = discover_geo_markets(markets, _THEME_TERMS, min_volume_usd=0, limit=3)
+        assert len(out) == 3
+
+
+class TestMergeGeoConfig:
+    def test_appends_new_dedup(self, tmp_path: Path) -> None:
+        cfg = tmp_path / "geo.yaml"
+        cfg.write_text(yaml.safe_dump({"markets": [
+            {"slug": "existing", "theme": "russia_ukraine",
+             "yes_token_id": "e"},
+        ]}))
+        discovered = [
+            {"slug": "existing", "theme": "russia_ukraine", "yes_token_id": "x"},
+            {"slug": "new", "theme": "energy_chokepoint", "yes_token_id": "n"},
+        ]
+        new_doc, stats = merge_geo_config(cfg, discovered)
+        assert stats["existing"] == 1
+        assert stats["added"] == 1
+        assert stats["skipped_duplicate"] == 1
+        slugs = [m["slug"] for m in new_doc["markets"]]
+        assert slugs == ["existing", "new"]
+        # The pre-existing entry is preserved verbatim (operator may have
+        # hand-tuned it) — discovery's competing token_id does NOT win.
+        assert new_doc["markets"][0]["yes_token_id"] == "e"
+
+    def test_fresh_when_no_file(self, tmp_path: Path) -> None:
+        ghost = tmp_path / "nope.yaml"
+        new_doc, stats = merge_geo_config(ghost, [
+            {"slug": "first", "theme": "war_escalation", "yes_token_id": "t"},
+        ])
+        assert stats["added"] == 1
+        assert new_doc["markets"][0]["slug"] == "first"
+
+
+class TestGeoMainEntry:
+    def test_geo_run_writes_config(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        out = tmp_path / "geo.yaml"
+
+        def fake_fetch(api_url: str = "", limit: int = 200,
+                       timeout_sec: float = 30,
+                       order_by_volume24hr: bool = False) -> list[dict[str, Any]]:
+            return [
+                {"slug": "hormuz-closed-2026",
+                 "question": "Will the Strait of Hormuz be closed in 2026?",
+                 "clobTokenIds": json.dumps(["yes-tok", "no-tok"]),
+                 "outcomePrices": json.dumps(["0.18", "0.82"]),
+                 "volumeNum": 120000, "endDate": "2026-12-31"},
+                {"slug": "lakers", "question": "Lakers win?",
+                 "clobTokenIds": json.dumps(["a", "b"]), "volumeNum": 500000},
+            ]
+
+        monkeypatch.setattr(
+            "scripts.discover_polymarket_markets.fetch_active_markets",
+            fake_fetch,
+        )
+        from scripts.discover_polymarket_markets import main
+        rc = main([
+            "--mode", "geo", "--out", str(out),
+            "--min-volume", "1000", "--limit", "50",
+        ])
+        assert rc == 0
+        loaded = yaml.safe_load(out.read_text())
+        assert len(loaded["markets"]) == 1
+        e = loaded["markets"][0]
+        assert e["slug"] == "hormuz-closed-2026"
+        assert e["theme"] == "energy_chokepoint"
+        assert e["yes_token_id"] == "yes-tok"
+
+    def test_geo_dry_run_no_write(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        out = tmp_path / "geo.yaml"
+
+        def fake_fetch(api_url: str = "", limit: int = 200,
+                       timeout_sec: float = 30,
+                       order_by_volume24hr: bool = False) -> list[dict[str, Any]]:
+            return [
+                {"slug": "taiwan-blockade-2026", "question": "Taiwan blockade in 2026?",
+                 "clobTokenIds": json.dumps(["y", "n"]), "volumeNum": 60000},
+            ]
+
+        monkeypatch.setattr(
+            "scripts.discover_polymarket_markets.fetch_active_markets",
+            fake_fetch,
+        )
+        from scripts.discover_polymarket_markets import main
+        rc = main(["--mode", "geo", "--out", str(out), "--dry-run",
+                   "--min-volume", "1000"])
+        assert rc == 0
+        assert not out.exists()

@@ -792,3 +792,79 @@ class TestPipelineIdeaWiring:
         args.digest_min_urgency = 5
         pipeline_mod._cycle(args)  # must not raise
         assert len(calls["sent"]) == 1  # digest still went out
+
+
+# --------------------------------------------------------------------- #
+# Prediction-market corroboration line (CL-r1ep)
+# --------------------------------------------------------------------- #
+
+
+class _FakePolySignal:
+    """Stub PolymarketSignal exposing only latest_prob_for_theme."""
+
+    def __init__(self, by_theme: dict[str, dict[str, dict[str, Any]]]) -> None:
+        self.by_theme = by_theme
+
+    def latest_prob_for_theme(self, theme: str) -> dict[str, dict[str, Any]]:
+        return self.by_theme.get(theme, {})
+
+
+class TestPolyCorroboration:
+    def test_line_rendered_for_theme(self) -> None:
+        poly = _FakePolySignal({
+            "energy_chokepoint": {
+                "hormuz-closure-2026": {
+                    "question": "Hormuz closed?", "yes_prob": 0.18,
+                    "rising": True,
+                },
+            },
+        })
+        built = build_digest([_res(urgency=7)], poly_signal=poly)
+        assert built is not None
+        _, msg = built
+        assert "Prediction mkt:" in msg
+        assert "hormuz-closure-2026 18% ↑" in msg
+
+    def test_falling_arrow(self) -> None:
+        poly = _FakePolySignal({
+            "energy_chokepoint": {
+                "s": {"question": "q", "yes_prob": 0.40, "rising": False},
+            },
+        })
+        _, msg = build_digest([_res(urgency=7)], poly_signal=poly)  # type: ignore[misc]
+        assert "s 40% ↓" in msg
+
+    def test_no_arrow_when_direction_unknown(self) -> None:
+        poly = _FakePolySignal({
+            "energy_chokepoint": {
+                "s": {"question": "q", "yes_prob": 0.25, "rising": None},
+            },
+        })
+        _, msg = build_digest([_res(urgency=7)], poly_signal=poly)  # type: ignore[misc]
+        assert "s 25%" in msg
+        assert "s 25% ↑" not in msg and "s 25% ↓" not in msg
+
+    def test_highest_prob_market_cited(self) -> None:
+        poly = _FakePolySignal({
+            "energy_chokepoint": {
+                "low": {"question": "q", "yes_prob": 0.10, "rising": None},
+                "high": {"question": "q", "yes_prob": 0.55, "rising": True},
+            },
+        })
+        _, msg = build_digest([_res(urgency=7)], poly_signal=poly)  # type: ignore[misc]
+        assert "high 55%" in msg
+        assert "low 10%" not in msg
+
+    def test_absent_signal_no_line(self) -> None:
+        _, msg = build_digest([_res(urgency=7)], poly_signal=None)  # type: ignore[misc]
+        assert "Prediction mkt" not in msg
+
+    def test_lookup_failure_fail_soft(self) -> None:
+        class Boom:
+            def latest_prob_for_theme(self, theme: str) -> dict[str, Any]:
+                raise RuntimeError("db down")
+
+        built = build_digest([_res(urgency=7)], poly_signal=Boom())
+        assert built is not None  # digest still builds
+        _, msg = built
+        assert "Prediction mkt" not in msg

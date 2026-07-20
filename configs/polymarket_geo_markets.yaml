@@ -1,0 +1,73 @@
+# Theme-tagged geopolitical Polymarket markets (CL-r1ep).
+#
+# Populated by scripts/discover_polymarket_markets.py --mode geo:
+# each entry's question/slug matched a playbook theme's watch_terms.
+# src/events/polymarket_signal.py polls yes_token_id each event-
+# pipeline cycle, persists YES prob to poly_market_probs, and alerts
+# on rapid shifts (Telegram HTML, like the trade cards). This config
+# is separate from configs/polymarket_markets.yaml (the macro
+# DataProvider-symbol config) on purpose — don't clobber that one.
+markets:
+- slug: strait-of-hormuz-traffic-returns-to-normal-by-july-31
+  question: Strait of Hormuz traffic returns to normal by July 31?
+  yes_token_id: '106929013576622300718402895513457875547556389240247806666273814836599548721421'
+  theme: energy_chokepoint
+  matched_term: strait of hormuz
+  discovered_at: '2026-07-20T22:25:43+00:00'
+  yes_prob: 0.0155
+  discovered_volume_usd: 18848089.0
+  end_date: '2026-07-31'
+- slug: strait-of-hormuz-traffic-returns-to-normal-by-july-15
+  question: Strait of Hormuz traffic returns to normal by July 15?
+  yes_token_id: '89075579425844467185868633488322759623361856543369509366205030098390192743019'
+  theme: energy_chokepoint
+  matched_term: strait of hormuz
+  discovered_at: '2026-07-20T22:25:43+00:00'
+  yes_prob: 0.0005
+  discovered_volume_usd: 11690057.0
+  end_date: '2026-07-15'
+- slug: strait-of-hormuz-traffic-returns-to-normal-by-december-31
+  question: Strait of Hormuz traffic returns to normal by December 31?
+  yes_token_id: '83783489454659420807679723574840032660002326710045123865554753994450797728825'
+  theme: energy_chokepoint
+  matched_term: strait of hormuz
+  discovered_at: '2026-07-20T22:25:43+00:00'
+  yes_prob: 0.545
+  discovered_volume_usd: 5474849.0
+  end_date: '2026-12-31'
+- slug: will-ukraine-recapture-crimean-territory-by-december-31-2026
+  question: Will Ukraine recapture Crimean territory by December 31, 2026?
+  yes_token_id: '67011482977279466154940850972585572311207926803952896052113224614375102184687'
+  theme: russia_ukraine
+  matched_term: crimea
+  discovered_at: '2026-07-20T22:25:43+00:00'
+  yes_prob: 0.085
+  discovered_volume_usd: 2304500.0
+  end_date: '2026-12-31'
+- slug: strait-of-hormuz-traffic-returns-to-normal-by-august-31-20260702154212320
+  question: Strait of Hormuz traffic returns to normal by August 31?
+  yes_token_id: '105426373826369935595603860663411604941599130211176020843036778867927711117332'
+  theme: energy_chokepoint
+  matched_term: strait of hormuz
+  discovered_at: '2026-07-20T22:25:43+00:00'
+  yes_prob: 0.135
+  discovered_volume_usd: 1359469.0
+  end_date: '2026-08-31'
+- slug: strait-of-hormuz-traffic-returns-to-normal-by-september-30-20260702154339440
+  question: Strait of Hormuz traffic returns to normal by September 30?
+  yes_token_id: '23545193122217391289335133742859160842475987880562465754342378273033942179195'
+  theme: energy_chokepoint
+  matched_term: strait of hormuz
+  discovered_at: '2026-07-20T22:25:43+00:00'
+  yes_prob: 0.235
+  discovered_volume_usd: 379233.0
+  end_date: '2026-09-30'
+- slug: will-the-houthis-successfully-target-shipping-by-july-31-2026-20260708165455693
+  question: Will the Houthis successfully target shipping by July 31, 2026?
+  yes_token_id: '11553285742256622965902391811056783122042804173189054211722148787777433742322'
+  theme: red_sea_shipping
+  matched_term: houthi
+  discovered_at: '2026-07-20T22:25:43+00:00'
+  yes_prob: 0.56
+  discovered_volume_usd: 151904.0
+  end_date: '2026-07-31'
