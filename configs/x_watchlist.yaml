@@ -1,0 +1,148 @@
+# X (Twitter) account watchlist — scripts/x_monitor.py (CL-3j86).
+#
+# Curated by the operator 2026-07-20. Every NEW post from these accounts
+# is relayed to Telegram once TWITTER_BEARER_TOKEN is provisioned (X API
+# v2 basic tier, paid). Until then the monitor idles — it never scrapes.
+#
+# Schema:
+#   categories:
+#     <category_key>:            # must be one of the known categories in
+#       accounts:                # src/data/x_monitor.py (footer policy is
+#         - handle: <X handle, no @>          #  category-keyed)
+#           note: <why it's on the list>
+#           priority: high | normal | low     # poll cadence: high = every
+#                                             # cycle, normal = every 2nd,
+#                                             # low = every 4th
+#           keywords: [..]      # OPTIONAL — notify only on posts containing
+#                               # any keyword (case-insensitive substring).
+#                               # Omit for all posts (the default).
+#
+# small_traders is operator-requested; performance claims from these
+# accounts are UNVERIFIED — treat as entertainment, not signal. Their
+# notifications carry an explicit unverified footer.
+
+categories:
+  financial_flow:
+    accounts:
+      - handle: unusual_whales
+        note: "Options-flow and market-structure squawk; fast broad-market headline relay."
+        priority: high
+      - handle: DeItaone
+        note: "Walter Bloomberg terminal squawk — among the fastest headline relays on X."
+        priority: high
+      - handle: zerohedge
+        note: "Macro / risk-off news aggregator; fast but editorialized — verify before acting."
+        priority: normal
+      - handle: HindenburgRes
+        note: "Activist short-seller research; report drops move single names hard."
+        priority: high
+      - handle: CheddarFlow
+        note: "Unusual options-flow alerts."
+        priority: normal
+      - handle: muddywatersre
+        note: "Muddy Waters Research — activist short reports."
+        priority: normal
+      - handle: WallStJesus
+        note: "Options-flow squawk."
+        priority: normal
+      - handle: spotgamma
+        note: "Dealer-gamma / options-positioning analytics."
+        priority: normal
+      - handle: StockMKTNewz
+        note: "Fast equities news aggregation."
+        priority: normal
+      - handle: FirstSquawk
+        note: "24h global newswire squawk."
+        priority: normal
+      - handle: AlderLaneEggs
+        note: "Short-seller / forensic-accounting commentary."
+        priority: low
+      - handle: CulperResearch
+        note: "Activist short-seller research."
+        priority: low
+      - handle: sprucepointcap
+        note: "Spruce Point Capital — activist short research."
+        priority: low
+
+  conflict_osint:
+    accounts:
+      - handle: sentdefender
+        note: "OSINTdefender — fast conflict alerts; speed over verification."
+        priority: high
+      - handle: Osinttechnical
+        note: "Equipment-loss and strike imagery analysis."
+        priority: high
+      - handle: Osint613
+        note: "Middle East conflict OSINT."
+        priority: normal
+      - handle: bellingcat
+        note: "Open-source investigations; high verification standard."
+        priority: normal
+      - handle: KofmanMichael
+        note: "Michael Kofman — Russian military capability analysis."
+        priority: normal
+      - handle: ianbremmer
+        note: "Eurasia Group — geopolitical-risk framing."
+        priority: normal
+      - handle: clashreport
+        note: "Conflict news aggregation."
+        priority: normal
+      - handle: rawsalerts
+        note: "Breaking incident alerts; speed over verification."
+        priority: normal
+      - handle: TheStudyofWar
+        note: "Institute for the Study of War — daily campaign assessments."
+        priority: normal
+      - handle: criticalthreats
+        note: "AEI Critical Threats Project — Iran / Africa trackers."
+        priority: low
+      - handle: CalibreObscura
+        note: "Weapons identification and arms-flow tracking."
+        priority: low
+
+  africa_mining:
+    accounts:
+      - handle: Africa_In_EN
+        note: "Africa Intelligence (EN) — scoops on African mining and politics."
+        priority: high
+      - handle: robert_ivanhoe
+        note: "Robert Friedland — Ivanhoe Mines founder; copper / DRC commentary."
+        priority: high
+      - handle: afrikarabia
+        note: "DRC politics analysis (French)."
+        priority: normal
+      - handle: miningmx
+        note: "Southern African mining trade press."
+        priority: normal
+      - handle: IF_Africa
+        note: "Africa mining and investment news feed."
+        priority: normal
+      - handle: ECA_OFFICIAL
+        note: "UN Economic Commission for Africa — official comms; slow but authoritative."
+        priority: low
+      - handle: MinMinesRDC
+        note: "DRC Ministry of Mines — official announcements (French)."
+        priority: normal
+
+  # Operator-requested; performance claims from these accounts are
+  # UNVERIFIED — treat as entertainment, not signal.
+  small_traders:
+    accounts:
+      - handle: Fun_Trades1
+        note: "Small-account options trader; posts entries/exits. UNVERIFIED."
+        priority: low
+      - handle: timeframeking
+        note: "Day-trading setups. UNVERIFIED."
+        priority: low
+      - handle: prosperousguy
+        note: "Swing / options trade posts. UNVERIFIED."
+        priority: low
+      - handle: StocksniperTeam
+        note: "Trade-alert account. UNVERIFIED."
+        priority: low
+      - handle: Simply0DTE
+        note: "0DTE options trades. UNVERIFIED."
+        priority: low
+      - handle: TT_stocks_
+        note: "Momentum stock picks. UNVERIFIED."
+        priority: low
