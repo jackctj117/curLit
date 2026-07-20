@@ -1,4 +1,4 @@
-"""Airflow DAG — weekly update check, bd issue creation, Pushover notification."""
+"""Airflow DAG — weekly update check, bd issue creation, Telegram notification."""
 
 from datetime import datetime
 

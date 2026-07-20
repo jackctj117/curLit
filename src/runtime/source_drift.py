@@ -8,7 +8,7 @@ signal cycle — alive, heartbeat fresh, but operating on dead code.
 This watcher hashes a curated list of source files at startup and re-
 hashes them periodically. When the on-disk hash diverges from the
 in-memory hash, it logs CRITICAL and sets ``fx_engine_source_drift = 1``
-so Grafana / Pushover can alert. We deliberately do *not* auto-halt:
+so Grafana / Telegram can alert. We deliberately do *not* auto-halt:
 the operator has the context to decide whether the change is a real
 fix that needs a restart vs an in-progress edit they didn't intend the
 engine to see.

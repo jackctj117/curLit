@@ -161,7 +161,7 @@ CL-2uns saying "switch from last-line to regex match for
 `https://github.com/.*/pull/\d+`" and patch
 `src/research/promote.py:_open_pr`.
 
-## CL-b7i3 — Pushover + Telegram delivery smoke
+## CL-b7i3 — Telegram + Telegram delivery smoke
 
 **What it proves:** `notify_operator` actually delivers messages on
 both channels and the Markdown formatting renders correctly when
@@ -171,7 +171,7 @@ parse-mode footgun).
 **Required env vars:**
 
 ```bash
-export PUSHOVER_API_TOKEN=...
+export TELEGRAM_BOT_TOKEN=...
 export PUSHOVER_USER_KEY=...
 export TELEGRAM_BOT_TOKEN=...
 export TELEGRAM_CHAT_ID=...
@@ -192,7 +192,7 @@ result = notify_operator(
     ),
     priority=0,
 )
-print(f'Pushover attempted={result.pushover_attempted} '
+print(f'Telegram attempted={result.pushover_attempted} '
       f'succeeded={result.pushover_succeeded} '
       f'error={result.pushover_error!r}')
 print(f'Telegram attempted={result.telegram_attempted} '
@@ -212,7 +212,7 @@ print(f'priority=1: pushover={result.pushover_succeeded} '
 
 **What to verify on the device:**
 
-1. Both messages arrive on Pushover.
+1. Both messages arrive on Telegram.
 2. Both messages arrive on Telegram.
 3. **Underscores in `regime_carry_underscores_in_slug` render as
    underscores, not as italic-toggle marks.** Telegram's Markdown
@@ -220,13 +220,13 @@ print(f'priority=1: pushover={result.pushover_succeeded} '
    weirdly formatted, the dispatcher needs to switch to MarkdownV2
    (with backslash-escaped underscores) or HTML mode. File under
    CL-b7i3.
-4. Priority=1 message wakes the device (Pushover's "high priority"
+4. Priority=1 message wakes the device (Telegram's "high priority"
    bypasses quiet hours) — confirm by running the smoke during a
    normally-quiet time.
 5. Telegram bot's chat shows both messages even if you've muted the
    chat.
 
-**Cost:** Pushover free tier is 10k messages/month. Telegram is
+**Cost:** Telegram free tier is 10k messages/month. Telegram is
 free. No real cost.
 
 ## After all three smokes pass

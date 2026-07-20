@@ -18,7 +18,7 @@ Output:
   - ReconciliationReport(matched, mismatches, oanda_only, internal_only)
   - Daily JSON summary written to reports/reconciliation/YYYY-MM-DD.json
   - Prometheus gauge fx_reconciliation_mismatches set per day
-  - Optional alert (Pushover/Telegram) on mismatch count > 0
+  - Optional alert (Telegram) on mismatch count > 0
 
 Usage as a cron job:
   0 1 * * *  .venv/bin/python -m scripts.run_daily_reconciliation

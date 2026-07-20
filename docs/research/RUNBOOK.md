@@ -126,7 +126,7 @@ Common transcript anti-patterns to flag:
 
 ## 3. Interpreting an ESCALATE alert
 
-The loop fires a Pushover priority-1 + Telegram alert when the verdict
+The loop fires a Telegram priority-1 + Telegram alert when the verdict
 engine returns ESCALATE. Body contains: slug, verdict reason, bull/bear
 positions, problem rules with their detail strings, OOS metrics blurb,
 and links to the transcript + candidate report.
@@ -543,7 +543,7 @@ cron job inherits credentials without sourcing.
   dedupes against `data/research/extracts/`. New items cost ~$0.01
   each via DeepSeek extractor.
 - Idea agent ideates new extracts via DeepSeek. Most DECLINE; PROPOSED
-  ones fire **Pushover/Telegram alert** and hold at GATE 1.
+  ones fire **Telegram/Telegram alert** and hold at GATE 1.
 - Output: `logs/research_loop_cron.log`
 
 ### What does NOT fire automatically

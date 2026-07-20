@@ -26,7 +26,7 @@ extract/hypothesis/candidate already processed in a prior run. A run
 that crashes mid-pipeline leaves a partially-updated state file, and
 the next run picks up exactly where the previous one stopped.
 
-Side-effects (paper-shadow registration, Pushover/Telegram alerting)
+Side-effects (paper-shadow registration, Telegram alerting)
 are intentionally out of scope here — those are separate beads
 (CL-3xn1, CL-o2vb) that read the loop's verdict log and act on it.
 The loop's job is to populate that log.
@@ -264,12 +264,12 @@ class RunSummary:
 # configured REVIEW_RULES.md once per run; tests inject a fixed list.
 RulesLoader = Callable[[], list[ParsedRule]]
 
-# GATE 1 notifier. Default = production pushover/telegram via
+# GATE 1 notifier. Default = production Telegram via
 # src.research.notifications.notify_operator; tests inject a recorder.
 # Signature: (title, message, priority) → DispatchResult.
 # The loop builds ``message`` as Telegram-HTML (interpolations escaped
 # via html_escape); the default notifier passes html=True so Telegram
-# renders it and Pushover gets a tag-stripped plain version (CL-frn7).
+# renders it (CL-frn7).
 NotifyFn = Callable[[str, str, int], DispatchResult]
 
 

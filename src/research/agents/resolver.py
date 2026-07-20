@@ -328,7 +328,7 @@ class QuestionResolver:
     another agent, sending an escalation alert) are callbacks the
     caller supplies — the resolver has no DB or HTTP knowledge of its
     own. This keeps it unit-testable without mocks of subprocess /
-    agent registry / Pushover.
+    agent registry / Telegram.
     """
 
     def __init__(

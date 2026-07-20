@@ -38,8 +38,8 @@ read -r -p "OANDA_ACCOUNT_ID: " OANDA_ACCOUNT_ID
 read -r -p "FRED_API_KEY: " -s FRED_API_KEY; echo
 read -r -p "POSTGRES_PASSWORD: " -s POSTGRES_PASSWORD; echo
 read -r -p "ANTHROPIC_API_KEY (blank to skip): " -s ANTHROPIC_API_KEY; echo
-read -r -p "PUSHOVER_USER_KEY (blank to skip): " -s PUSHOVER_USER_KEY; echo
-read -r -p "PUSHOVER_API_TOKEN (blank to skip): " -s PUSHOVER_API_TOKEN; echo
+read -r -p "TELEGRAM_BOT_TOKEN (blank to skip): " -s TELEGRAM_BOT_TOKEN; echo
+read -r -p "TELEGRAM_CHAT_ID (blank to skip): " TELEGRAM_CHAT_ID
 
 read -r -p "Vault master passphrase (used to unlock at boot): " -s VAULT_PASS; echo
 read -r -p "Confirm passphrase: " -s VAULT_PASS_CONFIRM; echo
@@ -59,8 +59,8 @@ cat > "$TMP" <<EOF
   "FRED_API_KEY": "$FRED_API_KEY",
   "POSTGRES_PASSWORD": "$POSTGRES_PASSWORD",
   "ANTHROPIC_API_KEY": "$ANTHROPIC_API_KEY",
-  "PUSHOVER_USER_KEY": "$PUSHOVER_USER_KEY",
-  "PUSHOVER_API_TOKEN": "$PUSHOVER_API_TOKEN"
+  "TELEGRAM_BOT_TOKEN": "$TELEGRAM_BOT_TOKEN",
+  "TELEGRAM_CHAT_ID": "$TELEGRAM_CHAT_ID"
 }
 EOF
 

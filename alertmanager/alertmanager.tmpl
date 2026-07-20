@@ -26,18 +26,6 @@ receivers:
       - url: "http://localhost:8080/alert-sink"
 
   - name: "pager"
-    pushover_configs:
-      - user_key: "__PUSHOVER_USER_KEY__"
-        token: "__PUSHOVER_API_TOKEN__"
-        priority: 2
-        retry: 30s
-        expire: 3h
-        title: 'FX CRITICAL: {{ .GroupLabels.alertname }}'
-        message: |
-          {{ range .Alerts }}
-          {{ .Annotations.summary }}
-          {{ .Annotations.description }}
-          {{ end }}
     telegram_configs:
       - bot_token: "__TELEGRAM_BOT_TOKEN__"
         chat_id: __TELEGRAM_CHAT_ID__
@@ -50,14 +38,14 @@ receivers:
           {{ end }}
 
   - name: "notify"
-    pushover_configs:
-      - user_key: "__PUSHOVER_USER_KEY__"
-        token: "__PUSHOVER_API_TOKEN__"
-        priority: 0
-        title: 'FX Warning: {{ .GroupLabels.alertname }}'
+    telegram_configs:
+      - bot_token: "__TELEGRAM_BOT_TOKEN__"
+        chat_id: __TELEGRAM_CHAT_ID__
+        parse_mode: "HTML"
         message: |
+          ⚠️ <b>Warning</b>
           {{ range .Alerts }}
-          {{ .Annotations.summary }}
+          <b>{{ .Annotations.summary }}</b>
           {{ .Annotations.description }}
           {{ end }}
 

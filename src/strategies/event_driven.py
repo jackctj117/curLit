@@ -9,7 +9,7 @@ Consumer half of the current-events pipeline. Every poll it:
      :class:`src.events.confluence.EventConfluence` (Gate A quality +
      Gate B market confirmation).
   3. For events it newly CONFIRMED: alerts the operator (Telegram /
-     Pushover via ``notify_operator``) and emits tightly-risked
+     Telegram via ``notify_operator``) and emits tightly-risked
      OrderIntents for the tradable affected instruments, then marks the
      row TRADED. Sizing: ``equity * event_risk_pct / stop_distance``
      with the stop ``event_stop_pct`` from entry.

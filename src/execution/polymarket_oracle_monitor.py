@@ -15,7 +15,7 @@ Failure modes the monitor watches for:
     YES and NO redeem at $0.50.
   * Pre-close freeze → trading halts before tokens redeem.
 
-This module is a SCAFFOLD. Wiring to Pushover/Telegram alerts and the
+This module is a SCAFFOLD. Wiring to Telegram alerts and the
 production kill switch happens in CL-poly-3 acceptance.
 """
 

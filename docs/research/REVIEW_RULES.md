@@ -17,7 +17,7 @@ A strategy receives ONE verdict per debate:
 | --- | --- |
 | **PROMOTE** | Every Section A/B/C/D rule passes against the candidate metrics AND both review agents end Round 4 with PROMOTE. Strategy registers in paper-shadow with `allocation = 0` (CL-3xn1). |
 | **REJECT** | Any single Section A/B/C/D rule fails. Or both agents end with REJECT/ABSTAIN. Strategy moved to `data/research/rejected/{slug}/` with reason. |
-| **ESCALATE** | Agents disagree (one PROMOTE, one REJECT). Or any required metric is missing. Or any unresolved smart-question remains after Round 2. Pushover/Telegram alert with full transcript link (CL-o2vb). |
+| **ESCALATE** | Agents disagree (one PROMOTE, one REJECT). Or any required metric is missing. Or any unresolved smart-question remains after Round 2. Telegram/Telegram alert with full transcript link (CL-o2vb). |
 
 ---
 

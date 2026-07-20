@@ -1,33 +1,27 @@
 """Notification dispatch for the research pipeline (CL-0hr3, CL-yta6).
 
-Two channels, both optional and env-var gated:
+One channel, optional and env-var gated (CL-b92t removed the old
+Pushover channel — Telegram is the sole operator channel now):
 
-  * **Pushover**  — push alert to operator's phone via api.pushover.net.
-                    Requires ``PUSHOVER_API_TOKEN`` + ``PUSHOVER_USER_KEY``.
-                    Same channel ``scripts/run_edge_tests.py`` uses;
-                    that pattern is mirrored here.
   * **Telegram**  — message to operator's bot chat. Requires
                     ``TELEGRAM_BOT_TOKEN`` + ``TELEGRAM_CHAT_ID``.
 
-Either channel being unconfigured is a no-op for that channel — the
-dispatcher logs that it was skipped and continues. This means dev
-machines without either env-var run the loop end-to-end without
-needing to wire anything; production sets the env-vars and gets
-alerts.
+The channel being unconfigured is a no-op — the dispatcher logs that
+it was skipped and continues. This means dev machines without the
+env-vars run the loop end-to-end without needing to wire anything;
+production sets the env-vars and gets alerts.
 
 Formatting (CL-frn7): callers may pass ``html=True`` with a message
 containing Telegram-HTML tags (``<b>``, ``<i>``, ``<code>``). Telegram
-then gets ``parse_mode=HTML``; Pushover always gets plain text (tags
-stripped, entities unescaped). HTML was chosen over Markdown because
+then gets ``parse_mode=HTML``. HTML was chosen over Markdown because
 Markdown made underscores in slugs (``regime_carry``) unpaired italic
 toggles → 400s; in HTML mode underscores are literal and only ``&``,
 ``<``, ``>`` need escaping — use :func:`html_escape` on every piece of
 interpolated content (slugs, headlines, reasons).
 
 Returned ``DispatchResult`` is purely informational — the loop
-records whether each channel attempted to send so the per-run summary
-can show "alerts dispatched" / "alerts skipped (env unset)" without
-the loop having to care which channel.
+records whether the channel attempted to send so the per-run summary
+can show "alerts dispatched" / "alerts skipped (env unset)".
 """
 
 from __future__ import annotations
@@ -51,8 +45,8 @@ logger = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
-# HTTP timeout for notification dispatch. Both APIs are fast; this is
-# a cap on how long the loop will block on a stuck request.
+# HTTP timeout for notification dispatch. The Telegram API is fast;
+# this is a cap on how long the loop will block on a stuck request.
 _HTTP_TIMEOUT_SEC: float = 10.0
 
 
@@ -81,95 +75,50 @@ _TAG_RE = re.compile(r"</?[a-zA-Z][^<>]*>")
 
 
 def _html_to_plain(text: str) -> str:
-    """Telegram-HTML body → plain text for Pushover (and for the
-    Telegram plain-text fallback): strip tags, unescape entities."""
+    """Telegram-HTML body → plain text (used for the Telegram
+    plain-text fallback): strip tags, unescape entities."""
     return _html.unescape(_TAG_RE.sub("", text))
 
 
 @dataclass
 class DispatchResult:
-    """Per-channel send outcome."""
+    """Send outcome for the Telegram channel."""
 
-    pushover_attempted: bool = False
-    pushover_succeeded: bool = False
-    pushover_error: str = ""
     telegram_attempted: bool = False
     telegram_succeeded: bool = False
     telegram_error: str = ""
 
     @property
     def any_succeeded(self) -> bool:
-        return self.pushover_succeeded or self.telegram_succeeded
+        return self.telegram_succeeded
 
     @property
     def any_attempted(self) -> bool:
-        return self.pushover_attempted or self.telegram_attempted
+        return self.telegram_attempted
 
 
 def notify_operator(
     title: str,
     message: str,
-    priority: int = 0,
+    priority: int = 0,  # kept for caller compatibility; ignored
     *,
     html: bool = False,
 ) -> DispatchResult:
-    """Send the same payload to every configured channel. Each channel
-    runs independently; one failing doesn't block the other.
+    """Send ``title`` + ``message`` to the operator's Telegram chat.
 
-    ``priority``: Pushover priority (0=normal, 1=high, 2=emergency).
-    Telegram has no notion of priority; we ignore it for that channel.
+    ``priority``: accepted for backwards compatibility with callers
+    written against the old two-channel (Pushover) signature; Telegram
+    has no notion of priority, so it is ignored.
 
     ``html=True``: ``message`` contains Telegram-HTML tags and its
     interpolated content is ALREADY escaped via :func:`html_escape`.
     Telegram renders it with ``parse_mode=HTML`` under a bolded
-    (escaped) ``title`` header; Pushover receives a tag-stripped plain
-    version. ``html=False`` keeps the original plain-text behavior for
-    existing callers.
+    (escaped) ``title`` header. ``html=False`` keeps the original
+    plain-text behavior for existing callers.
     """
     result = DispatchResult()
-    _dispatch_pushover(title, message, priority, result, html=html)
     _dispatch_telegram(title, message, result, html=html)
     return result
-
-
-def _dispatch_pushover(
-    title: str,
-    message: str,
-    priority: int,
-    result: DispatchResult,
-    html: bool = False,
-) -> None:
-    token = os.environ.get("PUSHOVER_API_TOKEN")
-    user = os.environ.get("PUSHOVER_USER_KEY")
-    if not token or not user:
-        logger.info(
-            "Pushover not configured (PUSHOVER_API_TOKEN / "
-            "PUSHOVER_USER_KEY missing); skipping channel",
-        )
-        return
-    if html:
-        # Pushover stays plain text — strip tags, unescape entities.
-        message = _html_to_plain(message)
-    result.pushover_attempted = True
-    try:
-        resp = httpx.post(
-            "https://api.pushover.net/1/messages.json",
-            data={
-                "token": token,
-                "user": user,
-                "title": title,
-                "message": message,
-                "priority": priority,
-            },
-            timeout=_HTTP_TIMEOUT_SEC,
-        )
-        resp.raise_for_status()
-        result.pushover_succeeded = True
-    except Exception as exc:
-        logger.warning(
-            "Pushover dispatch failed: %s: %s", type(exc).__name__, exc,
-        )
-        result.pushover_error = f"{type(exc).__name__}: {exc}"
 
 
 def _dispatch_telegram(

@@ -13,6 +13,12 @@ default) runs a single cycle.
 
 GDELT updates ~every 15 minutes, so looping faster than ~900s only
 re-fetches the same articles (they dedup away harmlessly).
+
+After each assess cycle a compact Telegram digest of that cycle's
+urgent events (urgency >= --digest-min-urgency, default 5 or
+$EVENT_DIGEST_MIN_URGENCY) is sent via src.events.digest — the
+operator's "bots surfaced these tickers" feed. ``--no-digest``
+disables it; quiet cycles never send anything.
 """
 
 from __future__ import annotations
@@ -69,8 +75,36 @@ def _build_parser() -> argparse.ArgumentParser:
         "--model", default=os.environ.get("EVENT_IMPACT_MODEL", ""),
         help="Impact agent model override (default: agent default)",
     )
+    p.add_argument(
+        "--digest", action=argparse.BooleanOptionalAction, default=True,
+        help="Send a Telegram digest of urgent events after each assess "
+             "cycle (default on; --no-digest to disable)",
+    )
+    p.add_argument(
+        "--digest-min-urgency", type=int, metavar="N", default=None,
+        help="Digest urgency threshold 1-10 (default: "
+             "$EVENT_DIGEST_MIN_URGENCY or 5)",
+    )
     p.add_argument("-v", "--verbose", action="store_true", help="DEBUG logging")
     return p
+
+
+def _resolve_digest_min_urgency(cli_value: int | None) -> int:
+    """CLI flag wins; else $EVENT_DIGEST_MIN_URGENCY; else the module
+    default. Resolved AFTER load_project_env() so .env values count."""
+    from src.events.digest import DEFAULT_MIN_URGENCY  # noqa: PLC0415
+
+    if cli_value is not None:
+        return cli_value
+    raw = os.environ.get("EVENT_DIGEST_MIN_URGENCY", "")
+    try:
+        return int(raw) if raw.strip() else DEFAULT_MIN_URGENCY
+    except ValueError:
+        logger.warning(
+            "EVENT_DIGEST_MIN_URGENCY=%r is not an int; using %d",
+            raw, DEFAULT_MIN_URGENCY,
+        )
+        return DEFAULT_MIN_URGENCY
 
 
 def _cycle(args: argparse.Namespace) -> None:
@@ -105,6 +139,24 @@ def _cycle(args: argparse.Namespace) -> None:
             len(results), assessed, len(results) - assessed,
         )
 
+        if args.digest:
+            from src.events.digest import send_digest  # noqa: PLC0415
+
+            # A digest failure must never take down the pipeline —
+            # assessments are already persisted by this point.
+            try:
+                disp = send_digest(
+                    results, min_urgency=args.digest_min_urgency,
+                )
+            except Exception:
+                logger.exception("digest dispatch failed; continuing")
+            else:
+                if disp is not None and disp.any_attempted:
+                    logger.info(
+                        "digest: sent (telegram ok=%s)",
+                        disp.telegram_succeeded,
+                    )
+
 
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
@@ -117,6 +169,7 @@ def main(argv: list[str] | None = None) -> int:
 
     from src.dotenv_bootstrap import load_project_env  # noqa: PLC0415
     load_project_env()
+    args.digest_min_urgency = _resolve_digest_min_urgency(args.digest_min_urgency)
 
     if args.loop is None:
         _cycle(args)

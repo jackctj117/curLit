@@ -151,7 +151,8 @@ def _build_db_engine() -> Any:
         "DATABASE_URL",
         f"postgresql+psycopg2://{os.environ.get('POSTGRES_USER', 'fx')}:"
         f"{os.environ.get('POSTGRES_PASSWORD', 'changeme')}@"
-        f"{os.environ.get('POSTGRES_HOST', 'localhost')}:5432/"
+        f"{os.environ.get('POSTGRES_HOST', 'localhost')}:"
+        f"{os.environ.get('POSTGRES_PORT', '5432')}/"
         f"{os.environ.get('POSTGRES_DB', 'fx')}",
     )
     return create_engine(db_url)
@@ -531,7 +532,7 @@ async def run_engine(broker_mode: str = "paper") -> None:
 
 
 def main() -> None:
-    # Auto-load .env so OANDA / Postgres / Pushover creds are available
+    # Auto-load .env so OANDA / Postgres / Telegram creds are available
     # without first sourcing the file. Explicit env vars still win.
     from src.dotenv_bootstrap import load_project_env  # noqa: PLC0415
     load_project_env()

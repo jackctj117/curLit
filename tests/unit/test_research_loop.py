@@ -631,8 +631,8 @@ class TestGate1:
             from src.research.notifications import DispatchResult
             notifications.append((title, message, priority))
             r = DispatchResult()
-            r.pushover_attempted = True
-            r.pushover_succeeded = True
+            r.telegram_attempted = True
+            r.telegram_succeeded = True
             return r
 
         store = _FakeExtractStore(root=loop_paths["extracts"])
@@ -784,7 +784,7 @@ class TestGate1:
         self, loop_paths: dict[str, Path],
     ) -> None:
         def boom(*_a: Any, **_kw: Any) -> Any:
-            raise ConnectionError("pushover unreachable")
+            raise ConnectionError("telegram unreachable")
 
         store = _FakeExtractStore(root=loop_paths["extracts"])
         ingest = _FakeIngestRunner(
@@ -888,8 +888,8 @@ class TestGate2:
             from src.research.notifications import DispatchResult
             notifications.append((title, message, priority))
             r = DispatchResult()
-            r.pushover_attempted = True
-            r.pushover_succeeded = True
+            r.telegram_attempted = True
+            r.telegram_succeeded = True
             return r
 
         loop, registrar = _build_promote_loop(
@@ -1100,8 +1100,8 @@ class TestEscalateAlert:
             from src.research.notifications import DispatchResult
             notifications.append((title, message, priority))
             r = DispatchResult()
-            r.pushover_attempted = True
-            r.pushover_succeeded = True
+            r.telegram_attempted = True
+            r.telegram_succeeded = True
             return r
 
         # Mixed positions → ESCALATE
@@ -1138,7 +1138,7 @@ class TestEscalateAlert:
             from src.research.notifications import DispatchResult
             notifications.append((title, message, priority))
             r = DispatchResult()
-            r.pushover_attempted = True
+            r.telegram_attempted = True
             return r
 
         loop, _ = _build_promote_loop(
@@ -1161,7 +1161,7 @@ class TestEscalateAlert:
         self, loop_paths: dict[str, Path],
     ) -> None:
         def boom(*_a: Any, **_kw: Any) -> Any:
-            raise ConnectionError("pushover unreachable")
+            raise ConnectionError("telegram unreachable")
 
         loop, _ = _build_promote_loop(
             loop_paths,

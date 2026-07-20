@@ -9,8 +9,8 @@ Adapts the in-process EdgeRunner orchestrator to a production CLI:
 
 Loads strategies via run_engine.build_strategies, pulls their backtest +
 live state from StrategyStateStore, runs G1→G9 via EdgeRunner, writes a
-JSON report, and (when actions fire) sends a Pushover alert if
-PUSHOVER_API_TOKEN + PUSHOVER_USER_KEY are present in the environment.
+JSON report, and (when actions fire) sends a Telegram alert if
+TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID are present in the environment.
 
 Schedule weekly via cron (see reference/14_edge_testing.md "Cron Schedule
 Entry"); the runner is idempotent and does not mutate state.
@@ -109,54 +109,34 @@ def _build_inputs_from_state_store(
 
 
 # -----------------------------------------------------------------------------
-# Pushover alerting
+# Telegram alerting
 # -----------------------------------------------------------------------------
 
 
 def _send_alerts_if_configured(
     actions: Sequence[tuple[str, LiveAction, str]],
 ) -> None:
-    """Send a single Pushover notification listing all action items.
+    """Send a single Telegram notification listing all action items.
 
-    No-op when PUSHOVER_API_TOKEN or PUSHOVER_USER_KEY is unset — the
-    operator running ad-hoc gets stdout output via the logger.
+    No-op when TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID is unset (the
+    dispatcher logs the skip) — the operator running ad-hoc gets stdout
+    output via the logger.
     """
     if not actions:
         return
-    token = os.environ.get("PUSHOVER_API_TOKEN")
-    user = os.environ.get("PUSHOVER_USER_KEY")
-    if not token or not user:
-        logger.info(
-            "Pushover not configured (PUSHOVER_API_TOKEN / PUSHOVER_USER_KEY missing); "
-            "skipping alert dispatch",
-        )
-        return
-
     lines = [
         f"[{action.value}] {sid}: {detail}"
         for sid, action, detail in actions
     ]
     message = "Edge run actions:\n" + "\n".join(lines)
     try:
-        import httpx
-        priority = 1 if any(
-            a == LiveAction.HALT_STRATEGY or a == LiveAction.RETIRE_STRATEGY
-            for _, a, _ in actions
-        ) else 0
-        httpx.post(
-            "https://api.pushover.net/1/messages.json",
-            data={
-                "token": token,
-                "user": user,
-                "title": "FX Edge Run",
-                "message": message,
-                "priority": priority,
-            },
-            timeout=10,
-        )
-        logger.info("Sent Pushover alert (%d actions)", len(actions))
+        from src.research.notifications import notify_operator  # noqa: PLC0415
+
+        result = notify_operator(title="FX Edge Run", message=message)
+        if result.any_attempted:
+            logger.info("Sent Telegram alert (%d actions)", len(actions))
     except Exception:
-        logger.exception("Pushover alert dispatch failed")
+        logger.exception("Telegram alert dispatch failed")
 
 
 # -----------------------------------------------------------------------------
@@ -165,7 +145,7 @@ def _send_alerts_if_configured(
 
 
 def main() -> None:
-    # Auto-load .env so PUSHOVER_* / Postgres creds are available
+    # Auto-load .env so TELEGRAM_* / Postgres creds are available
     # without first sourcing the file. Explicit env vars still win.
     from src.dotenv_bootstrap import load_project_env  # noqa: PLC0415
     load_project_env()
