@@ -265,6 +265,65 @@ class TestTradeIdeas:
         out = self._norm(trade_ideas=ideas)
         assert len(out["trade_ideas"]) == 8
 
+    # -- concrete, actionable level fields (CL-jiqq) ------------------- #
+
+    def test_concrete_levels_parsed(self) -> None:
+        out = self._norm(trade_ideas=[self._idea(
+            stop_loss_pct=0.07,
+            target_pct=[0.08, 0.15],
+            entry_trigger="on confirmed blockade language",
+            invalidation="official denial of the seizure",
+        )])
+        idea = out["trade_ideas"][0]
+        assert idea["stop_loss_pct"] == pytest.approx(0.07)
+        assert idea["target_pct"] == [0.08, 0.15]
+        assert idea["entry_trigger"] == "on confirmed blockade language"
+        assert idea["invalidation"] == "official denial of the seizure"
+
+    def test_level_fields_default_when_omitted(self) -> None:
+        # Absent levels are honest defaults, never fabricated — the
+        # enrichment layer fills them. The idea still survives.
+        idea = self._idea()
+        for k in ("stop_loss_pct", "target_pct", "entry_trigger", "invalidation"):
+            idea.pop(k, None)
+        out = self._norm(trade_ideas=[idea])
+        parsed = out["trade_ideas"][0]
+        assert parsed["stop_loss_pct"] is None
+        assert parsed["target_pct"] == []
+        assert parsed["entry_trigger"] == ""
+        assert parsed["invalidation"] == ""
+
+    def test_stop_loss_pct_clamped_and_bad_dropped(self) -> None:
+        out = self._norm(trade_ideas=[
+            self._idea(stop_loss_pct=5.0),          # over the 0.90 cap
+            self._idea(ticker="B", stop_loss_pct="nope"),  # unparseable
+            self._idea(ticker="C", stop_loss_pct=-0.1),    # <= 0 → unset
+        ])
+        assert out["trade_ideas"][0]["stop_loss_pct"] == pytest.approx(0.90)
+        assert out["trade_ideas"][1]["stop_loss_pct"] is None
+        assert out["trade_ideas"][2]["stop_loss_pct"] is None
+
+    def test_targets_cleaned_sorted_capped(self) -> None:
+        out = self._norm(trade_ideas=[self._idea(
+            target_pct=[0.30, 0.05, "junk", 0.30, 5.0, -1.0, 0.15],
+        )])
+        # dedup + sort + clamp (5.0 → 3.0 cap) + drop junk/neg + cap to 2
+        assert out["trade_ideas"][0]["target_pct"] == [0.05, 0.15]
+
+    def test_scalar_target_accepted(self) -> None:
+        out = self._norm(trade_ideas=[self._idea(target_pct=0.12)])
+        assert out["trade_ideas"][0]["target_pct"] == [0.12]
+
+    def test_bad_levels_never_drop_the_idea(self) -> None:
+        # Malformed level fields degrade individually; the idea itself
+        # (valid ticker/action/horizon) survives — levels are advisory.
+        out = self._norm(trade_ideas=[self._idea(
+            stop_loss_pct="", target_pct="all of it",
+        )])
+        assert len(out["trade_ideas"]) == 1
+        assert out["trade_ideas"][0]["stop_loss_pct"] is None
+        assert out["trade_ideas"][0]["target_pct"] == []
+
     def test_fade_candidates_parsed_and_bad_dropped(self) -> None:
         out = self._norm(fade_candidates=[
             {"ticker": "FXI", "action": "fade the spike",

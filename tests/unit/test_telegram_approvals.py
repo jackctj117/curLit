@@ -759,23 +759,26 @@ class TestMobileKeyboardMangling:
 
 
 def _ledger_engine() -> Any:
-    """sqlite engine with the REAL migration-007 schema (types shimmed),
-    mirroring tests/unit/test_idea_ledger.py."""
+    """sqlite engine with the REAL migration-007 + 008 schema (types
+    shimmed), mirroring tests/unit/test_idea_ledger.py. 008 adds the
+    concrete trade-card level columns the ledger now writes (CL-jiqq)."""
     import sqlalchemy as sa
     from migrations.run import _strip_sql_comments
     from sqlalchemy import text as sql_text
 
-    sql = (
-        _strip_sql_comments(Path("migrations/007_trade_ideas.sql").read_text())
-        .replace("TIMESTAMPTZ", "TEXT")
-        .replace("DOUBLE PRECISION", "REAL")
-        .replace("BIGSERIAL", "INTEGER")
-        .replace("BIGINT", "INTEGER")
+    from tests.unit.test_idea_ledger import (
+        MIGRATION,
+        MIGRATION_LEVELS,
+        _shim_pg_types_for_sqlite,
+        _sqlite_statements,
     )
+
     engine = sa.create_engine("sqlite://")
-    with engine.begin() as conn:
-        for stmt in [s.strip() for s in sql.split(";") if s.strip()]:
-            conn.execute(sql_text(stmt))
+    for mig in (MIGRATION, MIGRATION_LEVELS):
+        sql = _shim_pg_types_for_sqlite(_strip_sql_comments(mig.read_text()))
+        with engine.begin() as conn:
+            for stmt in _sqlite_statements(sql):
+                conn.execute(sql_text(stmt))
     return engine
 
 
@@ -809,9 +812,12 @@ class TestIdeasCommand:
 
         reply = render_ideas(engine=engine, get_prices_fn=fake_prices)
         assert "Open trade ideas (2):" in reply
-        # Newest first; numbered; age vs stop; price where resolvable.
-        assert "1. RTX long — 3h old / stop 20d" in reply
-        assert "2. TSM buy_puts — 2d old / stop 5d — $172.40 (-1.8%)" in reply
+        # Newest first; numbered; bracketed short id; imperative action;
+        # age vs stop; price where resolvable (CL-jiqq).
+        assert "] RTX LONG — 3h old / stop 20d" in reply
+        assert "] TSM BUY PUTS — 2d old / stop 5d — $172.40 (-1.8%)" in reply
+        assert reply.index("RTX") < reply.index("TSM")  # newest first
+        assert "Send 'idea <id>' for the full trade card." in reply
         assert "Read-only" in reply
 
     def test_empty_ledger(self) -> None:
@@ -843,7 +849,7 @@ class TestIdeasCommand:
             raise RuntimeError("yahoo down")
 
         reply = render_ideas(engine=engine, get_prices_fn=boom)
-        assert "1. RTX long — 3h old / stop 20d" in reply
+        assert "] RTX LONG — 3h old / stop 20d" in reply
         assert "$" not in reply
 
     def test_handle_text_dispatches_ideas(
@@ -862,3 +868,120 @@ class TestIdeasCommand:
 
     def test_help_mentions_ideas(self) -> None:
         assert "ideas" in handle_text(_make_state(), "help").reply
+
+
+class TestIdeaDetailCommand:
+    """CL-jiqq — the `idea <id>` full trade card."""
+
+    def _seed_one(self, engine: Any) -> str:
+        from datetime import UTC, datetime
+
+        from src.events.idea_ledger import make_idea_id, persist_ideas
+
+        persist_ideas(engine, 1, {"trade_ideas": [{
+            "ticker": "TSM", "action": "buy_puts", "direction": "bearish",
+            "confidence": 0.7, "rationale": "advanced-node concentration",
+            "time_horizon": "short", "holding_period_days": "2-6",
+            "time_stop_days": 5, "stop_loss_pct": 0.40,
+            "target_pct": [0.10, 0.18],
+            "entry_trigger": "on confirmed blockade language",
+            "invalidation": "official denial of the strike",
+        }]}, prices={"TSM": {"price": 172.4, "change_pct": -1.8}},
+            now=datetime(2026, 7, 20, 12, tzinfo=UTC))
+        return make_idea_id(1, "TSM", "buy_puts")
+
+    def test_full_card_found(self) -> None:
+        from src.research.telegram_approvals import (
+            IDEA_ADVISORY_FOOTER,
+            render_idea_detail,
+        )
+
+        engine = _ledger_engine()
+        idea_id = self._seed_one(engine)
+
+        def fake_prices(tickers: Any, engine: Any = None) -> dict[str, Any]:
+            return {"TSM": {"price": 172.4, "change_pct": -1.8}}
+
+        reply = render_idea_detail(
+            idea_id[:6], engine=engine, get_prices_fn=fake_prices,
+        )
+        assert reply.startswith("TSM — BUY PUTS")
+        assert "$172.40" in reply
+        assert "Stop:" in reply            # dollar stop present
+        assert "Targets:" in reply
+        assert "Risk:reward:" in reply
+        # option guidance with the pick-nearest caveat
+        assert "Suggested strike:" in reply
+        assert "pick nearest listed strike" in reply
+        assert "to expiry" in reply
+        assert "Trigger: on confirmed blockade language" in reply
+        assert "Invalidation: official denial of the strike" in reply
+        assert "Rationale: advanced-node concentration" in reply
+        assert "Age:" in reply
+        # bold advisory footer
+        assert IDEA_ADVISORY_FOOTER in reply
+
+    def test_unknown_id(self) -> None:
+        from src.research.telegram_approvals import render_idea_detail
+
+        engine = _ledger_engine()
+        self._seed_one(engine)
+        reply = render_idea_detail(
+            "zzzzzz", engine=engine, get_prices_fn=lambda *a, **k: {},
+        )
+        assert "Unknown idea id" in reply
+
+    def test_no_live_price_falls_back_to_signal(self) -> None:
+        from src.research.telegram_approvals import (
+            IDEA_ADVISORY_FOOTER,
+            render_idea_detail,
+        )
+
+        engine = _ledger_engine()
+        idea_id = self._seed_one(engine)
+        # No live price now → uses persisted price_at_signal / levels.
+        reply = render_idea_detail(
+            idea_id[:6], engine=engine, get_prices_fn=lambda *a, **k: {},
+        )
+        assert "at signal" in reply
+        assert IDEA_ADVISORY_FOOTER in reply
+
+    def test_ledger_unreachable_graceful(self) -> None:
+        import sqlalchemy as sa
+
+        from src.research.telegram_approvals import render_idea_detail
+
+        reply = render_idea_detail(
+            "abc", engine=sa.create_engine("sqlite://"),
+            get_prices_fn=lambda *a, **k: {},
+        )
+        assert "unavailable" in reply.lower()
+
+    def test_handle_text_dispatches_idea_detail(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        captured: dict[str, Any] = {}
+
+        def fake(idea_id: str) -> str:
+            captured["id"] = idea_id
+            return "DETAIL-SENTINEL"
+
+        monkeypatch.setattr(
+            "src.research.telegram_approvals.render_idea_detail", fake,
+        )
+        result = handle_text(_make_state(), "idea a1b2c3")
+        assert result == CommandResult(reply="DETAIL-SENTINEL", state_changed=False)
+        assert captured["id"] == "a1b2c3"
+
+    def test_idea_without_id_gives_usage(self) -> None:
+        result = handle_text(_make_state(), "idea")
+        assert "Usage: idea <id>" in result.reply
+
+    def test_parse_command_distinguishes_idea_from_ideas(self) -> None:
+        assert parse_command("idea a1b2c3") == ParsedCommand(
+            verb="idea", target="a1b2c3",
+        )
+        assert parse_command("ideas") == ParsedCommand(verb="ideas")
+
+    def test_help_mentions_idea_detail(self) -> None:
+        assert "idea <id>" in handle_text(_make_state(), "help").reply

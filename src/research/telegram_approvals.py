@@ -92,7 +92,7 @@ SHORT_ID_LEN: int = 6
 _SEND_RETRIES: int = 1
 
 _ACTION_VERBS = frozenset({"approve", "reject", "skip"})
-_KNOWN_VERBS = _ACTION_VERBS | {"pending", "help", "start", "ideas"}
+_KNOWN_VERBS = _ACTION_VERBS | {"pending", "help", "start", "ideas", "idea"}
 
 HELP_TEXT = (
     "curLit research approval bot — commands:\n"
@@ -101,9 +101,12 @@ HELP_TEXT = (
     "  skip <id> [reason]     same as reject\n"
     "  pending                list entries awaiting your decision\n"
     "  ideas                  list open trade ideas (read-only)\n"
+    "  idea <id>              full trade card for one idea (levels, "
+    "strike, DTE)\n"
     "  help                   this message\n"
     "<id> is the short id from the gate notification or the 'pending' "
-    "listing (gate 1: extract-hash prefix, gate 2: strategy slug)."
+    "listing (gate 1: extract-hash prefix, gate 2: strategy slug); for "
+    "'idea <id>' it is the idea's short id from the 'ideas' listing."
 )
 
 
@@ -388,13 +391,28 @@ def _ideas_engine() -> Any:
     )
 
 
+#: Short id length shown for trade ideas in the `ideas` listing — the
+#: prefix the operator replies with to `idea <id>` for the full card.
+IDEA_SHORT_ID_LEN: int = 6
+
+#: The bold advisory footer on every full idea card (CL-jiqq). These are
+#: NOT machine-traded; the system has no live options/IV data, so the
+#: operator MUST confirm strikes and expiries on their own broker.
+IDEA_ADVISORY_FOOTER = (
+    "⚠️ advisory — not machine-traded; confirm strikes/expiries on your "
+    "broker; no live options/IV data"
+)
+
+
 def render_ideas(
     engine: Any = None,
     get_prices_fn: Any = None,
     now: Any = None,
 ) -> str:
     """Phone-readable listing of OPEN (pending) trade ideas (CL-mgcp):
-    ``1. TSM buy_puts — 2d old / stop 5d — $172.40 (-1.8%)``.
+    ``1. [a1b2c3] TSM BUY PUTS — 2d old / stop 5d — $172.40 (-1.8%)``.
+    The bracketed short id is what the operator sends to ``idea <id>``
+    for the full trade card (CL-jiqq).
 
     READ-ONLY v1 — ideas auto-expire in the pipeline cycle; there is
     no bot mutation path yet (taken/cancelled/closed are future work).
@@ -429,7 +447,9 @@ def render_ideas(
     lines = [f"Open trade ideas ({len(rows)}):", ""]
     for n, row in enumerate(rows, 1):
         age = prices_mod.format_age(row.get("created_at"), now=now)
-        parts = [f"{n}. {row['ticker']} {row['action']}"]
+        short_id = str(row.get("idea_id") or "")[:IDEA_SHORT_ID_LEN]
+        action = str(row.get("action") or "?").replace("_", " ").upper()
+        parts = [f"{n}. [{short_id}] {row['ticker']} {action}"]
         aging = []
         if age:
             aging.append(f"{age} old")
@@ -444,7 +464,162 @@ def render_ideas(
             parts.append(price)
         lines.append(" — ".join(parts))
     lines.append("")
+    lines.append("Send 'idea <id>' for the full trade card.")
     lines.append("Read-only; ideas expire automatically at their time stop.")
+    return "\n".join(lines)
+
+
+def _fmt_dollar(value: Any) -> str:
+    """``$172.40`` for a dollar level, or ``?`` when absent/unparseable."""
+    try:
+        return f"${float(value):,.2f}"
+    except (TypeError, ValueError):
+        return "?"
+
+
+def render_idea_detail(
+    idea_id: str,
+    engine: Any = None,
+    get_prices_fn: Any = None,
+    now: Any = None,
+) -> str:
+    """The FULL trade card for one idea (CL-jiqq) — everything the
+    operator needs to actually place the trade: ticker, live price,
+    action + instrument, entry zone, dollar stop, dollar targets, R:R,
+    suggested option strike + DTE window with the 'pick nearest listed'
+    caveat, entry trigger, invalidation, rationale, age vs time stop,
+    and the bold advisory footer.
+
+    Grounded numbers are RECOMPUTED live off the current price (the
+    persisted card can be stale — the price moved since the signal); the
+    persisted card is the fallback when no live price resolves. Plain
+    text, graceful degradation, never a crash — same posture as
+    :func:`render_ideas`."""
+    from src.events import idea_ledger  # noqa: PLC0415
+    from src.events import prices as prices_mod  # noqa: PLC0415
+    from src.events.trade_card import build_trade_card  # noqa: PLC0415
+
+    prefix = str(idea_id or "").strip().strip(_TOKEN_TRIM_CHARS)
+    if not prefix:
+        return "Usage: idea <id> — send 'ideas' for the open ideas and their ids."
+    try:
+        engine = engine if engine is not None else _ideas_engine()
+        row = idea_ledger.get_idea(engine, prefix)
+    except Exception as exc:
+        logger.warning(
+            "idea detail unavailable: %s: %s", type(exc).__name__, exc,
+        )
+        return (
+            "Trade idea unavailable (ledger unreachable — is the DB up "
+            "and migrations 007/008 applied?)."
+        )
+    if row is None:
+        return (
+            f"Unknown idea id {prefix!r} — send 'ideas' to list open "
+            f"ideas and their ids."
+        )
+
+    ticker = str(row.get("ticker") or "")
+    fetch = get_prices_fn if get_prices_fn is not None else prices_mod.get_prices
+    try:
+        price_map = fetch([ticker], engine=engine)
+    except Exception:
+        logger.warning("idea detail: price fetch failed", exc_info=True)
+        price_map = {}
+    info = price_map.get(ticker) or {}
+    live_price = info.get("price")
+    # Recompute the card off the live price; if that misses, fall back to
+    # the persisted dollar levels so the operator still sees numbers.
+    card = build_trade_card(dict(row), live_price, info.get("change_pct"))
+
+    action = str(row.get("action") or "?").replace("_", " ").upper()
+    lines = [f"{ticker} — {action}"]
+
+    price_str = prices_mod.format_price(ticker, info)
+    if price_str:
+        lines.append(f"Price: {price_str} (live last close)")
+    elif row.get("price_at_signal") is not None:
+        lines.append(
+            f"Price: {_fmt_dollar(row.get('price_at_signal'))} at signal "
+            f"(no live price now)",
+        )
+    else:
+        lines.append("Price: no live price")
+
+    instrument = str(row.get("preferred_instrument") or "").strip()
+    if instrument:
+        lines.append(f"Instrument: {instrument}")
+
+    # Grounded levels — prefer the freshly recomputed card; fall back to
+    # the persisted values (which may be from an older price).
+    stop_price = card.get("stop_price")
+    if stop_price is None:
+        stop_price = row.get("stop_price")
+    targets = card.get("target_prices") or row.get("target_prices") or []
+    rr = card.get("risk_reward")
+    if rr is None:
+        rr = row.get("risk_reward")
+
+    entry_zone = str(card.get("entry_zone") or "").strip()
+    if entry_zone:
+        lines.append(f"Entry: {entry_zone}")
+    if stop_price is not None:
+        # The dollar stop reflects the UNDERLYING move used by the card
+        # (card['stop_loss_pct']). For an option the row's own stop_loss_pct
+        # is a PREMIUM fraction, shown separately so it never reads as a
+        # share-price move.
+        under_pct = card.get("stop_loss_pct")
+        pct_note = f" ({float(under_pct) * 100:.0f}% underlying)" if under_pct else ""
+        stop_line = f"Stop: {_fmt_dollar(stop_price)}{pct_note}"
+        if card.get("is_option") and row.get("stop_loss_pct"):
+            stop_line += f"; exit at {float(row['stop_loss_pct']) * 100:.0f}% of premium"
+        lines.append(stop_line)
+    if targets:
+        lines.append("Targets: " + ", ".join(_fmt_dollar(t) for t in targets))
+    if rr is not None:
+        lines.append(f"Risk:reward: {rr}")
+
+    if card.get("is_option"):
+        strike = card.get("suggested_strike") or row.get("suggested_strike")
+        dte = str(card.get("dte_window") or row.get("dte_window") or "").strip()
+        if strike is not None:
+            lines.append(
+                f"Suggested strike: {_fmt_dollar(strike)} — pick nearest "
+                f"listed strike",
+            )
+        if dte:
+            dte_days = card.get("dte_days")
+            days_note = (
+                f" (choose the listed expiry nearest {dte_days} days out)"
+                if dte_days else ""
+            )
+            lines.append(f"Expiry: {dte} to expiry{days_note}")
+
+    trigger = str(row.get("entry_trigger") or "").strip()
+    if trigger:
+        lines.append(f"Trigger: {trigger}")
+    invalidation = str(row.get("invalidation") or "").strip()
+    if invalidation:
+        lines.append(f"Invalidation: {invalidation}")
+    rationale = str(row.get("rationale") or "").strip()
+    if rationale:
+        lines.append(f"Rationale: {rationale}")
+    notes = str(row.get("notes") or "").strip()
+    if notes:
+        lines.append(f"Notes: {notes}")
+
+    age = prices_mod.format_age(row.get("created_at"), now=now)
+    time_stop = row.get("time_stop_days")
+    age_parts = []
+    if age:
+        age_parts.append(f"{age} old")
+    if time_stop is not None:
+        age_parts.append(f"expires at {time_stop}d time stop")
+    if age_parts:
+        lines.append("Age: " + " / ".join(age_parts))
+
+    lines.append("")
+    lines.append(IDEA_ADVISORY_FOOTER)
     return "\n".join(lines)
 
 
@@ -466,6 +641,15 @@ def handle_text(state: LoopState, text: str) -> CommandResult:
         return CommandResult(reply=render_pending(state))
     if cmd.verb == "ideas":
         return CommandResult(reply=render_ideas())
+    if cmd.verb == "idea":
+        if not cmd.target:
+            return CommandResult(
+                reply=(
+                    "Usage: idea <id> — send 'ideas' for the open ideas "
+                    "and their ids."
+                ),
+            )
+        return CommandResult(reply=render_idea_detail(cmd.target))
     # approve / reject / skip
     if not cmd.target:
         return CommandResult(

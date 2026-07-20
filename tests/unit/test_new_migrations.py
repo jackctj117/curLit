@@ -210,3 +210,74 @@ class TestTradeIdeasTable:
                 "VALUES ('x', 1, 'TSM', 'long', '2026-07-20T00:00:00Z', "
                 "'BOGUS', '2026-07-20T00:00:00Z')",
             ))
+
+
+class TestTradeIdeaLevelsMigration:
+    """CL-jiqq — migration 008 adds the concrete trade-card level columns
+    to the migration-007 trade_ideas table."""
+
+    def _apply_007_and_008(self, engine) -> None:  # type: ignore[no-untyped-def]
+        from migrations.run import _strip_sql_comments
+
+        from tests.unit.test_idea_ledger import (
+            _shim_pg_types_for_sqlite,
+            _sqlite_statements,
+        )
+
+        for mig in (
+            "migrations/007_trade_ideas.sql",
+            "migrations/008_trade_idea_levels.sql",
+        ):
+            sql = _shim_pg_types_for_sqlite(
+                _strip_sql_comments(Path(mig).read_text()),
+            )
+            with engine.begin() as conn:
+                for stmt in _sqlite_statements(sql):
+                    conn.execute(text(stmt))
+
+    def test_adds_all_level_columns(self, sqlite_engine) -> None:  # type: ignore[no-untyped-def]
+        self._apply_007_and_008(sqlite_engine)
+        cols = {c["name"] for c in inspect(sqlite_engine).get_columns("trade_ideas")}
+        assert {
+            "stop_price", "target_prices", "risk_reward", "entry_trigger",
+            "invalidation", "dte_window", "suggested_strike",
+        } <= cols
+
+    def test_new_columns_default_null(self, sqlite_engine) -> None:  # type: ignore[no-untyped-def]
+        self._apply_007_and_008(sqlite_engine)
+        with sqlite_engine.begin() as conn:
+            conn.execute(text(
+                "INSERT INTO trade_ideas "
+                "(idea_id, geo_event_id, ticker, action, created_at, "
+                "status_updated_at) "
+                "VALUES ('lv1', 1, 'TSM', 'buy_puts', "
+                "'2026-07-20T00:00:00Z', '2026-07-20T00:00:00Z')",
+            ))
+            row = conn.execute(text(
+                "SELECT stop_price, target_prices, risk_reward, "
+                "entry_trigger, invalidation, dte_window, suggested_strike "
+                "FROM trade_ideas WHERE idea_id='lv1'",
+            )).fetchone()
+            assert all(v is None for v in row)
+
+    def test_level_columns_round_trip(self, sqlite_engine) -> None:  # type: ignore[no-untyped-def]
+        self._apply_007_and_008(sqlite_engine)
+        with sqlite_engine.begin() as conn:
+            conn.execute(text(
+                "INSERT INTO trade_ideas "
+                "(idea_id, geo_event_id, ticker, action, created_at, "
+                "status_updated_at, stop_price, target_prices, risk_reward, "
+                "entry_trigger, invalidation, dte_window, suggested_strike) "
+                "VALUES ('lv2', 1, 'TSM', 'buy_puts', "
+                "'2026-07-20T00:00:00Z', '2026-07-20T00:00:00Z', "
+                "186.0, '[155.0, 141.0]', 1.3, 'on blockade', "
+                "'denial', '1-3 weeks', 164.0)",
+            ))
+            row = conn.execute(text(
+                "SELECT stop_price, target_prices, dte_window, suggested_strike "
+                "FROM trade_ideas WHERE idea_id='lv2'",
+            )).fetchone()
+            assert row[0] == 186.0
+            assert row[1] == "[155.0, 141.0]"
+            assert row[2] == "1-3 weeks"
+            assert row[3] == 164.0

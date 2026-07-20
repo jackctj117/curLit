@@ -713,6 +713,50 @@ class TestConfirmedAlertEnrichment:
         message = next(m for t, m, _ in sent_alerts if t == "Event confirmed")
         assert "Operator ideas" not in message
 
+    def test_top_idea_shows_grounded_card_when_price_resolves(
+        self, tmp_path: Any, sent_alerts: list[tuple[str, str, int]],
+    ) -> None:
+        # CL-jiqq: the top idea's GROUNDED card numbers surface in the
+        # confirmed alert when a live price resolves. USD_CAD is in the
+        # engine's price feed (CONFIRM_PRICES = tick 1.0), so its dollar
+        # stop/target/R:R render under the idea line.
+        db = make_db()
+        eid = insert_event(db)
+        _add_advisory(db, eid, [{
+            "ticker": "USD_CAD", "action": "long", "direction": "bullish",
+            "confidence": 0.9, "rationale": "chokepoint reopening",
+            "time_horizon": "short", "holding_period_days": "2-6",
+            "time_stop_days": 5, "stop_loss_pct": 0.05,
+            "target_pct": [0.08, 0.15],
+            "entry_trigger": "on confirmed reopening",
+            "invalidation": "renewed blockade",
+        }])
+        self._confirm(tmp_path, db)
+        message = next(m for t, m, _ in sent_alerts if t == "Event confirmed")
+        # long → stop below 1.0, targets above; card grounds them.
+        assert "stop $0.95" in message
+        assert "tgt $1.08/$1.15" in message
+        assert "R:R" in message
+        assert "entry on confirmed reopening" in message
+        assert "invalid if renewed blockade" in message
+
+    def test_top_idea_card_lines_no_price_no_dollar_levels(
+        self, tmp_path: Any,
+    ) -> None:
+        # Directly exercise the card helper: no price → no fabricated
+        # dollar stop/target/strike; only price-free facts (the DTE
+        # window for an option) may show. A bare STOCK idea shows nothing.
+        strat = make_strategy(tmp_path, db=make_db(), provider=None)
+        opt = {"ticker": "TSM", "action": "buy_puts", "direction": "bearish",
+               "time_horizon": "short", "confidence": 0.7}
+        opt_lines = strat._top_idea_card_lines(opt, prices={}, now=None)
+        assert opt_lines == ["  1-3 weeks to expiry"]  # DTE is price-free
+        assert not any("$" in ln for ln in opt_lines)  # no fake dollars
+
+        stock = {"ticker": "TSM", "action": "short", "direction": "bearish",
+                 "time_horizon": "short", "confidence": 0.7}
+        assert strat._top_idea_card_lines(stock, prices={}, now=None) == []
+
 
 class TestExpiredAlertEnrichment:
     def test_age_and_top_idea(

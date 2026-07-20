@@ -325,6 +325,12 @@ def _idea(**overrides: Any) -> dict[str, Any]:
         "time_horizon": "short",
         "holding_period_days": "2-6",
         "time_stop_days": 5,
+        # Concrete levels (CL-jiqq) — percentages the grounder converts
+        # to dollar stop/targets/R:R when a price is present.
+        "stop_loss_pct": 0.07,
+        "target_pct": [0.10, 0.18],
+        "entry_trigger": "on confirmed blockade language",
+        "invalidation": "official denial",
         "suggested_entry": "",
         "preferred_instrument": "",
         "notes": "",
@@ -415,31 +421,47 @@ class TestIdeasSection:
         return built[1]
 
     def test_idea_line_full_format(self) -> None:
+        # CL-jiqq: the compact line now carries GROUNDED dollar levels
+        # computed from the LLM percentages + the real price. buy_puts is
+        # bearish → stop ABOVE spot, targets BELOW.
         message = self._with_ideas(
             _idea(),
             prices={"TSM": {"price": 172.4, "change_pct": -1.8}},
         )
         assert "<b>Ideas:</b>" in message
-        assert (
-            "TSM $172.40 (-1.8%) — buy_puts short 2-6d stop5d — "
-            "advanced-node concentration risk"
-        ) in message
-
-    def test_idea_line_without_price(self) -> None:
-        message = self._with_ideas(_idea())
-        assert "TSM — buy_puts short 2-6d stop5d" in message
-
-    def test_long_rationale_truncated(self) -> None:
-        message = self._with_ideas(_idea(rationale="R" * 200))
         idea_line = next(
             ln for ln in message.split("\n") if ln.startswith("TSM")
         )
-        assert len(idea_line) < 120
-        assert idea_line.endswith("…")
+        assert idea_line.startswith("TSM $172.40 (-1.8%) — BUY PUTS 1-3wk")
+        assert "entry on confirmed blockade" in idea_line
+        assert "stop $186" in idea_line          # 172.4 × 1.08 (option underlying)
+        assert "tgt $155/$141" in idea_line       # 172.4 × 0.90 / 0.82
+        assert "R:R" in idea_line
+        assert "5d stop" in idea_line
+
+    def test_idea_line_without_price(self) -> None:
+        # No live price → no dollar levels, but action / DTE / trigger /
+        # time stop still render (the honest %-only card).
+        message = self._with_ideas(_idea())
+        idea_line = next(
+            ln for ln in message.split("\n") if ln.startswith("TSM")
+        )
+        assert idea_line.startswith("TSM — BUY PUTS 1-3wk")
+        assert "stop $" not in idea_line          # no price → no dollar stop
+        assert "5d stop" in idea_line
+
+    def test_long_entry_trigger_truncated(self) -> None:
+        message = self._with_ideas(_idea(entry_trigger="R" * 200))
+        idea_line = next(
+            ln for ln in message.split("\n") if ln.startswith("TSM")
+        )
+        # The entry-trigger segment is capped; the whole line stays short.
+        assert "entry " in idea_line
+        assert "…" in idea_line
 
     def test_hostile_idea_fields_escaped(self) -> None:
         message = self._with_ideas(_idea(
-            ticker="<TSM&>", rationale='<script>alert("x")</script>',
+            ticker="<TSM&>", entry_trigger='<script>alert("x")</script>',
         ))
         assert "<script>" not in message
         assert "&lt;TSM&amp;&gt;" in message

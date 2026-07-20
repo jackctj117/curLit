@@ -26,6 +26,10 @@ from src.events.idea_ledger import (
 )
 
 MIGRATION = Path("migrations/007_trade_ideas.sql")
+#: CL-jiqq — concrete trade-card level columns (stop_price, targets, R:R,
+#: entry_trigger, invalidation, dte_window, suggested_strike) live in 008;
+#: the ledger now writes them, so the test schema must include both.
+MIGRATION_LEVELS = Path("migrations/008_trade_idea_levels.sql")
 
 
 def _shim_pg_types_for_sqlite(sql: str) -> str:
@@ -34,7 +38,32 @@ def _shim_pg_types_for_sqlite(sql: str) -> str:
         .replace("DOUBLE PRECISION", "REAL")
         .replace("BIGSERIAL", "INTEGER")
         .replace("BIGINT", "INTEGER")
+        # sqlite lacks JSONB and ALTER ... ADD COLUMN IF NOT EXISTS; store
+        # the JSON list as TEXT and drop the guard (fresh table per test).
+        .replace("JSONB", "TEXT")
+        .replace("ADD COLUMN IF NOT EXISTS", "ADD COLUMN")
     )
+
+
+def _sqlite_statements(sql: str) -> list[str]:
+    """Split shimmed SQL into sqlite-executable statements. sqlite only
+    accepts ONE ``ADD COLUMN`` per ``ALTER TABLE``; migration 008 batches
+    seven, so fan a multi-add ALTER out into one ALTER per column."""
+    import re  # noqa: PLC0415
+
+    out: list[str] = []
+    for stmt in [s.strip() for s in sql.split(";") if s.strip()]:
+        # Collapse whitespace so the multi-add ALTER is easy to split.
+        flat = " ".join(stmt.split())
+        if flat.upper().startswith("ALTER TABLE") and flat.count("ADD COLUMN") > 1:
+            head, _, rest = flat.partition("ADD COLUMN")
+            table_prefix = head.strip()  # "ALTER TABLE trade_ideas"
+            for col in re.split(r",\s*ADD COLUMN", "ADD COLUMN" + rest):
+                col = re.sub(r"^ADD COLUMN\s*", "", col.strip())
+                out.append(f"{table_prefix} ADD COLUMN {col}")
+        else:
+            out.append(stmt)
+    return out
 
 
 @pytest.fixture
@@ -42,10 +71,11 @@ def engine() -> Any:
     from migrations.run import _strip_sql_comments
 
     eng = sa.create_engine("sqlite://")
-    sql = _shim_pg_types_for_sqlite(_strip_sql_comments(MIGRATION.read_text()))
-    with eng.begin() as conn:
-        for stmt in [s.strip() for s in sql.split(";") if s.strip()]:
-            conn.execute(text(stmt))
+    for mig in (MIGRATION, MIGRATION_LEVELS):
+        sql = _shim_pg_types_for_sqlite(_strip_sql_comments(mig.read_text()))
+        with eng.begin() as conn:
+            for stmt in _sqlite_statements(sql):
+                conn.execute(text(stmt))
     return eng
 
 
@@ -166,6 +196,82 @@ class TestPersist:
             now=NOW,
         )
         assert n == 1
+
+
+class TestTradeCardPersistence:
+    """CL-jiqq — the grounded trade-card columns (migration 008) are
+    computed from the LLM percentages + the cycle price and persisted."""
+
+    def test_card_levels_persisted_with_price(self, engine: Any) -> None:
+        idea = _idea(
+            action="buy_puts", direction="bearish",
+            stop_loss_pct=0.40, target_pct=[0.10, 0.18],
+            entry_trigger="on confirmed blockade language",
+            invalidation="official denial",
+        )
+        prices = {"TSM": {"price": 172.4, "change_pct": -1.8}}
+        persist_ideas(engine, 1, _assessment(idea), prices=prices, now=NOW)
+        row = _all_rows(engine)[0]
+        # buy_puts is bearish → stop ABOVE spot (option underlying default),
+        # rounded to the name's tick (>= 100 → 1dp).
+        assert row["stop_price"] == pytest.approx(186.2)   # 172.4 × 1.08
+        # targets DOWN, stored as a JSON list.
+        import json
+        assert json.loads(row["target_prices"]) == [155.2, 141.4]
+        assert row["risk_reward"] is not None
+        assert row["entry_trigger"] == "on confirmed blockade language"
+        assert row["invalidation"] == "official denial"
+        assert row["dte_window"] == "1-3 weeks"          # short horizon
+        assert row["suggested_strike"] == pytest.approx(163.8)  # 172.4 × 0.95
+
+    def test_dollar_levels_null_without_price(self, engine: Any) -> None:
+        idea = _idea(
+            entry_trigger="on strength", invalidation="denial",
+            target_pct=[0.10],
+        )
+        persist_ideas(engine, 1, _assessment(idea), prices={}, now=NOW)
+        row = _all_rows(engine)[0]
+        # No live price → no dollar levels, but the TEXT fields persist.
+        assert row["stop_price"] is None
+        assert row["target_prices"] is None
+        assert row["risk_reward"] is None
+        assert row["suggested_strike"] is None
+        assert row["entry_trigger"] == "on strength"
+        assert row["invalidation"] == "denial"
+        assert row["dte_window"] == "1-3 weeks"          # DTE is price-free
+
+    def test_stock_stop_uses_llm_pct(self, engine: Any) -> None:
+        # A STOCK idea's stop_loss_pct is a real share move → dollar stop.
+        idea = _idea(
+            action="short", direction="bearish", stop_loss_pct=0.09,
+            time_horizon="structural", holding_period_days="60",
+        )
+        prices = {"TSM": {"price": 100.0, "change_pct": 0.0}}
+        persist_ideas(engine, 1, _assessment(idea), prices=prices, now=NOW)
+        row = _all_rows(engine)[0]
+        # short → stop above; stock → uses the 9% the LLM gave.
+        assert row["stop_price"] == pytest.approx(109.0)
+        assert row["suggested_strike"] is None            # not an option
+
+    def test_list_open_parses_target_prices_to_list(self, engine: Any) -> None:
+        idea = _idea(target_pct=[0.10, 0.18])
+        prices = {"TSM": {"price": 172.4, "change_pct": -1.8}}
+        persist_ideas(engine, 1, _assessment(idea), prices=prices, now=NOW)
+        row = list_open(engine)[0]
+        assert isinstance(row["target_prices"], list)
+        assert all(isinstance(t, float) for t in row["target_prices"])
+
+    def test_get_idea_by_prefix(self, engine: Any) -> None:
+        from src.events.idea_ledger import get_idea, make_idea_id
+
+        prices = {"TSM": {"price": 172.4, "change_pct": -1.8}}
+        persist_ideas(engine, 1, _assessment(_idea()), prices=prices, now=NOW)
+        idea_id = make_idea_id(1, "TSM", "buy_puts")
+        row = get_idea(engine, idea_id[:6])
+        assert row is not None
+        assert row["ticker"] == "TSM"
+        assert isinstance(row["target_prices"], list)
+        assert get_idea(engine, "nomatch") is None
 
 
 class TestSelectorGapFill:

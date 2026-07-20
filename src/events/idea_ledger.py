@@ -28,6 +28,7 @@ for future operator commands (the bot listing is read-only for now).
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
@@ -37,6 +38,7 @@ from sqlalchemy import bindparam, text
 
 from src.events.instrument_selector import decision_for_idea
 from src.events.prices import parse_ts
+from src.events.trade_card import build_trade_card
 
 logger = logging.getLogger(__name__)
 
@@ -45,12 +47,16 @@ _INSERT_SQL = text(
     "(idea_id, geo_event_id, ticker, action, direction, confidence, "
     " time_horizon, holding_period_days, time_stop_days, stop_loss_pct, "
     " preferred_instrument, instrument_reason, rationale, suggested_entry, "
-    " notes, price_at_signal, created_at, status, status_updated_at) "
+    " notes, price_at_signal, stop_price, target_prices, risk_reward, "
+    " entry_trigger, invalidation, dte_window, suggested_strike, "
+    " created_at, status, status_updated_at) "
     "VALUES "
     "(:idea_id, :geo_event_id, :ticker, :action, :direction, :confidence, "
     " :time_horizon, :holding_period_days, :time_stop_days, :stop_loss_pct, "
     " :preferred_instrument, :instrument_reason, :rationale, :suggested_entry, "
-    " :notes, :price_at_signal, :created_at, 'pending', :created_at) "
+    " :notes, :price_at_signal, :stop_price, :target_prices, :risk_reward, "
+    " :entry_trigger, :invalidation, :dte_window, :suggested_strike, "
+    " :created_at, 'pending', :created_at) "
     "ON CONFLICT (idea_id) DO NOTHING"
 )
 
@@ -58,7 +64,9 @@ _LIST_OPEN_SQL = text(
     "SELECT idea_id, geo_event_id, ticker, action, direction, confidence, "
     "       time_horizon, holding_period_days, time_stop_days, stop_loss_pct, "
     "       preferred_instrument, instrument_reason, rationale, "
-    "       suggested_entry, notes, price_at_signal, created_at "
+    "       suggested_entry, notes, price_at_signal, stop_price, "
+    "       target_prices, risk_reward, entry_trigger, invalidation, "
+    "       dte_window, suggested_strike, created_at "
     "FROM trade_ideas WHERE status = 'pending' "
     "ORDER BY created_at DESC, id DESC"
 )
@@ -122,6 +130,22 @@ def _row_params(
             notes = f"{notes}; {annotation}" if notes else annotation
 
     price_info = (prices or {}).get(ticker) or {}
+
+    # Ground the idea's PERCENTAGES in the real price fetched this cycle
+    # (CL-jiqq). Build the card from the gap-filled stop so an idea the
+    # LLM left blank still gets a dollar stop from the selector's value.
+    # No price → the card returns %-only (dollar fields None); we still
+    # persist the entry_trigger / invalidation / dte_window text.
+    card_idea = dict(idea)
+    if stop_loss_pct is not None:
+        card_idea["stop_loss_pct"] = stop_loss_pct
+    card = build_trade_card(
+        card_idea,
+        _float_or_none(price_info.get("price")),
+        _float_or_none(price_info.get("change_pct")),
+    )
+    target_prices = card.get("target_prices") or []
+
     return {
         "idea_id": make_idea_id(geo_event_id, ticker, action),
         "geo_event_id": int(geo_event_id),
@@ -139,6 +163,15 @@ def _row_params(
         "suggested_entry": str(idea.get("suggested_entry") or "") or None,
         "notes": notes or None,
         "price_at_signal": _float_or_none(price_info.get("price")),
+        # Grounded trade-card levels (CL-jiqq). Dollar fields are NULL
+        # when there was no live price; text fields persist regardless.
+        "stop_price": card.get("stop_price"),
+        "target_prices": json.dumps(target_prices) if target_prices else None,
+        "risk_reward": card.get("risk_reward"),
+        "entry_trigger": str(idea.get("entry_trigger") or "") or None,
+        "invalidation": str(idea.get("invalidation") or "") or None,
+        "dte_window": card.get("dte_window") or None,
+        "suggested_strike": card.get("suggested_strike"),
         "created_at": now,
     }
 
@@ -216,4 +249,57 @@ def list_open(engine: Any) -> list[dict[str, Any]]:
         rows = [dict(r._mapping) for r in conn.execute(_LIST_OPEN_SQL)]
     for row in rows:
         row["created_at"] = parse_ts(row.get("created_at"))
+        row["target_prices"] = _parse_target_prices(row.get("target_prices"))
     return rows
+
+
+_GET_ONE_SQL = text(
+    "SELECT idea_id, geo_event_id, ticker, action, direction, confidence, "
+    "       time_horizon, holding_period_days, time_stop_days, stop_loss_pct, "
+    "       preferred_instrument, instrument_reason, rationale, "
+    "       suggested_entry, notes, price_at_signal, stop_price, "
+    "       target_prices, risk_reward, entry_trigger, invalidation, "
+    "       dte_window, suggested_strike, created_at, status "
+    "FROM trade_ideas WHERE idea_id LIKE :prefix "
+    "ORDER BY created_at DESC, id DESC"
+)
+
+
+def get_idea(engine: Any, idea_id_prefix: str) -> dict[str, Any] | None:
+    """One idea by ``idea_id`` prefix (the short id the bot shows), most
+    recent first on ties. ``None`` when nothing matches. Fields are
+    parsed like :func:`list_open` (aware ``created_at``, list
+    ``target_prices``). Raises only on DB errors — the bot wraps it."""
+    prefix = str(idea_id_prefix or "").strip()
+    if not prefix:
+        return None
+    with engine.connect() as conn:
+        row = conn.execute(_GET_ONE_SQL, {"prefix": f"{prefix}%"}).first()
+    if row is None:
+        return None
+    out = dict(row._mapping)
+    out["created_at"] = parse_ts(out.get("created_at"))
+    out["target_prices"] = _parse_target_prices(out.get("target_prices"))
+    return out
+
+
+def _parse_target_prices(value: Any) -> list[float]:
+    """``target_prices`` normalised to a list of floats. Postgres JSONB
+    hands back a Python list; sqlite (tests) stores the JSON string —
+    parse either. Garbage → ``[]`` (never a lie, never a raise)."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (ValueError, TypeError):
+            return []
+    if not isinstance(value, (list, tuple)):
+        return []
+    out: list[float] = []
+    for item in value:
+        try:
+            out.append(float(item))
+        except (TypeError, ValueError):
+            continue
+    return out

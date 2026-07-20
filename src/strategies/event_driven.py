@@ -598,17 +598,32 @@ class EventDrivenStrategy:
                     watch.append(name)
         return watch
 
-    @staticmethod
     def _ideas_block(
-        assessment: dict[str, Any], limit: int = 5,
+        self,
+        assessment: dict[str, Any],
+        limit: int = 5,
+        prices: dict[str, Any] | None = None,
+        now: datetime | None = None,
     ) -> list[str]:
         """Advisory trade-ideas lines (CL-mgcp) — clearly separated
         from the machine trades above them: the system never trades
         equities or options; these are for the operator's own hands.
-        Empty list when the assessment carries no ideas."""
+        Empty list when the assessment carries no ideas.
+
+        The TOP idea (highest confidence) additionally shows its
+        GROUNDED trade-card numbers (CL-jiqq) — dollar stop/targets/R:R
+        and, for options, the suggested strike + DTE window — whenever a
+        live price for that ticker resolves. Absent a price the card
+        degrades to its percentages; equity idea tickers usually are not
+        in the engine's FX price feed, so this often shows the %-only
+        form, which is honest."""
         ideas = assessment.get("trade_ideas")
         if not isinstance(ideas, list) or not ideas:
             return []
+        usable = [i for i in ideas if isinstance(i, dict) and i.get("ticker")]
+        if not usable:
+            return []
+        top = max(usable, key=lambda i: float(i.get("confidence") or 0.0))
         lines = ["Operator ideas (not machine-traded):"]
         for idea in ideas[:limit]:
             if not isinstance(idea, dict):
@@ -628,7 +643,52 @@ class EventDrivenStrategy:
             if rationale:
                 line += f" — {rationale[:60]}"
             lines.append(line)
+            if idea is top:
+                lines.extend(self._top_idea_card_lines(idea, prices, now))
         return lines if len(lines) > 1 else []
+
+    def _top_idea_card_lines(
+        self,
+        idea: dict[str, Any],
+        prices: dict[str, Any] | None,
+        now: datetime | None,
+    ) -> list[str]:
+        """Indented grounded-card detail for the top confirmed idea
+        (CL-jiqq). Returns ``[]`` when nothing concrete resolves — an
+        LLM percentage with no price and no trigger isn't worth a line."""
+        from src.events.trade_card import build_trade_card  # noqa: PLC0415
+
+        ticker = str(idea.get("ticker") or "")
+        current = self._current_price(
+            ticker, prices or {}, now or datetime.now(UTC),
+        )
+        card = build_trade_card(dict(idea), current)
+        detail: list[str] = []
+        entry = str(idea.get("entry_trigger") or "").strip()
+        if entry:
+            detail.append(f"entry {entry[:40]}")
+        stop_price = card.get("stop_price")
+        if stop_price is not None:
+            detail.append(f"stop ${stop_price:,.2f}")
+        targets = card.get("target_prices") or []
+        if targets:
+            detail.append("tgt " + "/".join(f"${t:,.2f}" for t in targets))
+        rr = card.get("risk_reward")
+        if rr is not None:
+            detail.append(f"R:R {rr}")
+        if card.get("is_option"):
+            strike = card.get("suggested_strike")
+            if strike is not None:
+                detail.append(
+                    f"~{card.get('dte_window') or ''} strike ${strike:,.2f} "
+                    f"(nearest listed)".strip(),
+                )
+            elif card.get("dte_window"):
+                detail.append(f"{card.get('dte_window')} to expiry")
+        inval = str(idea.get("invalidation") or "").strip()
+        if inval:
+            detail.append(f"invalid if {inval[:40]}")
+        return [f"  {' | '.join(detail)}"] if detail else []
 
     @staticmethod
     def _event_age(row: dict[str, Any], now: datetime | None = None) -> str:
@@ -670,7 +730,7 @@ class EventDrivenStrategy:
         watch = self._watch_list(assessment)
         if watch:
             lines.append("Watch: " + ", ".join(watch))
-        ideas = self._ideas_block(assessment)
+        ideas = self._ideas_block(assessment, prices=prices, now=now)
         if ideas:
             lines.append("")
             lines.extend(ideas)

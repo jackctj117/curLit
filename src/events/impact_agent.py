@@ -59,6 +59,13 @@ _DEFAULT_TIME_STOP_DAYS = {
 }
 MAX_TRADE_IDEAS = 8
 MAX_FADE_CANDIDATES = 5
+#: Concrete-levels caps (CL-jiqq) — the LLM supplies PERCENTAGES (it has
+#: no live market data); the enrichment layer grounds them in real
+#: prices. A stop worth more than the position is nonsense; a profit
+#: target beyond a double on a news trade is fantasy. Clamp both.
+MAX_STOP_LOSS_PCT = 0.90
+MAX_TARGET_PCT = 3.0
+MAX_TARGETS = 2
 
 _SYSTEM_PROMPT = """\
 You are the Event Impact Agent for an FX/CFD trading system. You receive
@@ -140,8 +147,44 @@ equities or options; these go to the operator's alert feed):
 - Leave "trade_ideas"/"fade_candidates" empty when nothing is
   genuinely actionable.
 
+Concrete, actionable detail (CL-jiqq) — the operator risks real money
+off these, so each idea must carry enough to act on. YOU HAVE NO LIVE
+MARKET DATA: you see a headline, not a quote screen. So give PERCENTAGES
+and LOGIC, never fabricated prices, strikes, or expiry dates — the
+system converts your percentages into real dollar levels from live
+prices downstream. For every idea provide:
+  * "stop_loss_pct": the adverse move that kills the trade, as a
+    DECIMAL FRACTION. For stock, it is the % move in the share price
+    (e.g. 0.07 = a 7% adverse move). For options it is the % of
+    PREMIUM you are willing to lose (e.g. 0.40). Size it to the name's
+    volatility and your horizon — tight for calm large-caps, wider for
+    a volatile miner.
+  * "target_pct": a LIST of 1-2 profit targets, each a DECIMAL FRACTION
+    of favorable move in the UNDERLYING (e.g. [0.08, 0.15] = +8% then
+    +15% for a long, or the down-move for a short/puts). First target
+    should be realistic for the horizon; keep them sane (a news trade
+    rarely runs past a double).
+  * "entry_trigger": the CONDITION to enter, in words — not a fabricated
+    price. E.g. "on confirmed blockade language", "after a retest of the
+    breakdown level", "only if it holds below the prior-day low",
+    "immediately — this is a clean gap catalyst". If it is
+    "buy now, no trigger", say so.
+  * "invalidation": the observable fact that KILLS the thesis (distinct
+    from the price stop) — e.g. "official denial of the strike",
+    "ceasefire announced", "company confirms the mine is unaffected",
+    "reclaims the breakdown level on volume".
+  * Option guidance in "preferred_instrument": give a MONEYNESS BAND and
+    a DTE (days-to-expiry) WINDOW, NOT a specific strike or a calendar
+    expiry date (you cannot know the listed chain). E.g. "slightly OTM
+    puts (~5% below spot), 2-4 weeks to expiry" or "ATM-to-1-strike-OTM
+    calls, 3-6 weeks out". The operator picks the nearest listed
+    strike/expiry on their broker.
+Keep confidence / time_horizon / time_stop_days as before.
+
 JSON schema (all keys required except "trade_ideas" and
-"fade_candidates", which are optional advisory extras):
+"fade_candidates", which are optional advisory extras; within a trade
+idea, "stop_loss_pct" / "target_pct" / "entry_trigger" / "invalidation"
+are strongly preferred but the system fills sane defaults if omitted):
 {
   "core_event": "<one sentence: what actually happened>",
   "direction": "bullish" | "bearish" | "neutral",
@@ -164,8 +207,14 @@ JSON schema (all keys required except "trade_ideas" and
      "time_horizon": "immediate" | "short" | "medium" | "structural",
      "holding_period_days": "<e.g. 2-7>",
      "time_stop_days": <int>,
+     "stop_loss_pct": <float 0.0-0.9, adverse move: % of share price
+                       for stock / % of premium for options>,
+     "target_pct": [<float>, ...],  // 1-2 favorable-move fractions
+     "entry_trigger": "<condition to enter, NOT a fabricated price>",
+     "invalidation": "<observable fact that kills the thesis>",
      "suggested_entry": "<entry condition / level note>",
-     "preferred_instrument": "<stock, or option strike/expiry note>",
+     "preferred_instrument": "<stock, or moneyness band + DTE window —
+                              NO specific strike or expiry date>",
      "notes": "<key risks: vol crush, borrow, stale-facts caveats>"}
   ],
   "fade_candidates": [
@@ -272,6 +321,38 @@ def _clamp_float(value: Any, lo: float, hi: float) -> float:
     return max(lo, min(hi, float(value)))
 
 
+def _optional_fraction(value: Any, lo: float, hi: float) -> float | None:
+    """Parse an optional decimal fraction (stop/target %), clamped to
+    ``[lo, hi]``. ``None`` when absent or unparseable — a missing level
+    is honest (the enrichment layer defaults it), a fabricated one is
+    not. A value <= 0 is treated as unset (no zero-width stop)."""
+    if value is None:
+        return None
+    try:
+        frac = float(value)
+    except (TypeError, ValueError):
+        return None
+    if frac <= 0.0:
+        return None
+    return max(lo, min(hi, frac))
+
+
+def _clean_targets(raw: Any) -> list[float]:
+    """A trade idea's ``target_pct`` list → up to ``MAX_TARGETS`` valid,
+    positive, clamped, ascending-deduped fractions. Accepts a bare
+    scalar (one target) too. Empty when nothing parses — never raises."""
+    if raw is None:
+        return []
+    items = raw if isinstance(raw, (list, tuple)) else [raw]
+    out: list[float] = []
+    for item in items:
+        frac = _optional_fraction(item, 0.0, MAX_TARGET_PCT)
+        if frac is not None and frac not in out:
+            out.append(frac)
+    out.sort()
+    return out[:MAX_TARGETS]
+
+
 def _normalise_trade_ideas(raw: Any) -> list[dict[str, Any]]:
     """Advisory-only ``trade_ideas`` — validate enums, clamp numbers,
     drop malformed entries INDIVIDUALLY (a bad idea never dismisses the
@@ -302,6 +383,14 @@ def _normalise_trade_ideas(raw: Any) -> list[dict[str, Any]]:
             time_stop = _clamp_int(entry.get("time_stop_days"), 1, 120)
         except (TypeError, ValueError):
             time_stop = _DEFAULT_TIME_STOP_DAYS[horizon]
+        # Concrete levels (CL-jiqq) — the LLM's PERCENTAGES, clamped to
+        # sane ranges; the selector/enrichment layer fills gaps and
+        # grounds them in real prices. A malformed level never drops the
+        # idea (advisory), it just goes absent → default fills later.
+        stop_loss_pct = _optional_fraction(
+            entry.get("stop_loss_pct"), 0.0, MAX_STOP_LOSS_PCT,
+        )
+        target_pct = _clean_targets(entry.get("target_pct"))
         ideas.append({
             "ticker": ticker,
             "action": action,
@@ -311,6 +400,10 @@ def _normalise_trade_ideas(raw: Any) -> list[dict[str, Any]]:
             "time_horizon": horizon,
             "holding_period_days": str(entry.get("holding_period_days", "")).strip(),
             "time_stop_days": time_stop,
+            "stop_loss_pct": stop_loss_pct,
+            "target_pct": target_pct,
+            "entry_trigger": str(entry.get("entry_trigger", "")).strip(),
+            "invalidation": str(entry.get("invalidation", "")).strip(),
             "suggested_entry": str(entry.get("suggested_entry", "")).strip(),
             "preferred_instrument": str(entry.get("preferred_instrument", "")).strip(),
             "notes": str(entry.get("notes", "")).strip(),

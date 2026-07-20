@@ -189,30 +189,60 @@ def _token_lines(label_html: str, tokens: list[str]) -> list[str]:
     return lines
 
 
+def _action_label(action: str) -> str:
+    """Human, imperative action for the compact line: ``buy_puts`` →
+    ``BUY PUTS``, ``short`` → ``SHORT``. Keeps the operator's own words
+    (puts/shorts) front and center (CL-jiqq)."""
+    return str(action or "?").replace("_", " ").strip().upper() or "?"
+
+
 def _idea_line(
     idea: Mapping[str, Any],
     prices: Mapping[str, Mapping[str, Any]] | None,
 ) -> str:
-    """One Ideas: line — ``TSM $172.40 (-1.8%) — buy_puts short 2-6d
-    stop5d — rationale…``. Every LLM-sourced field is escaped."""
+    """One compact Ideas: line, now carrying the GROUNDED numbers
+    (CL-jiqq): ``TSM $172.40 (-1.8%) — BUY PUTS 1-3wk | entry <trigger>
+    | stop $181 | tgt $150 | R:R 2.1 | 5d stop``. Dollar levels come
+    from :func:`src.events.trade_card.build_trade_card` off the real
+    price; absent a price they simply don't render. Every LLM-sourced
+    field is escaped; machine numbers are HTML-safe by construction."""
+    from src.events.trade_card import build_trade_card  # noqa: PLC0415
+
     ticker = str(idea.get("ticker") or "")
-    call_parts = [str(idea.get("action") or "?")]
-    horizon = str(idea.get("time_horizon") or "").strip()
-    if horizon:
-        call_parts.append(horizon)
-    holding = str(idea.get("holding_period_days") or "").strip()
-    if holding:
-        call_parts.append(f"{holding}d")
+    info = (prices or {}).get(ticker) or {}
+    card = build_trade_card(
+        dict(idea), info.get("price"), info.get("change_pct"),
+    )
+
+    # Lead: ticker + price + imperative action + DTE window (options).
+    head = f"{html_escape(ticker)}{_price_part(ticker, prices)} — "
+    call = _action_label(str(idea.get("action") or "?"))
+    dte = str(card.get("dte_window") or "").replace(" weeks", "wk").replace(
+        " months", "mo",
+    )
+    if dte:
+        call += f" {dte}"
+    line = head + html_escape(call)
+
+    # Grounded segments, pipe-separated — only what actually resolved.
+    segs: list[str] = []
+    trigger = str(idea.get("entry_trigger") or "").strip()
+    if trigger:
+        segs.append(f"entry {html_escape(_truncate(trigger, 28))}")
+    stop_price = card.get("stop_price")
+    if stop_price is not None:
+        segs.append(f"stop ${stop_price:,.0f}")
+    targets = card.get("target_prices") or []
+    if targets:
+        segs.append("tgt " + "/".join(f"${t:,.0f}" for t in targets))
+    rr = card.get("risk_reward")
+    if rr is not None:
+        segs.append(f"R:R {rr}")
     time_stop = idea.get("time_stop_days")
     if time_stop is not None:
-        call_parts.append(f"stop{time_stop}d")
-    line = (
-        f"{html_escape(ticker)}{_price_part(ticker, prices)} — "
-        f"{html_escape(' '.join(call_parts))}"
-    )
-    rationale = str(idea.get("rationale") or "").strip()
-    if rationale:
-        line += f" — {html_escape(_truncate(rationale, _RATIONALE_MAX))}"
+        segs.append(f"{time_stop}d stop")
+    if segs:
+        line += " | " + " | ".join(segs)
     return line
 
 
