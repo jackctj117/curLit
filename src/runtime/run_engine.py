@@ -40,6 +40,7 @@ from src.strategies.carry_vol_filter import (
     CarryVolFilterStrategy,
 )
 from src.strategies.cb_sentiment_shift import CBSentimentConfig, CBSentimentShiftStrategy
+from src.strategies.event_driven import EventDrivenConfig, EventDrivenStrategy
 from src.strategies.rate_diff_mean_reversion import RateDiffMRConfig, RateDiffMRStrategy
 from src.strategies.state import StrategyStateStore
 
@@ -244,6 +245,11 @@ def build_strategies(
     for sconf in config.get("strategies", []):
         sid = sconf.get("id", "")
         scfg = sconf.get("config", {})
+        # CL-mnhw: honor an explicit `enabled: false` on any strategy
+        # entry. Missing/true keeps the legacy always-on behavior.
+        if sconf.get("enabled", True) is False:
+            logger.info("Strategy %s disabled via config (enabled: false) — skipping", sid)
+            continue
         if "rate_diff" in sid:
             strategies.append(
                 RateDiffMRStrategy(
@@ -270,6 +276,20 @@ def build_strategies(
                     data_provider=data_provider,
                     state_store=state_store,
                     snapshot_store=snapshot_store,
+                )
+            )
+        elif "event" in sid:
+            # CL-mnhw: current-events consumer. Gets the raw DB engine
+            # (not just DataProvider) for geo_events polling + status
+            # transitions. NO-OP that logs once if the producer's
+            # geo_events migration hasn't been applied yet.
+            strategies.append(
+                EventDrivenStrategy(
+                    EventDrivenConfig(**scfg) if scfg else EventDrivenConfig(),
+                    data_provider=data_provider,
+                    state_store=state_store,
+                    snapshot_store=snapshot_store,
+                    db_engine=engine,
                 )
             )
     if not strategies:

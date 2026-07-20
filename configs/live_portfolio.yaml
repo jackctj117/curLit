@@ -67,6 +67,105 @@ strategies:
       min_rate_spread: 0.005
       signal_interval_seconds: 86400
 
+  # CL-mnhw: current-events consumer — confirms LLM-assessed geo_events
+  # against actual market moves, then paper-trades the confirmed ones
+  # with tight risk. PAPER ONLY until the edge is proven. If the
+  # geo_events table doesn't exist yet (producer migration 005 not
+  # applied) this strategy is a NO-OP that logs once at boot.
+  - id: event_driven
+    class: src.strategies.event_driven.EventDrivenStrategy
+    enabled: true
+    config:
+      # ---- Gate A: assessment quality --------------------------------
+      # Minimum LLM urgency (1-10) — only clearly market-moving events.
+      min_urgency: 7
+      # Minimum LLM confidence (0-1) — drops hedged/ambiguous calls.
+      min_confidence: 0.75
+      # ---- Confirmation window (minutes from seen_at) ----------------
+      # No confirmation before min (knee-jerk spike risk); past max the
+      # event EXPIRES — a late move is too stale to chase.
+      confirm_window_min_minutes: 30
+      confirm_window_max_minutes: 120
+      # ---- Gate B: market confirmation -------------------------------
+      # Price must have moved in the assessed direction since seen_at by
+      # this fraction of the instrument's 20d realized DAILY vol.
+      # 0.25 = a quarter-sigma move.
+      confirm_move_frac: 0.25
+      # How many tradable instruments must confirm to act on the event.
+      min_confirmed_instruments: 1
+      # Daily-return window for the baseline realized vol.
+      realized_vol_window: 20
+      # Optional extra gate: short-window vol must spike to
+      # vol_spike_ratio x baseline. Off by default (needs intraday data
+      # density we don't reliably have yet).
+      vol_spike_check_enabled: false
+      vol_spike_window: 5
+      vol_spike_ratio: 1.5
+      # ---- Trading (tight risk) --------------------------------------
+      # Risk per event trade as a fraction of equity (0.005 = 50bps —
+      # half the CB-sentiment risk; least-proven signal in the book).
+      event_risk_pct: 0.005
+      # Hard stop distance from entry (fraction of entry price).
+      event_stop_pct: 0.01
+      # Max simultaneous event positions across ALL events.
+      max_concurrent_event_positions: 2
+      # Hard TIME STOP: exit after this many hours REGARDLESS of P&L.
+      event_max_holding_hours: 4
+      # ---- Event-book protection -------------------------------------
+      # Cumulative realized event-trade loss (fraction of equity) that
+      # freezes NEW entries and logs CRITICAL. Exits still flow. State
+      # persists in event_book_state_path (atomic writes).
+      event_book_max_loss_pct: 0.02
+      event_book_state_path: data/event_book_state.json
+      # ---- Alerts ----------------------------------------------------
+      # EXPIRED (unconfirmed) events at/above this urgency still get a
+      # brief info alert, capped at 1 per run.
+      expired_alert_min_urgency: 8
+      # ---- Plumbing --------------------------------------------------
+      # Event entries chase news moves — allow more slippage than the
+      # 2bps default before refusing a fill.
+      max_slippage_bps: 10.0
+      # Poll cadence for ASSESSED rows + exit checks (seconds).
+      signal_interval_seconds: 300
+      # Assessment instrument id -> OANDA broker instrument. Unknown ids
+      # are SKIPPED with a warning, never traded blind. Covers every
+      # tradable id in configs/event_playbooks.yaml plus compact aliases
+      # the LLM might emit. (Omit this key to use the identical default
+      # map in src/strategies/event_driven.py.)
+      instrument_map:
+        EUR_USD: EUR_USD
+        GBP_USD: GBP_USD
+        USD_JPY: USD_JPY
+        USD_CAD: USD_CAD
+        USD_CHF: USD_CHF
+        AUD_USD: AUD_USD
+        NZD_USD: NZD_USD
+        USD_MXN: USD_MXN
+        USD_NOK: USD_NOK
+        USD_SEK: USD_SEK
+        USD_CNH: USD_CNH
+        EUR_GBP: EUR_GBP
+        EUR_JPY: EUR_JPY
+        XAU_USD: XAU_USD
+        XAG_USD: XAG_USD
+        BCO_USD: BCO_USD
+        WTICO_USD: WTICO_USD
+        NATGAS_USD: NATGAS_USD
+        SPX500_USD: SPX500_USD
+        NAS100_USD: NAS100_USD
+        EURUSD: EUR_USD
+        GBPUSD: GBP_USD
+        USDJPY: USD_JPY
+        USDCAD: USD_CAD
+        USDCHF: USD_CHF
+        AUDUSD: AUD_USD
+        NZDUSD: NZD_USD
+        XAUUSD: XAU_USD
+        XAGUSD: XAG_USD
+        GOLD: XAU_USD
+        BRENT: BCO_USD
+        WTI: WTICO_USD
+
 risk:
   max_total_leverage: 2.0
   max_per_pair_notional_pct: 0.30
