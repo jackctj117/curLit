@@ -10,12 +10,18 @@ when no data exists, and log warnings (not exceptions) on DB errors.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from unittest.mock import MagicMock
 
 import pandas as pd
 import pytest
 from sqlalchemy import create_engine, text
 
-from src.data.provider import DataProvider
+from src.data.provider import (
+    _SYMBOL_ALIASES,
+    UNMAPPED_EVENT_INSTRUMENTS,
+    DataProvider,
+    _normalize_symbol,
+)
 
 
 @pytest.fixture
@@ -176,3 +182,196 @@ class TestErrorPath:
         assert any(
             "get_latest_value" in r.message for r in caplog.records
         )
+
+
+# ---------------------------------------------------------------------------
+# CL-5lpp — OANDA/event-id → prices-table symbol normalization.
+#
+# The event pipeline speaks OANDA ids (XAU_USD, BCO_USD, USD_JPY); the
+# prices table holds yfinance symbols (GOLD, OIL_WTI, USDJPY). Without
+# normalization every event-leg price/vol lookup returned nothing and
+# confluence Gate B could never confirm (164 EXPIRED / 0 CONFIRMED).
+# ---------------------------------------------------------------------------
+
+
+class TestNormalizeSymbol:
+    @pytest.mark.parametrize(
+        ("oanda", "db"),
+        [
+            ("BCO_USD", "OIL_WTI"),   # Brent → WTI proxy (documented)
+            ("WTICO_USD", "OIL_WTI"),
+            ("XAU_USD", "GOLD"),
+            ("XCU_USD", "COPPER"),
+            ("USD_JPY", "USDJPY"),
+            ("USD_CAD", "USDCAD"),
+            ("USD_CHF", "USDCHF"),
+            ("EUR_USD", "EURUSD"),
+            ("GBP_USD", "GBPUSD"),
+            ("AUD_USD", "AUDUSD"),
+            ("NZD_USD", "NZDUSD"),
+            ("SPX500_USD", "SPX"),
+        ],
+    )
+    def test_maps_each_alias(self, oanda: str, db: str) -> None:
+        assert _normalize_symbol(oanda) == db
+
+    @pytest.mark.parametrize(
+        "native",
+        ["EURUSD", "US_10Y", "US_2Y", "DE_2Y", "DGS2", "DGS10",
+         "GOLD", "OIL_WTI", "USDJPY", "COPPER", "SPX", "VIX", "DXY"],
+    )
+    def test_db_native_passes_through(self, native: str) -> None:
+        # DB-native names (and FRED series) must be returned unchanged so
+        # the existing FX/macro strategies keep working.
+        assert _normalize_symbol(native) == native
+
+    @pytest.mark.parametrize(
+        "unmapped",
+        ["XAG_USD", "XPT_USD", "XPD_USD", "USD_NOK", "USD_ZAR",
+         "USD_CNH", "NATGAS_USD", "WHEAT_USD", "CORN_USD", "NAS100_USD"],
+    )
+    def test_unmapped_event_ids_pass_through(self, unmapped: str) -> None:
+        # No DB equivalent yet — pass through unchanged so the lookup
+        # honestly resolves to nothing (not a crash, not a wrong series).
+        assert _normalize_symbol(unmapped) == unmapped
+        assert unmapped in UNMAPPED_EVENT_INSTRUMENTS
+
+    def test_no_alias_collides_with_a_db_native_key(self) -> None:
+        # Purely additive: an alias KEY must never also be a mapped VALUE
+        # (would risk double-translation) — keys are OANDA ids, values are
+        # DB symbols, disjoint sets.
+        keys = set(_SYMBOL_ALIASES)
+        values = set(_SYMBOL_ALIASES.values())
+        assert keys.isdisjoint(values)
+        # And no OANDA id is simultaneously classed as unmapped.
+        assert keys.isdisjoint(UNMAPPED_EVENT_INSTRUMENTS)
+
+    def test_brent_to_wti_proxy_is_documented(self) -> None:
+        # The Brent→WTI substitution is a proxy (no Brent series exists);
+        # guard that the mapping is present and documented in the source.
+        assert _SYMBOL_ALIASES["BCO_USD"] == "OIL_WTI"
+        import inspect
+
+        import src.data.provider as prov
+
+        src = inspect.getsource(prov)
+        assert "Brent" in src and "proxy" in src.lower()
+
+    def test_unmapped_miss_logs_once_at_debug(
+        self, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        # A known-unmapped event id logs a discoverable DEBUG line, but
+        # only once per distinct symbol (no per-call spam in tight loops).
+        import src.data.provider as prov
+
+        prov._logged_unmapped.discard("CORN_USD")
+        with caplog.at_level("DEBUG", logger="src.data.provider"):
+            _normalize_symbol("CORN_USD")
+            _normalize_symbol("CORN_USD")
+        hits = [r for r in caplog.records if "CORN_USD" in r.message]
+        assert len(hits) == 1
+
+
+class TestReadMethodsNormalize:
+    """Each read method must translate the OANDA id to the DB symbol
+    BEFORE it hits the database — proven by mocking the engine and
+    asserting the bound query parameter is the DB-native symbol."""
+
+    def _mock_engine(self):  # type: ignore[no-untyped-def]
+        """Engine whose connect() yields a conn recording execute() args
+        and returning an empty result (we only care about the bound sym)."""
+        engine = MagicMock()
+        conn = MagicMock()
+        result = MagicMock()
+        result.fetchone.return_value = None
+        conn.execute.return_value = result
+        engine.connect.return_value.__enter__.return_value = conn
+        return engine, conn
+
+    def test_get_latest_value_normalizes(self) -> None:
+        engine, conn = self._mock_engine()
+        DataProvider(engine).get_latest_value("XAU_USD", datetime(2026, 4, 1, tzinfo=UTC))
+        # First execute is macro_data (series_id), then prices (sid) — both
+        # must carry the normalized DB symbol, never the OANDA id.
+        bound = [c.args[1] for c in conn.execute.call_args_list if len(c.args) > 1]
+        for params in bound:
+            sid = params.get("sid")
+            if sid is not None:
+                assert sid == "GOLD"
+        assert any(p.get("sid") == "GOLD" for p in bound)
+        assert not any(p.get("sid") == "XAU_USD" for p in bound)
+
+    def test_get_series_normalizes(self, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+        # get_series uses pd.read_sql; intercept it and capture params.
+        captured: dict = {}
+
+        def fake_read_sql(_sql, _conn, params=None):  # type: ignore[no-untyped-def]
+            captured.setdefault("sids", []).append((params or {}).get("sid"))
+            return pd.DataFrame()  # empty → falls through both branches
+
+        engine, _ = self._mock_engine()
+        monkeypatch.setattr("src.data.provider.pd.read_sql", fake_read_sql)
+        DataProvider(engine).get_series(
+            "USD_JPY",
+            datetime(2026, 4, 1, tzinfo=UTC),
+            datetime(2026, 4, 2, tzinfo=UTC),
+        )
+        assert "USDJPY" in captured["sids"]
+        assert "USD_JPY" not in captured["sids"]
+
+    def test_get_realized_vol_normalizes(self, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+        captured: dict = {}
+
+        def fake_read_sql(_sql, _conn, params=None):  # type: ignore[no-untyped-def]
+            captured["pair"] = (params or {}).get("pair")
+            return pd.DataFrame()
+
+        engine, _ = self._mock_engine()
+        monkeypatch.setattr("src.data.provider.pd.read_sql", fake_read_sql)
+        DataProvider(engine).get_realized_vol("BCO_USD", window=20)
+        assert captured["pair"] == "OIL_WTI"  # Brent → WTI proxy
+
+    def test_get_aligned_series_normalizes(self, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+        captured: dict = {}
+
+        def fake_read_sql(_sql, _engine, params=None):  # type: ignore[no-untyped-def]
+            captured.setdefault("symbols", []).append((params or {}).get("symbols"))
+            return pd.DataFrame()
+
+        engine, _ = self._mock_engine()
+        monkeypatch.setattr("src.data.provider.pd.read_sql", fake_read_sql)
+        DataProvider(engine).get_aligned_series(
+            ["XAU_USD", "EURUSD", "WHEAT_USD"],
+            datetime(2026, 4, 1, tzinfo=UTC),
+            datetime(2026, 4, 2, tzinfo=UTC),
+        )
+        # The prices-table query gets normalized ids: XAU_USD→GOLD,
+        # EURUSD (native) unchanged, WHEAT_USD (unmapped) unchanged.
+        prices_call = captured["symbols"][0]
+        assert prices_call == ["GOLD", "EURUSD", "WHEAT_USD"]
+
+
+class TestFxStrategyPathUnaffected:
+    """The existing FX/macro strategy lookups query DB-native names and
+    must resolve exactly as before — normalization is a no-op for them."""
+
+    def test_native_fx_and_macro_still_resolve(self, provider_engine) -> None:  # type: ignore[no-untyped-def]
+        provider = DataProvider(provider_engine)
+        # EURUSD is in prices, DGS2 in macro_data — both DB-native.
+        assert provider.get_latest_value(
+            "EURUSD", datetime(2026, 4, 3, tzinfo=UTC),
+        ) == 1.12
+        assert provider.get_latest_value(
+            "DGS2", datetime(2026, 4, 3, tzinfo=UTC),
+        ) == 4.7
+
+    def test_oanda_id_now_resolves_via_alias(self, provider_engine) -> None:  # type: ignore[no-untyped-def]
+        # Seed GOLD directly, then look it up by the OANDA id XAU_USD.
+        with provider_engine.begin() as conn:
+            conn.execute(text(
+                "INSERT INTO prices VALUES ('2026-04-03 00:00:00', 'GOLD', 2400.0)",
+            ))
+        provider = DataProvider(provider_engine)
+        assert provider.get_latest_value(
+            "XAU_USD", datetime(2026, 4, 3, tzinfo=UTC),
+        ) == 2400.0

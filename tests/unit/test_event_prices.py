@@ -54,7 +54,15 @@ class Recorder:
 
 @pytest.fixture
 def db() -> Any:
-    """sqlite mirror of the provider tables the OANDA path reads."""
+    """sqlite mirror of the provider tables the OANDA path reads.
+
+    The prices table is keyed by DB-native (yfinance) symbols, NOT OANDA
+    ids — Brent is stored as ``OIL_WTI`` (the WTI proxy), and the caller's
+    OANDA id ``BCO_USD`` is translated to it by DataProvider's
+    normalization layer (CL-5lpp). Before that fix, event-leg lookups
+    queried the OANDA id directly, matched nothing, and no event ever
+    confirmed.
+    """
     engine = sa.create_engine("sqlite://")
     with engine.begin() as conn:
         conn.execute(text("CREATE TABLE prices (ts TEXT, symbol TEXT, close REAL)"))
@@ -62,9 +70,10 @@ def db() -> Any:
             "CREATE TABLE macro_data (series_id TEXT, observation_date TEXT, "
             "value REAL, release_date TEXT)",
         ))
+        # Seed under OIL_WTI — the symbol BCO_USD normalizes to.
         for days_ago, close in ((2, 76.8), (1, 78.4)):
             conn.execute(
-                text("INSERT INTO prices VALUES (:ts, 'BCO_USD', :close)"),
+                text("INSERT INTO prices VALUES (:ts, 'OIL_WTI', :close)"),
                 {"ts": (NOW - timedelta(days=days_ago)).isoformat(sep=" "),
                  "close": close},
             )
@@ -139,6 +148,9 @@ class TestEquities:
 
 class TestOandaIds:
     def test_closes_from_prices_table(self, db: Any) -> None:
+        # BCO_USD (OANDA id) → OIL_WTI (prices-table symbol) via
+        # DataProvider normalization (CL-5lpp). Output stays keyed by the
+        # caller's original OANDA id.
         out = get_prices(["BCO_USD"], engine=db, now=NOW)
         assert out["BCO_USD"]["price"] == pytest.approx(78.4)
         assert out["BCO_USD"]["change_pct"] == pytest.approx(2.0833, abs=1e-3)
