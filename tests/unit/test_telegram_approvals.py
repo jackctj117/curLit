@@ -921,6 +921,63 @@ class TestIdeaDetailCommand:
         # bold advisory footer
         assert IDEA_ADVISORY_FOOTER in reply
 
+    def _seed_instrument(
+        self, engine: Any, ticker: str, action: str, direction: str,
+    ) -> str:
+        """Seed one idea keyed on an OANDA/CFD instrument (CL-vowz), so
+        the Robinhood proxy section has something to map."""
+        from datetime import UTC, datetime
+
+        from src.events.idea_ledger import make_idea_id, persist_ideas
+
+        persist_ideas(engine, 3, {"trade_ideas": [{
+            "ticker": ticker, "action": action, "direction": direction,
+            "confidence": 0.7, "rationale": "r", "time_horizon": "short",
+            "holding_period_days": "2-6", "time_stop_days": 5,
+        }]}, now=datetime(2026, 7, 20, 12, tzinfo=UTC))
+        return make_idea_id(3, ticker, action)
+
+    def test_robinhood_section_commodity_long(self) -> None:
+        # CL-vowz: a LONG XAU_USD idea's card carries a Robinhood section
+        # mapping the CFD to the gold ETFs with the direction instruction.
+        from src.research.telegram_approvals import render_idea_detail
+
+        engine = _ledger_engine()
+        idea_id = self._seed_instrument(engine, "XAU_USD", "long", "bullish")
+        reply = render_idea_detail(
+            idea_id[:6], engine=engine, get_prices_fn=lambda *a, **k: {},
+        )
+        assert "Robinhood proxies: GLD, IAU" in reply
+        assert "LONG XAU_USD → buy GLD or IAU." in reply
+        assert "track imperfectly" in reply
+        assert "not financial advice" in reply.lower()
+
+    def test_robinhood_section_index_short_inverse(self) -> None:
+        # A SHORT index idea surfaces the inverse ETFs + puts alternative
+        # and the leveraged-decay + options-approval caveats.
+        from src.research.telegram_approvals import render_idea_detail
+
+        engine = _ledger_engine()
+        idea_id = self._seed_instrument(engine, "SPX500_USD", "short", "bearish")
+        reply = render_idea_detail(
+            idea_id[:6], engine=engine, get_prices_fn=lambda *a, **k: {},
+        )
+        assert "Inverse (for shorts): SH, SDS" in reply
+        assert "SHORT SPX500_USD → buy SH/SDS or SPY puts." in reply
+        assert "DECAY" in reply                    # leveraged decay caveat
+        assert "broker approval" in reply.lower()  # options caveat
+
+    def test_robinhood_section_equity_direct(self) -> None:
+        # The default TSM idea is a plain equity → trades directly.
+        from src.research.telegram_approvals import render_idea_detail
+
+        engine = _ledger_engine()
+        idea_id = self._seed_one(engine)
+        reply = render_idea_detail(
+            idea_id[:6], engine=engine, get_prices_fn=lambda *a, **k: {},
+        )
+        assert "TSM trades directly" in reply
+
     def test_unknown_id(self) -> None:
         from src.research.telegram_approvals import render_idea_detail
 

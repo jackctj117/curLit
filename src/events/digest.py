@@ -46,6 +46,7 @@ from typing import Any
 
 from src.events.impact_agent import AssessmentResult
 from src.events.prices import format_age, format_price
+from src.events.retail_proxy import compact_label
 from src.research.notifications import (
     DispatchResult,
     html_escape,
@@ -249,6 +250,15 @@ def _idea_line(
         segs.append(f"{time_stop}d stop")
     if segs:
         block.append("  " + " | ".join(segs))
+
+    # Robinhood execution proxy (CL-vowz): the operator trades Robinhood,
+    # which has no FX/CFDs/futures — so a raw 'XAU_USD LONG' idea is not
+    # placeable. Show the tradable version on its own indented line.
+    # ``direction`` (falling back to ``action``) picks the short side.
+    proxy = compact_label(
+        ticker, str(idea.get("direction") or idea.get("action") or ""),
+    )
+    block.append(f"  RH: {html_escape(proxy)}")
     return "\n".join(block)
 
 

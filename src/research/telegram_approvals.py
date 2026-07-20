@@ -497,6 +497,7 @@ def render_idea_detail(
     :func:`render_ideas`."""
     from src.events import idea_ledger  # noqa: PLC0415
     from src.events import prices as prices_mod  # noqa: PLC0415
+    from src.events.retail_proxy import full_detail  # noqa: PLC0415
     from src.events.trade_card import build_trade_card  # noqa: PLC0415
 
     prefix = str(idea_id or "").strip().strip(_TOKEN_TRIM_CHARS)
@@ -617,6 +618,17 @@ def render_idea_detail(
         age_parts.append(f"expires at {time_stop}d time stop")
     if age_parts:
         lines.append("Age: " + " / ".join(age_parts))
+
+    # Robinhood execution proxy (CL-vowz): the operator can't place FX /
+    # CFDs / futures on Robinhood, so map the idea's instrument to the
+    # tradable ETF/stock version. The idea's ``direction`` (falling back
+    # to ``action``) selects the short side (inverse ETFs / puts).
+    proxy_lines = full_detail(
+        ticker, str(row.get("direction") or row.get("action") or ""),
+    )
+    if proxy_lines:
+        lines.append("")
+        lines.extend(proxy_lines)
 
     lines.append("")
     lines.append(IDEA_ADVISORY_FOOTER)

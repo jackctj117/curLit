@@ -1,0 +1,117 @@
+# Retail-broker (Robinhood) execution proxies (CL-vowz).
+#
+# curLit's event pipeline emits ideas on OANDA CFDs and FX pairs
+# (XAU_USD, BCO_USD, SPX500_USD, USD_JPY, ...). The operator executes on
+# Robinhood, which offers NO forex, NO CFDs, and NO futures — only US
+# equities, ETFs, and (with approval) options on them. This file maps
+# each event instrument to the closest Robinhood-tradable proxy so every
+# notification can show a version the operator can actually place.
+#
+# HONESTY / CAVEATS (not financial advice):
+#   * ETF proxies track the underlying IMPERFECTLY. Commodity funds that
+#     hold futures (USO/BNO for oil, UNG for gas) suffer roll/contango
+#     drift — over weeks they can diverge materially from spot.
+#   * LEVERAGED and INVERSE ETFs (BOIL 2x, SQQQ -3x, SDS -2x, ...) are
+#     rebalanced DAILY and decay on multi-day holds in a choppy tape;
+#     they are short-term tactical tools, not position trades.
+#   * FX pairs have NO clean retail proxy — skip, or trade a correlated
+#     commodity ETF (a short petro-currency ≈ long the oil ETF).
+#   * Options require broker approval and there is no live options/IV
+#     data here — confirm strikes/expiries on the broker.
+# This is an ADVISORY convenience mapping, NOT financial advice.
+#
+# Schema per instrument:
+#   proxies: [ETF/stock tickers]        # the long/bullish-side proxies
+#   inverse: [ETF tickers]              # optional; the short/bearish side
+#   note: "..."                         # optional operator caveat
+#   leveraged_warning: true|false       # optional; proxy list includes a
+#                                       #   leveraged/inverse decaying fund
+#   tradable_on_robinhood: true|false   # optional; false ⇒ FX, no proxy
+#
+# Every ETF ticker is a plain US-listed symbol [A-Z]{1,5}.
+
+instruments:
+
+  # ---- Precious & industrial metals ------------------------------- #
+  XAU_USD:
+    proxies: [GLD, IAU]
+    note: "Gold. GLD (liquid) or IAU (cheaper expense ratio); both track spot closely."
+  XAG_USD:
+    proxies: [SLV]
+    note: "Silver. SLV holds physical silver; tracks spot closely."
+  XPT_USD:
+    proxies: [PPLT]
+    note: "Platinum. PPLT holds physical platinum; thinner volume than gold/silver funds."
+  XPD_USD:
+    proxies: [PALL]
+    note: "Palladium. PALL holds physical palladium; thin/volatile."
+  XCU_USD:
+    proxies: [CPER, COPX]
+    note: "Copper. CPER tracks copper futures (roll drift); COPX is copper MINERS (higher beta, equity risk, not pure copper)."
+
+  # ---- Energy ----------------------------------------------------- #
+  BCO_USD:
+    proxies: [BNO]
+    note: "Brent crude. BNO tracks Brent futures — roll/contango drift over multi-week holds."
+  WTICO_USD:
+    proxies: [USO]
+    note: "WTI crude. USO tracks WTI futures — roll/contango drift; historically a poor spot tracker over long holds."
+  NATGAS_USD:
+    proxies: [UNG]
+    note: "Natural gas. UNG tracks front-month gas futures with heavy contango decay. BOIL is 2x leveraged and decays fast on multi-day holds — tactical only."
+    leveraged_warning: true
+
+  # ---- Equity indices (inverse funds for the short side) ---------- #
+  SPX500_USD:
+    proxies: [SPY]
+    inverse: [SH, SDS]
+    note: "S&P 500. Long → SPY. Short → SH (-1x) or SDS (-2x, decays), or buy SPY puts."
+    leveraged_warning: true
+  NAS100_USD:
+    proxies: [QQQ]
+    inverse: [PSQ, SQQQ]
+    note: "Nasdaq 100. Long → QQQ. Short → PSQ (-1x) or SQQQ (-3x, decays fast), or buy QQQ puts."
+    leveraged_warning: true
+
+  # ---- Ags -------------------------------------------------------- #
+  WHEAT_USD:
+    proxies: [WEAT]
+    note: "Wheat. WEAT tracks wheat futures — roll drift; thin."
+  CORN_USD:
+    proxies: [CORN]
+    note: "Corn. CORN tracks corn futures — roll drift; thin."
+
+  # ---- FX pairs: NO clean retail proxy ---------------------------- #
+  # Robinhood offers no forex. There is no ETF that cleanly tracks a
+  # single spot cross. Skip the FX leg, or express the correlated view
+  # via a commodity ETF (e.g. short a petro-currency ≈ long an oil ETF).
+  USD_JPY:
+    tradable_on_robinhood: false
+    note: "FX — not available on Robinhood; skip or trade a correlated ETF (e.g. petro-FX shorts ≈ long oil ETFs)."
+  USD_CAD:
+    tradable_on_robinhood: false
+    note: "FX — not available on Robinhood; skip or trade a correlated ETF (e.g. petro-FX shorts ≈ long oil ETFs)."
+  USD_NOK:
+    tradable_on_robinhood: false
+    note: "FX — not available on Robinhood; skip or trade a correlated ETF (e.g. petro-FX shorts ≈ long oil ETFs)."
+  USD_ZAR:
+    tradable_on_robinhood: false
+    note: "FX — not available on Robinhood; skip or trade a correlated ETF (e.g. petro-FX shorts ≈ long oil ETFs)."
+  EUR_USD:
+    tradable_on_robinhood: false
+    note: "FX — not available on Robinhood; skip or trade a correlated ETF (e.g. petro-FX shorts ≈ long oil ETFs)."
+  GBP_USD:
+    tradable_on_robinhood: false
+    note: "FX — not available on Robinhood; skip or trade a correlated ETF (e.g. petro-FX shorts ≈ long oil ETFs)."
+  AUD_USD:
+    tradable_on_robinhood: false
+    note: "FX — not available on Robinhood; skip or trade a correlated ETF (e.g. petro-FX shorts ≈ long oil ETFs)."
+  NZD_USD:
+    tradable_on_robinhood: false
+    note: "FX — not available on Robinhood; skip or trade a correlated ETF (e.g. petro-FX shorts ≈ long oil ETFs)."
+  USD_CHF:
+    tradable_on_robinhood: false
+    note: "FX — not available on Robinhood; skip or trade a correlated ETF (e.g. petro-FX shorts ≈ long oil ETFs)."
+  USD_CNH:
+    tradable_on_robinhood: false
+    note: "FX — not available on Robinhood; skip or trade a correlated ETF (e.g. petro-FX shorts ≈ long oil ETFs)."

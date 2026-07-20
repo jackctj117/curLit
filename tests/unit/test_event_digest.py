@@ -452,6 +452,40 @@ class TestIdeasSection:
         assert "stop $" not in message            # no price → no dollar stop
         assert "5d stop" in message
 
+    def test_rh_proxy_subline_commodity(self) -> None:
+        # CL-vowz: every idea block carries an indented Robinhood-proxy
+        # sub-line. A LONG XAU_USD idea → the gold ETFs.
+        message = self._with_ideas(
+            _idea(ticker="XAU_USD", action="long", direction="bullish"),
+        )
+        assert "  RH: GLD/IAU" in message
+
+    def test_rh_proxy_subline_index_short(self) -> None:
+        # A SHORT index idea surfaces the inverse ETFs on the sub-line.
+        message = self._with_ideas(
+            _idea(ticker="SPX500_USD", action="short", direction="bearish"),
+        )
+        assert "  RH: SPY→short via SH/SDS" in message
+
+    def test_rh_proxy_subline_fx(self) -> None:
+        message = self._with_ideas(
+            _idea(ticker="USD_JPY", action="short", direction="bearish"),
+        )
+        assert "  RH: FX — n/a" in message
+
+    def test_rh_proxy_subline_equity_direct(self) -> None:
+        # A plain equity idea (the default _idea ticker is TSM) → direct.
+        message = self._with_ideas(_idea())
+        assert "  RH: trades directly" in message
+
+    def test_rh_proxy_subline_escaped(self) -> None:
+        # A hostile ticker cannot break the sub-line; it renders 'n/a'
+        # (unknown) and is escaped like every interpolated value.
+        message = self._with_ideas(_idea(ticker="<X&>"))
+        assert "<script>" not in message
+        # unknown instrument → n/a proxy line still present.
+        assert "  RH: n/a" in message
+
     def test_long_entry_trigger_shown_in_full(self) -> None:
         # CL-jiqq follow-up: entry conditions are the operator's action
         # signal — they must NOT be truncated mid-sentence. A 200-char
