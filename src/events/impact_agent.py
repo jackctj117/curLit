@@ -49,6 +49,17 @@ VALID_HORIZONS = frozenset({"minutes", "hours", "days"})
 VALID_AFFECTED_KINDS = frozenset({"oanda", "fx", "equity_watch", "polymarket"})
 VALID_AFFECTED_DIRECTIONS = frozenset({"long", "short", "watch"})
 
+# -- advisory trade ideas (CL-01zt) — operator-facing, never machine-traded
+VALID_IDEA_ACTIONS = frozenset({"long", "short", "buy_calls", "buy_puts"})
+VALID_IDEA_HORIZONS = frozenset({"immediate", "short", "medium", "structural"})
+_BULLISH_IDEA_ACTIONS = frozenset({"long", "buy_calls"})
+#: Hard time-stop defaults (days) when the LLM omits one — event edge decays.
+_DEFAULT_TIME_STOP_DAYS = {
+    "immediate": 3, "short": 5, "medium": 20, "structural": 60,
+}
+MAX_TRADE_IDEAS = 8
+MAX_FADE_CANDIDATES = 5
+
 _SYSTEM_PROMPT = """\
 You are the Event Impact Agent for an FX/CFD trading system. You receive
 one news headline (from GDELT, so it is already ~15+ minutes old) plus a
@@ -68,13 +79,69 @@ Rules:
   and stale news deserve direction "neutral", low urgency, and an empty
   or watch-only affected list. Confidence above 0.7 requires a concrete,
   new, physical or policy event.
+- Be CONSERVATIVE: overstating impact destroys capital. When in doubt,
+  lower urgency and confidence rather than raise them.
+- Second-order thinking: this headline is already 15+ minutes old, so
+  the obvious first move may be priced. When the primary instrument has
+  likely already moved, prefer the SECOND-ORDER effects that reprice
+  more slowly (substitute producers, input costs, freight, currencies).
+- Prefer liquid instruments; propose a thin proxy only when nothing
+  liquid carries the exposure.
+- Territorial events (coups, nationalization, resource nationalism,
+  license revocation, or war in a producing region — Africa,
+  Russia/Ukraine): from the playbook context, name the specific
+  companies whose ASSETS sit in the affected territory and put the
+  asset/territory in each "reason" (e.g. "Kamoa-Kakula copper, DRC").
+  Assess: (a) which mines/projects face nationalization, license
+  revocation, or disruption; (b) which companies have material
+  ownership or offtake agreements in that territory; (c) second-order
+  effects on global supply of the commodity (cobalt, copper, gold,
+  uranium, wheat, nickel, palladium); (d) whether Western alternative
+  producers likely benefit.
+- China-Taiwan events: prioritize TSMC / advanced-semiconductor supply
+  chain impact, escalation vs routine grey-zone probability, Western
+  equipment and defense beneficiaries, and negative China-revenue
+  exposure. Routine drills are usually a fade, not a trade.
+- Vintage honesty: company/asset facts (yours and the playbook's) are
+  training-data vintage — ownership, permits, and mine status may have
+  changed. Flag that uncertainty in the "reason" where it matters.
 - Be selective in "affected": list only instruments THIS specific event
   genuinely moves — do not copy the entire playbook mapping.
 - "direction" is the overall risk impulse of the event itself
   (bullish/bearish for risk assets, neutral if unclear); per-instrument
   direction lives in "affected".
 
-JSON schema (all keys required):
+Advisory trade ideas (operator-facing — the system never auto-trades
+equities or options; these go to the operator's alert feed):
+- Generate concrete, actionable ideas in "trade_ideas" — an explicit
+  long / short / buy_calls / buy_puts per idea, not just directional
+  bias. Prefer defined-risk options (buy_calls/buy_puts) when
+  volatility is likely to spike or the move can reverse quickly;
+  recommend shorting stock only for high-conviction, longer-horizon
+  ideas with easy borrow.
+- Every idea gets a time_horizon ("immediate" = minutes-hours news
+  reaction; "short" = 1-5 trading days; "medium" = 1-4 weeks;
+  "structural" = multi-month, rare), a holding_period_days range, and
+  a HARD time_stop_days (immediate/short: 3-5; medium: 15-25 max —
+  event edge decays fast).
+- Rules of thumb: pure news reactions get short horizons and tight
+  stops. Supply disruption (mines/shipping/chips) can justify medium.
+  Nationalization/regime change is medium with high uncertainty.
+  Knee-jerk broad risk-off (especially China headlines) is often an
+  overreaction — put the fade in "fade_candidates". NEVER recommend
+  shorts/puts on a name already up/down >12-15% on this news without
+  a re-acceleration catalyst.
+- Decision framework: sudden military escalation -> puts on exposed
+  names + long defense (2-8 days; warn about post-spike vol crush).
+  Nationalization/license revocation -> short/puts on the SPECIFIC
+  exposed miner (5-20 days). Grain/commodity export disruption ->
+  long commodity exposure (1-4 weeks). Structural defense-spending
+  shift -> long defense (weeks-months, only when confirmed).
+- Leave "trade_ideas"/"fade_candidates" empty when nothing is
+  genuinely actionable.
+
+JSON schema (all keys required except "trade_ideas" and
+"fade_candidates", which are optional advisory extras):
 {
   "core_event": "<one sentence: what actually happened>",
   "direction": "bullish" | "bearish" | "neutral",
@@ -87,7 +154,24 @@ JSON schema (all keys required):
      "direction": "long" | "short" | "watch",
      "reason": "<one line>"}
   ],
-  "rationale": "<2-3 sentences: why this assessment>"
+  "rationale": "<2-3 sentences: why this assessment>",
+  "trade_ideas": [
+    {"ticker": "<symbol>",
+     "action": "long" | "short" | "buy_calls" | "buy_puts",
+     "direction": "bullish" | "bearish",
+     "confidence": <float 0.0-1.0>,
+     "rationale": "<one line, name the territorial asset if relevant>",
+     "time_horizon": "immediate" | "short" | "medium" | "structural",
+     "holding_period_days": "<e.g. 2-7>",
+     "time_stop_days": <int>,
+     "suggested_entry": "<entry condition / level note>",
+     "preferred_instrument": "<stock, or option strike/expiry note>",
+     "notes": "<key risks: vol crush, borrow, stale-facts caveats>"}
+  ],
+  "fade_candidates": [
+    {"ticker": "<symbol>", "action": "<e.g. fade the spike>",
+     "reason": "<one line: why this is an overreaction>"}
+  ]
 }
 """
 
@@ -188,6 +272,76 @@ def _clamp_float(value: Any, lo: float, hi: float) -> float:
     return max(lo, min(hi, float(value)))
 
 
+def _normalise_trade_ideas(raw: Any) -> list[dict[str, Any]]:
+    """Advisory-only ``trade_ideas`` — validate enums, clamp numbers,
+    drop malformed entries INDIVIDUALLY (a bad idea never dismisses the
+    assessment; ideas are operator advisory, not machine-traded)."""
+    if not isinstance(raw, list):
+        return []
+    ideas: list[dict[str, Any]] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        ticker = str(entry.get("ticker", "")).strip()
+        action = str(entry.get("action", "")).strip().lower()
+        horizon = str(entry.get("time_horizon", "")).strip().lower()
+        if not ticker or action not in VALID_IDEA_ACTIONS:
+            logger.debug("dropping trade idea (ticker/action): %r", entry)
+            continue
+        if horizon not in VALID_IDEA_HORIZONS:
+            logger.debug("dropping trade idea (time_horizon): %r", entry)
+            continue
+        direction = str(entry.get("direction", "")).strip().lower()
+        if direction not in ("bullish", "bearish"):
+            direction = "bullish" if action in _BULLISH_IDEA_ACTIONS else "bearish"
+        try:
+            confidence = _clamp_float(entry.get("confidence"), 0.0, 1.0)
+        except (TypeError, ValueError):
+            confidence = 0.5  # advisory default, not worth dropping over
+        try:
+            time_stop = _clamp_int(entry.get("time_stop_days"), 1, 120)
+        except (TypeError, ValueError):
+            time_stop = _DEFAULT_TIME_STOP_DAYS[horizon]
+        ideas.append({
+            "ticker": ticker,
+            "action": action,
+            "direction": direction,
+            "confidence": confidence,
+            "rationale": str(entry.get("rationale", "")).strip(),
+            "time_horizon": horizon,
+            "holding_period_days": str(entry.get("holding_period_days", "")).strip(),
+            "time_stop_days": time_stop,
+            "suggested_entry": str(entry.get("suggested_entry", "")).strip(),
+            "preferred_instrument": str(entry.get("preferred_instrument", "")).strip(),
+            "notes": str(entry.get("notes", "")).strip(),
+        })
+        if len(ideas) >= MAX_TRADE_IDEAS:
+            break
+    return ideas
+
+
+def _normalise_fade_candidates(raw: Any) -> list[dict[str, str]]:
+    """Advisory ``fade_candidates`` — overreaction fades; same
+    drop-individually posture as trade ideas."""
+    if not isinstance(raw, list):
+        return []
+    fades: list[dict[str, str]] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        ticker = str(entry.get("ticker", "")).strip()
+        if not ticker:
+            continue
+        fades.append({
+            "ticker": ticker,
+            "action": str(entry.get("action", "")).strip(),
+            "reason": str(entry.get("reason", "")).strip(),
+        })
+        if len(fades) >= MAX_FADE_CANDIDATES:
+            break
+    return fades
+
+
 def normalise_assessment(
     payload: dict[str, Any],
     headline: str,
@@ -278,6 +432,13 @@ def normalise_assessment(
         "confidence": confidence,
         "affected": affected,
         "rationale": rationale,
+        # Optional advisory extras (CL-01zt) — always present as lists so
+        # downstream .get() consumers see a stable shape; empty when the
+        # LLM offered nothing actionable.
+        "trade_ideas": _normalise_trade_ideas(payload.get("trade_ideas")),
+        "fade_candidates": _normalise_fade_candidates(
+            payload.get("fade_candidates"),
+        ),
     }
 
 

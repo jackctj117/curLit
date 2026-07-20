@@ -132,6 +132,63 @@ class TestQueryBuilding:
         assert len(a) == 64  # sha256 hex
 
 
+class TestRealConfigQueries:
+    """CL-01zt: every expanded theme must build a well-formed, bounded
+    GDELT query, and the total per-run request count must stay sane for
+    the ingester's one-query-per-theme pacing."""
+
+    NEW_THEMES = (
+        "russia_ukraine",
+        "africa_power_shift",
+        "drc_copper_cobalt",
+        "sahel_gold_uranium",
+        "guinea_iron_bauxite",
+        "south_africa_pgm_gold",
+        "red_sea_shipping",
+        "taiwan_semiconductor",
+        "black_sea_grain",
+    )
+
+    @pytest.fixture(scope="class")
+    def real_playbooks(self) -> dict:
+        return load_playbooks("configs/event_playbooks.yaml")
+
+    @pytest.mark.parametrize("theme", NEW_THEMES)
+    def test_new_theme_query_shape(self, real_playbooks: dict, theme: str) -> None:
+        q = build_theme_query(real_playbooks[theme])
+        assert q.startswith("(")
+        assert q.endswith(") sourcelang:english")
+
+    def test_all_theme_queries_under_gdelt_length_ceiling(
+        self, real_playbooks: dict,
+    ) -> None:
+        # GDELT's Doc API rejects long queries with an HTTP-200
+        # plain-text "query was too short or too long" (observed live at
+        # 255 chars, CL-01zt); the longest known-good query is 191 chars
+        # (cb_surprise). Guard every theme under 200.
+        for key, pb in real_playbooks.items():
+            q = build_theme_query(pb)
+            assert len(q) <= 200, (
+                f"{key}: built GDELT query is {len(q)} chars — GDELT "
+                f"rejects over-long queries; trim watch_terms"
+            )
+
+    def test_multiword_terms_are_phrase_quoted(self, real_playbooks: dict) -> None:
+        for theme in self.NEW_THEMES:
+            pb = real_playbooks[theme]
+            q = build_theme_query(pb)
+            for term in pb.watch_terms:
+                expected = f'"{term}"' if " " in term else term
+                assert expected in q, f"{theme}: {term!r} not in query"
+
+    def test_per_run_request_load_stays_bounded(self, real_playbooks: dict) -> None:
+        # One GDELT request per theme per run; the ingester paces at
+        # pause_sec=6.0 with one 20s 429 cool-off retry. ~15 themes ≈
+        # 90s+fetch per cycle — fine inside the 900s producer loop, but
+        # unbounded growth here would eat the loop, so pin a ceiling.
+        assert len(real_playbooks) <= 20
+
+
 # ---------------------------------------------------------------------- #
 # fetch (mocked HTTP)
 # ---------------------------------------------------------------------- #

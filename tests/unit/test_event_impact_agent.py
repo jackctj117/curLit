@@ -171,6 +171,112 @@ class TestNormalise:
         out = self._norm(_valid_payload(core_event=""))
         assert out["core_event"] == "headline"
 
+    def test_advisory_fields_default_to_empty_lists(self) -> None:
+        # Optional fields absent -> stable empty-list shape downstream.
+        out = self._norm(_valid_payload())
+        assert out["trade_ideas"] == []
+        assert out["fade_candidates"] == []
+
+
+class TestTradeIdeas:
+    """CL-01zt advisory trade ideas — additive, operator-facing; the
+    machine-traded 'affected' array must be untouched by them."""
+
+    def _idea(self, **overrides: Any) -> dict:
+        base: dict = {
+            "ticker": "GOLD",
+            "action": "buy_puts",
+            "direction": "bearish",
+            "confidence": 0.7,
+            "rationale": "Loulo-Gounkoto (Mali) seizure risk hits Barrick NAV",
+            "time_horizon": "medium",
+            "holding_period_days": "5-20",
+            "time_stop_days": 20,
+            "suggested_entry": "on any bounce",
+            "preferred_instrument": "puts, 1-2 month expiry",
+            "notes": "training-data vintage — verify mine status",
+        }
+        base.update(overrides)
+        return base
+
+    def _norm(self, **payload_overrides: Any) -> dict:
+        return normalise_assessment(
+            _valid_payload(**payload_overrides), "headline", HORMUZ, FALLBACK,
+        )
+
+    def test_valid_idea_passes_through(self) -> None:
+        out = self._norm(trade_ideas=[self._idea()])
+        assert len(out["trade_ideas"]) == 1
+        idea = out["trade_ideas"][0]
+        assert idea["ticker"] == "GOLD"
+        assert idea["action"] == "buy_puts"
+        assert idea["time_horizon"] == "medium"
+        assert idea["time_stop_days"] == 20
+        # affected is untouched by advisory extras
+        assert {a["instrument"] for a in out["affected"]} == {"BCO_USD", "FRO"}
+
+    def test_bad_action_dropped_assessment_survives(self) -> None:
+        out = self._norm(trade_ideas=[
+            self._idea(action="yolo_leaps"),
+            self._idea(ticker="BTG", action="short"),
+        ])
+        assert [i["ticker"] for i in out["trade_ideas"]] == ["BTG"]
+        assert out["direction"] == "bearish"  # whole assessment intact
+
+    def test_bad_horizon_dropped(self) -> None:
+        out = self._norm(trade_ideas=[self._idea(time_horizon="forever")])
+        assert out["trade_ideas"] == []
+
+    def test_missing_ticker_dropped(self) -> None:
+        out = self._norm(trade_ideas=[self._idea(ticker="  ")])
+        assert out["trade_ideas"] == []
+
+    def test_confidence_clamped_and_defaulted(self) -> None:
+        out = self._norm(trade_ideas=[
+            self._idea(confidence=1.8),
+            self._idea(ticker="B", confidence="very high"),
+        ])
+        assert out["trade_ideas"][0]["confidence"] == 1.0
+        assert out["trade_ideas"][1]["confidence"] == 0.5
+
+    def test_time_stop_defaults_by_horizon(self) -> None:
+        out = self._norm(trade_ideas=[
+            self._idea(time_stop_days=None, time_horizon="immediate"),
+            self._idea(ticker="B", time_stop_days="soon", time_horizon="medium"),
+        ])
+        assert out["trade_ideas"][0]["time_stop_days"] == 3
+        assert out["trade_ideas"][1]["time_stop_days"] == 20
+
+    def test_direction_derived_from_action_when_invalid(self) -> None:
+        out = self._norm(trade_ideas=[
+            self._idea(direction="sideways", action="buy_calls"),
+            self._idea(ticker="B", direction="", action="short"),
+        ])
+        assert out["trade_ideas"][0]["direction"] == "bullish"
+        assert out["trade_ideas"][1]["direction"] == "bearish"
+
+    def test_non_list_trade_ideas_ignored_not_dismissed(self) -> None:
+        out = self._norm(trade_ideas="buy everything")
+        assert out["trade_ideas"] == []
+        assert out["direction"] == "bearish"
+
+    def test_idea_count_capped(self) -> None:
+        ideas = [self._idea(ticker=f"T{i}") for i in range(12)]
+        out = self._norm(trade_ideas=ideas)
+        assert len(out["trade_ideas"]) == 8
+
+    def test_fade_candidates_parsed_and_bad_dropped(self) -> None:
+        out = self._norm(fade_candidates=[
+            {"ticker": "FXI", "action": "fade the spike",
+             "reason": "routine drills, knee-jerk China risk-off"},
+            {"action": "fade", "reason": "no ticker"},
+            "not a dict",
+        ])
+        assert out["fade_candidates"] == [{
+            "ticker": "FXI", "action": "fade the spike",
+            "reason": "routine drills, knee-jerk China risk-off",
+        }]
+
 
 # ---------------------------------------------------------------------- #
 # agent + DB round trip (mock LLM, sqlite)
@@ -305,3 +411,54 @@ class TestAgentRoundTrip:
         assert results[0].status == "ASSESSED"
         user_msg = client.calls[0]["messages"][1].content
         assert "No playbook matched" in user_msg
+
+
+# ---------------------------------------------------------------------- #
+# CL-01zt prompt guidance
+# ---------------------------------------------------------------------- #
+
+
+class TestPromptGuidance:
+    """The analyst-guidance upgrade must land in the system prompt
+    WITHOUT touching the JSON contract (confluence/digest depend on it)."""
+
+    def test_system_prompt_has_operator_guidance(self) -> None:
+        from src.events.impact_agent import _SYSTEM_PROMPT
+
+        low = _SYSTEM_PROMPT.lower()
+        assert "conservative" in low
+        assert "second-order" in low
+        assert "territory" in low  # territorial asset naming
+        assert "training-data" in low  # vintage honesty
+        assert "liquid" in low
+        assert "tsmc" in low  # China-Taiwan guidance
+        # advisory trade-idea guidance (second refinement)
+        assert "trade_ideas" in low
+        assert "buy_puts" in low
+        assert "time_stop_days" in low
+        assert "fade_candidates" in low
+
+    def test_json_schema_keys_unchanged(self) -> None:
+        from src.events.impact_agent import _SYSTEM_PROMPT
+
+        for key in (
+            '"core_event"', '"direction"', '"urgency"', '"horizon"',
+            '"confidence"', '"affected"', '"instrument"', '"kind"',
+            '"reason"', '"rationale"',
+        ):
+            assert key in _SYSTEM_PROMPT
+
+    def test_territorial_playbook_context_reaches_llm(self, engine: Engine) -> None:
+        # A DRC event's user prompt must carry the mine/territory notes
+        # so the model can name whose assets sit in the territory.
+        _insert_event(
+            engine, "e1", "Kolwezi export halt announced",
+            theme="drc_copper_cobalt",
+        )
+        client = MockLLMClient(json.dumps(_valid_payload()))
+        agent = EventImpactAgent(engine, client=client)  # type: ignore[arg-type]
+        agent.assess_new_events()
+        user_msg = client.calls[0]["messages"][1].content
+        assert "Kamoa-Kakula" in user_msg
+        assert "IVN.TO" in user_msg
+        assert "XCU_USD" in user_msg

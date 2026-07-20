@@ -1,33 +1,42 @@
-# Event playbooks (CL-6iu7) — pre-seeded geopolitical knowledge base for
-# the current-events pipeline. Each theme carries:
+# Event playbooks (CL-6iu7, expanded CL-01zt) — pre-seeded geopolitical
+# knowledge base for the current-events pipeline. Each theme carries:
 #   * watch_terms — GDELT Doc 2.0 query phrases (OR-joined per theme)
 #   * instruments — what curLit can actually reach, with direction HINTS
 #
 # Instrument kinds:
 #   oanda        — OANDA CFD (BCO_USD brent, WTICO_USD wti, XAU_USD gold,
-#                  NATGAS_USD natgas, SPX500_USD, NAS100_USD) — tradable
-#   fx           — OANDA FX pair (USD_CAD, USD_NOK, ...) — tradable
-#   equity_watch — equity ticker, ALERT-ONLY (no equity execution path)
+#                  NATGAS_USD natgas, XCU_USD copper, XPT_USD platinum,
+#                  XPD_USD palladium, WHEAT_USD, CORN_USD, SPX500_USD,
+#                  NAS100_USD) — tradable
+#   fx           — OANDA FX pair (USD_CAD, USD_NOK, USD_ZAR, ...) — tradable
+#   equity_watch — equity ticker, ALERT-ONLY (no equity execution path).
+#                  Non-US listings use yfinance-style suffixes (IVN.TO,
+#                  GLEN.L). Reasons for territorial themes MUST name the
+#                  specific asset/territory (mine, project, country).
 #   polymarket   — event-contract slug (placeholder examples; discover
 #                  real slugs via scripts/discover_polymarket_markets.py)
 #
 # Directions are hints for the Event Impact Agent, not orders: "long" /
 # "short" = the historically typical reaction if the theme fires as
 # described; "watch" = sign depends on the specifics (the LLM decides).
+#
+# VINTAGE NOTE: company/asset facts (who owns which mine, mine status)
+# are training-data vintage (~2024-25). Ownership, permits, and
+# operating status change — the impact agent is instructed to flag
+# uncertainty rather than assert stale facts.
 
 themes:
   energy_chokepoint:
     name: Energy chokepoint disruption
     description: >
       Physical disruption or credible closure threat at a maritime oil/LNG
-      chokepoint — Strait of Hormuz (~20% of global oil + LNG), Suez
-      Canal/Bab el-Mandeb (Europe-Asia transit), Strait of Malacca (Asia
-      imports). Reprices freight, crude, and LNG within hours.
+      chokepoint — Strait of Hormuz (~20% of global oil + LNG), Strait of
+      Malacca (Asia imports). Red Sea / Suez / Bab el-Mandeb has its own
+      theme (red_sea_shipping). Reprices freight, crude, and LNG within
+      hours.
     watch_terms:
       - "strait of hormuz"
       - "hormuz closure"
-      - "suez canal blocked"
-      - "bab el-mandeb"
       - "strait of malacca"
       - "tanker attacked"
       - "tanker seized"
@@ -73,6 +82,55 @@ themes:
         direction: watch
         rationale: DHT Holdings — VLCC pure-play, most levered to Hormuz disruption.
       - instrument: strait-of-hormuz-closed-in-2026
+        kind: polymarket
+        direction: watch
+        rationale: Placeholder event-contract slug — replace with a discovered live market.
+
+  red_sea_shipping:
+    name: Red Sea / Suez shipping disruption
+    description: >
+      Attacks on shipping in the Red Sea / Bab el-Mandeb, Suez transit
+      disruption, or mass diversion around the Cape of Good Hope.
+      Lengthens Asia-Europe voyages ~10-14 days, absorbs vessel capacity,
+      spikes container/tanker rates and war-risk insurance, and reroutes
+      Qatari LNG bound for Europe.
+    watch_terms:
+      - "houthi"
+      - "bab el-mandeb"
+      - "red sea shipping"
+      - "suez canal"
+      - "cape of good hope"
+      - "vessel attacked"
+    instruments:
+      - instrument: BCO_USD
+        kind: oanda
+        direction: long
+        rationale: Rerouted crude and war-risk premia tighten prompt Brent.
+      - instrument: NATGAS_USD
+        kind: oanda
+        direction: long
+        rationale: Qatari LNG diverting around the Cape lengthens voyages and tightens the global gas balance.
+      - instrument: ZIM
+        kind: equity_watch
+        direction: watch
+        rationale: ZIM — Asia-Europe container exposure; spot freight spikes on Suez diversion, but Israeli-linked fleet carries direct targeting risk (two-sided).
+      - instrument: DAC
+        kind: equity_watch
+        direction: watch
+        rationale: Danaos — containership lessor; Cape rerouting absorbs capacity and re-rates charter rates.
+      - instrument: CMRE
+        kind: equity_watch
+        direction: watch
+        rationale: Costamare — container vessel owner, same charter-rate upside on longer routes.
+      - instrument: SFL
+        kind: equity_watch
+        direction: watch
+        rationale: SFL Corp — diversified tanker/container lessor; day-rate upside on rerouting.
+      - instrument: MATX
+        kind: equity_watch
+        direction: watch
+        rationale: Matson — transpacific lanes only (no Red Sea routes); second-order beneficiary of global capacity tightening.
+      - instrument: red-sea-shipping-normalized-2026
         kind: polymarket
         direction: watch
         rationale: Placeholder event-contract slug — replace with a discovered live market.
@@ -131,6 +189,502 @@ themes:
         direction: watch
         rationale: Valero — refinery outages elsewhere widen crack spreads for survivors.
       - instrument: opec-announces-emergency-cut-2026
+        kind: polymarket
+        direction: watch
+        rationale: Placeholder event-contract slug — replace with a discovered live market.
+
+  russia_ukraine:
+    name: Russia-Ukraine war and regional escalation
+    description: >
+      Escalation or de-escalation in the Russia-Ukraine war and its
+      economic theater — strikes on Russian refineries/export terminals,
+      Black Sea corridor and Kerch bridge events, mobilization, ceasefire
+      talks, sanctions/price-cap changes, shadow-fleet enforcement, NATO
+      rearmament. Moves energy, grains, fertilizer, defense, and EUR.
+      De-escalation headlines invert the energy/gold legs.
+    # NOTE: GDELT's Doc API rejects long queries ("query was too short or
+    # too long") — keep the built query under ~190 chars (see the
+    # length-guard unit test). Dropped for length: "oil price cap"
+    # (sanctions_trade covers caps), "russian mobilization"
+    # (war_escalation has "military mobilization"), "patriot missiles"
+    # (himars covers the defense-aid news cluster).
+    watch_terms:
+      - "kerch bridge"
+      - "grain corridor"
+      - "nord stream"
+      - "zaporizhzhia"
+      - "russian refinery"
+      - "ceasefire talks"
+      - "shadow fleet"
+      - "odesa"
+      - "crimea"
+      - "donbas"
+      - "himars"
+    instruments:
+      - instrument: BCO_USD
+        kind: oanda
+        direction: long
+        rationale: Strikes on Russian refineries/terminals and tighter sanctions subtract barrels from the waterborne market.
+      - instrument: NATGAS_USD
+        kind: oanda
+        direction: long
+        rationale: Escalation threatens residual Russian gas flows to Europe; US Henry Hub is pulled up second-order via LNG export arb.
+      - instrument: XAU_USD
+        kind: oanda
+        direction: long
+        rationale: Safe-haven bid plus central-bank gold demand on every sanctions escalation.
+      - instrument: EUR_USD
+        kind: fx
+        direction: short
+        rationale: Europe wears the war-risk premium and the energy terms-of-trade hit; USD is the deeper haven.
+      - instrument: WHEAT_USD
+        kind: oanda
+        direction: long
+        rationale: Black Sea corridor disruption reprices global wheat (Russia+Ukraine ~30% of exports).
+      - instrument: LMT
+        kind: equity_watch
+        direction: watch
+        rationale: Lockheed Martin — HIMARS/GMLRS and PAC-3 interceptor demand from Ukraine aid and European rearmament.
+      - instrument: RTX
+        kind: equity_watch
+        direction: watch
+        rationale: RTX — Patriot air-defense prime; interceptor backlog grows with every missile-defense headline.
+      - instrument: NOC
+        kind: equity_watch
+        direction: watch
+        rationale: Northrop Grumman — ammunition and solid-rocket-motor capacity beneficiary of sustained war.
+      - instrument: GD
+        kind: equity_watch
+        direction: watch
+        rationale: General Dynamics — 155mm artillery production ramp is direct Ukraine-war exposure.
+      - instrument: MOS
+        kind: equity_watch
+        direction: watch
+        rationale: Mosaic — potash/phosphate pricing upside when Russian/Belarusian fertilizer supply is sanctioned or disrupted.
+      - instrument: NTR
+        kind: equity_watch
+        direction: watch
+        rationale: Nutrien — largest Western potash producer (Saskatchewan); gains share on Belarus/Russia potash disruption.
+      - instrument: CF
+        kind: equity_watch
+        direction: watch
+        rationale: CF Industries — nitrogen; European ammonia curtails on gas spikes, widening the US low-cost-gas margin advantage.
+      - instrument: CCJ
+        kind: equity_watch
+        direction: watch
+        rationale: Cameco — nuclear-as-energy-security demand plus Western conversion/enrichment scarcity when Rosatom is sanctioned.
+      - instrument: URA
+        kind: equity_watch
+        direction: watch
+        rationale: Global X Uranium ETF — diversified proxy for the same nuclear energy-security theme.
+      - instrument: SBSW
+        kind: equity_watch
+        direction: watch
+        rationale: Sibanye-Stillwater — non-Russian palladium alternative (SA + US Stillwater) when Nornickel supply is at risk.
+      - instrument: russia-ukraine-ceasefire-in-2026
+        kind: polymarket
+        direction: watch
+        rationale: Placeholder event-contract slug — replace with a discovered live market.
+
+  africa_power_shift:
+    name: African power shift (umbrella)
+    description: >
+      Catch-all for coups, junta takeovers, mine nationalizations, and
+      raw-material export bans in African states NOT covered by the
+      focused regional themes (drc_copper_cobalt, sahel_gold_uranium,
+      guinea_iron_bauxite, south_africa_pgm_gold) — e.g. Sudan, Gabon,
+      Ethiopia, Zambia politics, Mozambique. The question is always: whose
+      mines sit in the affected territory, and what commodity flow breaks.
+    watch_terms:
+      - "military coup"
+      - "coup attempt"
+      - "junta"
+      - "seizes power"
+      - "nationalization"
+      - "export ban"
+      - "mining licence"
+      - "mining license"
+    instruments:
+      - instrument: XAU_USD
+        kind: oanda
+        direction: long
+        rationale: Coups in gold-producing states threaten supply and add the generic uncertainty bid.
+      - instrument: XCU_USD
+        kind: oanda
+        direction: long
+        rationale: African copperbelt disruption (DRC+Zambia >10% of mined copper) tightens the global balance.
+      - instrument: USD_ZAR
+        kind: fx
+        direction: long
+        rationale: ZAR is the liquid African risk proxy — regional instability widens its risk premium.
+      - instrument: AU
+        kind: equity_watch
+        direction: watch
+        rationale: AngloGold Ashanti — Obuasi/Iduapriem (Ghana), Kibali (DRC, JV with Barrick), Geita (Tanzania); pan-African footprint (vintage 2024-25).
+      - instrument: NEM
+        kind: equity_watch
+        direction: watch
+        rationale: Newmont — Ahafo and Akyem gold mines, Ghana; West African political-risk exposure.
+      - instrument: FQVLF
+        kind: equity_watch
+        direction: watch
+        rationale: First Quantum — Kansanshi and Sentinel copper mines, Zambia; tax/royalty regime risk.
+      - instrument: new-african-coup-in-2026
+        kind: polymarket
+        direction: watch
+        rationale: Placeholder event-contract slug — replace with a discovered live market.
+
+  drc_copper_cobalt:
+    name: DRC copper-cobalt belt disruption
+    description: >
+      Political change, resource nationalism, export policy, or conflict
+      touching the DR Congo copper-cobalt belt (Kolwezi/Katanga/Lualaba)
+      — the DRC supplies ~70% of world cobalt and is a top-3 copper
+      producer. Watch Gecamines (state miner) contract renegotiations,
+      cobalt export quotas/bans, Lobito corridor logistics, and eastern
+      DRC conflict (M23) spillover.
+    watch_terms:
+      - "kolwezi"
+      - "katanga"
+      - "gecamines"
+      - "lobito corridor"
+      - "kamoa"
+      - "tenke fungurume"
+      - "cobalt export"
+      - "congo copper"
+      - "m23"
+    instruments:
+      - instrument: XCU_USD
+        kind: oanda
+        direction: long
+        rationale: DRC is a top-3 copper producer (Kamoa, Tenke, KCC) — any belt disruption tightens the global balance.
+      - instrument: XAU_USD
+        kind: oanda
+        direction: long
+        rationale: Resource-nationalism escalation in central Africa carries a safe-haven bid; Kibali gold sits in the DRC too.
+      - instrument: IVN.TO
+        kind: equity_watch
+        direction: watch
+        rationale: Ivanhoe Mines — Kamoa-Kakula copper complex (Lualaba, DRC) and Kipushi zinc; the purest listed DRC copper play.
+      - instrument: GLEN.L
+        kind: equity_watch
+        direction: watch
+        rationale: Glencore — KCC (Katanga) and Mutanda copper-cobalt mines, DRC, plus cobalt marketing dominance (vintage 2024-25).
+      - instrument: CMCLF
+        kind: equity_watch
+        direction: watch
+        rationale: CMOC Group (OTC) — Tenke Fungurume and Kisanfu, DRC; the world's largest cobalt producer (vintage 2024-25).
+      - instrument: ZIJMF
+        kind: equity_watch
+        direction: watch
+        rationale: Zijin Mining (OTC) — ~40% JV partner in Kamoa-Kakula (DRC); shares the same territorial risk as Ivanhoe.
+      - instrument: FQVLF
+        kind: equity_watch
+        direction: watch
+        rationale: First Quantum — Kansanshi/Sentinel in neighboring Zambia; regional contagion risk plus copper-price beta.
+      - instrument: drc-mining-disruption-2026
+        kind: polymarket
+        direction: watch
+        rationale: Placeholder event-contract slug — replace with a discovered live market.
+
+  sahel_gold_uranium:
+    name: Sahel gold and uranium (Mali/Niger/Burkina Faso)
+    description: >
+      Junta actions against Western miners in the Alliance of Sahel
+      States — Mali (top-4 African gold producer), Burkina Faso, Niger
+      (uranium). Pattern since 2023: new mining codes, higher state
+      stakes, license revocations, detained executives, and outright
+      nationalization (Niger's Somair uranium mine, Orano). Orano is
+      French state-owned and unlisted — trade uranium via proxies.
+    watch_terms:
+      - "alliance of sahel states"
+      - "barrick mali"
+      - "somair"
+      - "loulo"
+      - "fekola"
+      - "niger uranium"
+      - "mali gold"
+      - "mali junta"
+      - "niger junta"
+      - "arlit"
+    instruments:
+      - instrument: XAU_USD
+        kind: oanda
+        direction: long
+        rationale: Mali/Burkina are top-15 gold producers — seizure or shut-in risk tightens supply on top of the risk bid.
+      - instrument: GOLD
+        kind: equity_watch
+        direction: watch
+        rationale: Barrick — Loulo-Gounkoto complex, Mali; in open dispute with the junta (operations suspended, staff detained — vintage 2024-25, verify status).
+      - instrument: BTG
+        kind: equity_watch
+        direction: watch
+        rationale: B2Gold — Fekola mine, Mali; direct exposure to the junta's revised mining code and fiscal demands.
+      - instrument: EDV.TO
+        kind: equity_watch
+        direction: watch
+        rationale: Endeavour Mining — Houndé/Mana (Burkina Faso), Ity (Côte d'Ivoire), Sabodala-Massawa (Senegal); broad West African footprint.
+      - instrument: GLO.TO
+        kind: equity_watch
+        direction: watch
+        rationale: Global Atomic — Dasa uranium project, Niger; direct junta permitting/nationalization risk.
+      - instrument: CCJ
+        kind: equity_watch
+        direction: watch
+        rationale: Cameco — no Sahel assets (Canada/Kazakhstan); Western supply beneficiary when Niger uranium is stranded.
+      - instrument: UEC
+        kind: equity_watch
+        direction: watch
+        rationale: Uranium Energy Corp — US ISR producer; benefits from the Western supply-security premium on Niger disruption.
+      - instrument: URA
+        kind: equity_watch
+        direction: watch
+        rationale: Global X Uranium ETF — sector proxy for Niger supply risk (Orano itself is unlisted).
+      - instrument: sahel-mining-nationalization-2026
+        kind: polymarket
+        direction: watch
+        rationale: Placeholder event-contract slug — replace with a discovered live market.
+
+  guinea_iron_bauxite:
+    name: Guinea iron ore and bauxite
+    description: >
+      Political or policy disruption in Guinea — the world's top bauxite
+      exporter (China's main supply) and home of Simandou, the largest
+      new iron-ore development. Coup risk (junta since 2021), export
+      suspensions, and license fights move alumina/aluminum chains and
+      the seaborne iron-ore outlook.
+    watch_terms:
+      - "simandou"
+      - "conakry"
+      - "guinea bauxite"
+      - "guinea junta"
+      - "bauxite export"
+      - "guinea mining"
+    instruments:
+      - instrument: XAU_USD
+        kind: oanda
+        direction: long
+        rationale: West African coup-risk haven bid; Guinea also hosts AngloGold's Siguiri gold mine.
+      - instrument: RIO
+        kind: equity_watch
+        direction: watch
+        rationale: Rio Tinto — SimFer JV at Simandou iron ore, Guinea; disruption delays its biggest growth project.
+      - instrument: VALE
+        kind: equity_watch
+        direction: watch
+        rationale: Vale — iron-ore incumbent; a Simandou (Guinea) delay is bullish existing seaborne supply.
+      - instrument: BHP
+        kind: equity_watch
+        direction: watch
+        rationale: BHP — Pilbara incumbent with the same second-order benefit from Simandou (Guinea) slippage.
+      - instrument: AA
+        kind: equity_watch
+        direction: watch
+        rationale: Alcoa — stake in CBG bauxite (Halco consortium), Guinea; two-sided — asset risk vs global alumina price spike.
+      - instrument: guinea-mining-disruption-2026
+        kind: polymarket
+        direction: watch
+        rationale: Placeholder event-contract slug — replace with a discovered live market.
+
+  south_africa_pgm_gold:
+    name: South Africa PGMs, gold, and grid risk
+    description: >
+      South Africa supplies ~70% of mined platinum and ~35% of palladium
+      (with Russia). Eskom load-shedding, wage strikes (AMCU), mining
+      charter changes, and rail/port failures (Transnet) throttle PGM and
+      gold output and hit ZAR terms of trade.
+    watch_terms:
+      - "eskom"
+      - "load shedding"
+      - "south africa mining"
+      - "platinum supply"
+      - "amcu"
+      - "mining charter"
+    instruments:
+      - instrument: XPT_USD
+        kind: oanda
+        direction: long
+        rationale: SA is ~70% of mined platinum — outage or strike risk reprices it directly.
+      - instrument: XPD_USD
+        kind: oanda
+        direction: long
+        rationale: SA is the largest non-Russian palladium source; joint SA+Russia risk is a supply squeeze.
+      - instrument: USD_ZAR
+        kind: fx
+        direction: long
+        rationale: Grid or mining crisis is a direct ZAR terms-of-trade and growth hit.
+      - instrument: XAU_USD
+        kind: oanda
+        direction: watch
+        rationale: SA is no longer the marginal gold producer — sign depends on whether the event is SA-specific or a broader risk impulse.
+      - instrument: SBSW
+        kind: equity_watch
+        direction: watch
+        rationale: Sibanye-Stillwater — Rustenburg/Marikana PGM ops and SA gold; most levered to Eskom load-shedding.
+      - instrument: IMPUY
+        kind: equity_watch
+        direction: watch
+        rationale: Impala Platinum — Impala Rustenburg (SA) plus Zimplats (Zimbabwe); concentrated PGM supply exposure.
+      - instrument: ANGPY
+        kind: equity_watch
+        direction: watch
+        rationale: Anglo American Platinum — Mogalakwena/Amandelbult, SA; demerged from Anglo as Valterra in 2025 — ADR ticker may have changed, verify.
+      - instrument: GFI
+        kind: equity_watch
+        direction: watch
+        rationale: Gold Fields — South Deep (SA) plus Ghana/Australia/Peru; partial SA power-and-labor exposure.
+      - instrument: HMY
+        kind: equity_watch
+        direction: watch
+        rationale: Harmony Gold — Mponeng and SA deep-level gold pure-play; most exposed to Eskom power cuts.
+      - instrument: eskom-grid-collapse-2026
+        kind: polymarket
+        direction: watch
+        rationale: Placeholder event-contract slug — replace with a discovered live market.
+
+  taiwan_semiconductor:
+    name: China-Taiwan escalation / semiconductor supply
+    description: >
+      Cross-strait escalation — blockade drills, ADIZ incursions,
+      grey-zone pressure on outlying islands (Kinmen/Penghu/Matsu), or
+      worse. TSMC's Hsinchu/Tainan fabs are >90% of leading-edge foundry
+      capacity: even a blockade scare reprices the whole semiconductor
+      and AI complex. Distinguish routine drills (fade) from genuinely
+      new escalation (act).
+    # NOTE: kept under GDELT's query-length ceiling (~190 chars built).
+    # Dropped for length: "pla air force" (pla navy catches drills
+    # coverage), "air defense identification zone" (33 chars; adiz
+    # incursion stories co-report strait/drill terms), "one china",
+    # "penghu" (kinmen covers the outlying-island grey-zone cluster).
+    watch_terms:
+      - "taiwan strait"
+      - "taiwan blockade"
+      - "pla navy"
+      - "around taiwan"
+      - "reunification"
+      - "arms sale to taiwan"
+      - "kinmen"
+      - "chip blockade"
+      - "taiwan invasion"
+    instruments:
+      - instrument: USD_JPY
+        kind: fx
+        direction: short
+        rationale: Regional escalation triggers risk-off yen bid (carry unwind dominates the first move).
+      - instrument: NAS100_USD
+        kind: oanda
+        direction: short
+        rationale: The index's AI/semiconductor concentration makes TSMC disruption a direct earnings shock.
+      - instrument: SPX500_USD
+        kind: oanda
+        direction: short
+        rationale: Broad risk-off on any credible cross-strait escalation.
+      - instrument: XAU_USD
+        kind: oanda
+        direction: long
+        rationale: Safe-haven bid scales with escalation severity.
+      - instrument: TSM
+        kind: equity_watch
+        direction: watch
+        rationale: TSMC — the asset at risk itself; >90% of leading-edge capacity sits in Hsinchu/Tainan, Taiwan.
+      - instrument: ASML
+        kind: equity_watch
+        direction: watch
+        rationale: ASML — sole EUV supplier; Taiwan disruption freezes fab expansion (two-sided with China export controls).
+      - instrument: AVGO
+        kind: equity_watch
+        direction: watch
+        rationale: Broadcom — fabless, dependent on TSMC Taiwan capacity for leading-edge parts.
+      - instrument: QCOM
+        kind: equity_watch
+        direction: watch
+        rationale: Qualcomm — TSMC-dependent plus large China handset revenue exposure.
+      - instrument: AMAT
+        kind: equity_watch
+        direction: watch
+        rationale: Applied Materials — WFE exposure to Taiwan capex and China export-control crossfire.
+      - instrument: LRCX
+        kind: equity_watch
+        direction: watch
+        rationale: Lam Research — same WFE exposure, historically the highest China revenue share of the trio.
+      - instrument: KLAC
+        kind: equity_watch
+        direction: watch
+        rationale: KLA — process-control WFE, Taiwan/China exposure like AMAT/LRCX.
+      - instrument: SOXX
+        kind: equity_watch
+        direction: watch
+        rationale: iShares Semiconductor ETF — sector beta for any strait escalation.
+      - instrument: SMH
+        kind: equity_watch
+        direction: watch
+        rationale: VanEck Semiconductor ETF — alternative sector proxy, TSM is a top holding.
+      - instrument: EWT
+        kind: equity_watch
+        direction: watch
+        rationale: iShares MSCI Taiwan — the direct country risk premium.
+      - instrument: FXI
+        kind: equity_watch
+        direction: watch
+        rationale: iShares China Large-Cap — sanctions/derating leg on escalation.
+      - instrument: MCHI
+        kind: equity_watch
+        direction: watch
+        rationale: iShares MSCI China — broader China derating proxy.
+      - instrument: AAPL
+        kind: equity_watch
+        direction: watch
+        rationale: Apple — China assembly concentration plus ~one-fifth of revenue from Greater China (vintage FY24).
+      - instrument: china-taiwan-military-action-2026
+        kind: polymarket
+        direction: watch
+        rationale: Placeholder event-contract slug — replace with a discovered live market.
+
+  black_sea_grain:
+    name: Black Sea grain corridor
+    description: >
+      Grain-flow disruption in the Black Sea — corridor/deal collapse,
+      strikes on Odesa port infrastructure, Bosphorus transit issues,
+      mined waters. Russia+Ukraine are ~30% of world wheat exports;
+      Ukraine is a top-4 corn exporter. Escalation also feeds the
+      russia_ukraine theme; this one is the food-price leg.
+    watch_terms:
+      - "black sea grain"
+      - "grain deal"
+      - "odesa port"
+      - "odessa port"
+      - "bosphorus"
+      - "wheat exports"
+    instruments:
+      - instrument: WHEAT_USD
+        kind: oanda
+        direction: long
+        rationale: Corridor disruption reprices the ~30% of world wheat exports that load in the Black Sea.
+      - instrument: CORN_USD
+        kind: oanda
+        direction: long
+        rationale: Ukraine is a top-4 corn exporter — same corridor, same repricing.
+      - instrument: XAU_USD
+        kind: oanda
+        direction: watch
+        rationale: Only a haven leg when grain disruption comes with broader military escalation.
+      - instrument: WEAT
+        kind: equity_watch
+        direction: watch
+        rationale: Teucrium Wheat ETF — direct listed proxy for CBOT wheat.
+      - instrument: CORN
+        kind: equity_watch
+        direction: watch
+        rationale: Teucrium Corn ETF — direct listed proxy for CBOT corn.
+      - instrument: ADM
+        kind: equity_watch
+        direction: watch
+        rationale: ADM — Black Sea origination plus global merchandising margins that widen on trade-flow dislocation.
+      - instrument: BG
+        kind: equity_watch
+        direction: watch
+        rationale: Bunge — Ukraine crush plants and export terminals (Mykolaiv — vintage pre-2022, verify status); asset risk and margin upside.
+      - instrument: black-sea-grain-deal-collapse-2026
         kind: polymarket
         direction: watch
         rationale: Placeholder event-contract slug — replace with a discovered live market.
@@ -296,6 +850,7 @@ themes:
     watch_terms:
       - "new sanctions"
       - "sanctions package"
+      - "secondary sanctions"
       - "export controls"
       - "tariffs announced"
       - "trade embargo"

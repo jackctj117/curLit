@@ -133,6 +133,16 @@ strategies:
       # the LLM might emit. (Omit this key to use the identical default
       # map in src/strategies/event_driven.py.)
       instrument_map:
+        # New-theme commodity/FX legs (CL-01zt). Names follow OANDA
+        # conventions but are unverified against the live practice
+        # account — a rejected instrument surfaces as an order
+        # rejection, not a crash. Remove any that OANDA rejects.
+        XCU_USD: XCU_USD      # copper CFD (DRC/Zambia supply themes)
+        XPT_USD: XPT_USD      # platinum (South Africa PGM theme)
+        XPD_USD: XPD_USD      # palladium (SA + Russia supply)
+        USD_ZAR: USD_ZAR      # rand (Africa risk proxy)
+        WHEAT_USD: WHEAT_USD  # wheat CFD (Black Sea grain theme)
+        CORN_USD: CORN_USD    # corn CFD (Black Sea grain theme)
         EUR_USD: EUR_USD
         GBP_USD: GBP_USD
         USD_JPY: USD_JPY
