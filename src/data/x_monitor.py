@@ -373,6 +373,56 @@ def load_watchlist(path: Path | str = DEFAULT_WATCHLIST_PATH) -> list[WatchAccou
     return accounts
 
 
+def _flag_env(name: str, *, default: bool) -> bool:
+    """Parse a boolean env flag (CL-esyo). Accepts 1/0, true/false,
+    yes/no, on/off (case-insensitive); unset → ``default``."""
+    raw = os.environ.get(name, "").strip().lower()
+    if not raw:
+        return default
+    if raw in ("1", "true", "yes", "on"):
+        return True
+    if raw in ("0", "false", "no", "off"):
+        return False
+    logger.warning(
+        "%s=%r is not a recognized boolean; using default %s",
+        name, raw, default,
+    )
+    return default
+
+
+def _build_ingest_engine() -> Any | None:
+    """Build a SQLAlchemy engine from POSTGRES_* env for X→pipeline
+    ingestion (CL-esyo), mirroring scripts/event_pipeline._db_url and
+    src.runtime.run_engine._build_db_engine. Returns None (with one
+    warning) when SQLAlchemy or the DB URL can't be built — the monitor
+    then runs with ingestion disabled but still polls (and can forward).
+    """
+    try:
+        from sqlalchemy import create_engine  # noqa: PLC0415
+    except ImportError:
+        logger.warning(
+            "SQLAlchemy unavailable — X→pipeline ingestion disabled; "
+            "monitor continues (forwarding only)",
+        )
+        return None
+    db_url = os.environ.get(
+        "DATABASE_URL",
+        f"postgresql+psycopg2://{os.environ.get('POSTGRES_USER', 'fx')}:"
+        f"{os.environ.get('POSTGRES_PASSWORD', 'changeme')}@"
+        f"{os.environ.get('POSTGRES_HOST', 'localhost')}:"
+        f"{os.environ.get('POSTGRES_PORT', '5432')}/"
+        f"{os.environ.get('POSTGRES_DB', 'fx')}",
+    )
+    try:
+        return create_engine(db_url)
+    except Exception as exc:
+        logger.warning(
+            "could not build ingest DB engine (%s) — X→pipeline "
+            "ingestion disabled; monitor continues", str(exc)[:120],
+        )
+        return None
+
+
 def _cap_from_env() -> int:
     raw = os.environ.get("X_MONITOR_MONTHLY_CAP", "").strip()
     if not raw:
@@ -414,6 +464,21 @@ class XMonitorConfig:
     cli_shuffle: bool = True  # randomize account order each cycle
     cli_min_gap_sec: float = 15.0  # min pause between accounts
     cli_max_gap_sec: float = 45.0  # max pause between accounts
+
+    # Pipeline wiring (CL-esyo). The monitor's PURPOSE is to feed the
+    # analysis pipeline: relevant posts become NEW geo_events rows the
+    # impact agent assesses. Ingestion is ON by default; raw tweet
+    # forwarding to Telegram is now OPT-IN (the operator wants ingestion
+    # as the point, not a firehose relay). Env defaults resolve at
+    # construction (X_MONITOR_INGEST / X_MONITOR_FORWARD).
+    x_ingest_enabled: bool = field(default_factory=lambda: _flag_env(
+        "X_MONITOR_INGEST", default=True,
+    ))
+    x_forward_enabled: bool = field(default_factory=lambda: _flag_env(
+        "X_MONITOR_FORWARD", default=False,
+    ))
+    #: Max geo_events rows ingested per account per cycle (flood guard).
+    x_ingest_cap: int = 10
 
 
 # --------------------------------------------------------------------- #
@@ -847,6 +912,7 @@ class CycleSummary:
     polled: int = 0
     new_posts: int = 0
     notifications: int = 0
+    ingested: int = 0  # NEW geo_events rows created this cycle (CL-esyo)
     reads_used: int = 0  # month-to-date after the cycle (metered only)
 
 
@@ -919,6 +985,8 @@ class XWatchlistMonitor:
         now_fn: Callable[[], datetime] = lambda: datetime.now(UTC),
         sleep_fn: Callable[[float], None] = time.sleep,
         rand_fn: Callable[[float, float], float] | None = None,
+        engine: Any | None = None,
+        playbooks: Any | None = None,
     ) -> None:
         self.config = config or XMonitorConfig()
         self.accounts = list(
@@ -934,6 +1002,20 @@ class XWatchlistMonitor:
         self._shuffle: Callable[[list[Any]], None] = random.shuffle
         self._idle_logged = False
         self.state = self._load_state()
+        # X→pipeline ingestion (CL-esyo). Relevant posts become NEW
+        # geo_events rows for the impact agent. The engine + playbooks
+        # are lazy-built (POSTGRES_* env; events playbook config) only
+        # when ingestion is enabled — a DB-less monitor still polls and
+        # can still forward. Both are injectable for tests.
+        self._ingest_engine = engine
+        self._playbooks = playbooks
+        if self.config.x_ingest_enabled and self._ingest_engine is None:
+            self._ingest_engine = _build_ingest_engine()
+            if self._ingest_engine is None:
+                logger.warning(
+                    "X→pipeline ingestion enabled but no DB engine — "
+                    "posts will NOT be ingested this run",
+                )
 
     # -- state -------------------------------------------------------- #
 
@@ -1208,25 +1290,80 @@ class XWatchlistMonitor:
         self.state["since_ids"][account.handle] = new[-1].id
         summary.new_posts += len(new)
 
+        # X→pipeline ingestion (CL-esyo) — the monitor's PURPOSE. Every
+        # NEW post (NOT keyword-filtered: the playbook watch-term match
+        # inside ingest_posts is the real relevance gate) is offered to
+        # the ingest bridge, which drops no-theme posts, the whole
+        # small_traders category, and dedups on external_id. Fully
+        # guarded: a failure here logs and never breaks the poll loop.
+        if self.config.x_ingest_enabled and self._ingest_engine is not None:
+            self._ingest_new_posts(account, new, summary)
+
+        # Raw tweet forwarding to Telegram (CL-esyo) — now OPT-IN. The
+        # operator wants ingestion as the point, so this only fires when
+        # explicitly enabled. Keyword filtering still narrows the relay.
+        if not self.config.x_forward_enabled:
+            return
+
+        forward = new
         if account.keywords:
             lowered = [k.lower() for k in account.keywords]
-            new = [
-                p for p in new
+            forward = [
+                p for p in forward
                 if any(k in p.text.lower() for k in lowered)
             ]
-            if not new:
+            if not forward:
                 return
 
-        if len(new) > self.config.batch_threshold:
+        if len(forward) > self.config.batch_threshold:
             message = build_batch_message(
-                account, new, self.config.batch_text_limit,
+                account, forward, self.config.batch_text_limit,
             )
             self.notify(NOTIFY_TITLE, message, html=True)
             summary.notifications += 1
         else:
-            for post in new:
+            for post in forward:
                 message = build_post_message(
                     account, post, self.config.text_limit,
                 )
                 self.notify(NOTIFY_TITLE, message, html=True)
                 summary.notifications += 1
+
+    def _ingest_new_posts(
+        self,
+        account: WatchAccount,
+        new: list[Post],
+        summary: CycleSummary,
+    ) -> None:
+        """Feed NEW posts to the X→pipeline bridge (CL-esyo).
+
+        Lazy-imports the events bridge so the monitor carries no hard
+        events dependency. Any failure (import, DB, parse) is logged and
+        swallowed — ingestion must never break the poll loop.
+        """
+        engine = self._ingest_engine
+        if engine is None:  # narrowed for the type checker; guarded above
+            return
+        try:
+            from src.events.playbooks import load_playbooks  # noqa: PLC0415
+            from src.events.x_ingest import ingest_posts  # noqa: PLC0415
+
+            if self._playbooks is None:
+                self._playbooks = load_playbooks()
+            result = ingest_posts(
+                engine,
+                account,
+                new,
+                self._playbooks,
+                cap=self.config.x_ingest_cap,
+            )
+            summary.ingested += result.ingested
+            if result.ingested or result.deduped:
+                logger.info("%s", result.summary_line(account.handle))
+            else:
+                logger.debug("%s", result.summary_line(account.handle))
+        except Exception:
+            logger.exception(
+                "X→pipeline ingestion failed for @%s; continuing",
+                account.handle,
+            )

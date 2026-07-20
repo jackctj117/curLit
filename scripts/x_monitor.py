@@ -114,9 +114,9 @@ def _log_summary(summary: CycleSummary) -> None:
         logger.info("cycle stopped: monthly read budget exhausted")
         return
     logger.info(
-        "cycle complete: polled=%d new_posts=%d notifications=%d "
-        "reads_used=%d", summary.polled, summary.new_posts,
-        summary.notifications, summary.reads_used,
+        "cycle complete: polled=%d new_posts=%d ingested=%d "
+        "notifications=%d reads_used=%d", summary.polled, summary.new_posts,
+        summary.ingested, summary.notifications, summary.reads_used,
     )
 
 

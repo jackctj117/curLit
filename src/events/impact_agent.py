@@ -35,6 +35,7 @@ from src.events.playbooks import (
     all_tradable_instruments,
     load_playbooks,
 )
+from src.events.x_ingest import source_credibility_note
 from src.research.llm import Message, get_client
 from src.research.llm.client import LLMClient
 
@@ -583,11 +584,20 @@ class EventImpactAgent:
         return "\n".join(lines)
 
     def _user_prompt(self, row: dict[str, Any]) -> str:
+        # Provenance line (CL-esyo): rows sourced from the X watchlist
+        # ("x:<handle>") carry a one-line source-credibility note so the
+        # model can calibrate confidence on a fast-but-unconfirmed
+        # headline account vs a noisy OSINT feed. GDELT rows get nothing.
+        source_line = ""
+        note = source_credibility_note(str(row.get("source") or ""))
+        if note:
+            source_line = f"{note}\n"
         return (
             f"HEADLINE: {row['headline']}\n"
             f"URL: {row.get('url') or 'n/a'}\n"
             f"SEEN AT (UTC): {row.get('seen_at')}\n"
-            f"THEME: {row.get('theme') or 'unmatched'}\n\n"
+            f"THEME: {row.get('theme') or 'unmatched'}\n"
+            f"{source_line}\n"
             f"{self._playbook_context(row.get('theme'))}\n\n"
             "Assess this event now. Respond with the JSON object only."
         )
@@ -660,7 +670,7 @@ class EventImpactAgent:
             rows = [
                 dict(r._mapping)
                 for r in conn.execute(text(
-                    "SELECT id, seen_at, headline, url, theme "
+                    "SELECT id, seen_at, headline, url, theme, source "
                     "FROM geo_events WHERE status = 'NEW' "
                     "ORDER BY seen_at DESC LIMIT :lim",
                 ), {"lim": limit})

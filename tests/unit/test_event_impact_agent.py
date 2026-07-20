@@ -558,3 +558,64 @@ class TestTransportFailureRetrySemantics:
         results = agent.assess_new_events()
         assert results[0].status == "DISMISSED"
         assert "impact agent failure" in results[0].assessment["rationale"]
+
+
+def _insert_x_event(
+    engine: Engine, external_id: str, headline: str, source: str,
+    theme: str | None = "energy_chokepoint",
+    seen_at: str = "2026-07-20T09:30:00",
+) -> None:
+    with engine.begin() as conn:
+        conn.execute(text(
+            "INSERT INTO geo_events "
+            "(seen_at, source, external_id, headline, url, theme, "
+            " status, status_updated_at) "
+            "VALUES (:seen, :src, :eid, :hl, 'https://x.com/x/status/1', "
+            ":theme, 'NEW', :seen)",
+        ), {
+            "seen": seen_at, "src": source, "eid": external_id,
+            "hl": headline, "theme": theme,
+        })
+
+
+class TestSourceCredibilityProvenance:
+    """CL-esyo: rows from the X watchlist ('x:<handle>') get one line of
+    source-credibility context in the impact prompt so the model can
+    calibrate confidence; GDELT rows get nothing (schema unchanged)."""
+
+    def _prompt_for(self, engine: Engine, external_id: str) -> str:
+        client = MockLLMClient(json.dumps(_valid_payload()))
+        agent = EventImpactAgent(engine, client=client)  # type: ignore[arg-type]
+        agent.assess_new_events()
+        assert client.calls, "LLM was not called"
+        # The user message is the second Message in the last call.
+        messages = client.calls[-1]["messages"]
+        return messages[-1].content
+
+    def test_x_source_adds_credibility_line(self, engine: Engine) -> None:
+        _insert_x_event(
+            engine, "x:1", "Iran moves to close the Strait of Hormuz",
+            source="x:DeItaone",
+        )
+        prompt = self._prompt_for(engine, "x:1")
+        assert "SOURCE: X/@DeItaone" in prompt
+        # A known handle uses its specific framing.
+        assert "unconfirmed" in prompt.lower()
+
+    def test_gdelt_source_has_no_credibility_line(
+        self, engine: Engine,
+    ) -> None:
+        _insert_event(engine, "g1", "Iran moves to close Hormuz")
+        prompt = self._prompt_for(engine, "g1")
+        assert "SOURCE:" not in prompt
+        assert "X/@" not in prompt
+
+    def test_unknown_x_handle_uses_generic_line(
+        self, engine: Engine,
+    ) -> None:
+        _insert_x_event(
+            engine, "x:2", "Iran moves to close the Strait of Hormuz",
+            source="x:SomeNewHandle",
+        )
+        prompt = self._prompt_for(engine, "x:2")
+        assert "SOURCE: X/@SomeNewHandle" in prompt

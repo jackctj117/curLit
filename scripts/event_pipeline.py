@@ -238,6 +238,10 @@ def _cycle(args: argparse.Namespace) -> None:
             model=args.model or DEFAULT_MODEL,
             playbooks_path=args.playbooks,
         )
+        # CL-esyo: X watchlist posts and GDELT headlines now share this
+        # one NEW queue. assess_new_events orders by seen_at DESC, so a
+        # fresh X post (recent seen_at) naturally jumps ahead of any
+        # GDELT backlog — no separate path, same impact agent.
         results = agent.assess_new_events(limit=args.limit)
         for result in results:
             logger.info("%s", result.summary_line())

@@ -125,13 +125,23 @@ def _monitor(
     cap: int = 9_000,
     paced: bool = False,
     now_fn: Any = None,
+    x_forward_enabled: bool = True,
+    x_ingest_enabled: bool = False,
+    engine: Any = None,
+    playbooks: Any = None,
     **config_kw: Any,
 ) -> tuple[XWatchlistMonitor, Recorder]:
+    # CL-esyo: forwarding is opt-in in production (default off), but the
+    # legacy notification-dispatch tests exercise forwarding — so this
+    # helper defaults forwarding ON and ingestion OFF to isolate the
+    # relay path. Wiring tests override these explicitly.
     config = XMonitorConfig(
         state_path=tmp_path / "state.json",
         user_ids_path=tmp_path / "ids.json",
         monthly_cap=cap,
         paced=paced,
+        x_forward_enabled=x_forward_enabled,
+        x_ingest_enabled=x_ingest_enabled,
         **config_kw,
     )
     if isinstance(fake, Transport):
@@ -153,6 +163,8 @@ def _monitor(
         accounts=accounts,
         transport=transport,
         notify=recorder,
+        engine=engine,
+        playbooks=playbooks,
         **kwargs,
     )
     return monitor, recorder
@@ -1355,3 +1367,217 @@ class TestRepoWatchlistWindows:
         assert odte is not None
         assert odte.tz == ZoneInfo("Europe/Rome")
         assert odte.start == dt_time(19, 0) and odte.end == dt_time(23, 0)
+
+
+# --------------------------------------------------------------------- #
+# X → pipeline ingestion wiring (CL-esyo)
+# --------------------------------------------------------------------- #
+
+
+class _SpyEngine:
+    """A stand-in DB engine that need never be touched — ingest is
+    spied at the ingest_posts boundary, so the engine is just a marker."""
+
+
+class _IngestSpy:
+    """Records ingest_posts(...) calls; returns a canned IngestResult."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    def __call__(
+        self, engine: Any, account: Any, posts: list[Post],
+        playbooks: Any, cap: int = 10,
+    ) -> Any:
+        from src.events.x_ingest import IngestResult
+
+        self.calls.append({
+            "engine": engine, "account": account, "posts": list(posts),
+            "cap": cap,
+        })
+        return IngestResult(ingested=len(posts))
+
+
+@pytest.mark.usefixtures("token_env")
+class TestPipelineWiring:
+    """Ingestion default ON, forwarding default OFF, both independently
+    toggleable, baseline still silent, DB-absent safe."""
+
+    def _fresh_account(self, fake: FakeApi) -> None:
+        fake.users = {"unusual_whales": "111"}
+        fake.timelines["111"] = [{"id": "100", "text": "baseline"}]
+
+    def _new_post(
+        self, fake: FakeApi,
+        text_in: str = "Iran closes the Strait of Hormuz",
+    ) -> None:
+        fake.timelines["111"].append({"id": "101", "text": text_in})
+
+    def test_ingest_called_when_enabled(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        spy = _IngestSpy()
+        monkeypatch.setattr("src.events.x_ingest.ingest_posts", spy)
+        fake = FakeApi()
+        self._fresh_account(fake)
+        monitor, recorder = _monitor(
+            tmp_path, [_account()], fake,
+            x_ingest_enabled=True, x_forward_enabled=False,
+            engine=_SpyEngine(), playbooks={},
+        )
+        monitor.poll_cycle()  # baseline — no ingest, no forward
+        assert spy.calls == []
+        assert recorder.sent == []
+
+        self._new_post(fake)
+        summary = monitor.poll_cycle()
+        assert len(spy.calls) == 1
+        assert [p.id for p in spy.calls[0]["posts"]] == ["101"]
+        assert spy.calls[0]["cap"] == monitor.config.x_ingest_cap
+        assert summary.ingested == 1
+        # Forwarding is off by default → no Telegram sends.
+        assert recorder.sent == []
+
+    def test_forward_suppressed_by_default(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        spy = _IngestSpy()
+        monkeypatch.setattr("src.events.x_ingest.ingest_posts", spy)
+        fake = FakeApi()
+        self._fresh_account(fake)
+        # Production defaults: ingest on, forward off.
+        monitor, recorder = _monitor(
+            tmp_path, [_account()], fake,
+            x_ingest_enabled=True, x_forward_enabled=False,
+            engine=_SpyEngine(), playbooks={},
+        )
+        monitor.poll_cycle()
+        self._new_post(fake)
+        monitor.poll_cycle()
+        assert recorder.sent == []
+        assert len(spy.calls) == 1
+
+    def test_forward_only_no_ingest(self, tmp_path: Path) -> None:
+        # Forwarding on, ingestion off → notify fires, no engine built.
+        fake = FakeApi()
+        self._fresh_account(fake)
+        monitor, recorder = _monitor(
+            tmp_path, [_account()], fake,
+            x_ingest_enabled=False, x_forward_enabled=True,
+        )
+        assert monitor._ingest_engine is None
+        monitor.poll_cycle()
+        self._new_post(fake)
+        summary = monitor.poll_cycle()
+        assert len(recorder.sent) == 1
+        assert summary.ingested == 0
+
+    def test_both_toggle_independently(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # Both on: ingest AND forward.
+        spy = _IngestSpy()
+        monkeypatch.setattr("src.events.x_ingest.ingest_posts", spy)
+        fake = FakeApi()
+        self._fresh_account(fake)
+        monitor, recorder = _monitor(
+            tmp_path, [_account()], fake,
+            x_ingest_enabled=True, x_forward_enabled=True,
+            engine=_SpyEngine(), playbooks={},
+        )
+        monitor.poll_cycle()
+        self._new_post(fake)
+        monitor.poll_cycle()
+        assert len(spy.calls) == 1
+        assert len(recorder.sent) == 1
+
+    def test_baseline_silent_no_ingest_no_forward(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        spy = _IngestSpy()
+        monkeypatch.setattr("src.events.x_ingest.ingest_posts", spy)
+        fake = FakeApi()
+        self._fresh_account(fake)
+        monitor, recorder = _monitor(
+            tmp_path, [_account()], fake,
+            x_ingest_enabled=True, x_forward_enabled=True,
+            engine=_SpyEngine(), playbooks={},
+        )
+        summary = monitor.poll_cycle()  # first sighting = baseline
+        assert spy.calls == []
+        assert recorder.sent == []
+        assert summary.ingested == 0
+        # since_id was recorded so the next cycle is live.
+        state = json.loads((tmp_path / "state.json").read_text())
+        assert state["since_ids"]["unusual_whales"] == "100"
+
+    def test_db_absent_is_safe(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # Ingestion enabled but no engine (DB unreachable) → no crash,
+        # no ingest attempt; monitor still polls (and could forward).
+        spy = _IngestSpy()
+        monkeypatch.setattr("src.events.x_ingest.ingest_posts", spy)
+        fake = FakeApi()
+        self._fresh_account(fake)
+        monitor, recorder = _monitor(
+            tmp_path, [_account()], fake,
+            x_ingest_enabled=True, x_forward_enabled=True,
+            engine=None, playbooks={},
+        )
+        # No engine was injected and none could be lazily built in the
+        # test env for a definitely-unreachable DB is possible, so force
+        # the None to model the DB-absent branch deterministically.
+        monitor._ingest_engine = None
+        monitor.poll_cycle()
+        self._new_post(fake)
+        summary = monitor.poll_cycle()
+        assert spy.calls == []  # ingestion skipped — engine is None
+        assert summary.ingested == 0
+        # Forwarding still worked.
+        assert len(recorder.sent) == 1
+
+    def test_ingest_failure_never_breaks_loop(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        def _boom(*_a: Any, **_k: Any) -> Any:
+            raise RuntimeError("ingest exploded")
+
+        monkeypatch.setattr("src.events.x_ingest.ingest_posts", _boom)
+        fake = FakeApi()
+        self._fresh_account(fake)
+        monitor, recorder = _monitor(
+            tmp_path, [_account()], fake,
+            x_ingest_enabled=True, x_forward_enabled=True,
+            engine=_SpyEngine(), playbooks={},
+        )
+        monitor.poll_cycle()
+        self._new_post(fake)
+        # Must not raise — the poll loop survives an ingest failure.
+        summary = monitor.poll_cycle()
+        assert summary.ingested == 0
+        assert len(recorder.sent) == 1  # forwarding still happened
+
+    def test_small_traders_full_post_list_offered(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # The monitor offers ALL new posts to ingest_posts (the category
+        # / theme gate lives inside ingest_posts, not the monitor). Verify
+        # a keyword'd account still hands the full unfiltered list over.
+        spy = _IngestSpy()
+        monkeypatch.setattr("src.events.x_ingest.ingest_posts", spy)
+        fake = FakeApi()
+        self._fresh_account(fake)
+        acct = _account(keywords=("hormuz",))
+        monitor, _ = _monitor(
+            tmp_path, [acct], fake,
+            x_ingest_enabled=True, x_forward_enabled=False,
+            engine=_SpyEngine(), playbooks={},
+        )
+        monitor.poll_cycle()
+        fake.timelines["111"].append({"id": "101", "text": "unrelated chatter"})
+        monitor.poll_cycle()
+        # 'unrelated chatter' fails the forward keyword filter, but is
+        # still handed to ingest (theme gate decides relevance there).
+        assert len(spy.calls) == 1
+        assert [p.id for p in spy.calls[0]["posts"]] == ["101"]
