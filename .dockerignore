@@ -1,0 +1,41 @@
+# Keep the build context lean (CL-oluv). The image only needs
+# src/, scripts/, configs/, migrations/, pyproject.toml.
+.git/
+.venv/
+.beads/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.hypothesis/
+__pycache__/
+*.pyc
+.coverage
+.DS_Store
+
+# Data / artifacts — mounted at runtime, never baked in
+data/
+logs/
+models/
+reports/
+research/
+reference/
+training/
+labeling/
+notebooks/
+build/
+web-ui/
+docs/
+
+# Secrets — mounted read-only by compose, never in the image
+.env
+.env.*
+!.env.example
+
+# Infra configs used by other containers, not this image
+airflow/
+grafana/
+prometheus/
+promtail/
+loki/
+alertmanager/
+deploy/

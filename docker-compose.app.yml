@@ -1,18 +1,20 @@
-# App-services overlay for docker-compose.yml (CL-mz7).
+# App-services overlay for docker-compose.yml (CL-mz7, profiled in CL-oluv).
 #
 # Run alongside the base infra stack:
 #   docker compose -f docker-compose.yml -f docker-compose.app.yml up -d
+#     → LIGHT stack: postgres + engine only.
+#   docker compose -f docker-compose.yml -f docker-compose.app.yml --profile full up -d
+#     → everything: + watchdog, nlp, research dashboard, observability, airflow.
 #
-# Contains the curLit application processes themselves: live engine,
-# watchdog, NLP service, web UI. The infra services in docker-compose.yml
-# (Postgres, Prometheus, Grafana, Loki, Airflow) keep working unchanged
-# for development workflows that don't need the app containers.
+# NOTE: the PREVIOUS behavior (all app services on a bare `up -d`) is now
+# behind `--profile full`.
 #
 # Notes on shape:
-#   - All app services build from the same Dockerfile (deploy/Dockerfile)
-#     for image cache reuse.
-#   - The engine reads .env via dotenv_bootstrap; we mount the file
-#     read-only so secrets aren't baked into the image.
+#   - All app services build from the single canonical ./Dockerfile at the
+#     repo root (deploy/Dockerfile was removed in CL-oluv) for image cache
+#     reuse. The per-service `command` picks the process.
+#   - The engine reads .env via dotenv_bootstrap; secrets come from the
+#     compose environment, not baked into the image.
 #   - host.docker.internal works on Docker Desktop (Mac/Windows). Linux
 #     hosts need `--add-host` or networking via the existing observability
 #     bridge — already configured.
@@ -21,10 +23,11 @@ services:
   engine:
     build:
       context: .
-      dockerfile: deploy/Dockerfile
+      dockerfile: Dockerfile
     image: curlit-app:latest
     container_name: curlit-engine
     restart: unless-stopped
+    mem_limit: 2g
     networks: [observability]
     command: python -m src.runtime.run_engine --broker ${BROKER_MODE:-paper}
     environment:
@@ -35,6 +38,12 @@ services:
       OANDA_API_KEY: ${OANDA_API_KEY}
       OANDA_ACCOUNT_ID: ${OANDA_ACCOUNT_ID}
       WEB_API_SECRET: ${WEB_API_SECRET:-curlit-dev}
+      # Bind the embedded FastAPI to all container interfaces so the
+      # published port below is actually reachable from the host
+      # (native default stays loopback-only — see live_engine.py).
+      CURLIT_API_HOST: 0.0.0.0
+      CURLIT_API_PORT: ${CURLIT_API_PORT:-8200}
+      CURLIT_METRICS_PORT: ${CURLIT_METRICS_PORT:-8099}
       PYTHONUNBUFFERED: "1"
     volumes:
       - ./logs:/opt/curlit/logs
@@ -43,10 +52,12 @@ services:
       postgres:
         condition: service_healthy
     ports:
-      - "127.0.0.1:8200:8200"   # web API
-      - "127.0.0.1:8099:8099"   # prometheus metrics
+      - "127.0.0.1:${CURLIT_API_PORT:-8200}:${CURLIT_API_PORT:-8200}"   # web API
+      - "127.0.0.1:${CURLIT_METRICS_PORT:-8099}:${CURLIT_METRICS_PORT:-8099}"   # prometheus metrics
     healthcheck:
-      test: ["CMD", "curl", "-f", "-o", "/dev/null", "http://localhost:8099/metrics"]
+      # /health is the unauthenticated liveness route on the embedded
+      # FastAPI (CL-oluv) — same check the image HEALTHCHECK runs.
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:${CURLIT_API_PORT:-8200}/health || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 5
@@ -55,14 +66,20 @@ services:
   watchdog:
     build:
       context: .
-      dockerfile: deploy/Dockerfile
+      dockerfile: Dockerfile
     image: curlit-app:latest
     container_name: curlit-watchdog
+    profiles: ["full"]
     restart: unless-stopped
+    mem_limit: 256m
     networks: [observability]
     command: python -m scripts.soak_monitor --watch-engine engine:8099
     environment:
       PYTHONUNBUFFERED: "1"
+    # The image HEALTHCHECK probes the engine API; irrelevant for the
+    # watchdog process — disable rather than report a false unhealthy.
+    healthcheck:
+      disable: true
     depends_on:
       engine:
         condition: service_healthy
@@ -70,10 +87,12 @@ services:
   nlp:
     build:
       context: .
-      dockerfile: deploy/Dockerfile
+      dockerfile: Dockerfile
     image: curlit-app:latest
     container_name: curlit-nlp
+    profiles: ["full"]
     restart: unless-stopped
+    mem_limit: 4g
     networks: [observability]
     command: uvicorn src.nlp.service:app --host 0.0.0.0 --port 8400
     environment:
@@ -84,6 +103,14 @@ services:
       PYTHONUNBUFFERED: "1"
     ports:
       - "127.0.0.1:8400:8400"
+    healthcheck:
+      # Override the image-level engine healthcheck with the NLP
+      # service's own /health route.
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8400/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
     depends_on:
       postgres:
         condition: service_healthy
@@ -91,10 +118,12 @@ services:
   research_dashboard:
     build:
       context: .
-      dockerfile: deploy/Dockerfile
+      dockerfile: Dockerfile
     image: curlit-app:latest
     container_name: curlit-research-dashboard
+    profiles: ["full"]
     restart: unless-stopped
+    mem_limit: 1g
     networks: [observability]
     # CL-28j: paper triage Streamlit. Reads research_papers + writes
     # status / priority / notes back. Mount the dashboard file rather
@@ -123,10 +152,11 @@ services:
   web:
     build:
       context: .
-      dockerfile: deploy/Dockerfile
+      dockerfile: Dockerfile
     image: curlit-app:latest
     container_name: curlit-web
     restart: unless-stopped
+    mem_limit: 512m
     networks: [observability]
     # Standalone Web API container is redundant when engine is running
     # (engine embeds the same FastAPI). This profile is for read-only
@@ -138,6 +168,12 @@ services:
       PYTHONUNBUFFERED: "1"
     ports:
       - "127.0.0.1:8201:8201"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8201/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
     depends_on:
       postgres:
         condition: service_healthy

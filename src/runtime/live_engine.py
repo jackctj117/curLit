@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import os
 import time
 from datetime import UTC, datetime
 from typing import Any
@@ -59,7 +60,9 @@ class LiveEngine:
 
     async def run(self) -> None:
         self.running = True
-        start_metrics_server(port=8099)
+        # CL-oluv: port env-overridable for containerized deploys; default
+        # matches the historical hard-coded value so native runs are unchanged.
+        start_metrics_server(port=int(os.environ.get("CURLIT_METRICS_PORT", "8099")))
         self._heartbeat = HeartbeatTracker("live_engine", interval_sec=30)
         self._heartbeat.start()
         logger.info("Live engine starting")
@@ -105,7 +108,12 @@ class LiveEngine:
 
         from src.web.api import app, set_runtime
         set_runtime(self.broker, self.oms, self.strategies)
-        config = uvicorn.Config(app, host="127.0.0.1", port=8200, log_level="warning")
+        # CL-oluv: host/port env-overridable. Defaults preserve native
+        # behavior (loopback-only on 8200). Containers set
+        # CURLIT_API_HOST=0.0.0.0 so the published port is reachable.
+        host = os.environ.get("CURLIT_API_HOST", "127.0.0.1")
+        port = int(os.environ.get("CURLIT_API_PORT", "8200"))
+        config = uvicorn.Config(app, host=host, port=port, log_level="warning")
         server = uvicorn.Server(config)
         await server.serve()
 

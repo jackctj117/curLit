@@ -32,6 +32,14 @@ def verify_secret(secret: str = "") -> None:
         raise HTTPException(status_code=403)
 
 
+@app.get("/health")
+def health() -> dict[str, str]:
+    """Unauthenticated liveness probe (CL-oluv) — used by the Docker
+    HEALTHCHECK. Deliberately reports process-up only; no broker/DB state
+    and no secret required."""
+    return {"status": "ok"}
+
+
 @app.get("/api/positions")
 def get_positions(_: str = Depends(verify_secret)) -> list[dict[str, Any]]:
     broker = _runtime.get("broker")
