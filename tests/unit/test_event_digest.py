@@ -421,43 +421,45 @@ class TestIdeasSection:
         return built[1]
 
     def test_idea_line_full_format(self) -> None:
-        # CL-jiqq: the compact line now carries GROUNDED dollar levels
-        # computed from the LLM percentages + the real price. buy_puts is
-        # bearish → stop ABOVE spot, targets BELOW.
+        # CL-jiqq: the block carries GROUNDED dollar levels computed from
+        # the LLM percentages + the real price. buy_puts is bearish →
+        # stop ABOVE spot, targets BELOW. Multi-line: bold ticker+price+
+        # action, full entry trigger, then the number segments.
         message = self._with_ideas(
             _idea(),
             prices={"TSM": {"price": 172.4, "change_pct": -1.8}},
         )
         assert "<b>Ideas:</b>" in message
-        idea_line = next(
-            ln for ln in message.split("\n") if ln.startswith("TSM")
+        head = next(
+            ln for ln in message.split("\n") if ln.startswith("<b>TSM</b>")
         )
-        assert idea_line.startswith("TSM $172.40 (-1.8%) — BUY PUTS 1-3wk")
-        assert "entry on confirmed blockade" in idea_line
-        assert "stop $186" in idea_line          # 172.4 × 1.08 (option underlying)
-        assert "tgt $155/$141" in idea_line       # 172.4 × 0.90 / 0.82
-        assert "R:R" in idea_line
-        assert "5d stop" in idea_line
+        assert head.startswith("<b>TSM</b> $172.40 (-1.8%) — BUY PUTS 1-3wk")
+        assert "entry: on confirmed blockade" in message
+        assert "stop $186" in message            # 172.4 × 1.08 (option underlying)
+        assert "tgt $155/$141" in message         # 172.4 × 0.90 / 0.82
+        assert "R:R" in message
+        assert "5d stop" in message
 
     def test_idea_line_without_price(self) -> None:
         # No live price → no dollar levels, but action / DTE / trigger /
-        # time stop still render (the honest %-only card).
+        # time stop still render (the honest %-only card). Multi-line
+        # block: bold ticker + action on line 1, segments on line 3.
         message = self._with_ideas(_idea())
-        idea_line = next(
-            ln for ln in message.split("\n") if ln.startswith("TSM")
+        head = next(
+            ln for ln in message.split("\n") if ln.startswith("<b>TSM</b>")
         )
-        assert idea_line.startswith("TSM — BUY PUTS 1-3wk")
-        assert "stop $" not in idea_line          # no price → no dollar stop
-        assert "5d stop" in idea_line
+        assert head.startswith("<b>TSM</b> — BUY PUTS 1-3wk")
+        assert "stop $" not in message            # no price → no dollar stop
+        assert "5d stop" in message
 
-    def test_long_entry_trigger_truncated(self) -> None:
-        message = self._with_ideas(_idea(entry_trigger="R" * 200))
-        idea_line = next(
-            ln for ln in message.split("\n") if ln.startswith("TSM")
-        )
-        # The entry-trigger segment is capped; the whole line stays short.
-        assert "entry " in idea_line
-        assert "…" in idea_line
+    def test_long_entry_trigger_shown_in_full(self) -> None:
+        # CL-jiqq follow-up: entry conditions are the operator's action
+        # signal — they must NOT be truncated mid-sentence. A 200-char
+        # trigger (under the 240 bound) renders whole, no ellipsis.
+        trigger = "Enter only on confirmed blockade language " + "R" * 150
+        message = self._with_ideas(_idea(entry_trigger=trigger))
+        assert f"entry: {trigger}" in message
+        assert "…" not in message
 
     def test_hostile_idea_fields_escaped(self) -> None:
         message = self._with_ideas(_idea(
@@ -476,14 +478,14 @@ class TestIdeasSection:
         built = build_digest([r1, r2])
         assert built is not None
         message = built[1]
-        assert message.count("DUP —") == 1  # deduped on (ticker, action)
-        assert "OTHER —" in message
+        assert message.count("<b>DUP</b> —") == 1  # deduped on (ticker, action)
+        assert "<b>OTHER</b> —" in message
 
     def test_ideas_capped_with_more_note(self) -> None:
         message = self._with_ideas(
             *[_idea(ticker=f"AA{i}") for i in range(MAX_IDEAS + 2)],
         )
-        idea_lines = [ln for ln in message.split("\n") if ln.startswith("AA")]
+        idea_lines = [ln for ln in message.split("\n") if ln.startswith("<b>AA")]
         assert len(idea_lines) == MAX_IDEAS
         assert "+2 more ideas" in message
 
@@ -503,7 +505,9 @@ class TestFadeSection:
         built = build_digest([r])
         assert built is not None
         assert "<b>Fade:</b>" in built[1]
-        assert "NVDA — fade the spike — routine drills, priced in" in built[1]
+        # Multi-line fade block: bold ticker + action, full reason on line 2.
+        assert "<b>NVDA</b> — fade the spike" in built[1]
+        assert "routine drills, priced in" in built[1]
 
     def test_hostile_fade_escaped(self) -> None:
         r = _res(urgency=7)

@@ -214,21 +214,27 @@ def _idea_line(
         dict(idea), info.get("price"), info.get("change_pct"),
     )
 
-    # Lead: ticker + price + imperative action + DTE window (options).
-    head = f"{html_escape(ticker)}{_price_part(ticker, prices)} — "
+    # A multi-line block (CL-jiqq follow-up: single truncated lines hid
+    # the entry conditions the operator needs to act). Line 1: ticker +
+    # price + action + DTE. Line 2: the FULL entry trigger. Line 3: the
+    # grounded number segments. Blank lines between blocks are added by
+    # the assembler.
+    head = f"<b>{html_escape(ticker)}</b>{_price_part(ticker, prices)} — "
     call = _action_label(str(idea.get("action") or "?"))
     dte = str(card.get("dte_window") or "").replace(" weeks", "wk").replace(
         " months", "mo",
     )
     if dte:
         call += f" {dte}"
-    line = head + html_escape(call)
+    block: list[str] = [head + html_escape(call)]
 
-    # Grounded segments, pipe-separated — only what actually resolved.
-    segs: list[str] = []
     trigger = str(idea.get("entry_trigger") or "").strip()
     if trigger:
-        segs.append(f"entry {html_escape(_truncate(trigger, 28))}")
+        # Full trigger (generous cap only to bound pathological output).
+        block.append(f"  entry: {html_escape(_truncate(trigger, 240))}")
+
+    # Grounded number segments — only what actually resolved.
+    segs: list[str] = []
     stop_price = card.get("stop_price")
     if stop_price is not None:
         segs.append(f"stop ${stop_price:,.0f}")
@@ -242,19 +248,20 @@ def _idea_line(
     if time_stop is not None:
         segs.append(f"{time_stop}d stop")
     if segs:
-        line += " | " + " | ".join(segs)
-    return line
+        block.append("  " + " | ".join(segs))
+    return "\n".join(block)
 
 
 def _fade_line(fade: Mapping[str, Any]) -> str:
-    """One Fade: line — ``NVDA — fade the spike — reason…``."""
-    line = html_escape(str(fade.get("ticker") or ""))
+    """One Fade: block — ticker + action on line 1, full reason on
+    line 2 (the reason is what tells the operator WHY to fade)."""
+    ticker = html_escape(str(fade.get("ticker") or ""))
     action = str(fade.get("action") or "").strip() or "fade"
-    line += f" — {html_escape(_truncate(action, _RATIONALE_MAX))}"
+    block = [f"<b>{ticker}</b> — {html_escape(_truncate(action, 160))}"]
     reason = str(fade.get("reason") or "").strip()
     if reason:
-        line += f" — {html_escape(_truncate(reason, _RATIONALE_MAX))}"
-    return line
+        block.append(f"  {html_escape(_truncate(reason, 240))}")
+    return "\n".join(block)
 
 
 def _advisory_entries(
@@ -452,14 +459,18 @@ def build_digest(
     if ideas:
         lines.append("")
         lines.append("<b>Ideas:</b>")
-        lines.extend(_idea_line(idea, prices) for idea in ideas[:MAX_IDEAS])
+        for idea in ideas[:MAX_IDEAS]:
+            lines.append(_idea_line(idea, prices))
+            lines.append("")  # blank line between ideas for readability
         if len(ideas) > MAX_IDEAS:
             lines.append(f"+{len(ideas) - MAX_IDEAS} more ideas")
     fades = _advisory_entries(qualifying, "fade_candidates")
     if fades:
         lines.append("")
         lines.append("<b>Fade:</b>")
-        lines.extend(_fade_line(fade) for fade in fades[:MAX_FADES])
+        for fade in fades[:MAX_FADES]:
+            lines.append(_fade_line(fade))
+            lines.append("")  # blank line between fades
 
     while lines and not lines[-1]:
         lines.pop()
