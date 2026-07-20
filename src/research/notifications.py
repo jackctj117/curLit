@@ -142,16 +142,21 @@ def _dispatch_telegram(
     # underscores are literal — only &/</> need escaping, which the
     # message builders do via html_escape(). Legacy callers (html=False)
     # keep plain text: smallest safe surface, zero escaping needed.
-    if html:
-        payload = {
-            "chat_id": chat_id,
-            "text": f"<b>{html_escape(title)}</b>\n\n{message}",
-            "parse_mode": "HTML",
-        }
-    else:
-        payload = {"chat_id": chat_id, "text": f"{title}\n\n{message}"}
+    full = (
+        f"<b>{html_escape(title)}</b>\n\n{message}"
+        if html else f"{title}\n\n{message}"
+    )
+    # Split over-long bodies so Telegram's 4096-char cap can't silently
+    # 400 a busy digest (CL-frn7 follow-up: un-truncated ideas made
+    # digests long enough to hit this).
+    chunks = _split_for_telegram(full)
     try:
-        _telegram_send(token, payload)
+        for i, chunk in enumerate(chunks):
+            text = chunk if i == 0 else f"<i>(cont. {i + 1}/{len(chunks)})</i>\n{chunk}"
+            payload: dict[str, str] = {"chat_id": chat_id, "text": text}
+            if html:
+                payload["parse_mode"] = "HTML"
+            _telegram_send(token, payload)
         result.telegram_succeeded = True
     except Exception as exc:
         # An HTML body with a broken tag gets a 400 from Telegram.
@@ -164,10 +169,13 @@ def _dispatch_telegram(
                 type(exc).__name__, _scrub_token(str(exc), token),
             )
             try:
-                _telegram_send(token, {
-                    "chat_id": chat_id,
-                    "text": f"{title}\n\n{_html_to_plain(message)}",
-                })
+                plain = f"{title}\n\n{_html_to_plain(message)}"
+                for i, chunk in enumerate(_split_for_telegram(plain)):
+                    prefix = "" if i == 0 else f"(cont. {i + 1})\n"
+                    _telegram_send(token, {
+                        "chat_id": chat_id,
+                        "text": f"{prefix}{chunk}",
+                    })
                 result.telegram_succeeded = True
                 return
             except Exception as retry_exc:
@@ -191,6 +199,40 @@ def _telegram_send(token: str, payload: dict[str, str]) -> None:
         timeout=_HTTP_TIMEOUT_SEC,
     )
     resp.raise_for_status()
+
+
+#: Telegram hard-rejects sendMessage bodies over 4096 chars. Split at
+#: ~3800 to leave room for the title header and a continuation marker.
+_TELEGRAM_MAX_CHARS = 3800
+
+
+def _split_for_telegram(text: str, limit: int = _TELEGRAM_MAX_CHARS) -> list[str]:
+    """Split ``text`` into <=limit-char chunks at newline boundaries.
+
+    Our messages put each self-contained HTML tag on its own line
+    (``<b>x</b>``), so breaking between lines never splits a tag. A
+    single over-long line (rare) is hard-cut as a last resort.
+    """
+    if len(text) <= limit:
+        return [text]
+    chunks: list[str] = []
+    current = ""
+    for line in text.split("\n"):
+        while len(line) > limit:  # pathological single line
+            if current:
+                chunks.append(current)
+                current = ""
+            chunks.append(line[:limit])
+            line = line[limit:]
+        candidate = line if not current else f"{current}\n{line}"
+        if len(candidate) > limit:
+            chunks.append(current)
+            current = line
+        else:
+            current = candidate
+    if current:
+        chunks.append(current)
+    return chunks
 
 
 def _scrub_token(text: str, token: str) -> str:
