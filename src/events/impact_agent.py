@@ -502,7 +502,16 @@ class EventImpactAgent:
     # -- assessment -----------------------------------------------------
 
     def assess_row(self, row: dict[str, Any]) -> AssessmentResult:
-        """LLM-assess one row (no DB write). Returns the outcome."""
+        """LLM-assess one row (no DB write). Returns the outcome.
+
+        Failure semantics (learned the hard way — a subscription
+        usage-window outage once terminally DISMISSED ~175 events):
+        TRANSPORT failures (the LLM call itself raised — CLI exit,
+        quota window, network) leave the row NEW so the next cycle
+        retries it. Only failures of a SUCCESSFUL response (JSON
+        extraction / schema validation) dismiss, because retrying
+        those reproduces the same bad output.
+        """
         theme = row.get("theme")
         playbook = self.playbooks.get(theme or "")
         try:
@@ -514,14 +523,27 @@ class EventImpactAgent:
                 model=self.model,
                 max_tokens=self.max_tokens,
             )
+        except Exception as exc:
+            logger.warning(
+                "impact agent transport failure for event id=%s "
+                "(left NEW for retry): %s", row.get("id"), str(exc)[:200],
+            )
+            return AssessmentResult(
+                event_id=int(row["id"]),
+                headline=str(row["headline"]),
+                theme=theme,
+                assessment={},
+                status="NEW",  # no-op transition — row stays queued
+            )
+        try:
             payload = extract_json_object(resp.text)
             assessment = normalise_assessment(
                 payload, row["headline"], playbook, self._fallback_tradables,
             )
             status = "ASSESSED"
         except Exception as exc:
-            # Parse/validation/LLM failure → DISMISSED with a rationale;
-            # the row is never retried, so the reason must be on it.
+            # Content failure on a successful response → DISMISSED with
+            # a rationale; retrying would reproduce the same output.
             logger.warning(
                 "impact agent dismissed event id=%s: %s", row.get("id"), exc,
             )
@@ -553,7 +575,8 @@ class EventImpactAgent:
         results: list[AssessmentResult] = []
         for row in rows:
             result = self.assess_row(row)
-            self._persist(result)
+            if result.status != "NEW":  # transport failure = no write,
+                self._persist(result)   # row stays queued for retry
             results.append(result)
         return results
 

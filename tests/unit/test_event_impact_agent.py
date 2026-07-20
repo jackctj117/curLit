@@ -462,3 +462,35 @@ class TestPromptGuidance:
         assert "Kamoa-Kakula" in user_msg
         assert "IVN.TO" in user_msg
         assert "XCU_USD" in user_msg
+
+
+class _RaisingLLMClient:
+    """LLM client whose complete() always raises (transport failure)."""
+
+    def complete(self, messages: Any, model: str, **kwargs: Any) -> Any:
+        raise RuntimeError("claude -p exited 1: usage limit reached")
+
+
+class TestTransportFailureRetrySemantics:
+    """Transport failures must leave rows NEW (retried next cycle) —
+    a quota outage once terminally DISMISSED ~175 healthy events."""
+
+    def test_llm_transport_error_leaves_row_new(self, engine: Engine) -> None:
+        _insert_event(engine, "tf1", "Iran moves to close Hormuz")
+        agent = EventImpactAgent(engine, client=_RaisingLLMClient())  # type: ignore[arg-type]
+        results = agent.assess_new_events()
+        assert len(results) == 1
+        assert results[0].status == "NEW"
+        assert results[0].assessment == {}
+        # Row untouched in the DB — still queued, no assessment written.
+        row = _fetch(engine, "tf1")
+        assert row["status"] == "NEW"
+        assert row["assessment"] is None
+
+    def test_content_failure_still_dismisses(self, engine: Engine) -> None:
+        _insert_event(engine, "tf2", "Iran moves to close Hormuz")
+        client = MockLLMClient("this is not json at all")
+        agent = EventImpactAgent(engine, client=client)  # type: ignore[arg-type]
+        results = agent.assess_new_events()
+        assert results[0].status == "DISMISSED"
+        assert "impact agent failure" in results[0].assessment["rationale"]
