@@ -1,0 +1,340 @@
+# Event playbooks (CL-6iu7) — pre-seeded geopolitical knowledge base for
+# the current-events pipeline. Each theme carries:
+#   * watch_terms — GDELT Doc 2.0 query phrases (OR-joined per theme)
+#   * instruments — what curLit can actually reach, with direction HINTS
+#
+# Instrument kinds:
+#   oanda        — OANDA CFD (BCO_USD brent, WTICO_USD wti, XAU_USD gold,
+#                  NATGAS_USD natgas, SPX500_USD, NAS100_USD) — tradable
+#   fx           — OANDA FX pair (USD_CAD, USD_NOK, ...) — tradable
+#   equity_watch — equity ticker, ALERT-ONLY (no equity execution path)
+#   polymarket   — event-contract slug (placeholder examples; discover
+#                  real slugs via scripts/discover_polymarket_markets.py)
+#
+# Directions are hints for the Event Impact Agent, not orders: "long" /
+# "short" = the historically typical reaction if the theme fires as
+# described; "watch" = sign depends on the specifics (the LLM decides).
+
+themes:
+  energy_chokepoint:
+    name: Energy chokepoint disruption
+    description: >
+      Physical disruption or credible closure threat at a maritime oil/LNG
+      chokepoint — Strait of Hormuz (~20% of global oil + LNG), Suez
+      Canal/Bab el-Mandeb (Europe-Asia transit), Strait of Malacca (Asia
+      imports). Reprices freight, crude, and LNG within hours.
+    watch_terms:
+      - "strait of hormuz"
+      - "hormuz closure"
+      - "suez canal blocked"
+      - "bab el-mandeb"
+      - "strait of malacca"
+      - "tanker attacked"
+      - "tanker seized"
+    instruments:
+      - instrument: BCO_USD
+        kind: oanda
+        direction: long
+        rationale: Brent is the waterborne benchmark — chokepoint risk premium hits it first and hardest.
+      - instrument: WTICO_USD
+        kind: oanda
+        direction: long
+        rationale: WTI follows Brent with smaller beta (landlocked US supply is unaffected directly).
+      - instrument: NATGAS_USD
+        kind: oanda
+        direction: long
+        rationale: Qatari LNG transits Hormuz; closure threat bids global gas.
+      - instrument: XAU_USD
+        kind: oanda
+        direction: long
+        rationale: Geopolitical risk bid in gold accompanies any credible chokepoint event.
+      - instrument: USD_NOK
+        kind: fx
+        direction: short
+        rationale: NOK is an oil currency outside the disrupted region — strengthens on Brent spikes.
+      - instrument: USD_CAD
+        kind: fx
+        direction: short
+        rationale: CAD benefits from higher crude; Canadian supply routes are unaffected.
+      - instrument: SPX500_USD
+        kind: oanda
+        direction: short
+        rationale: Sustained energy shock is a risk-off / margin-compression impulse for equities.
+      - instrument: FRO
+        kind: equity_watch
+        direction: watch
+        rationale: Frontline — tanker day-rates spike on rerouting and war-risk premia.
+      - instrument: STNG
+        kind: equity_watch
+        direction: watch
+        rationale: Scorpio Tankers — product-tanker rates jump when transit routes lengthen.
+      - instrument: DHT
+        kind: equity_watch
+        direction: watch
+        rationale: DHT Holdings — VLCC pure-play, most levered to Hormuz disruption.
+      - instrument: strait-of-hormuz-closed-in-2026
+        kind: polymarket
+        direction: watch
+        rationale: Placeholder event-contract slug — replace with a discovered live market.
+
+  oil_supply_shock:
+    name: Oil supply shock
+    description: >
+      Supply-side crude shock away from chokepoints — OPEC+ emergency
+      action, new sanctions on a producer, pipeline sabotage, major
+      refinery or export-terminal outage. Moves flat price and cracks;
+      petro-currencies follow with a lag.
+    watch_terms:
+      - "opec emergency"
+      - "opec+ meeting"
+      - "oil export ban"
+      - "pipeline sabotage"
+      - "pipeline explosion"
+      - "refinery explosion"
+      - "oil sanctions"
+      - "production shut-in"
+    instruments:
+      - instrument: BCO_USD
+        kind: oanda
+        direction: long
+        rationale: Supply subtraction reprices the global waterborne barrel.
+      - instrument: WTICO_USD
+        kind: oanda
+        direction: long
+        rationale: WTI tracks the global balance; US-specific outages hit it directly.
+      - instrument: USD_CAD
+        kind: fx
+        direction: short
+        rationale: CAD is the cleanest G10 petro-currency — strengthens on supply shocks elsewhere.
+      - instrument: USD_NOK
+        kind: fx
+        direction: short
+        rationale: NOK rallies with Brent unless the outage is Norwegian (then invert).
+      - instrument: USD_JPY
+        kind: fx
+        direction: long
+        rationale: Japan imports ~90% of its energy — an oil shock is a terms-of-trade hit to JPY.
+      - instrument: SPX500_USD
+        kind: oanda
+        direction: watch
+        rationale: Small shocks are noise; a sustained shock is a stagflation impulse (short).
+      - instrument: XOM
+        kind: equity_watch
+        direction: watch
+        rationale: ExxonMobil — upstream beneficiary of higher crude.
+      - instrument: OXY
+        kind: equity_watch
+        direction: watch
+        rationale: Occidental — high-beta upstream exposure to flat price.
+      - instrument: VLO
+        kind: equity_watch
+        direction: watch
+        rationale: Valero — refinery outages elsewhere widen crack spreads for survivors.
+      - instrument: opec-announces-emergency-cut-2026
+        kind: polymarket
+        direction: watch
+        rationale: Placeholder event-contract slug — replace with a discovered live market.
+
+  war_escalation:
+    name: War escalation / armed conflict
+    description: >
+      State-level military escalation — declaration of war, cross-border
+      invasion, missile strikes on a capital, mobilization, nuclear
+      rhetoric. Classic safe-haven rotation: gold, CHF, JPY bid; equities
+      and risk-FX offered.
+    watch_terms:
+      - "declares war"
+      - "military mobilization"
+      - "missile strike"
+      - "air strikes"
+      - "nuclear threat"
+      - "troops cross border"
+      - "airspace closed"
+    instruments:
+      - instrument: XAU_USD
+        kind: oanda
+        direction: long
+        rationale: Gold is the first-order safe haven on hard geopolitical escalation.
+      - instrument: USD_CHF
+        kind: fx
+        direction: short
+        rationale: CHF safe-haven bid — SNB tolerance permitting.
+      - instrument: USD_JPY
+        kind: fx
+        direction: short
+        rationale: JPY strengthens on risk-off deleveraging (carry unwind) despite energy-import drag.
+      - instrument: SPX500_USD
+        kind: oanda
+        direction: short
+        rationale: Broad risk-off; equities de-rate on war-risk premia.
+      - instrument: NAS100_USD
+        kind: oanda
+        direction: short
+        rationale: Higher-beta equity leg of the same risk-off move.
+      - instrument: EUR_USD
+        kind: fx
+        direction: short
+        rationale: European-theater escalation prices an EUR risk premium; USD is the deeper haven.
+      - instrument: BCO_USD
+        kind: oanda
+        direction: long
+        rationale: Conflict in or near producing regions adds a supply-risk premium to crude.
+      - instrument: LMT
+        kind: equity_watch
+        direction: watch
+        rationale: Lockheed Martin — defense primes re-rate on sustained escalation.
+      - instrument: RTX
+        kind: equity_watch
+        direction: watch
+        rationale: RTX — missile-defense demand proxy.
+      - instrument: NOC
+        kind: equity_watch
+        direction: watch
+        rationale: Northrop Grumman — long-cycle defense budget beneficiary.
+      - instrument: major-power-direct-conflict-2026
+        kind: polymarket
+        direction: watch
+        rationale: Placeholder event-contract slug — replace with a discovered live market.
+
+  cb_surprise:
+    name: Central bank surprise
+    description: >
+      Unscheduled or off-consensus central-bank action — emergency
+      intermeeting cut/hike, FX intervention, capital controls, surprise
+      YCC/QT change. Direction depends entirely on which bank and which
+      way, so instrument hints are watch-only; the impact agent sets sign.
+    watch_terms:
+      - "emergency rate cut"
+      - "emergency rate hike"
+      - "unscheduled meeting"
+      - "intermeeting rate"
+      - "currency intervention"
+      - "capital controls"
+      - "surprise rate decision"
+    instruments:
+      - instrument: EUR_USD
+        kind: fx
+        direction: watch
+        rationale: Fed or ECB surprise moves the pair by rate-differential repricing — sign depends on who and which way.
+      - instrument: USD_JPY
+        kind: fx
+        direction: watch
+        rationale: BoJ surprises and MoF intervention hit USD_JPY hardest; Fed shocks move it via UST yields.
+      - instrument: SPX500_USD
+        kind: oanda
+        direction: watch
+        rationale: Emergency cuts historically signal panic (equities down) unless framed as insurance.
+      - instrument: NAS100_USD
+        kind: oanda
+        direction: watch
+        rationale: Duration-sensitive tech is the high-beta leg of any rate shock.
+      - instrument: XAU_USD
+        kind: oanda
+        direction: watch
+        rationale: Gold rallies on surprise easing / policy-credibility damage; sells off on hawkish shocks.
+      - instrument: TLT
+        kind: equity_watch
+        direction: watch
+        rationale: Long-duration Treasury ETF — cleanest read on the rates leg (alert-only).
+      - instrument: fed-emergency-rate-cut-in-2026
+        kind: polymarket
+        direction: watch
+        rationale: Placeholder event-contract slug — replace with a discovered live market.
+
+  natural_disaster:
+    name: Major natural disaster
+    description: >
+      Region-dependent catastrophe — major earthquake (Japan: JPY
+      historically STRENGTHENS on repatriation flows, cf. 2011), Gulf of
+      Mexico hurricane (natgas/refining shut-ins), tsunami, volcanic
+      eruption disrupting aviation/agriculture. Sign is set by geography,
+      so hints are watch-only.
+    watch_terms:
+      - "major earthquake"
+      - "tsunami warning"
+      - "category 5 hurricane"
+      - "category 4 hurricane"
+      - "volcanic eruption"
+      - "state of emergency"
+    instruments:
+      - instrument: USD_JPY
+        kind: fx
+        direction: watch
+        rationale: A large Japan quake historically strengthens JPY (insurance repatriation, 2011 precedent) — counterintuitive but documented.
+      - instrument: NATGAS_USD
+        kind: oanda
+        direction: watch
+        rationale: Gulf hurricanes shut in production and LNG export terminals (bullish); demand destruction can dominate (bearish).
+      - instrument: WTICO_USD
+        kind: oanda
+        direction: watch
+        rationale: Gulf storms hit US production and refining — crude vs products spread depends on what is shut.
+      - instrument: SPX500_USD
+        kind: oanda
+        direction: watch
+        rationale: Only market-moving for catastrophes with macro-scale insured losses or supply-chain reach.
+      - instrument: GNRC
+        kind: equity_watch
+        direction: watch
+        rationale: Generac — generator demand spikes on hurricane/outage events.
+      - instrument: TRV
+        kind: equity_watch
+        direction: watch
+        rationale: Travelers — insured-loss proxy; sells off on large US catastrophes.
+      - instrument: major-hurricane-us-landfall-2026
+        kind: polymarket
+        direction: watch
+        rationale: Placeholder event-contract slug — replace with a discovered live market.
+
+  sanctions_trade:
+    name: Sanctions / trade war escalation
+    description: >
+      Tariff announcements, export controls, sanctions packages, trade
+      embargoes, asset freezes. Hits export-heavy currencies (EUR, CNH,
+      MXN, CAD) and control-exposed sectors (semis); gold catches the
+      de-dollarization / uncertainty bid.
+    watch_terms:
+      - "new sanctions"
+      - "sanctions package"
+      - "export controls"
+      - "tariffs announced"
+      - "trade embargo"
+      - "asset freeze"
+      - "trade retaliation"
+    instruments:
+      - instrument: USD_CNH
+        kind: fx
+        direction: long
+        rationale: Tariff/export-control escalation versus China pressures CNH.
+      - instrument: USD_MXN
+        kind: fx
+        direction: long
+        rationale: MXN is the liquid proxy for US-tariff risk on nearshored supply chains.
+      - instrument: USD_CAD
+        kind: fx
+        direction: long
+        rationale: US tariffs on Canadian goods weaken CAD (energy carve-outs can mute it).
+      - instrument: EUR_USD
+        kind: fx
+        direction: short
+        rationale: Export-heavy Europe wears the tariff hit; USD is the retaliation haven.
+      - instrument: NAS100_USD
+        kind: oanda
+        direction: short
+        rationale: Semiconductor export controls hit the index's largest constituents directly.
+      - instrument: XAU_USD
+        kind: oanda
+        direction: long
+        rationale: Sanctions escalation feeds central-bank gold demand and the uncertainty bid.
+      - instrument: NVDA
+        kind: equity_watch
+        direction: watch
+        rationale: Nvidia — first-order headline risk on any chip export-control news.
+      - instrument: AMD
+        kind: equity_watch
+        direction: watch
+        rationale: AMD — same export-control exposure, higher beta.
+      - instrument: new-china-tariffs-announced-2026
+        kind: polymarket
+        direction: watch
+        rationale: Placeholder event-contract slug — replace with a discovered live market.

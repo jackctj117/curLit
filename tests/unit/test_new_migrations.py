@@ -1,8 +1,10 @@
-"""Smoke test that the new migration files apply cleanly on sqlite (CL-43l, CL-1fm).
+"""Smoke test that the new migration files apply cleanly on sqlite
+(CL-43l, CL-1fm, CL-6iu7).
 
-Sqlite doesn't grok TIMESTAMPTZ / JSONB / NUMERIC, so we shim the types
-before running. The point is that the SQL parses and table creation
-succeeds — Postgres compatibility is verified by the production runner.
+Sqlite doesn't grok TIMESTAMPTZ / JSONB / NUMERIC / BIGSERIAL, so we
+shim the types before running. The point is that the SQL parses and
+table creation succeeds — Postgres compatibility is verified by the
+production runner.
 """
 
 from __future__ import annotations
@@ -19,6 +21,7 @@ def _shim_pg_types_for_sqlite(sql: str) -> str:
         sql.replace("TIMESTAMPTZ", "TEXT")
         .replace("JSONB", "TEXT")
         .replace("NUMERIC", "REAL")
+        .replace("BIGSERIAL", "INTEGER")
         .replace(" DEFAULT NOW()", "")
     )
 
@@ -82,3 +85,49 @@ class TestResearchPapersTable:
                 "WHERE paper_id='arxiv:2024.001'",
             )).scalar()
             assert status == "unread"
+
+
+class TestGeoEventsTable:
+    def test_creates_table_and_index(self, sqlite_engine) -> None:  # type: ignore[no-untyped-def]
+        _apply(sqlite_engine, Path("migrations/005_geo_events.sql"))
+        insp = inspect(sqlite_engine)
+        assert "geo_events" in insp.get_table_names()
+        cols = {c["name"] for c in insp.get_columns("geo_events")}
+        assert {
+            "id", "seen_at", "source", "external_id", "headline",
+            "url", "theme", "assessment", "status", "status_updated_at",
+        } <= cols
+        idx_names = {i["name"] for i in insp.get_indexes("geo_events")}
+        assert "idx_geo_events_status_seen" in idx_names
+
+    def test_default_status_new_and_unique_external_id(self, sqlite_engine) -> None:  # type: ignore[no-untyped-def]
+        _apply(sqlite_engine, Path("migrations/005_geo_events.sql"))
+        with sqlite_engine.begin() as conn:
+            conn.execute(text(
+                "INSERT INTO geo_events "
+                "(seen_at, source, external_id, headline, status_updated_at) "
+                "VALUES ('2026-07-14T00:00:00Z', 'gdelt', 'abc', 'h1', "
+                "'2026-07-14T00:00:00Z')",
+            ))
+            status = conn.execute(text(
+                "SELECT status FROM geo_events WHERE external_id='abc'",
+            )).scalar()
+            assert status == "NEW"
+        with pytest.raises(Exception, match="(?i)unique"), sqlite_engine.begin() as conn:
+            conn.execute(text(
+                "INSERT INTO geo_events "
+                "(seen_at, source, external_id, headline, status_updated_at) "
+                "VALUES ('2026-07-14T00:00:00Z', 'gdelt', 'abc', 'dup', "
+                "'2026-07-14T00:00:00Z')",
+            ))
+
+    def test_status_check_constraint(self, sqlite_engine) -> None:  # type: ignore[no-untyped-def]
+        _apply(sqlite_engine, Path("migrations/005_geo_events.sql"))
+        with pytest.raises(Exception, match="(?i)check"), sqlite_engine.begin() as conn:
+            conn.execute(text(
+                "INSERT INTO geo_events "
+                "(seen_at, source, external_id, headline, status, "
+                "status_updated_at) "
+                "VALUES ('2026-07-14T00:00:00Z', 'gdelt', 'xyz', 'h', "
+                "'BOGUS', '2026-07-14T00:00:00Z')",
+            ))
