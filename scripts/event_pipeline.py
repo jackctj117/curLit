@@ -19,6 +19,11 @@ urgent events (urgency >= --digest-min-urgency, default 5 or
 $EVENT_DIGEST_MIN_URGENCY) is sent via src.events.digest — the
 operator's "bots surfaced these tickers" feed. ``--no-digest``
 disables it; quiet cycles never send anything.
+
+Each cycle also runs the key-free relative-volume scanner (CL-i4sr)
+over the playbook equity watch universe before the digest, so Watch:
+tickers with an unusual spike in the last 24h render as ``FRO×3.2``.
+``--no-scan`` disables it; a scan failure never kills the cycle.
 """
 
 from __future__ import annotations
@@ -81,6 +86,12 @@ def _build_parser() -> argparse.ArgumentParser:
              "cycle (default on; --no-digest to disable)",
     )
     p.add_argument(
+        "--scan", action=argparse.BooleanOptionalAction, default=True,
+        help="Run the relative-volume scanner over the equity watch "
+             "universe each cycle, before the digest (default on; "
+             "--no-scan to disable)",
+    )
+    p.add_argument(
         "--digest-min-urgency", type=int, metavar="N", default=None,
         help="Digest urgency threshold 1-10 (default: "
              "$EVENT_DIGEST_MIN_URGENCY or 5)",
@@ -117,6 +128,27 @@ def _cycle(args: argparse.Namespace) -> None:
         rows = ingester.run(start, end)
         logger.info("ingest: %d new geo_events rows", rows)
 
+    if args.scan:
+        # RVOL scan runs BEFORE assess/digest so this cycle's digest
+        # can annotate Watch tickers with fresh marks. A scan failure
+        # (yfinance outage, missing table) must never kill the cycle
+        # — RVOL is advisory confirmation, not pipeline plumbing.
+        try:
+            from src.scanners.relative_volume import (  # noqa: PLC0415
+                RelativeVolumeScanner,
+            )
+
+            scanner = RelativeVolumeScanner(
+                _db_url(), playbooks_path=args.playbooks,
+            )
+            scan_rows = scanner.scan()
+            logger.info(
+                "scan: %d tickers, %d unusual",
+                len(scan_rows), sum(1 for r in scan_rows if r.is_unusual),
+            )
+        except Exception:
+            logger.exception("volume scan failed; continuing")
+
     if args.assess:
         from sqlalchemy import create_engine  # noqa: PLC0415
 
@@ -140,13 +172,21 @@ def _cycle(args: argparse.Namespace) -> None:
         )
 
         if args.digest:
-            from src.events.digest import send_digest  # noqa: PLC0415
+            from src.events.digest import (  # noqa: PLC0415
+                fetch_volume_marks,
+                send_digest,
+            )
 
             # A digest failure must never take down the pipeline —
             # assessments are already persisted by this point.
             try:
+                # fetch_volume_marks is fail-soft ({} on missing
+                # table / DB blip) — the Watch line just renders
+                # without ×rvol annotations.
+                marks = fetch_volume_marks(create_engine(_db_url()))
                 disp = send_digest(
                     results, min_urgency=args.digest_min_urgency,
+                    volume_marks=marks,
                 )
             except Exception:
                 logger.exception("digest dispatch failed; continuing")

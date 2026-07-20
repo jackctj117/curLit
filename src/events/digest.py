@@ -15,6 +15,13 @@ threshold, sends nothing at all. Long cycles are capped at
 union still covers every qualifying event, so the ticker feed stays
 complete even when event lines are elided.
 
+Volume marks (CL-i4sr): ``Watch:`` tickers with an unusual
+relative-volume spike in the last 24h (per the ``volume_spikes`` table
+written by :class:`src.scanners.relative_volume.RelativeVolumeScanner`)
+are annotated ``FRO×3.2`` style. :func:`fetch_volume_marks` is
+deliberately fail-soft — a missing table, empty DB, or connection blip
+degrades to no annotations, never to a lost digest.
+
 All interpolated content (headlines, themes, instruments) is escaped
 via :func:`src.research.notifications.html_escape` — GDELT headlines
 are hostile input.
@@ -23,7 +30,9 @@ are hostile input.
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from src.events.impact_agent import AssessmentResult
 from src.research.notifications import (
@@ -51,6 +60,41 @@ _HEADLINE_MAX = 80
 _TRADABLE_KINDS = frozenset({"oanda", "fx"})
 
 _ARROWS = {"long": "↑", "short": "↓"}  # ↑ / ↓
+
+#: Lookback for "recent" unusual volume spikes on the Watch line.
+VOLUME_MARK_LOOKBACK_HOURS = 24
+
+
+def fetch_volume_marks(
+    engine: Any,
+    lookback_hours: int = VOLUME_MARK_LOOKBACK_HOURS,
+) -> dict[str, float]:
+    """Latest unusual RVOL per ticker within the lookback window —
+    ``{"FRO": 3.2, ...}`` for Watch-line annotation.
+
+    Fail-soft BY DESIGN: the ``volume_spikes`` table not existing yet
+    (migration not run), an empty table, or any DB error all return
+    ``{}`` so the digest renders unannotated instead of dying — the
+    scanner is an optional enhancement, not a digest dependency.
+    """
+    try:
+        from sqlalchemy import text  # noqa: PLC0415
+
+        cutoff = datetime.now(UTC) - timedelta(hours=lookback_hours)
+        with engine.connect() as conn:
+            result = conn.execute(
+                text(
+                    "SELECT ticker, rvol FROM volume_spikes "
+                    "WHERE is_unusual AND scanned_at >= :cutoff "
+                    "ORDER BY scanned_at ASC"
+                ),
+                {"cutoff": cutoff},
+            )
+            # ASC + dict overwrite → the LATEST scan wins per ticker.
+            return {str(t): float(r) for t, r in result}
+    except Exception:
+        logger.debug("volume marks unavailable; digest renders unannotated", exc_info=True)
+        return {}
 
 
 def _urgency(result: AssessmentResult) -> int:
@@ -81,10 +125,25 @@ def _instrument_token(instrument: str, directions: set[str]) -> str:
     return f"{html_escape(instrument)}{arrow}"
 
 
+def _watch_token(
+    instrument: str, volume_marks: Mapping[str, float] | None,
+) -> str:
+    """Watch-line token, RVOL-annotated when the ticker had a recent
+    unusual spike: ``FRO`` + 3.2 → ``FRO×3.2``. The rvol suffix is
+    machine-generated (float), but the ticker is escaped like every
+    other interpolated value."""
+    token = html_escape(instrument)
+    rvol = (volume_marks or {}).get(instrument)
+    if rvol is not None and rvol > 0:
+        token += f"×{rvol:.1f}"
+    return token
+
+
 def build_digest(
     results: Sequence[AssessmentResult],
     min_urgency: int = DEFAULT_MIN_URGENCY,
     max_events: int = MAX_EVENTS,
+    volume_marks: Mapping[str, float] | None = None,
 ) -> tuple[str, str] | None:
     """Build ``(title, html_message)`` for one assess cycle, or
     ``None`` when nothing qualifies (never send an empty digest).
@@ -153,7 +212,8 @@ def build_digest(
         lines.append(f"<b>Tradable:</b> {tokens}")
     if watch:
         lines.append(
-            "<b>Watch:</b> " + " ".join(html_escape(i) for i in watch)
+            "<b>Watch:</b> "
+            + " ".join(_watch_token(i, volume_marks) for i in watch)
         )
 
     while lines and not lines[-1]:
@@ -171,6 +231,7 @@ def send_digest(
     results: Sequence[AssessmentResult],
     min_urgency: int = DEFAULT_MIN_URGENCY,
     max_events: int = MAX_EVENTS,
+    volume_marks: Mapping[str, float] | None = None,
 ) -> DispatchResult | None:
     """Build and dispatch the cycle digest via Telegram.
 
@@ -178,8 +239,15 @@ def send_digest(
     the threshold (in which case NO message is sent — the digest never
     spams quiet cycles). Telegram being unconfigured is the
     dispatcher's no-op, same as every other notification.
+
+    ``volume_marks`` (ticker → recent unusual RVOL, see
+    :func:`fetch_volume_marks`) annotates the Watch line; ``None`` /
+    ``{}`` renders it unannotated.
     """
-    built = build_digest(results, min_urgency=min_urgency, max_events=max_events)
+    built = build_digest(
+        results, min_urgency=min_urgency, max_events=max_events,
+        volume_marks=volume_marks,
+    )
     if built is None:
         logger.info(
             "digest: no ASSESSED events at urgency >= %d; nothing sent",

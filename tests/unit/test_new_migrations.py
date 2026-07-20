@@ -131,3 +131,32 @@ class TestGeoEventsTable:
                 "VALUES ('2026-07-14T00:00:00Z', 'gdelt', 'xyz', 'h', "
                 "'BOGUS', '2026-07-14T00:00:00Z')",
             ))
+
+
+class TestVolumeSpikesTable:
+    def test_creates_table_and_indexes(self, sqlite_engine) -> None:  # type: ignore[no-untyped-def]
+        _apply(sqlite_engine, Path("migrations/006_volume_spikes.sql"))
+        insp = inspect(sqlite_engine)
+        assert "volume_spikes" in insp.get_table_names()
+        cols = {c["name"] for c in insp.get_columns("volume_spikes")}
+        assert {
+            "id", "ticker", "scanned_at", "rvol", "volume",
+            "avg_volume_20d", "price_change_pct", "is_unusual", "source",
+        } <= cols
+        idx_names = {i["name"] for i in insp.get_indexes("volume_spikes")}
+        assert "idx_volume_spikes_ticker_scanned" in idx_names
+        assert "idx_volume_spikes_unusual_scanned" in idx_names
+
+    def test_defaults_not_unusual_yfinance_source(self, sqlite_engine) -> None:  # type: ignore[no-untyped-def]
+        _apply(sqlite_engine, Path("migrations/006_volume_spikes.sql"))
+        with sqlite_engine.begin() as conn:
+            conn.execute(text(
+                "INSERT INTO volume_spikes (ticker, scanned_at, rvol) "
+                "VALUES ('FRO', '2026-07-20T00:00:00Z', 3.2)",
+            ))
+            row = conn.execute(text(
+                "SELECT is_unusual, source FROM volume_spikes "
+                "WHERE ticker='FRO'",
+            )).fetchone()
+            assert not row[0]
+            assert row[1] == "yfinance"

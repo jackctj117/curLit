@@ -350,12 +350,26 @@ class _FakeAgent:
         return list(self.results)[:limit]
 
 
+class _NoopScanner:
+    """Stands in for RelativeVolumeScanner inside _cycle (--scan is
+    default-on since CL-i4sr); no yfinance, no DB."""
+
+    def __init__(self, _db_url: str, **_kw: Any) -> None:
+        pass
+
+    def scan(self, persist: bool = True) -> list[Any]:
+        return []
+
+
 @pytest.fixture
 def pipeline_mod(monkeypatch: pytest.MonkeyPatch) -> Any:
     from scripts import event_pipeline as mod
 
     monkeypatch.setattr(
         "src.events.impact_agent.EventImpactAgent", _FakeAgent,
+    )
+    monkeypatch.setattr(
+        "src.scanners.relative_volume.RelativeVolumeScanner", _NoopScanner,
     )
     monkeypatch.setattr("sqlalchemy.create_engine", lambda _url: None)
     return mod

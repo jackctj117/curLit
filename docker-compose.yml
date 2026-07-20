@@ -295,6 +295,8 @@ services:
     volumes:
       - ./airflow/dags:/opt/airflow/dags:ro
       - ./src:/opt/curlit/src:ro
+      # event_ingestion DAG reads configs/event_playbooks.yaml (CL-i4sr)
+      - ./configs:/opt/curlit/configs:ro
       - ./pyproject.toml:/opt/curlit/pyproject.toml:ro
     depends_on:
       airflow-init:
@@ -337,6 +339,8 @@ services:
     volumes:
       - ./airflow/dags:/opt/airflow/dags:ro
       - ./src:/opt/curlit/src:ro
+      # event_ingestion DAG reads configs/event_playbooks.yaml (CL-i4sr)
+      - ./configs:/opt/curlit/configs:ro
     depends_on:
       airflow-init:
         condition: service_completed_successfully
