@@ -47,6 +47,7 @@ from src.events.confluence import (
     EventConfluence,
     mid_price,
 )
+from src.events.prices import format_age
 from src.execution.oms import OrderIntent
 from src.models.feature_versioning import (
     FeatureSnapshot,
@@ -456,15 +457,21 @@ class EventDrivenStrategy:
         prices: dict[str, Any],
         equity: float | None,
         now: datetime,
-    ) -> tuple[list[OrderIntent], list[tuple[str, str, str]], list[tuple[str, str]]]:
+    ) -> tuple[
+        list[OrderIntent],
+        list[tuple[str, str, str, float, str]],
+        list[tuple[str, str]],
+    ]:
         """Emit entry intents for the tradable affected instruments.
 
         Returns (intents, entered, skipped) where entered is
-        [(symbol, direction_str, size_str)] and skipped is
-        [(instrument_or_symbol, reason)] — both feed the operator alert.
+        [(symbol, direction_str, size_str, entry_price, reason)] —
+        reason is the assessment's per-instrument ``affected[].reason``
+        — and skipped is [(instrument_or_symbol, reason)]; both feed
+        the operator alert.
         """
         intents: list[OrderIntent] = []
-        entered: list[tuple[str, str, str]] = []
+        entered: list[tuple[str, str, str, float, str]] = []
         skipped: list[tuple[str, str]] = []
         event_id = row.get("id")
         headline = str(row.get("headline") or "")
@@ -567,7 +574,10 @@ class EventDrivenStrategy:
                 urgency="high", max_slippage_bps=self.config.max_slippage_bps,
                 metadata=meta,
             ))
-            entered.append((symbol, dir_str, f"{size:.0f}"))
+            entered.append((
+                symbol, dir_str, f"{size:.0f}", entry_price,
+                str(aff.get("reason") or ""),
+            ))
         return intents, entered, skipped
 
     # ------------------------------------------------------------------
@@ -588,18 +598,69 @@ class EventDrivenStrategy:
                     watch.append(name)
         return watch
 
+    @staticmethod
+    def _ideas_block(
+        assessment: dict[str, Any], limit: int = 5,
+    ) -> list[str]:
+        """Advisory trade-ideas lines (CL-mgcp) — clearly separated
+        from the machine trades above them: the system never trades
+        equities or options; these are for the operator's own hands.
+        Empty list when the assessment carries no ideas."""
+        ideas = assessment.get("trade_ideas")
+        if not isinstance(ideas, list) or not ideas:
+            return []
+        lines = ["Operator ideas (not machine-traded):"]
+        for idea in ideas[:limit]:
+            if not isinstance(idea, dict):
+                continue
+            parts = [
+                str(idea.get("ticker") or "?"),
+                str(idea.get("action") or "?"),
+            ]
+            horizon = str(idea.get("time_horizon") or "").strip()
+            if horizon:
+                parts.append(horizon)
+            time_stop = idea.get("time_stop_days")
+            if time_stop is not None:
+                parts.append(f"stop{time_stop}d")
+            line = f"- {' '.join(parts)}"
+            rationale = str(idea.get("rationale") or "").strip()
+            if rationale:
+                line += f" — {rationale[:60]}"
+            lines.append(line)
+        return lines if len(lines) > 1 else []
+
+    @staticmethod
+    def _event_age(row: dict[str, Any], now: datetime | None = None) -> str:
+        """``2h`` / ``3d`` since the event was first seen, or ``""``."""
+        return format_age(row.get("seen_at"), now=now)
+
     def _alert_confirmed(
         self,
         row: dict[str, Any],
         assessment: dict[str, Any],
-        entered: list[tuple[str, str, str]],
+        entered: list[tuple[str, str, str, float, str]],
         skipped: list[tuple[str, str]],
+        prices: dict[str, Any] | None = None,
+        now: datetime | None = None,
     ) -> None:
+        now = now or datetime.now(UTC)
         lines = [f"Headline: {str(row.get('headline') or '')[:140]}"]
-        for symbol, dir_str, size_str in entered:
-            lines.append(f"Trade: {symbol} {dir_str} ({size_str} units)")
+        age = self._event_age(row, now)
+        if age:
+            lines.append(f"Age: {age} since first seen")
+        for symbol, dir_str, size_str, entry_price, reason in entered:
+            lines.append(
+                f"Trade: {symbol} {dir_str} ({size_str} units) @ {entry_price:g}",
+            )
+            if reason:
+                lines.append(f"  Why: {reason[:100]}")
         for name, reason in skipped:
-            lines.append(f"Skipped: {name} ({reason})")
+            line = f"Skipped: {name} ({reason})"
+            current = self._current_price(name, prices or {}, now)
+            if current is not None:
+                line += f" @ {current:g}"
+            lines.append(line)
         lines.append(f"Risk: {self.config.event_risk_pct * 100:.2f}% of equity per trade")
         lines.append(f"Stop: {self.config.event_stop_pct * 100:.2f}% from entry")
         lines.append(f"Time stop: {self.config.event_max_holding_hours:g}h")
@@ -609,19 +670,47 @@ class EventDrivenStrategy:
         watch = self._watch_list(assessment)
         if watch:
             lines.append("Watch: " + ", ".join(watch))
+        ideas = self._ideas_block(assessment)
+        if ideas:
+            lines.append("")
+            lines.extend(ideas)
         try:
             notify_operator("Event confirmed", "\n".join(lines), priority=1)
         except Exception:
             logger.exception("Confirmed-event alert dispatch failed")
 
     def _alert_expired(self, row: dict[str, Any], urgency: int, confidence: float) -> None:
-        lines = [
-            f"Headline: {str(row.get('headline') or '')[:140]}",
+        lines = [f"Headline: {str(row.get('headline') or '')[:140]}"]
+        age = self._event_age(row)
+        if age:
+            lines.append(f"Age: {age} since first seen")
+        lines += [
             f"Urgency: {urgency}/10",
             f"Confidence: {confidence:.2f}",
             f"No market confirmation within {self.config.confirm_window_max_minutes}min",
             "No trade taken",
         ]
+        # Top advisory idea (highest confidence) still surfaces — an
+        # expired-unconfirmed event can be an operator opportunity even
+        # when the machine passes (CL-mgcp).
+        assessment = EventConfluence.parse_assessment(row.get("assessment")) or {}
+        ideas = [
+            i for i in (assessment.get("trade_ideas") or [])
+            if isinstance(i, dict) and i.get("ticker")
+        ]
+        if ideas:
+            top = max(
+                ideas, key=lambda i: float(i.get("confidence") or 0.0),
+            )
+            line = (
+                f"Top idea: {top.get('ticker')} {top.get('action') or '?'}"
+            )
+            if top.get("time_stop_days") is not None:
+                line += f" (stop {top.get('time_stop_days')}d)"
+            rationale = str(top.get("rationale") or "").strip()
+            if rationale:
+                line += f" — {rationale[:60]}"
+            lines.append(line)
         try:
             notify_operator("Event expired unconfirmed", "\n".join(lines), priority=0)
         except Exception:
@@ -686,7 +775,9 @@ class EventDrivenStrategy:
             )
             # Alert on every CONFIRMED event — even when caps/mapping
             # meant nothing was tradable (operator can act manually).
-            self._alert_confirmed(row, assessment, entered, skipped)
+            self._alert_confirmed(
+                row, assessment, entered, skipped, prices=prices, now=now,
+            )
             if entry_intents:
                 intents.extend(entry_intents)
                 self.confluence.transition(row.get("id"), "CONFIRMED", "TRADED")

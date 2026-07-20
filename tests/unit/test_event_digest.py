@@ -2,13 +2,15 @@
 
 Covers digest formatting (threshold filter, instrument dedup, cap,
 HTML escaping of hostile GDELT headlines), the never-spam rule
-(empty cycle / nothing above threshold → no message), and the
+(empty cycle / nothing above threshold → no message), the
 scripts/event_pipeline.py flag wiring (--digest/--no-digest +
-EVENT_DIGEST_MIN_URGENCY).
+EVENT_DIGEST_MIN_URGENCY), and the CL-mgcp enrichment (price/change
+tokens, per-event age, Ideas:/Fade: sections, token line wrapping).
 """
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -16,6 +18,8 @@ import pytest
 from src.events.digest import (
     DEFAULT_MIN_URGENCY,
     MAX_EVENTS,
+    MAX_IDEAS,
+    TOKENS_PER_LINE,
     build_digest,
     send_digest,
 )
@@ -307,6 +311,213 @@ class TestCap:
 
 
 # --------------------------------------------------------------------- #
+# Enrichment (CL-mgcp): prices, age, Ideas/Fade, wrapping
+# --------------------------------------------------------------------- #
+
+
+def _idea(**overrides: Any) -> dict[str, Any]:
+    idea = {
+        "ticker": "TSM",
+        "action": "buy_puts",
+        "direction": "bearish",
+        "confidence": 0.7,
+        "rationale": "advanced-node concentration risk",
+        "time_horizon": "short",
+        "holding_period_days": "2-6",
+        "time_stop_days": 5,
+        "suggested_entry": "",
+        "preferred_instrument": "",
+        "notes": "",
+    }
+    idea.update(overrides)
+    return idea
+
+
+_NOW = datetime(2026, 7, 20, 12, 0, tzinfo=UTC)
+
+
+class TestPriceAnnotations:
+    def test_tradable_token_gains_price_change_arrow(self) -> None:
+        built = build_digest(
+            [_res(urgency=7, affected=[_aff("BCO_USD", direction="long")])],
+            prices={"BCO_USD": {"price": 78.4, "change_pct": 2.08}},
+        )
+        assert built is not None
+        assert "<b>Tradable:</b> BCO_USD 78.4 (+2.1%)↑" in built[1]
+
+    def test_watch_token_price_and_rvol_mark(self) -> None:
+        built = build_digest(
+            [_res(urgency=7, affected=[
+                _aff("FRO", kind="equity_watch", direction="watch"),
+            ])],
+            volume_marks={"FRO": 3.2},
+            prices={"FRO": {"price": 24.1, "change_pct": 3.2}},
+        )
+        assert built is not None
+        assert "<b>Watch:</b> FRO $24.10 (+3.2%)×3.2" in built[1]
+
+    def test_unpriced_ticker_renders_bare(self) -> None:
+        built = build_digest(
+            [_res(urgency=7, affected=[_aff("BCO_USD", direction="long"),
+                                       _aff("XAU_USD", direction="short")])],
+            prices={"BCO_USD": {"price": 78.4, "change_pct": 2.08}},
+        )
+        assert built is not None
+        assert "BCO_USD 78.4 (+2.1%)↑" in built[1]
+        assert "XAU_USD↓" in built[1]
+
+    def test_token_lines_wrap_above_limit(self) -> None:
+        affected = [
+            _aff(f"T{i}", kind="equity_watch", direction="watch")
+            for i in range(TOKENS_PER_LINE + 2)
+        ]
+        built = build_digest([_res(urgency=7, affected=affected)])
+        assert built is not None
+        lines = built[1].split("\n")
+        watch_idx = next(
+            i for i, ln in enumerate(lines) if ln.startswith("<b>Watch:</b>")
+        )
+        assert lines[watch_idx].count(" ") == TOKENS_PER_LINE  # label + 6 tokens
+        assert lines[watch_idx + 1] == f"T{TOKENS_PER_LINE} T{TOKENS_PER_LINE + 1}"
+
+
+class TestEventAge:
+    def test_age_appended_when_seen_at_known(self) -> None:
+        built = build_digest(
+            [_res(event_id=7, urgency=7)],
+            seen_ats={7: _NOW - timedelta(hours=2)},
+            now=_NOW,
+        )
+        assert built is not None
+        assert "<b>7/10</b> Strait of Hormuz closed (2h ago)" in built[1]
+
+    def test_unknown_seen_at_renders_no_age(self) -> None:
+        built = build_digest([_res(event_id=7, urgency=7)], seen_ats={}, now=_NOW)
+        assert built is not None
+        assert "ago)" not in built[1]
+
+    def test_string_seen_at_parsed(self) -> None:
+        built = build_digest(
+            [_res(event_id=7, urgency=7)],
+            seen_ats={7: (_NOW - timedelta(days=3)).isoformat()},
+            now=_NOW,
+        )
+        assert built is not None
+        assert "(3d ago)" in built[1]
+
+
+class TestIdeasSection:
+    def _with_ideas(self, *ideas: dict[str, Any], **kw: Any) -> str:
+        r = _res(urgency=7)
+        r.assessment["trade_ideas"] = list(ideas)
+        built = build_digest([r], **kw)
+        assert built is not None
+        return built[1]
+
+    def test_idea_line_full_format(self) -> None:
+        message = self._with_ideas(
+            _idea(),
+            prices={"TSM": {"price": 172.4, "change_pct": -1.8}},
+        )
+        assert "<b>Ideas:</b>" in message
+        assert (
+            "TSM $172.40 (-1.8%) — buy_puts short 2-6d stop5d — "
+            "advanced-node concentration risk"
+        ) in message
+
+    def test_idea_line_without_price(self) -> None:
+        message = self._with_ideas(_idea())
+        assert "TSM — buy_puts short 2-6d stop5d" in message
+
+    def test_long_rationale_truncated(self) -> None:
+        message = self._with_ideas(_idea(rationale="R" * 200))
+        idea_line = next(
+            ln for ln in message.split("\n") if ln.startswith("TSM")
+        )
+        assert len(idea_line) < 120
+        assert idea_line.endswith("…")
+
+    def test_hostile_idea_fields_escaped(self) -> None:
+        message = self._with_ideas(_idea(
+            ticker="<TSM&>", rationale='<script>alert("x")</script>',
+        ))
+        assert "<script>" not in message
+        assert "&lt;TSM&amp;&gt;" in message
+        assert "&lt;script&gt;" in message
+
+    def test_ideas_deduped_across_events(self) -> None:
+        r1 = _res(event_id=1, urgency=9)
+        r1.assessment["trade_ideas"] = [_idea(ticker="DUP")]
+        r2 = _res(event_id=2, urgency=6)
+        r2.assessment["trade_ideas"] = [_idea(ticker="DUP"),
+                                        _idea(ticker="OTHER")]
+        built = build_digest([r1, r2])
+        assert built is not None
+        message = built[1]
+        assert message.count("DUP —") == 1  # deduped on (ticker, action)
+        assert "OTHER —" in message
+
+    def test_ideas_capped_with_more_note(self) -> None:
+        message = self._with_ideas(
+            *[_idea(ticker=f"AA{i}") for i in range(MAX_IDEAS + 2)],
+        )
+        idea_lines = [ln for ln in message.split("\n") if ln.startswith("AA")]
+        assert len(idea_lines) == MAX_IDEAS
+        assert "+2 more ideas" in message
+
+    def test_no_ideas_no_section(self) -> None:
+        built = build_digest([_res(urgency=7)])
+        assert built is not None
+        assert "Ideas:" not in built[1]
+
+
+class TestFadeSection:
+    def test_fade_lines(self) -> None:
+        r = _res(urgency=7)
+        r.assessment["fade_candidates"] = [
+            {"ticker": "NVDA", "action": "fade the spike",
+             "reason": "routine drills, priced in"},
+        ]
+        built = build_digest([r])
+        assert built is not None
+        assert "<b>Fade:</b>" in built[1]
+        assert "NVDA — fade the spike — routine drills, priced in" in built[1]
+
+    def test_hostile_fade_escaped(self) -> None:
+        r = _res(urgency=7)
+        r.assessment["fade_candidates"] = [
+            {"ticker": "NVDA", "action": "<b>fade</b>", "reason": "a & b"},
+        ]
+        built = build_digest([r])
+        assert built is not None
+        assert "<b>fade</b>" not in built[1]
+        assert "&lt;b&gt;fade&lt;/b&gt;" in built[1]
+        assert "a &amp; b" in built[1]
+
+    def test_no_fades_no_section(self) -> None:
+        built = build_digest([_res(urgency=7)])
+        assert built is not None
+        assert "Fade:" not in built[1]
+
+
+class TestSendDigestEnrichmentForwarding:
+    def test_prices_and_seen_ats_reach_the_message(
+        self, notify_recorder: list[dict[str, Any]],
+    ) -> None:
+        r = _res(event_id=5, urgency=7,
+                 affected=[_aff("BCO_USD", direction="long")])
+        result = send_digest(
+            [r],
+            prices={"BCO_USD": {"price": 78.4, "change_pct": 2.08}},
+            seen_ats={5: datetime.now(UTC) - timedelta(hours=2)},
+        )
+        assert result is not None and result.telegram_succeeded
+        message = notify_recorder[0]["message"]
+        assert "BCO_USD 78.4 (+2.1%)↑" in message
+        assert "(2h ago)" in message
+
+
+# --------------------------------------------------------------------- #
 # send_digest dispatch
 # --------------------------------------------------------------------- #
 
@@ -473,3 +684,89 @@ class TestPipelineWiring:
         args = pipeline_mod._build_parser().parse_args(["--assess"])
         args.digest_min_urgency = 5
         pipeline_mod._cycle(args)  # must not raise
+
+
+class TestPipelineIdeaWiring:
+    """CL-mgcp: _cycle persists ideas, expires stale ones, and feeds
+    the one-per-cycle price batch into the digest."""
+
+    def _wire(self, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+        calls: dict[str, Any] = {"persist": [], "expire": 0, "sent": []}
+
+        def fake_get_prices(tickers: Any, engine: Any = None, **_kw: Any) -> dict:
+            calls["price_tickers"] = sorted(tickers)
+            return {"TSM": {"price": 172.4, "change_pct": -1.8}}
+
+        def fake_persist(engine: Any, eid: int, assessment: Any,
+                         prices: Any = None, now: Any = None) -> int:
+            calls["persist"].append((eid, prices))
+            return 1
+
+        def fake_expire(engine: Any, now: Any = None) -> int:
+            calls["expire"] += 1
+            return 0
+
+        def fake_send(res: Any, min_urgency: int = 5, **kw: Any) -> DispatchResult:
+            calls["sent"].append(kw)
+            return DispatchResult(telegram_attempted=True, telegram_succeeded=True)
+
+        monkeypatch.setattr("src.events.prices.get_prices", fake_get_prices)
+        monkeypatch.setattr("src.events.idea_ledger.persist_ideas", fake_persist)
+        monkeypatch.setattr("src.events.idea_ledger.expire_stale", fake_expire)
+        monkeypatch.setattr("src.events.digest.send_digest", fake_send)
+        return calls
+
+    def _result_with_idea(self, event_id: int = 7) -> AssessmentResult:
+        r = _res(event_id=event_id, urgency=7,
+                 affected=[_aff("BCO_USD", direction="long")])
+        r.assessment["trade_ideas"] = [
+            {"ticker": "TSM", "action": "buy_puts", "time_stop_days": 5},
+        ]
+        return r
+
+    def test_assessed_events_persisted_with_batch_prices(
+        self, pipeline_mod: Any, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        calls = self._wire(monkeypatch)
+        _FakeAgent.results = [self._result_with_idea()]
+        args = pipeline_mod._build_parser().parse_args(["--assess"])
+        args.digest_min_urgency = 5
+        pipeline_mod._cycle(args)
+        # One price batch for affected + idea tickers, shared everywhere.
+        assert calls["price_tickers"] == ["BCO_USD", "TSM"]
+        assert calls["persist"] == [
+            (7, {"TSM": {"price": 172.4, "change_pct": -1.8}}),
+        ]
+        assert calls["expire"] == 1  # stale sweep runs every cycle
+        assert calls["sent"][0]["prices"] == {
+            "TSM": {"price": 172.4, "change_pct": -1.8},
+        }
+
+    def test_dismissed_events_not_persisted(
+        self, pipeline_mod: Any, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        calls = self._wire(monkeypatch)
+        _FakeAgent.results = [AssessmentResult(
+            event_id=9, headline="junk", theme=None,
+            status="DISMISSED", assessment={"rationale": "parse failure"},
+        )]
+        args = pipeline_mod._build_parser().parse_args(["--assess"])
+        args.digest_min_urgency = 5
+        pipeline_mod._cycle(args)
+        assert calls["persist"] == []
+        assert calls["expire"] == 1
+
+    def test_ledger_failure_never_kills_cycle_or_digest(
+        self, pipeline_mod: Any, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        calls = self._wire(monkeypatch)
+
+        def boom(*_a: Any, **_kw: Any) -> int:
+            raise RuntimeError("db down")
+
+        monkeypatch.setattr("src.events.idea_ledger.persist_ideas", boom)
+        _FakeAgent.results = [self._result_with_idea()]
+        args = pipeline_mod._build_parser().parse_args(["--assess"])
+        args.digest_min_urgency = 5
+        pipeline_mod._cycle(args)  # must not raise
+        assert len(calls["sent"]) == 1  # digest still went out

@@ -14,7 +14,14 @@ in the Telegram chat that already receives the gate notifications
     reject vol-carry    # gate 2: slug vol-carry → DEPLOY_REJECTED
     skip a1b2c3 dupe    # gate 1: → SKIPPED with reason "dupe"
     pending             # list everything awaiting a decision
+    ideas               # open trade ideas from the event pipeline
     help                # command grammar
+
+``ideas`` (CL-mgcp) is READ-ONLY v1: it lists ``pending`` rows from
+the ``trade_ideas`` ledger (migration 007) with age vs time stop and a
+live price where one resolves. Ideas auto-expire in the pipeline
+cycle; operator-driven transitions (taken/cancelled/closed) are
+schema-reserved future work — no bot command mutates the ledger yet.
 
 Design:
 
@@ -85,7 +92,7 @@ SHORT_ID_LEN: int = 6
 _SEND_RETRIES: int = 1
 
 _ACTION_VERBS = frozenset({"approve", "reject", "skip"})
-_KNOWN_VERBS = _ACTION_VERBS | {"pending", "help", "start"}
+_KNOWN_VERBS = _ACTION_VERBS | {"pending", "help", "start", "ideas"}
 
 HELP_TEXT = (
     "curLit research approval bot — commands:\n"
@@ -93,6 +100,7 @@ HELP_TEXT = (
     "  reject <id> [reason]   decline (gate 1: SKIP, gate 2: reject deploy)\n"
     "  skip <id> [reason]     same as reject\n"
     "  pending                list entries awaiting your decision\n"
+    "  ideas                  list open trade ideas (read-only)\n"
     "  help                   this message\n"
     "<id> is the short id from the gate notification or the 'pending' "
     "listing (gate 1: extract-hash prefix, gate 2: strategy slug)."
@@ -365,9 +373,85 @@ def render_pending(state: LoopState) -> str:
     return "\n".join(lines)
 
 
+def _ideas_engine() -> Any:
+    """Engine for the trade_ideas ledger, from the same POSTGRES_* env
+    the event pipeline uses. Module-level so tests monkeypatch it."""
+    from sqlalchemy import create_engine  # noqa: PLC0415
+
+    return create_engine(
+        f"postgresql+psycopg2://"
+        f"{os.environ.get('POSTGRES_USER', 'fx')}:"
+        f"{os.environ.get('POSTGRES_PASSWORD', 'changeme')}@"
+        f"{os.environ.get('POSTGRES_HOST', 'localhost')}:"
+        f"{os.environ.get('POSTGRES_PORT', '5432')}/"
+        f"{os.environ.get('POSTGRES_DB', 'fx')}",
+    )
+
+
+def render_ideas(
+    engine: Any = None,
+    get_prices_fn: Any = None,
+    now: Any = None,
+) -> str:
+    """Phone-readable listing of OPEN (pending) trade ideas (CL-mgcp):
+    ``1. TSM buy_puts — 2d old / stop 5d — $172.40 (-1.8%)``.
+
+    READ-ONLY v1 — ideas auto-expire in the pipeline cycle; there is
+    no bot mutation path yet (taken/cancelled/closed are future work).
+    Graceful degradation: ledger unreachable (migration 007 not
+    applied, DB down) → an 'unavailable' reply, never a crash; price
+    resolution failing → lines render without prices. Plain text like
+    every bot reply — no parse_mode, nothing needs escaping."""
+    # Local imports: the ledger/price stack is event-pipeline plumbing
+    # the approval bot only needs for this listing.
+    from src.events import idea_ledger  # noqa: PLC0415
+    from src.events import prices as prices_mod  # noqa: PLC0415
+
+    try:
+        engine = engine if engine is not None else _ideas_engine()
+        rows = idea_ledger.list_open(engine)
+    except Exception as exc:
+        logger.warning(
+            "ideas listing unavailable: %s: %s", type(exc).__name__, exc,
+        )
+        return (
+            "Trade ideas unavailable (ledger unreachable — is migration "
+            "007 applied and the DB up?)."
+        )
+    if not rows:
+        return "No open trade ideas."
+    fetch = get_prices_fn if get_prices_fn is not None else prices_mod.get_prices
+    try:
+        price_map = fetch([r["ticker"] for r in rows], engine=engine)
+    except Exception:
+        logger.warning("ideas listing: price fetch failed", exc_info=True)
+        price_map = {}
+    lines = [f"Open trade ideas ({len(rows)}):", ""]
+    for n, row in enumerate(rows, 1):
+        age = prices_mod.format_age(row.get("created_at"), now=now)
+        parts = [f"{n}. {row['ticker']} {row['action']}"]
+        aging = []
+        if age:
+            aging.append(f"{age} old")
+        if row.get("time_stop_days") is not None:
+            aging.append(f"stop {row['time_stop_days']}d")
+        if aging:
+            parts.append(" / ".join(aging))
+        price = prices_mod.format_price(
+            row["ticker"], price_map.get(row["ticker"]),
+        )
+        if price:
+            parts.append(price)
+        lines.append(" — ".join(parts))
+    lines.append("")
+    lines.append("Read-only; ideas expire automatically at their time stop.")
+    return "\n".join(lines)
+
+
 def handle_text(state: LoopState, text: str) -> CommandResult:
-    """Process one operator message against the loaded state. Pure —
-    caller persists ``state`` iff ``state_changed``."""
+    """Process one operator message against the loaded state. Pure
+    over ``state`` — caller persists ``state`` iff ``state_changed``
+    (``ideas`` reads the trade_ideas ledger, never the loop state)."""
     cmd = parse_command(text)
     if cmd is None:
         return CommandResult(
@@ -380,6 +464,8 @@ def handle_text(state: LoopState, text: str) -> CommandResult:
         return CommandResult(reply=HELP_TEXT)
     if cmd.verb == "pending":
         return CommandResult(reply=render_pending(state))
+    if cmd.verb == "ideas":
+        return CommandResult(reply=render_ideas())
     # approve / reject / skip
     if not cmd.target:
         return CommandResult(

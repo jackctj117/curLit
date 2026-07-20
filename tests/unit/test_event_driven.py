@@ -629,3 +629,117 @@ class TestStatePersistence:
         assert strat.open_positions == {}
         assert run(strat, {}) == []
         assert (tmp_path / "event_book_state.json.corrupt").exists()
+
+
+# =============================================================================
+# Alert enrichment (CL-mgcp): price, reason, age, advisory ideas
+# =============================================================================
+
+
+def _add_advisory(db: Any, eid: int, ideas: list[dict[str, Any]]) -> None:
+    """Splice trade_ideas into a stored assessment (the fixture's
+    insert_event predates the advisory keys)."""
+    with db.begin() as conn:
+        raw = conn.execute(
+            text("SELECT assessment FROM geo_events WHERE id = :id"), {"id": eid},
+        ).scalar()
+        assessment = json.loads(raw)
+        assessment["trade_ideas"] = ideas
+        conn.execute(
+            text("UPDATE geo_events SET assessment = :a WHERE id = :id"),
+            {"a": json.dumps(assessment), "id": eid},
+        )
+
+
+_IDEAS = [
+    {"ticker": "TSM", "action": "buy_puts", "direction": "bearish",
+     "confidence": 0.7, "rationale": "advanced-node concentration",
+     "time_horizon": "short", "holding_period_days": "2-6",
+     "time_stop_days": 5},
+    {"ticker": "RTX", "action": "long", "direction": "bullish",
+     "confidence": 0.5, "rationale": "defense demand",
+     "time_horizon": "medium", "holding_period_days": "10-20",
+     "time_stop_days": 20},
+]
+
+
+class TestConfirmedAlertEnrichment:
+    def _confirm(
+        self, tmp_path: Any, db: Any, minutes_ago: float = 60,
+    ) -> None:
+        strat = make_strategy(tmp_path, db=db, provider=confirming_provider())
+        run(strat, CONFIRM_PRICES)
+
+    def test_trade_line_has_entry_price_and_reason(
+        self, tmp_path: Any, sent_alerts: list[tuple[str, str, int]],
+    ) -> None:
+        db = make_db()
+        insert_event(db)
+        self._confirm(tmp_path, db)
+        message = next(m for t, m, _ in sent_alerts if t == "Event confirmed")
+        assert "Trade: USD_CAD long" in message
+        assert "@ 1" in message  # ask tick 1.0 formatted %g
+        assert "Why: test" in message
+
+    def test_age_line_since_first_seen(
+        self, tmp_path: Any, sent_alerts: list[tuple[str, str, int]],
+    ) -> None:
+        db = make_db()
+        insert_event(db, minutes_ago=60)
+        self._confirm(tmp_path, db)
+        message = next(m for t, m, _ in sent_alerts if t == "Event confirmed")
+        assert "Age: 1h since first seen" in message
+
+    def test_advisory_ideas_block_clearly_separated(
+        self, tmp_path: Any, sent_alerts: list[tuple[str, str, int]],
+    ) -> None:
+        db = make_db()
+        eid = insert_event(db)
+        _add_advisory(db, eid, _IDEAS)
+        self._confirm(tmp_path, db)
+        message = next(m for t, m, _ in sent_alerts if t == "Event confirmed")
+        assert "Operator ideas (not machine-traded):" in message
+        assert "- TSM buy_puts short stop5d — advanced-node concentration" in message
+        assert "- RTX long medium stop20d — defense demand" in message
+        # Advisory block comes AFTER the machine-trade facts.
+        assert message.index("Trade: USD_CAD") < message.index("Operator ideas")
+
+    def test_no_ideas_no_advisory_block(
+        self, tmp_path: Any, sent_alerts: list[tuple[str, str, int]],
+    ) -> None:
+        db = make_db()
+        insert_event(db)
+        self._confirm(tmp_path, db)
+        message = next(m for t, m, _ in sent_alerts if t == "Event confirmed")
+        assert "Operator ideas" not in message
+
+
+class TestExpiredAlertEnrichment:
+    def test_age_and_top_idea(
+        self, tmp_path: Any, sent_alerts: list[tuple[str, str, int]],
+    ) -> None:
+        db = make_db()
+        eid = insert_event(db, minutes_ago=300, urgency=9)
+        _add_advisory(db, eid, _IDEAS)
+        strat = make_strategy(tmp_path, db=db, provider=confirming_provider())
+        run(strat, CONFIRM_PRICES)
+        message = next(
+            m for t, m, _ in sent_alerts if t == "Event expired unconfirmed"
+        )
+        assert "Age: 5h since first seen" in message
+        # Highest-confidence idea wins the single Top idea line.
+        assert "Top idea: TSM buy_puts (stop 5d) — advanced-node concentration" in message
+        assert "RTX" not in message
+        assert "No trade taken" in message
+
+    def test_no_ideas_no_top_idea_line(
+        self, tmp_path: Any, sent_alerts: list[tuple[str, str, int]],
+    ) -> None:
+        db = make_db()
+        insert_event(db, minutes_ago=300, urgency=9)
+        strat = make_strategy(tmp_path, db=db, provider=confirming_provider())
+        run(strat, CONFIRM_PRICES)
+        message = next(
+            m for t, m, _ in sent_alerts if t == "Event expired unconfirmed"
+        )
+        assert "Top idea" not in message

@@ -160,3 +160,53 @@ class TestVolumeSpikesTable:
             )).fetchone()
             assert not row[0]
             assert row[1] == "yfinance"
+
+
+class TestTradeIdeasTable:
+    def test_creates_table_and_indexes(self, sqlite_engine) -> None:  # type: ignore[no-untyped-def]
+        _apply(sqlite_engine, Path("migrations/007_trade_ideas.sql"))
+        insp = inspect(sqlite_engine)
+        assert "trade_ideas" in insp.get_table_names()
+        cols = {c["name"] for c in insp.get_columns("trade_ideas")}
+        assert {
+            "id", "idea_id", "geo_event_id", "ticker", "action",
+            "direction", "confidence", "time_horizon",
+            "holding_period_days", "time_stop_days", "stop_loss_pct",
+            "preferred_instrument", "instrument_reason", "rationale",
+            "suggested_entry", "notes", "price_at_signal", "created_at",
+            "status", "status_updated_at",
+        } <= cols
+        idx_names = {i["name"] for i in insp.get_indexes("trade_ideas")}
+        assert "idx_trade_ideas_status_created" in idx_names
+        assert "idx_trade_ideas_ticker" in idx_names
+
+    def test_default_pending_and_unique_idea_id(self, sqlite_engine) -> None:  # type: ignore[no-untyped-def]
+        _apply(sqlite_engine, Path("migrations/007_trade_ideas.sql"))
+        insert = text(
+            "INSERT INTO trade_ideas "
+            "(idea_id, geo_event_id, ticker, action, created_at, "
+            "status_updated_at) "
+            "VALUES ('abc123', 1, 'TSM', 'buy_puts', "
+            "'2026-07-20T00:00:00Z', '2026-07-20T00:00:00Z') "
+            "ON CONFLICT (idea_id) DO NOTHING",
+        )
+        with sqlite_engine.begin() as conn:
+            conn.execute(insert)
+            conn.execute(insert)  # dedups silently
+            status, count = conn.execute(text(
+                "SELECT status, (SELECT count(*) FROM trade_ideas) "
+                "FROM trade_ideas",
+            )).fetchone()
+            assert status == "pending"
+            assert count == 1
+
+    def test_status_check_constraint(self, sqlite_engine) -> None:  # type: ignore[no-untyped-def]
+        _apply(sqlite_engine, Path("migrations/007_trade_ideas.sql"))
+        with pytest.raises(Exception, match="(?i)check"), sqlite_engine.begin() as conn:
+            conn.execute(text(
+                "INSERT INTO trade_ideas "
+                "(idea_id, geo_event_id, ticker, action, created_at, "
+                "status, status_updated_at) "
+                "VALUES ('x', 1, 'TSM', 'long', '2026-07-20T00:00:00Z', "
+                "'BOGUS', '2026-07-20T00:00:00Z')",
+            ))

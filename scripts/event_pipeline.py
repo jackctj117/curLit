@@ -24,6 +24,14 @@ Each cycle also runs the key-free relative-volume scanner (CL-i4sr)
 over the playbook equity watch universe before the digest, so Watch:
 tickers with an unusual spike in the last 24h render as ``FRO×3.2``.
 ``--no-scan`` disables it; a scan failure never kills the cycle.
+
+Enrichment + idea ledger (CL-mgcp): after assessments, ONE price batch
+is fetched for every affected/idea/fade ticker in the cycle
+(src.events.prices), each ASSESSED event's advisory ``trade_ideas``
+are persisted to the ``trade_ideas`` table (migration 007, deduped on
+idea_id), stale pending ideas past their time stop auto-expire, and
+the digest renders prices, per-event age, and Ideas:/Fade: sections.
+All of it is fail-soft — enrichment must never take down the pipeline.
 """
 
 from __future__ import annotations
@@ -118,6 +126,73 @@ def _resolve_digest_min_urgency(cli_value: int | None) -> int:
         return DEFAULT_MIN_URGENCY
 
 
+def _result_tickers(result: object) -> set[str]:
+    """Every ticker the enrichment could annotate for one ASSESSED
+    result: affected instruments + trade-idea tickers + fade tickers."""
+    tickers: set[str] = set()
+    assessment = getattr(result, "assessment", None) or {}
+    for entry in assessment.get("affected") or []:
+        if isinstance(entry, dict) and entry.get("instrument"):
+            tickers.add(str(entry["instrument"]))
+    for key in ("trade_ideas", "fade_candidates"):
+        for entry in assessment.get(key) or []:
+            if isinstance(entry, dict) and entry.get("ticker"):
+                tickers.add(str(entry["ticker"]))
+    return tickers
+
+
+def _enrich_and_persist(engine: object, results: list) -> tuple[dict, dict]:
+    """CL-mgcp: one price batch per cycle, idea-ledger writes, idea
+    auto-expiry, and the seen_at lookup for digest ages.
+
+    Fail-soft EVERYWHERE by design — the assessments are already
+    persisted by this point, so enrichment failures degrade to an
+    unannotated digest, never a dead cycle. Returns (prices, seen_ats).
+    """
+    prices: dict = {}
+    seen_ats: dict = {}
+    assessed = [r for r in results if getattr(r, "status", "") == "ASSESSED"]
+    try:
+        from src.events.idea_ledger import expire_stale, persist_ideas  # noqa: PLC0415
+        from src.events.prices import get_prices  # noqa: PLC0415
+
+        tickers = sorted({t for r in assessed for t in _result_tickers(r)})
+        if tickers:
+            prices = get_prices(tickers, engine=engine)
+        persisted = 0
+        for r in assessed:
+            persisted += persist_ideas(
+                engine, r.event_id, r.assessment, prices=prices,
+            )
+        expired = expire_stale(engine)
+        logger.info(
+            "ideas: %d persisted, %d auto-expired (prices for %d/%d tickers)",
+            persisted, expired, len(prices), len(tickers),
+        )
+    except Exception:
+        logger.exception("idea ledger / price enrichment failed; continuing")
+    if assessed:
+        try:
+            from sqlalchemy import bindparam, text  # noqa: PLC0415
+
+            stmt = text(
+                "SELECT id, seen_at FROM geo_events WHERE id IN :ids",
+            ).bindparams(bindparam("ids", expanding=True))
+            with engine.connect() as conn:  # type: ignore[attr-defined]
+                seen_ats = {
+                    int(row_id): seen_at
+                    for row_id, seen_at in conn.execute(
+                        stmt, {"ids": [r.event_id for r in assessed]},
+                    )
+                }
+        except Exception:
+            logger.debug(
+                "seen_at lookup failed; digest renders without event ages",
+                exc_info=True,
+            )
+    return prices, seen_ats
+
+
 def _cycle(args: argparse.Namespace) -> None:
     if args.ingest:
         from src.data.gdelt import GdeltIngester  # noqa: PLC0415
@@ -157,8 +232,9 @@ def _cycle(args: argparse.Namespace) -> None:
             EventImpactAgent,
         )
 
+        engine = create_engine(_db_url())
         agent = EventImpactAgent(
-            engine=create_engine(_db_url()),
+            engine=engine,
             model=args.model or DEFAULT_MODEL,
             playbooks_path=args.playbooks,
         )
@@ -170,6 +246,9 @@ def _cycle(args: argparse.Namespace) -> None:
             "assess: %d processed (%d assessed, %d dismissed)",
             len(results), assessed, len(results) - assessed,
         )
+
+        # Idea ledger + one price batch per cycle (CL-mgcp) — fail-soft.
+        prices, seen_ats = _enrich_and_persist(engine, results)
 
         if args.digest:
             from src.events.digest import (  # noqa: PLC0415
@@ -183,10 +262,10 @@ def _cycle(args: argparse.Namespace) -> None:
                 # fetch_volume_marks is fail-soft ({} on missing
                 # table / DB blip) — the Watch line just renders
                 # without ×rvol annotations.
-                marks = fetch_volume_marks(create_engine(_db_url()))
+                marks = fetch_volume_marks(engine)
                 disp = send_digest(
                     results, min_urgency=args.digest_min_urgency,
-                    volume_marks=marks,
+                    volume_marks=marks, prices=prices, seen_ats=seen_ats,
                 )
             except Exception:
                 logger.exception("digest dispatch failed; continuing")

@@ -751,3 +751,114 @@ class TestMobileKeyboardMangling:
         target, err = resolve_target(state, cmd.target)
         assert err == "" and target is not None
         assert target.key.startswith("a1b2c3")
+
+
+# --------------------------------------------------------------------- #
+# 'ideas' command (CL-mgcp) — read-only trade-idea listing
+# --------------------------------------------------------------------- #
+
+
+def _ledger_engine() -> Any:
+    """sqlite engine with the REAL migration-007 schema (types shimmed),
+    mirroring tests/unit/test_idea_ledger.py."""
+    import sqlalchemy as sa
+    from migrations.run import _strip_sql_comments
+    from sqlalchemy import text as sql_text
+
+    sql = (
+        _strip_sql_comments(Path("migrations/007_trade_ideas.sql").read_text())
+        .replace("TIMESTAMPTZ", "TEXT")
+        .replace("DOUBLE PRECISION", "REAL")
+        .replace("BIGSERIAL", "INTEGER")
+        .replace("BIGINT", "INTEGER")
+    )
+    engine = sa.create_engine("sqlite://")
+    with engine.begin() as conn:
+        for stmt in [s.strip() for s in sql.split(";") if s.strip()]:
+            conn.execute(sql_text(stmt))
+    return engine
+
+
+class TestIdeasCommand:
+    def _seed(self, engine: Any) -> None:
+        from datetime import UTC, datetime, timedelta
+
+        from src.events.idea_ledger import persist_ideas
+
+        now = datetime.now(UTC)
+        persist_ideas(engine, 1, {"trade_ideas": [{
+            "ticker": "TSM", "action": "buy_puts", "direction": "bearish",
+            "confidence": 0.7, "rationale": "r", "time_horizon": "short",
+            "holding_period_days": "2-6", "time_stop_days": 5,
+        }]}, now=now - timedelta(days=2))
+        persist_ideas(engine, 2, {"trade_ideas": [{
+            "ticker": "RTX", "action": "long", "direction": "bullish",
+            "confidence": 0.5, "rationale": "r", "time_horizon": "medium",
+            "holding_period_days": "10-20", "time_stop_days": 20,
+        }]}, now=now - timedelta(hours=3))
+
+    def test_lists_open_ideas_with_age_stop_price(self) -> None:
+        from src.research.telegram_approvals import render_ideas
+
+        engine = _ledger_engine()
+        self._seed(engine)
+
+        def fake_prices(tickers: Any, engine: Any = None) -> dict[str, Any]:
+            assert sorted(tickers) == ["RTX", "TSM"]
+            return {"TSM": {"price": 172.4, "change_pct": -1.8}}
+
+        reply = render_ideas(engine=engine, get_prices_fn=fake_prices)
+        assert "Open trade ideas (2):" in reply
+        # Newest first; numbered; age vs stop; price where resolvable.
+        assert "1. RTX long — 3h old / stop 20d" in reply
+        assert "2. TSM buy_puts — 2d old / stop 5d — $172.40 (-1.8%)" in reply
+        assert "Read-only" in reply
+
+    def test_empty_ledger(self) -> None:
+        from src.research.telegram_approvals import render_ideas
+
+        reply = render_ideas(
+            engine=_ledger_engine(), get_prices_fn=lambda *a, **k: {},
+        )
+        assert reply == "No open trade ideas."
+
+    def test_table_missing_graceful(self) -> None:
+        import sqlalchemy as sa
+
+        from src.research.telegram_approvals import render_ideas
+
+        reply = render_ideas(
+            engine=sa.create_engine("sqlite://"),
+            get_prices_fn=lambda *a, **k: {},
+        )
+        assert "Trade ideas unavailable" in reply
+
+    def test_price_failure_renders_without_prices(self) -> None:
+        from src.research.telegram_approvals import render_ideas
+
+        engine = _ledger_engine()
+        self._seed(engine)
+
+        def boom(*_a: Any, **_k: Any) -> dict[str, Any]:
+            raise RuntimeError("yahoo down")
+
+        reply = render_ideas(engine=engine, get_prices_fn=boom)
+        assert "1. RTX long — 3h old / stop 20d" in reply
+        assert "$" not in reply
+
+    def test_handle_text_dispatches_ideas(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(
+            "src.research.telegram_approvals.render_ideas",
+            lambda: "IDEAS-SENTINEL",
+        )
+        result = handle_text(_make_state(), "ideas")
+        assert result == CommandResult(reply="IDEAS-SENTINEL", state_changed=False)
+
+    def test_parse_command_recognises_ideas(self) -> None:
+        assert parse_command("ideas") == ParsedCommand(verb="ideas")
+        assert parse_command("/Ideas") == ParsedCommand(verb="ideas")
+
+    def test_help_mentions_ideas(self) -> None:
+        assert "ideas" in handle_text(_make_state(), "help").reply
