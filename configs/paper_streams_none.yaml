@@ -1,0 +1,6 @@
+# Empty feed set — for research-loop runs that should SKIP ingestion
+# and only process the existing extract/hypothesis/candidate backlog
+# (gate approvals, implementer retries, debates, verdicts).
+#
+#   PYTHONPATH=. python scripts/research_loop.py --feeds configs/paper_streams_none.yaml
+feeds: {}
