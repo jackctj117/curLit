@@ -147,6 +147,7 @@ class TestRealConfigQueries:
         "red_sea_shipping",
         "taiwan_semiconductor",
         "black_sea_grain",
+        "pharma_api_supply",  # CL-lu80
     )
 
     @pytest.fixture(scope="class")

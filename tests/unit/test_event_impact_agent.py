@@ -18,6 +18,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 
 from src.events.impact_agent import (
+    _SYSTEM_PROMPT,
     EventImpactAgent,
     extract_json_object,
     normalise_assessment,
@@ -51,6 +52,21 @@ def _valid_payload(**overrides: Any) -> dict:
 # ---------------------------------------------------------------------- #
 # extract_json_object
 # ---------------------------------------------------------------------- #
+
+
+class TestSystemPrompt:
+    """CL-lu80: the system prompt must carry the pharma-supply guidance
+    (input-exposed generics vs diversified beneficiaries)."""
+
+    def test_pharma_guidance_present(self) -> None:
+        low = _SYSTEM_PROMPT.lower()
+        assert "pharma" in low or "api" in low
+        # Names the exposed generics and the diversified beneficiaries.
+        assert "teva" in low
+        assert "tmo" in low or "pfe" in low or "jnj" in low
+        # Specific-plant vs broad-shock distinction.
+        assert "form 483" in low or "import alert" in low
+        assert "supply shock" in low or "supply-supply" in low or "input-supply" in low
 
 
 class TestExtractJson:

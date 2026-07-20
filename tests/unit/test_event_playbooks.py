@@ -38,6 +38,8 @@ REQUIRED_THEMES = {
     "red_sea_shipping",
     "taiwan_semiconductor",
     "black_sea_grain",
+    # CL-lu80
+    "pharma_api_supply",
 }
 
 #: Themes whose equity watches exist BECAUSE of territorial exposure —
@@ -148,6 +150,57 @@ class TestTerritorialExposure:
         drc = {i.instrument for i in pbs["drc_copper_cobalt"].instruments}
         assert "IVN.TO" in drc
         assert "GLEN.L" in drc
+
+
+class TestPharmaApiSupply:
+    """CL-lu80: the pharma theme has NO pharma OANDA leg — it is almost
+    entirely equity_watch (alert-only). Reasons must distinguish
+    China/India-input-exposed generics from diversified/resilient names.
+    """
+
+    @pytest.fixture(scope="class")
+    def pharma(self):
+        return load_playbooks("configs/event_playbooks.yaml")["pharma_api_supply"]
+
+    def test_loads_with_watch_terms(self, pharma) -> None:
+        assert pharma.watch_terms
+        assert len(pharma.instruments) >= 3
+
+    def test_equities_are_watch_only(self, pharma) -> None:
+        # Every equity is alert-only (kind equity_watch, forced watch).
+        equities = [i for i in pharma.instruments if i.kind == "equity_watch"]
+        assert equities, "pharma theme has no equity watches"
+        for inst in equities:
+            assert inst.direction == "watch", inst.instrument
+        # Exposure names present.
+        names = {i.instrument for i in equities}
+        assert {"TEVA", "VTRS", "RDY"} <= names  # exposed generics
+        assert {"TMO", "PFE", "JNJ"} <= names    # diversified
+
+    def test_no_pharma_oanda_symbol_invented(self, pharma) -> None:
+        # The only tradable allowed is the broad SPX500_USD risk-off leg
+        # (optional weak proxy) — never an invented pharma CFD.
+        tradables = {i.instrument for i in pharma.tradable_instruments}
+        assert tradables <= {"SPX500_USD"}, tradables
+
+    def test_reasons_distinguish_exposed_vs_diversified(self, pharma) -> None:
+        reasons = [i.rationale.lower() for i in pharma.instruments]
+        # At least one reason names the China/India/generics input exposure.
+        assert any(
+            any(tok in r for tok in ("china", "india", "generics"))
+            for r in reasons
+        )
+        # At least one reason marks a diversified/resilient beneficiary.
+        assert any(
+            any(tok in r for tok in ("diversified", "resilient", "beneficiary"))
+            for r in reasons
+        )
+
+    def test_gdelt_query_under_length_ceiling(self, pharma) -> None:
+        from src.data.gdelt import build_theme_query
+
+        q = build_theme_query(pharma)
+        assert len(q) <= 200, f"pharma GDELT query is {len(q)} chars"
 
 
 class TestValidation:

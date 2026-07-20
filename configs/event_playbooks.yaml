@@ -893,3 +893,78 @@ themes:
         kind: polymarket
         direction: watch
         rationale: Placeholder event-contract slug — replace with a discovered live market.
+
+  pharma_api_supply:
+    name: Pharmaceutical API and supply-chain disruption
+    description: >
+      Pharmaceutical API / Key Starting Material supply chain: APIs,
+      intermediates, and KSMs are concentrated in China, and Indian
+      generics makers depend on Chinese inputs. Disruptions — export
+      controls, FDA import alerts / Form 483s, environmental shutdowns,
+      China-US/Taiwan escalation, chemical-feedstock shipping — drive
+      generics shortages, cost pressure, and China+1 reshoring winners.
+      Distinguish a single-plant hit (one FDA alert) from a broad input
+      supply shock. NO pharma OANDA CFD exists — this theme is almost
+      entirely equity_watch (alert/advisory only).
+    # NOTE: built GDELT query is 193 chars (8 terms) — under the ~200
+    # ceiling (see the length-guard unit test). Dropped for length:
+    # "amoxicillin shortage" (drug shortage + FDA import alert already
+    # catch the shortage-coverage cluster).
+    watch_terms:
+      - "active pharmaceutical ingredient"
+      - "API export control"
+      - "drug shortage"
+      - "FDA import alert"
+      - "Form 483"
+      - "Biosecure Act"
+      - "China API"
+      - "pharma supply chain"
+    instruments:
+      - instrument: SPX500_USD
+        kind: oanda
+        direction: short
+        rationale: Very indirect proxy — only a broad risk-off leg on MAJOR China/Taiwan escalation that happens to also threaten pharma inputs; secondary to the equity watches, not a pharma trade itself.
+      - instrument: TEVA
+        kind: equity_watch
+        direction: watch
+        rationale: Teva — large generics maker with heavy India/China API supply exposure; DISRUPTION-EXPOSED (short/put candidate on an input shock or supply cutoff).
+      - instrument: VTRS
+        kind: equity_watch
+        direction: watch
+        rationale: Viatris — large generics portfolio with concentrated China/India API supply; DISRUPTION-EXPOSED (short/put candidate on a broad input-supply shock).
+      - instrument: RDY
+        kind: equity_watch
+        direction: watch
+        rationale: Dr Reddy's — Indian generics/API maker dependent on Chinese KSM/intermediate inputs; DISRUPTION-EXPOSED to China export controls (short/put candidate).
+      - instrument: TMO
+        kind: equity_watch
+        direction: watch
+        rationale: Thermo Fisher — diversified life-sciences tools/CDMO; relative BENEFICIARY and China+1 reshoring winner, more resilient than the generics names.
+      - instrument: PFE
+        kind: equity_watch
+        direction: watch
+        rationale: Pfizer — diversified branded pharma with a resilient, multi-sourced supply chain; relative long / DIVERSIFIED rather than input-shock exposed.
+      - instrument: JNJ
+        kind: equity_watch
+        direction: watch
+        rationale: J&J — diversified pharma/medtech, resilient supply chain; DIVERSIFIED defensive relative long, low single-input concentration.
+      - instrument: MRK
+        kind: equity_watch
+        direction: watch
+        rationale: Merck — diversified branded pharma, resilient supply chain; DIVERSIFIED, relatively insulated from a generics API shock.
+      - instrument: ABBV
+        kind: equity_watch
+        direction: watch
+        rationale: AbbVie — diversified branded pharma with limited generics-API concentration; DIVERSIFIED, relative long vs the generics names.
+      - instrument: XLV
+        kind: equity_watch
+        direction: watch
+        rationale: Health Care Select Sector ETF — broad sector proxy for a pharma-wide supply-chain move (net small; blends exposed generics and diversified large-caps).
+      - instrument: XBI
+        kind: equity_watch
+        direction: watch
+        rationale: SPDR biotech ETF — sentiment/beta proxy for the health-care complex on a broad drug-supply scare.
+      - instrument: pharma-api-shortage-2026
+        kind: polymarket
+        direction: watch
+        rationale: Placeholder event-contract slug — replace with a discovered live market.

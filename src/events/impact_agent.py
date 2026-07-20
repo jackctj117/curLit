@@ -110,6 +110,15 @@ Rules:
   chain impact, escalation vs routine grey-zone probability, Western
   equipment and defense beneficiaries, and negative China-revenue
   exposure. Routine drills are usually a fade, not a trade.
+- Pharma API / drug-supply events: name which companies are
+  China/India-INPUT exposed generics makers (TEVA, VTRS, RDY —
+  disruption-BEARISH, put candidates on an input-supply shock) vs
+  diversified / China+1 beneficiaries (TMO, PFE, JNJ — relatively
+  resilient). Decide whether it is a specific-company hit (an FDA
+  import alert / Form 483 on ONE plant → that name only) or a broad
+  input-supply shock (export controls, feedstock cutoff → the generics
+  cluster + XLV/XBI). No pharma OANDA leg exists; SPX500_USD only on
+  major China escalation.
 - Vintage honesty: company/asset facts (yours and the playbook's) are
   training-data vintage — ownership, permits, and mine status may have
   changed. Flag that uncertainty in the "reason" where it matters.
