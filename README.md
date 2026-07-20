@@ -8,15 +8,18 @@ Algorithmic FX trading system: pulls live ticker values for currencies, cryptocu
 
 ## Features
 
-- **Autonomous research pipeline**: multi-source ingest (arXiv preprints + quant substacks + Polymarket prediction markets) → idea agent → operator GATE 1 → implementer → walk-forward backtest → Bull/Bear debate → verdict engine → operator GATE 2 → paper-shadow registration (allocation=0). Pluggable LLM providers (Claude + DeepSeek + Grok), daily cron, full transcripts, Pushover/Telegram alerts. See [`docs/research/RUNBOOK.md`](docs/research/RUNBOOK.md).
-- **Multi-source data ingestion**: FRED (US macro, yields), ECB/BoJ/BoE, Yahoo Finance (FX spot, commodities, indices), CFTC COT (positioning), CME SOFR futures
-- **Rate differential models**: Rolling OLS regression on yield spreads for FX pair fair-value estimation
+- **Autonomous research pipeline**: multi-source ingest (arXiv preprints + quant substacks + Polymarket prediction markets) → idea agent → operator GATE 1 → implementer → walk-forward backtest → Bull/Bear debate → verdict engine → operator GATE 2 → paper-shadow registration (allocation=0). All LLM roles run on headless Claude Code (`claude-fable-5`) via the operator's subscription — the Grok/DeepSeek drivers are kept only for the provider-comparison harness. Daily cron, full transcripts, Telegram alerts. See [`docs/research/RUNBOOK.md`](docs/research/RUNBOOK.md).
+- **Telegram gate approvals**: research gates are approved by replying `approve <id>` / `reject <id>` in the alert chat (chat-id locked bot, `scripts/telegram_approval_bot.py`); notifications carry a `Trades:` line listing the instruments each candidate would touch
+- **Current-events pipeline**: GDELT news ingest → 6 geopolitical playbooks → LLM impact agent → market-confirmation gate → `EventDrivenStrategy` paper-trades confirmed events with tight risk caps and a persistent event-book loss cap
+- **Multi-source data ingestion**: FRED (US macro, yields), ECB/BoJ/BoE, Yahoo Finance (FX spot, commodities, indices), CFTC COT (positioning), CME SOFR futures, GDELT (news events)
+- **Rate differential models**: Rolling OLS regression on yield spreads for FX pair fair-value estimation, with carry/momentum/vol-regime entry filters
 - **NLP pipeline**: Fine-tuned FinBERT on central bank statements — hawkish/dovish sentiment scoring and diff analysis (Fed, ECB, BoE, BoJ, BoC)
 - **OIS curve construction**: Bootstrapped discount factors and forward rates from futures prices
-- **Walk-forward backtesting**: Non-overlapping IS/OOS windows with bootstrap confidence intervals
-- **Risk management**: Volatility-targeted sizing, regime-aware position adjustment, 6 automatic kill switches
+- **Walk-forward backtesting**: Non-overlapping IS/OOS windows with bootstrap confidence intervals, per-pair spreads, and overnight funding costs
+- **Risk management**: Volatility-targeted sizing, regime-aware position adjustment, 11 automatic kill switches (incl. equity trailing stop + open-position correlation) wired into the live engine's health tick; risk profiles switchable via `CURLIT_RISK_PROFILE`
 - **Live trading engine**: Async event loop with price streaming, signal generation, OMS, reconciliation
-- **Observability**: Prometheus + Grafana + Loki + Alertmanager (Pushover + Telegram alerts)
+- **Research tooling**: Optuna walk-forward hyperopt (`scripts/hyperopt_rate_model.py`), weekly Streamlit scorecard (`scripts/scorecard.py`), paper-triage dashboard (`research/dashboard.py`)
+- **Observability**: Prometheus + Grafana + Loki + Alertmanager (Telegram alerts)
 - **Security**: wolfcrypt AES-256-GCM encrypted vault with paper backup recovery (BIP39 seed)
 - **Web UI**: FastAPI backend + browser dashboard for positions, signals, P&L, config, manual trades
 
@@ -34,8 +37,10 @@ fx-system/
 │   ├── nlp/           CB scrapers, lexicon scorer, diff analyzer, inference
 │   ├── backtest/      Walk-forward runner, analytics, bootstrap CIs
 │   ├── risk/          Sizing, kill switches, regime monitor, stress tests
-│   ├── execution/     Broker interface, PaperBroker, OANDA, OMS
-│   ├── strategies/    Rate diff MR, CB sentiment shift
+│   ├── execution/     Broker interface, PaperBroker, OANDA, Polymarket, OMS
+│   ├── strategies/    Rate diff MR, CB sentiment shift, carry vol filter, event-driven
+│   ├── events/        Current-events layer: playbooks, LLM impact agent, confluence
+│   ├── research/      Autonomous research pipeline, LLM drivers, Telegram approvals
 │   ├── runtime/       Live engine event loop, entrypoint
 │   ├── monitoring/    Prometheus metrics, structured JSON logging
 │   ├── security/      Vault agent, vault client (wolfcrypt)
@@ -116,7 +121,7 @@ Or trigger Airflow DAGs manually at `http://localhost:8080`.
 ### 6. Start the engine (paper trading)
 
 ```bash
-python -m src.runtime.run_engine --practice
+python -m src.runtime.run_engine --broker paper
 ```
 
 The engine runs the live event loop — strategies evaluate signals, manage positions, and record trades. No real money is used.
@@ -169,8 +174,10 @@ Verdict thresholds: **RED** if engine is dead, monitor stale >25min, or memory h
 |-----|--------|-----------|
 | `FRED_API_KEY` | [fred.stlouisfed.org](https://fred.stlouisfed.org) | ✅ Required — US macro data |
 | `OANDA_API_KEY` | [oanda.com](https://developer.oanda.com) | For live trading (paper mode works without) |
-| `PUSHOVER_USER_KEY` | [pushover.net](https://pushover.net) | For critical alert push notifications |
-| `TELEGRAM_BOT_TOKEN` | [@BotFather](https://t.me/BotFather) | For secondary alert channel |
+| `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID` | [@BotFather](https://t.me/BotFather) | For alerts + interactive research-gate approvals |
+
+The research pipeline and event impact agent need no API key — they run
+on the local `claude` CLI logged into the operator's subscription.
 
 ## Testing
 

@@ -10,8 +10,12 @@ No prose; copy-paste only. For human operations & alert response, see
   - `OANDA_API_KEY`, `OANDA_ACCOUNT_ID`
   - `FRED_API_KEY`
   - `POSTGRES_PASSWORD`
-  - `ANTHROPIC_API_KEY` (optional — research loop only)
-- Docker daemon running.
+  - `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` (alerts + gate approvals)
+- `claude` CLI logged in on the operator's subscription (research
+  pipeline + event impact agent run headless via the `claude-code`
+  driver; no `ANTHROPIC_API_KEY` needed for them).
+- Docker daemon running (observability + Airflow live in docker compose;
+  the engine and bots run natively on the host).
 - `.venv/` exists (`make install` if not).
 
 ## Startup — paper mode (default for fresh boots)
@@ -30,6 +34,44 @@ docker compose up -d --wait && \
   source .venv/bin/activate && \
   python -m migrations.run && \
   python -m src.runtime.run_engine --broker oanda-practice >/tmp/curlit-engine.log 2>&1 &
+```
+
+## Startup — OANDA practice, aggressive risk profile (current soak pattern)
+
+Practice broker + `aggressive` profile from `configs/risk_profile.yaml`
+(env var wins over the `active:` key). `nohup` keeps the engine alive
+after the shell exits.
+
+```bash
+docker compose up -d --wait && \
+  source .venv/bin/activate && \
+  python -m migrations.run && \
+  CURLIT_RISK_PROFILE=aggressive nohup python -m src.runtime.run_engine \
+    --broker oanda-practice >/tmp/curlit-engine.log 2>&1 &
+```
+
+## Startup — companion daemons (alongside the engine)
+
+```bash
+# Telegram gate-approval bot — long-polls the chat, applies
+# approve/reject/skip replies to data/research/state.json
+nohup .venv/bin/python scripts/telegram_approval_bot.py \
+  >/tmp/curlit-telegram-bot.log 2>&1 &
+
+# Current-events pipeline — GDELT ingest + LLM impact assessment
+# every 15 minutes
+nohup .venv/bin/python scripts/event_pipeline.py --ingest --assess --loop 900 \
+  >/tmp/curlit-events.log 2>&1 &
+```
+
+## Startup — dashboards (on demand)
+
+```bash
+# Research-triage dashboard (paper queue) — http://127.0.0.1:8501
+.venv/bin/python -m streamlit run research/dashboard.py --server.port 8501
+
+# Weekly scorecard (P&L, kill switches, LLM spend, data freshness)
+.venv/bin/python -m streamlit run scripts/scorecard.py --server.headless true
 ```
 
 ## Startup — OANDA live (real money — requires explicit confirmation)
@@ -83,21 +125,27 @@ Expected ports:
 - `8200` — Web API (REST)
 - `8099` — Prometheus metrics scrape
 - `3000` — Grafana dashboards
-- `8080` — Airflow scheduler UI (research loop)
+- `8080` — Airflow UI (daily ingestion DAGs — writes to the HOST
+  postgres on 127.0.0.1:5432, see `docker-compose.yml` comments)
 - `9090` — Prometheus
 - `5432` — Postgres
+- `8501` — research-triage dashboard (Streamlit, if launched)
 - `8200/api/system` returns `{"engine":"running","oms_halted":false}`
 
 ## Logs
 
 - Engine: `/tmp/curlit-engine.log`
+- Telegram approval bot: `/tmp/curlit-telegram-bot.log`
+- Event pipeline: `/tmp/curlit-events.log`
 - Docker services: `docker compose logs --tail=100 <service>`
 - Trade journal (canonical fill log): query `trade_journal_events` table
 
 ## Shutdown
 
 ```bash
-pkill -f 'src.runtime.run_engine' && \
+pkill -f 'src.runtime.run_engine'; \
+  pkill -f 'scripts/telegram_approval_bot.py'; \
+  pkill -f 'scripts/event_pipeline.py'; \
   docker compose down
 ```
 

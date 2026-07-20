@@ -9,7 +9,7 @@ Portfolio drawdown from peak equity has exceeded 15%.
 1. Open incident dashboard
 2. Review which strategies contributed to losses
 3. Check correlation regime — are all strategies losing together?
-4. Verify kill switches already triggered (drawdown_limit at 20%)
+4. Verify kill switches already triggered — equity_trailing_stop should have halted new trades at -10% from peak (check `cooldown_until` in `data/equity_trailing_stop_state.json`); drawdown_limit flattens at -20%
 
 ## Common causes
 - Multi-strategy correlation regime shift (all strategies losing together)

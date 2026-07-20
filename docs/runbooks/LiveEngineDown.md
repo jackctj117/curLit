@@ -6,6 +6,13 @@
 The main trading engine is not responding.
 
 ## Immediate actions
+
+> **Native deploy note**: on the current operator box the engine runs
+> natively via nohup (see `docs/BOOT.md`), not systemd. There, check
+> `/tmp/curlit-engine.log` and relaunch per BOOT.md; the
+> journalctl/systemctl steps below apply to the systemd production
+> deploy (`docs/STARTUP.md`).
+
 1. Open incident dashboard
 2. Check if watchdog has already restarted it: `journalctl -u fx-watchdog --since "5 min ago"`
 3. Check logs: `journalctl -u fx-live-engine --since "10 min ago"`

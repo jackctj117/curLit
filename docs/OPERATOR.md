@@ -36,7 +36,7 @@ Run in this order. Each step takes <2 minutes.
 
 ## Alert taxonomy & response
 
-Alerts arrive via Pushover/Telegram. Severity: 🟢 info, 🟡 warn, 🔴 page.
+Alerts arrive via Telegram. Severity: 🟢 info, 🟡 warn, 🔴 page.
 
 ### 🔴 Kill switch fired
 
@@ -55,6 +55,26 @@ Alerts arrive via Pushover/Telegram. Severity: 🟢 info, 🟡 warn, 🔴 page.
 | portfolio_correlation_crisis    | Cross-strategy corr regime = "crisis"            | reduce_50pct       | Review which strategies are correlating |
 | strategy_correlation_spike      | Max pairwise > 0.9                               | reduce_50pct       | Same — likely shared factor exposure |
 | single_strategy_drawdown        | One strategy at -25%                             | halt_strategy      | Liquidate that strategy or set paper_mode |
+| equity_trailing_stop            | Equity -10% below persisted all-time peak        | halt_new           | Cooldown (see below); resume only after PM review |
+| open_position_correlation       | Mean direction-adjusted corr of open positions > 0.85 | reduce_50pct | Open book is one trade in disguise — review overlap |
+
+Switches are built by `build_kill_switch_manager()` (`src/runtime/run_engine.py`)
+and evaluated by the live engine's health tick every 60 seconds. Thresholds
+come from the active risk profile (`configs/risk_profile.yaml`; override
+with `CURLIT_RISK_PROFILE`).
+
+**Kill-switch state on disk**:
+
+- `data/equity_trailing_stop_state.json` — `{peak_equity, cooldown_until}`,
+  written atomically, survives restarts. After a trigger the switch halts
+  new trades for the cooldown window (default 7 days); the peak stays
+  frozen during cooldown and only resets after the cooldown expires AND a
+  fresh equity mark arrives. A corrupt file makes the engine refuse to
+  start (deliberate — repair or remove it consciously, never blindly).
+- `data/event_book_state.json` — cumulative realized P&L of event-driven
+  trades (created on the first event trade). If the loss breaches the
+  configured `event_book_max_loss_pct`, new event entries are blocked and
+  a CRITICAL is logged.
 
 **Manual kill switch** — to halt all new trades (no liquidation):
 ```bash
@@ -90,6 +110,63 @@ curl -X POST -H "X-API-Secret: $WEB_API_SECRET" \
 
 Airflow → DAG `daily_ingest`. Failed task → retry first; if repeating,
 check the source provider (FRED rate limit, yfinance ban, etc).
+
+### 🟡 Event signals (current-events pipeline)
+
+Two alerts come from `EventDrivenStrategy` (see `docs/ARCHITECTURE.md`
+§13 for the pipeline):
+
+- **"Event confirmed"** — a geopolitical event passed both the quality
+  gate (urgency + confidence) and the market-confirmation gate (price
+  actually moved). The message lists the headline, trades taken with
+  sizes, skipped instruments, stop/time-stop settings, urgency,
+  confidence, and the watch list. Positions are already on with tight
+  risk — verify sizing looks sane and note the time stop
+  (`event_max_holding_hours`).
+- **"Event expired unconfirmed"** — a high-urgency event (urgency ≥ 8 by
+  default) passed its confirmation window without a market move; **no
+  trade was taken**. Informational: worth a headline scan in case the
+  market is late rather than indifferent. Capped at one alert per run.
+
+---
+
+## Research gate approvals (Telegram)
+
+GATE 1 (implement this hypothesis?) and GATE 2 (deploy this strategy as
+paper-shadow?) are approved by **replying in the Telegram chat** that
+receives the gate notifications. The notification is HTML-formatted and
+includes a `Trades:` line listing the instruments the candidate would
+touch (FX pairs + `POLY:` market ids; `(unknown)` if the brief exposes
+none) — read it before approving.
+
+Reply grammar (case-insensitive; trailing punctuation from mobile
+keyboards is stripped):
+
+```
+approve <id> [reason]    # GATE 1: run implementer · GATE 2: deploy paper-shadow
+reject  <id> [reason]    # decline (alias: skip)
+pending                  # list all open approvals with their Trades lines
+help                     # show this grammar
+```
+
+`<id>` is the **6-character short id** printed in the GATE 1
+notification (prefix of the extract hash), or the full **strategy slug**
+for GATE 2. The bot only accepts messages from the chat id in
+`TELEGRAM_CHAT_ID` — anything else is logged and dropped.
+
+Mechanics: `scripts/telegram_approval_bot.py` long-polls Telegram and
+writes decisions atomically to `data/research/state.json` — the same
+state file the research loop reads at the start of its next run. The
+loop never blocks on a gate; approvals take effect on its next
+invocation.
+
+CLI fallback (same state file, works with the bot down):
+
+```bash
+.venv/bin/python -m scripts.research_approve --list
+.venv/bin/python -m scripts.research_approve --slug <slug> --action GO
+.venv/bin/python -m scripts.research_approve --gate 2 --slug <slug> --action SKIP --reason "..."
+```
 
 ---
 
@@ -147,15 +224,25 @@ Read the runbook before placing real money.
 
 ## Configuration locations
 
-- Strategies: `configs/strategies.yaml` and per-strategy dataclasses in
+- Strategies: `configs/live_portfolio.yaml` (registry: id, class,
+  enabled, per-strategy config) and per-strategy dataclasses in
   `src/strategies/*.py` (e.g. `RateDiffMRConfig`).
+- Risk profile (sizing + kill-switch thresholds + strategy gates):
+  `configs/risk_profile.yaml` — `active:` key selects the profile
+  (conservative / aggressive / aggressive_short); `CURLIT_RISK_PROFILE`
+  env var overrides it.
 - Risk parity bounds + rebalance cadence:
   `src/portfolio/coordinator.py` constants (top of file, all named).
 - Allocation policy: `src/portfolio/allocation_policy.py` `PolicyConfig`
   defaults; per-strategy overrides via `PolicyConfig.overrides`.
-- Kill switch thresholds: `src/risk/kill_switches.py`
+- Kill switch implementations: `src/risk/kill_switches.py`
   `_build_switches()`. Each is documented inline.
-- Cost model defaults: `src/execution/cost_model.py`.
+- Event playbooks (themes, watch terms, instruments):
+  `configs/event_playbooks.yaml`.
+- Research agents (roles → LLM provider/model):
+  `configs/research_agents.yaml` — everything runs on `claude-code`.
+- Cost model defaults: `src/execution/cost_model.py` (live) and
+  `src/backtest/cost_model.py` (per-pair spreads + overnight funding).
 - Data ingest sources: `src/data/fred.py` `FRED_SERIES`,
   `src/data/yfinance_provider.py` ticker list.
 

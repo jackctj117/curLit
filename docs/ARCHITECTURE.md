@@ -17,6 +17,8 @@
 - [10. Data Vendors & Broker Comparison](#10-data-vendors--broker-comparison)
 - [11. FinBERT Fine-Tuning](#11-finbert-fine-tuning)
 - [12. FX Overnight Rolls & Funding](#12-fx-overnight-rolls--funding)
+- [13. Current-Events Pipeline](#13-current-events-pipeline)
+- [14. Research Pipeline & Operator Gates](#14-research-pipeline--operator-gates)
 - [Data Sources Reference](#data-sources-reference)
 - [What Will Go Wrong](#what-will-go-wrong)
 
@@ -63,6 +65,8 @@ fx-system/
 │   ├── risk/                # Correlation monitor, sizing, kill switches, stress tests
 │   ├── execution/           # Broker interface, OMS, broker implementations
 │   ├── strategies/          # Strategy classes, state store
+│   ├── events/              # Current-events layer: playbooks, impact agent, confluence (§13)
+│   ├── research/            # Autonomous research pipeline + LLM drivers + Telegram gates (§14)
 │   ├── runtime/             # Live engine
 │   ├── monitoring/          # Metrics, logging, heartbeat
 │   └── ops/                 # Watchdog, backup, runbook scripts
@@ -531,6 +535,11 @@ Model conservatively:
 - **Commission**: $3-7 per standard lot round-trip (ECN broker)
 - **Baseline**: 1 bp round-trip per trade for majors
 
+Implemented (CL-x50g): `src/backtest/cost_model.py` carries per-pair
+spreads (EURUSD 0.3 → NZDUSD 0.7 pips) plus an overnight funding charge
+(default 15 bps/yr, applied per trading day); `src/backtest/swap_model.py`
+models the daily swap with broker markup and triple-Wednesday rolls.
+
 ### 4.5 Avoiding Pitfalls
 
 - **Data snooping**: Keep a locked holdout (final 20% of data) never touched during development
@@ -614,13 +623,27 @@ class RegimeAwareSizer:
 
 ### 5.5 Kill Switches
 
-Six switches that trigger automatically:
-1. **Daily loss limit** → halt new trades
-2. **Drawdown limit** → flatten all positions
-3. **VIX spike** (>35, up 50% intraday) → reduce 50%
-4. **FX vol spike** (CVIX Z-score > 3) → halt new
-5. **Reconciliation failure** → halt new
-6. **Stale prices** (no tick in 10 min) → halt new
+Eleven switches that trigger automatically (`src/risk/kill_switches.py`):
+1. **daily_loss_limit** (-3% on the day) → halt new trades
+2. **drawdown_limit** (-20% from peak) → flatten all positions
+3. **vix_spike** (>35, up 50% intraday) → reduce 50%
+4. **fx_vol_spike** (CVIX Z-score > 3) → halt new
+5. **reconciliation_failure** → halt new
+6. **stale_prices** (no tick in 10 min) → halt new
+7. **portfolio_correlation_crisis** (regime = crisis) → reduce 50%
+8. **strategy_correlation_spike** (max pairwise > 0.9) → reduce 50%
+9. **single_strategy_drawdown** (any strategy -25%) → halt that strategy
+10. **equity_trailing_stop** (equity -10% below persisted all-time peak)
+    → halt new, with a cooldown (default 7 days) persisted across
+    restarts in `data/equity_trailing_stop_state.json`
+11. **open_position_correlation** (mean direction-adjusted pairwise
+    correlation of open positions > 0.85, 60d lookback) → reduce 50%
+
+Wiring: `build_kill_switch_manager()` in `src/runtime/run_engine.py`
+constructs the manager and injects it into `LiveEngine`; the engine's
+health-check task evaluates all switches every 60 seconds. Thresholds
+come from the active profile in `configs/risk_profile.yaml`
+(`CURLIT_RISK_PROFILE` env var overrides).
 
 ### 5.6 Scenario Stress Testing
 
@@ -688,7 +711,7 @@ SIGTERM → halt new trades → wait for pending orders (30s timeout) → persis
 3. Kill switch tested regularly
 4. Circuit breakers: max daily loss, max drawdown, max orders/min, price sanity checks
 5. Logging everything (every tick, signal, order, fill)
-6. Alerting (critical → Pushover priority 2, warning → email, info → log)
+6. Alerting (critical → Telegram high-priority, warning → Telegram, info → log)
 7. Time-of-day awareness
 8. Start absurdly small (1/100th of backtest sizing)
 
@@ -703,6 +726,11 @@ SIGTERM → halt new trades → wait for pending orders (30s timeout) → persis
 **Model**: Rolling OLS regression: `EURUSD = α + β × (US2Y − DE2Y) + ε`
 
 **Entry**: Z(deviation) > ±1.5
+**Entry filters** (CL-x50g): new entries are additionally gated by carry
+sign (don't enter against the rate differential), opposing momentum, and
+a CVIX vol-regime z-score cap — each independently toggleable in
+`RateDiffMRConfig` (`carry_filter_enabled` / `momentum_filter_enabled` /
+`regime_filter_enabled`). Exits and stops are never blocked by filters.
 **Exit**: Z reverts to ±0.3, or stop at Z = ±3.5, or time stop at 30 days
 **Sizing**: Volatility-targeted, conviction-scaled, capped at 20% equity
 **Quality gate**: R² < 0.25 → sit out (relationship too weak)
@@ -791,8 +819,8 @@ with LogContext(strategy_id='eurusd_rate_diff_mr'):
 ### 8.4 Alerting
 
 **Severity levels**:
-- **Critical (page via Pushover priority 2)**: Kill switch triggered, drawdown > 15%, reconciliation mismatch, engine down, price stream disconnected, order reject rate > 20%
-- **Warning (Pushover normal + email)**: Drawdown > 10%, daily loss > 2%, model R² degraded (< 0.20), data stale (> 5 min), P90 slippage > 3 bps, spread widening (> 5 bps), correlation regime stressed
+- **Critical (page via Telegram, high priority)**: Kill switch triggered, drawdown > 15%, reconciliation mismatch, engine down, price stream disconnected, order reject rate > 20%
+- **Warning (Telegram, normal priority)**: Drawdown > 10%, daily loss > 2%, model R² degraded (< 0.20), data stale (> 5 min), P90 slippage > 3 bps, spread widening (> 5 bps), correlation regime stressed
 - **Info (log only)**: All other
 
 **Alert rules**: Prometheus YAML with `for:` clauses for debounce. Inhibit: engine down → suppress all downstream alerts.
@@ -1025,6 +1053,91 @@ class SwapModel:
 ### 12.4 Cross-Currency Basis
 
 The FX swap market prices currency-specific funding pressure. When USD is scarce globally (year-end, crisis), EUR/USD basis goes deeply negative — European banks pay extra to borrow dollars synthetically. Monitoring basis is a leading signal for dollar funding stress. Sources: BIS (monthly, free), Bloomberg (daily, paid).
+
+---
+
+## 13. Current-Events Pipeline
+
+Geopolitical/news events flow from GDELT to paper trades through four
+stages (CL-6iu7 / CL-mnhw). Producer and consumer are decoupled through
+the `geo_events` table (migration 005):
+
+```
+GDELT Doc 2.0 API
+      │  scripts/event_pipeline.py --ingest        (themed queries, one per playbook;
+      ▼                                             URL-hash dedup; loop cadence 900s)
+geo_events: NEW
+      │  scripts/event_pipeline.py --assess
+      ▼  src/events/impact_agent.py — strict-JSON LLM call (claude-code driver;
+      │  override model via EVENT_IMPACT_MODEL) → direction, urgency 1-10,
+      │  confidence 0-1, affected instruments, rationale
+      ▼
+geo_events: ASSESSED ──(not tradable / low quality)──▶ DISMISSED
+      │
+      │  src/events/confluence.py — two gates:
+      │    Gate A (quality):  urgency ≥ min_urgency AND confidence ≥ min_confidence
+      │    Gate B (market):   price moved ≥ confirm_move_frac × 20d realized vol
+      │                       within the confirmation window
+      ▼
+CONFIRMED ──▶ src/strategies/event_driven.py (EventDrivenStrategy,
+      │        registered in configs/live_portfolio.yaml):
+      │        sizes at equity × event_risk_pct / stop distance, hard stop at
+      │        event_stop_pct, hard time stop at event_max_holding_hours
+      │        → TRADED; Telegram "Event confirmed" alert
+      │
+      └─(window elapsed, no move)──▶ EXPIRED
+               (Telegram "Event expired unconfirmed" alert when urgency ≥ 8)
+```
+
+Playbooks (`configs/event_playbooks.yaml`, loaded by
+`src/events/playbooks.py`) define 6 themes — `energy_chokepoint`,
+`oil_supply_shock`, `war_escalation`, `cb_surprise`, `natural_disaster`,
+`sanctions_trade` — each with watch terms and tradable/watch-only
+instruments (equities are forced watch-only). Status transitions are
+single atomic `UPDATE ... WHERE status = :old` queries, so concurrent
+producer/consumer runs are safe. An event-book loss cap
+(`data/event_book_state.json`, written atomically) blocks new event
+entries once cumulative realized event P&L breaches
+`event_book_max_loss_pct`.
+
+---
+
+## 14. Research Pipeline & Operator Gates
+
+The autonomous research loop (`scripts/research_loop.py`, cron-driven,
+idempotent via `data/research/state.json`) turns papers and feeds into
+paper-shadow strategies:
+
+```
+ingest (arXiv/substacks/Polymarket per configs/paper_streams.yaml)
+  → idea agent → hypothesis brief
+  → GATE 1 (operator: implement this?)          ── Telegram notification
+  → implementer → walk-forward backtest
+  → Bull/Bear debate → verdict engine
+  → GATE 2 (operator: deploy paper-shadow?)      ── Telegram notification
+  → paper-shadow registrar (allocation = 0)
+```
+
+**LLM stack**: every role (idea_generator, implementer, bull/bear
+reviewers, question_resolver, paper_extractor, modeler, fit_evaluator)
+runs on provider `claude-code` with model `claude-fable-5`
+(`configs/research_agents.yaml`). The driver
+(`src/research/llm/claude_code.py`) shells out to the headless `claude`
+CLI on the operator's subscription — API keys are stripped from the
+subprocess env so subscription auth always wins. The grok/deepseek
+drivers remain registered only for the side-by-side harness
+(`scripts/compare_llm_providers.py`).
+
+**Telegram gate flow**: gate notifications are HTML messages carrying a
+`Trades:` line (instruments extracted by `src/research/instruments.py`).
+The operator replies `approve <id>` / `reject <id>` / `skip <id>` /
+`pending` / `help` in the same chat; `scripts/telegram_approval_bot.py`
+long-polls, enforces a strict `TELEGRAM_CHAT_ID` lock, tolerates mobile
+keyboard mangling (case, trailing punctuation), and applies decisions
+atomically to `data/research/state.json` — the same file the loop reads
+on its next run (gates never block in-process). GATE 1 ids are 6-char
+extract-hash prefixes; GATE 2 uses the strategy slug. CLI fallback:
+`scripts/research_approve.py`.
 
 ---
 

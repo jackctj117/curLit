@@ -172,7 +172,7 @@ log queries hard — production must use a paid provider.
 ## Failure modes that have no FX analogue
 
 - **Oracle dispute.** A market we hold goes into UMA dispute → frozen
-  for days. Capital locked. Action: alert via Pushover; don't size new
+  for days. Capital locked. Action: alert via Telegram; don't size new
   positions in correlated markets.
 - **Wrong-resolution.** UMA returns 0.5 → both sides redeem at $0.50.
   Action: post-mortem. The position cost is gone modulo whatever you
