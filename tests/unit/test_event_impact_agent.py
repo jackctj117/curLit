@@ -483,9 +483,14 @@ class TestTransportFailureRetrySemantics:
         assert results[0].status == "NEW"
         assert results[0].assessment == {}
         # Row untouched in the DB — still queued, no assessment written.
-        row = _fetch(engine, "tf1")
-        assert row["status"] == "NEW"
-        assert row["assessment"] is None
+        # (_fetch json.loads()es the assessment, so query raw here.)
+        with engine.connect() as conn:
+            raw = conn.execute(text(
+                "SELECT status, assessment FROM geo_events "
+                "WHERE external_id='tf1'",
+            )).one()
+        assert raw[0] == "NEW"
+        assert raw[1] is None
 
     def test_content_failure_still_dismisses(self, engine: Engine) -> None:
         _insert_event(engine, "tf2", "Iran moves to close Hormuz")
