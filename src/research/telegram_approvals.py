@@ -194,19 +194,27 @@ class ParsedCommand:
     reason: str = ""
 
 
+#: Punctuation phone keyboards append/attach to tokens ("Approve
+#: a1b2c3." / "approve 'a1b2c3'"). Stripped from BOTH ends of the verb
+#: and the id — never from the middle (slugs contain hyphens).
+_TOKEN_TRIM_CHARS = ".,;:!?'\"()[]“”‘’"
+
+
 def parse_command(text: str) -> ParsedCommand | None:
-    """Parse a chat message into a command. Case-insensitive; a
-    leading ``/`` is tolerated (Telegram habit). Returns None for
-    unrecognized chatter so the caller can send a help hint."""
+    """Parse a chat message into a command. Case-insensitive on the
+    verb AND the id; a leading ``/`` is tolerated (Telegram habit);
+    surrounding punctuation from mobile autocorrect is trimmed."""
     tokens = text.strip().split()
     if not tokens:
         return None
-    verb = tokens[0].lower().lstrip("/")
+    verb = tokens[0].lower().lstrip("/").strip(_TOKEN_TRIM_CHARS)
     if verb not in _KNOWN_VERBS:
         return None
     if verb == "start":  # Telegram's default first message → help
         verb = "help"
-    target = tokens[1].lower() if len(tokens) > 1 else ""
+    target = (
+        tokens[1].lower().strip(_TOKEN_TRIM_CHARS) if len(tokens) > 1 else ""
+    )
     reason = " ".join(tokens[2:])
     return ParsedCommand(verb=verb, target=target, reason=reason)
 

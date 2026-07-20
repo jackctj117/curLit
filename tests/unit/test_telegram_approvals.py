@@ -601,3 +601,41 @@ class TestTokenSafety:
         joined = "\n".join(r.getMessage() for r in caplog.records)
         assert "retrying" in joined
         assert TOKEN not in joined
+
+
+class TestMobileKeyboardMangling:
+    """Phone keyboards capitalize, smart-quote, and append punctuation —
+    every form must parse identically to the clean lowercase command
+    (operator report 2026-07-20: replies must never be case-sensitive)."""
+
+    def test_verb_case_variants(self) -> None:
+        for text in ("PENDING", "Pending", "pEnDiNg", "/Pending"):
+            cmd = parse_command(text)
+            assert cmd is not None and cmd.verb == "pending", text
+
+    def test_action_verb_and_id_uppercased(self) -> None:
+        for text in ("Approve ABC123", "APPROVE abc123", "approve AbC123"):
+            cmd = parse_command(text)
+            assert cmd is not None, text
+            assert cmd.verb == "approve" and cmd.target == "abc123", text
+
+    def test_trailing_punctuation_trimmed(self) -> None:
+        for text in ("Approve abc123.", "approve abc123,", "approve abc123!",
+                     "Approve \u201cabc123\u201d", "approve 'abc123'"):
+            cmd = parse_command(text)
+            assert cmd is not None, text
+            assert cmd.target == "abc123", text
+
+    def test_hyphenated_slug_interior_untouched(self) -> None:
+        cmd = parse_command("Reject My-Slug-Name.")
+        assert cmd is not None
+        assert cmd.target == "my-slug-name"
+
+    def test_uppercase_id_resolves_against_lowercase_hash(self) -> None:
+        h = "a1b2c3d4e5f6" + "0" * 52
+        state = _make_state(ideas={h: _gate1_entry("some-slug")})
+        cmd = parse_command("Approve A1B2C3.")
+        assert cmd is not None
+        target, err = resolve_target(state, cmd.target)
+        assert err == "" and target is not None
+        assert target.key.startswith("a1b2c3")
