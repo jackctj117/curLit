@@ -135,6 +135,11 @@ class ConfluenceResult:
     urgency: int = 0
     confidence: float = 0.0
     checks: list[InstrumentCheck] = field(default_factory=list)
+    #: Cross-asset corroboration read (CL-6mzn) — a
+    #: :class:`src.events.cross_asset.CrossAssetResult`, or None when the
+    #: layer isn't configured / the event didn't reach confirmation. This
+    #: is a DISPLAY annotation, not a gate: it never changes ``outcome``.
+    cross_asset: Any = None
 
 
 class EventConfluence:
@@ -153,11 +158,16 @@ class EventConfluence:
         data_provider: Any = None,
         db_engine: Any = None,
         instrument_map: dict[str, str] | None = None,
+        cross_asset_config: Any = None,
     ) -> None:
         self.config = config or ConfluenceConfig()
         self.data = data_provider
         self.db = db_engine
         self.instrument_map = dict(instrument_map or {})
+        #: Cross-asset corroboration config (CL-6mzn), a
+        #: :class:`src.events.cross_asset.CrossAssetConfig`. Optional —
+        #: when None the cross-asset annotation is simply not computed.
+        self.cross_asset_config = cross_asset_config
 
     # ------------------------------------------------------------------
     # Assessment parsing
@@ -260,7 +270,28 @@ class EventConfluence:
         if confirmed_count >= self.config.min_confirmed_instruments:
             result.outcome = "confirmed"
             result.transitioned = self.transition(event_id, "ASSESSED", "CONFIRMED")
+            # Cross-asset corroboration (CL-6mzn) — a DISPLAY annotation,
+            # never a gate. Compute for confirmed events so the operator
+            # can SEE whether the theme's related commodity/asset is
+            # corroborating (or NOT — fade risk). Best-effort: any error
+            # leaves cross_asset None and the confirmation stands.
+            result.cross_asset = self._cross_asset(event.get("theme"), seen_at, now)
         return result
+
+    def _cross_asset(self, theme: Any, since: datetime, now: datetime) -> Any:
+        """Compute the theme's cross-asset read, or None when the layer
+        isn't configured / anything goes wrong (annotation only)."""
+        if self.cross_asset_config is None or self.data is None:
+            return None
+        try:
+            from src.events.cross_asset import cross_asset_confirmation  # noqa: PLC0415
+
+            return cross_asset_confirmation(
+                self.data, theme, since, self.cross_asset_config, now=now,
+            )
+        except Exception:
+            logger.debug("cross-asset confirmation failed", exc_info=True)
+            return None
 
     def _check_instrument(
         self,

@@ -758,6 +758,97 @@ class TestConfirmedAlertEnrichment:
         assert strat._top_idea_card_lines(stock, prices={}, now=None) == []
 
 
+class _CrossAssetProvider:
+    """Provider that confirms Gate B on USD_CAD AND moves the theme's
+    cross-asset instruments so the corroboration line renders (CL-6mzn).
+
+    ``get_latest_value`` returns a per-instrument reference value at
+    seen_at and a moved value at 'now' (distinguished by as_of), so the
+    cross-asset layer sees real % moves; USD_CAD is priced flat so the
+    live tick (CONFIRM_PRICES) drives Gate B.
+    """
+
+    def __init__(self, ref: float, cur: float, seen_cutoff: datetime) -> None:
+        self.seen_cutoff = seen_cutoff
+        # BCO/WTI up (agree "up"); USD_CAD down at the CROSS-ASSET leg but
+        # Gate B uses the live tick 1.0 vs its own ref 0.99 → still long-OK.
+        self._legs = {
+            "BCO_USD": (80.0, 84.0),
+            "WTICO_USD": (76.0, 79.0),
+            "USD_CAD": (0.99, 0.99),  # cross-asset flat; Gate B via live tick
+            "USD_NOK": (10.5, 10.4),
+        }
+
+    def get_latest_value(self, instrument: str, as_of: datetime) -> float | None:
+        leg = self._legs.get(instrument)
+        if leg is None:
+            return 0.99  # generic ref for any Gate-B instrument
+        p0, p1 = leg
+        return p1 if as_of > self.seen_cutoff else p0
+
+    def get_realized_vol(self, pair: str, window: int = 20,
+                         as_of: datetime | None = None) -> float | None:
+        return 0.01 * math.sqrt(252.0)
+
+
+class TestCrossAssetLine:
+    """The cross-asset corroboration line on the confirmed-event alert
+    (CL-6mzn) — display-only, never a gate."""
+
+    def _insert_energy(self, db: Any, minutes_ago: float = 60) -> int:
+        # An energy_chokepoint event (a configured cross-asset theme),
+        # tradable long USD_CAD so Gate B can confirm via the live tick.
+        _EVENT_SEQ["n"] += 1
+        assessment = {
+            "core_event": "hormuz threat", "direction": "bullish",
+            "urgency": 8, "horizon": "hours", "confidence": 0.9,
+            "affected": [{"instrument": "USD_CAD", "kind": "fx",
+                          "direction": "long", "reason": "petro-fx"}],
+            "rationale": "chokepoint",
+        }
+        seen = (datetime.now(UTC) - timedelta(minutes=minutes_ago)).isoformat()
+        with db.begin() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO geo_events (seen_at, source, external_id, "
+                    "headline, url, theme, assessment, status, status_updated_at) "
+                    "VALUES (:seen, 'gdelt', :ext, 'Hormuz closure threat', '', "
+                    "'energy_chokepoint', :a, 'ASSESSED', :seen)"
+                ),
+                {"seen": seen, "ext": f"xa-{_EVENT_SEQ['n']}",
+                 "a": json.dumps(assessment)},
+            )
+            return int(conn.execute(text("SELECT max(id) FROM geo_events")).scalar())
+
+    def test_confirmed_alert_shows_cross_asset_confirms(
+        self, tmp_path: Any, sent_alerts: list[tuple[str, str, int]],
+    ) -> None:
+        db = make_db()
+        self._insert_energy(db)
+        cutoff = datetime.now(UTC) - timedelta(minutes=30)
+        strat = make_strategy(
+            tmp_path, db=db, provider=_CrossAssetProvider(0.99, 1.0, cutoff),
+        )
+        run(strat, CONFIRM_PRICES)  # USD_CAD live tick 1.0 confirms Gate B
+        message = next(m for t, m, _ in sent_alerts if t == "Event confirmed")
+        assert "Cross-asset:" in message
+        assert "BCO_USD" in message
+        assert "✓" in message
+        assert "confirms" in message
+
+    def test_unconfigured_theme_omits_cross_asset(
+        self, tmp_path: Any, sent_alerts: list[tuple[str, str, int]],
+    ) -> None:
+        # The default insert_event uses theme='energy' (NOT a configured
+        # cross-asset theme) → unknown → no cross-asset line.
+        db = make_db()
+        insert_event(db)
+        strat = make_strategy(tmp_path, db=db, provider=confirming_provider())
+        run(strat, CONFIRM_PRICES)
+        message = next(m for t, m, _ in sent_alerts if t == "Event confirmed")
+        assert "Cross-asset:" not in message
+
+
 class TestExpiredAlertEnrichment:
     def test_age_and_top_idea(
         self, tmp_path: Any, sent_alerts: list[tuple[str, str, int]],

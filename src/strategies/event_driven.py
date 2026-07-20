@@ -118,6 +118,10 @@ class EventDrivenConfig:
     # event entries. Exits always still flow.
     event_book_max_loss_pct: float = 0.02
     event_book_state_path: str = "data/event_book_state.json"
+    # ---- Cross-asset corroboration (CL-6mzn) ---------------------------
+    # Path to the per-theme corroborating-instruments config. The read is
+    # a DISPLAY annotation on confirmed events, never a hard gate.
+    cross_asset_checks_path: str = "configs/cross_asset_checks.yaml"
     # ---- Alerts --------------------------------------------------------
     # EXPIRED events at/above this urgency get a brief info alert.
     expired_alert_min_urgency: int = 8
@@ -156,6 +160,10 @@ class EventDrivenStrategy:
         self.state = state_store
         self.snapshot_store = snapshot_store
         self.db = db_engine
+        # Cross-asset corroboration config (CL-6mzn) — best-effort load;
+        # a missing/broken config degrades the confirmation layer to "no
+        # cross-asset annotation", never a boot failure.
+        cross_asset_config = self._load_cross_asset_config()
         self.confluence = EventConfluence(
             config=ConfluenceConfig(
                 min_urgency=self.config.min_urgency,
@@ -172,6 +180,7 @@ class EventDrivenStrategy:
             data_provider=data_provider,
             db_engine=db_engine,
             instrument_map=self.config.instrument_map,
+            cross_asset_config=cross_asset_config,
         )
         self.open_positions: dict[str, EventPosition] = {}
         self._realized_pnl: float = 0.0
@@ -182,6 +191,24 @@ class EventDrivenStrategy:
         # Loss-cap breach is CRITICAL once per activation, WARNING after.
         self._breach_logged = False
         self._load_state()
+
+    def _load_cross_asset_config(self) -> Any:
+        """Load the cross-asset checks config (CL-6mzn), or None on any
+        problem. The corroboration is an operator-facing annotation, so a
+        missing/broken config must never break event confirmation — it
+        just means confirmed-event alerts carry no cross-asset line."""
+        try:
+            from src.events.cross_asset import load_cross_asset_config  # noqa: PLC0415
+
+            return load_cross_asset_config(self.config.cross_asset_checks_path)
+        except Exception:
+            logger.warning(
+                "cross-asset checks config unavailable at %s — confirmed-event "
+                "alerts will omit the cross-asset corroboration line",
+                self.config.cross_asset_checks_path,
+                exc_info=True,
+            )
+            return None
 
     # ------------------------------------------------------------------
     # Strategy protocol
@@ -695,6 +722,91 @@ class EventDrivenStrategy:
         """``2h`` / ``3d`` since the event was first seen, or ``""``."""
         return format_age(row.get("seen_at"), now=now)
 
+    @staticmethod
+    def _cross_asset_summary(result: Any) -> str | None:
+        """One-line machine-friendly cross-asset summary for the idea
+        ledger's ``notes`` (CL-6mzn) — ``cross-asset: confirms 2/3
+        (BCO_USD +1.8%, USD_CAD -0.2%)`` — or None when unknown/no-data."""
+        if result is None:
+            return None
+        confirmed = getattr(result, "confirmed", None)
+        if confirmed is None:
+            return None
+        details = list(getattr(result, "details", []) or [])
+        voting = [d for d in details if getattr(d, "agrees", None) is not None]
+        if not voting:
+            return None
+        n_agree = sum(1 for d in voting if d.agrees)
+        n_voting = len(voting)
+        verb = "confirms" if confirmed else "NOT confirming (fade risk)"
+        moves = ", ".join(
+            f"{d.instrument} {(d.actual_move_pct or 0.0):+.1f}%" for d in voting
+        )
+        return f"cross-asset: {verb} {n_agree}/{n_voting} ({moves})"
+
+    def _stamp_cross_asset_on_ideas(self, geo_event_id: Any, result: Any) -> None:
+        """Append the cross-asset summary to the ``notes`` of this event's
+        persisted trade ideas (CL-6mzn). Additive and idempotent-ish
+        (skips rows whose notes already carry a ``cross-asset:`` marker);
+        never touches the schema or the machine-trade path. Best-effort —
+        a DB error or missing table is swallowed (annotation only)."""
+        if self.db is None or geo_event_id is None:
+            return
+        summary = self._cross_asset_summary(result)
+        if not summary:
+            return
+        try:
+            with self.db.begin() as conn:
+                conn.execute(
+                    text(
+                        "UPDATE trade_ideas "
+                        "SET notes = CASE "
+                        "  WHEN notes IS NULL OR notes = '' THEN :summary "
+                        "  ELSE notes || ' | ' || :summary END "
+                        "WHERE geo_event_id = :eid "
+                        "  AND (notes IS NULL OR notes NOT LIKE '%cross-asset:%')"
+                    ),
+                    {"summary": summary, "eid": int(geo_event_id)},
+                )
+        except Exception:
+            logger.debug(
+                "cross-asset idea-notes stamp failed for geo_event_id=%s",
+                geo_event_id, exc_info=True,
+            )
+
+    @staticmethod
+    def _cross_asset_line(result: Any) -> str | None:
+        """Plain-text cross-asset corroboration line for the confirmed
+        alert (CL-6mzn), or None when the read is unknown/no-data.
+
+        ``result`` is a :class:`src.events.cross_asset.CrossAssetResult`.
+        The Telegram-HTML variant lives in
+        :func:`src.events.digest.build_cross_asset_line`; this alert body
+        is plain text, so we render ✓/✗ without markup here."""
+        if result is None:
+            return None
+        confirmed = getattr(result, "confirmed", None)
+        if confirmed is None:
+            return None  # unknown / no data — omit
+        details = list(getattr(result, "details", []) or [])
+        voting = [d for d in details if getattr(d, "agrees", None) is not None]
+        if not voting:
+            return None
+        n_agree = sum(1 for d in voting if d.agrees)
+        n_voting = len(voting)
+        parts = [
+            f"{d.instrument} {(d.actual_move_pct or 0.0):+.1f}% "
+            f"{'✓' if d.agrees else '✗'}"
+            for d in voting
+        ]
+        body = " · ".join(parts)
+        if confirmed:
+            return f"Cross-asset: {body} · confirms ({n_agree}/{n_voting})"
+        return (
+            f"Cross-asset: related assets NOT confirming — fade risk "
+            f"({n_agree}/{n_voting}) · {body}"
+        )
+
     def _alert_confirmed(
         self,
         row: dict[str, Any],
@@ -703,12 +815,16 @@ class EventDrivenStrategy:
         skipped: list[tuple[str, str]],
         prices: dict[str, Any] | None = None,
         now: datetime | None = None,
+        cross_asset: Any = None,
     ) -> None:
         now = now or datetime.now(UTC)
         lines = [f"Headline: {str(row.get('headline') or '')[:140]}"]
         age = self._event_age(row, now)
         if age:
             lines.append(f"Age: {age} since first seen")
+        cross_line = self._cross_asset_line(cross_asset)
+        if cross_line:
+            lines.append(cross_line)
         for symbol, dir_str, size_str, entry_price, reason in entered:
             lines.append(
                 f"Trade: {symbol} {dir_str} ({size_str} units) @ {entry_price:g}",
@@ -833,10 +949,15 @@ class EventDrivenStrategy:
             entry_intents, entered, skipped = self._enter_confirmed(
                 row, assessment, prices, equity, now,
             )
+            # Stamp the cross-asset read onto the persisted trade ideas'
+            # notes so `idea <id>` surfaces it later (CL-6mzn). Additive,
+            # best-effort — never blocks the alert or the trades.
+            self._stamp_cross_asset_on_ideas(row.get("id"), result.cross_asset)
             # Alert on every CONFIRMED event — even when caps/mapping
             # meant nothing was tradable (operator can act manually).
             self._alert_confirmed(
                 row, assessment, entered, skipped, prices=prices, now=now,
+                cross_asset=result.cross_asset,
             )
             if entry_intents:
                 intents.extend(entry_intents)

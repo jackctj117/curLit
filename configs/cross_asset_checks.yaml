@@ -1,0 +1,207 @@
+# Cross-asset confirmation checks (CL-6mzn) — per-theme corroborating
+# instruments and their EXPECTED direction on an ESCALATION / POSITIVE-THESIS
+# event (i.e. the theme "fires as described": the disruption is real, the
+# risk-off is real). Before acting on an event idea, the confirmation layer
+# checks that these related commodities/assets are actually MOVING THE WAY
+# the thesis needs. If the related commodity/sector is NOT moving, the equity
+# reaction is likely to fade — so the puts/shorts are less reliable.
+#
+# This is a DISPLAY / ANNOTATION layer, NOT a hard gate: the operator wants
+# to SEE the cross-asset read (e.g. "crude +1.8% ✓, USD_CAD -0.2% ✗") and
+# decide. It never silently suppresses a trade.
+#
+# ------------------------------------------------------------------------- #
+# expected_direction — the DIRECTION OF THE MOVE that CORROBORATES the thesis:
+#   up   — the instrument's price should RISE on this event
+#   down — the instrument's price should FALL on this event
+# We measure the actual % move of the instrument since the event's seen_at
+# and check its SIGN against this. An "up" instrument that fell (or a "down"
+# instrument that rose) DISAGREES with the thesis.
+#
+# weight (optional, default 1.0) — relative vote weight of an instrument in
+# the agreement fraction. Use it to lean on the primary corroborator (e.g.
+# crude for an energy chokepoint) over context legs (petro-FX).
+#
+# Only OANDA-tradable instruments the DataProvider can price are listed here
+# (oanda CFDs + FX pairs, ^[A-Z0-9_]+$). Equity_watch / polymarket entries
+# from the playbooks are NOT usable here — the DataProvider does not price
+# them and this layer must resolve every instrument to a % move or exclude it.
+#
+# ========================================================================= #
+# RISK-OFF SIGN CONVENTIONS — the easy-to-get-wrong part. READ CAREFULLY.
+# ========================================================================= #
+# The expected_direction below is the sign of the INSTRUMENT'S PRICE move,
+# not the sign of "the currency" or "risk". FX pairs are quoted BASE_QUOTE;
+# USD_JPY UP means the USD strengthened / the JPY WEAKENED.
+#
+#  * Risk-off yen bid (Taiwan/war escalation): the JPY STRENGTHENS on a
+#    risk-off carry-unwind. A stronger yen is USD_JPY *DOWN* (fewer yen per
+#    dollar). So the corroborating move for "risk-off yen" is USD_JPY = DOWN.
+#    (This mirrors the playbook, which hints USD_JPY direction 'short' for
+#    the taiwan_semiconductor and war_escalation themes — short USD_JPY =
+#    betting the pair falls = yen strengthens.) Encoding it as "up" here
+#    would be the classic sign error.
+#
+#  * Petro-FX on an oil supply shock / chokepoint: CAD and NOK STRENGTHEN
+#    when crude spikes (they are oil currencies). A stronger CAD is
+#    USD_CAD *DOWN*; a stronger NOK is USD_NOK *DOWN*. So the corroborating
+#    move is USD_CAD = DOWN and USD_NOK = DOWN. (Playbook hints these 'short'
+#    — short USD_CAD = pair falls = CAD strengthens. Same sign.)
+#
+#  * Gold (XAU_USD): quoted USD per ounce, so a safe-haven bid is simply
+#    XAU_USD = UP.
+#
+#  * Equity indices (SPX500_USD, NAS100_USD): a risk-off equity de-rate is
+#    the INDEX FALLING = DOWN.
+#
+#  * Commodities priced in USD (BCO_USD, WTICO_USD, NATGAS_USD, WHEAT_USD,
+#    CORN_USD, XCU_USD copper): a supply-disruption / risk premium is the
+#    commodity RISING = UP.
+#
+# Every entry's comment restates WHY its sign is what it is.
+
+themes:
+  # --- Energy / oil chokepoint cluster ----------------------------------- #
+  energy_chokepoint:
+    instruments:
+      # Crude is the primary corroborator — chokepoint risk hits Brent first.
+      - instrument: BCO_USD      # Brent, USD/bbl — chokepoint premium → UP
+        expected_direction: up
+        weight: 2.0
+      - instrument: WTICO_USD    # WTI, USD/bbl — follows Brent → UP
+        expected_direction: up
+        weight: 1.0
+      # Petro-FX context: CAD strengthens on crude spike → USD_CAD DOWN.
+      - instrument: USD_CAD      # CAD is an oil currency; stronger CAD = pair DOWN
+        expected_direction: down
+        weight: 0.5
+      # NOK strengthens on Brent spike → USD_NOK DOWN.
+      - instrument: USD_NOK      # NOK is an oil currency; stronger NOK = pair DOWN
+        expected_direction: down
+        weight: 0.5
+
+  oil_supply_shock:
+    instruments:
+      - instrument: BCO_USD      # supply subtraction reprices the barrel → UP
+        expected_direction: up
+        weight: 2.0
+      - instrument: WTICO_USD    # WTI tracks the global balance → UP
+        expected_direction: up
+        weight: 1.0
+      - instrument: USD_CAD      # cleanest G10 petro-FX; stronger CAD = pair DOWN
+        expected_direction: down
+        weight: 0.5
+      - instrument: USD_NOK      # NOK rallies with Brent; stronger NOK = pair DOWN
+        expected_direction: down
+        weight: 0.5
+
+  red_sea_shipping:
+    instruments:
+      - instrument: BCO_USD      # rerouted crude + war-risk premia → UP
+        expected_direction: up
+        weight: 2.0
+      - instrument: WTICO_USD    # follows Brent → UP
+        expected_direction: up
+        weight: 1.0
+      - instrument: USD_CAD      # petro-FX context; stronger CAD = pair DOWN
+        expected_direction: down
+        weight: 0.5
+      - instrument: USD_NOK      # petro-FX context; stronger NOK = pair DOWN
+        expected_direction: down
+        weight: 0.5
+
+  # --- Taiwan / semiconductor: RISK-OFF cluster -------------------------- #
+  taiwan_semiconductor:
+    instruments:
+      # RISK-OFF YEN: escalation triggers a carry-unwind yen BID. A stronger
+      # yen is USD_JPY DOWN (fewer yen per dollar). NOT "up" — see header.
+      - instrument: USD_JPY      # risk-off yen strengthens → USD_JPY DOWN
+        expected_direction: down
+        weight: 1.0
+      # Safe-haven gold bid scales with escalation → UP.
+      - instrument: XAU_USD      # safe-haven bid → UP
+        expected_direction: up
+        weight: 1.0
+      # Broad risk-off equity de-rate → index DOWN. TSMC concentration makes
+      # the index the direct earnings-shock proxy.
+      - instrument: SPX500_USD   # broad risk-off → index DOWN
+        expected_direction: down
+        weight: 1.0
+
+  # --- Russia-Ukraine escalation ---------------------------------------- #
+  russia_ukraine:
+    instruments:
+      # Escalation threatens residual Russian gas flows to Europe → UP.
+      - instrument: NATGAS_USD   # gas supply-risk premium → UP
+        expected_direction: up
+        weight: 1.5
+      # Black Sea corridor disruption reprices global wheat → UP.
+      - instrument: WHEAT_USD    # Black Sea export risk → UP
+        expected_direction: up
+        weight: 1.0
+      # Safe-haven + central-bank gold demand on sanctions escalation → UP.
+      - instrument: XAU_USD      # safe-haven / sanctions bid → UP
+        expected_direction: up
+        weight: 1.0
+
+  # --- Africa minerals cluster (disruption = tighter supply) ------------ #
+  drc_copper_cobalt:
+    instruments:
+      # DRC belt disruption tightens the copper balance → copper UP.
+      - instrument: XCU_USD      # copper supply disruption → UP
+        expected_direction: up
+        weight: 1.5
+      - instrument: XAU_USD      # central-Africa resource-nationalism haven bid → UP
+        expected_direction: up
+        weight: 1.0
+
+  africa_power_shift:
+    instruments:
+      # Coups in copper/gold states threaten supply + add uncertainty bid.
+      - instrument: XCU_USD      # copperbelt disruption → UP
+        expected_direction: up
+        weight: 1.5
+      - instrument: XAU_USD      # gold-state coup risk + uncertainty bid → UP
+        expected_direction: up
+        weight: 1.0
+
+  sahel_gold_uranium:
+    instruments:
+      # Mali/Burkina are top gold producers; seizure/shut-in risk → UP.
+      # (Uranium has no OANDA instrument; gold is the tradable corroborator.)
+      - instrument: XAU_USD      # Sahel gold supply risk + haven bid → UP
+        expected_direction: up
+        weight: 1.5
+
+  south_africa_pgm_gold:
+    instruments:
+      # PGM supply throttle plus generic gold-state disruption bid. XCU_USD
+      # is not a direct SA proxy; gold is the OANDA-tradable corroborator.
+      - instrument: XAU_USD      # SA mining/grid disruption + haven bid → UP
+        expected_direction: up
+        weight: 1.0
+      # SA copper exposure is minor; keep gold as the single strong leg and
+      # copper as a weak secondary regional-disruption read.
+      - instrument: XCU_USD      # weak secondary — regional mining disruption → UP
+        expected_direction: up
+        weight: 0.5
+
+  # --- Black Sea grain corridor (food-price leg) ------------------------- #
+  black_sea_grain:
+    instruments:
+      - instrument: WHEAT_USD    # ~30% of world wheat exports load here → UP
+        expected_direction: up
+        weight: 1.5
+      - instrument: CORN_USD     # Ukraine is a top-4 corn exporter → UP
+        expected_direction: up
+        weight: 1.0
+
+  # --- Guinea iron ore / bauxite ---------------------------------------- #
+  guinea_iron_bauxite:
+    instruments:
+      # No OANDA iron-ore/bauxite instrument exists; the tradable
+      # corroborator is the West-African coup-risk gold haven bid (Guinea
+      # also hosts AngloGold's Siguiri).
+      - instrument: XAU_USD      # West African coup-risk haven bid → UP
+        expected_direction: up
+        weight: 1.0

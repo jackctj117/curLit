@@ -282,6 +282,78 @@ def _advisory_entries(
     return out
 
 
+def build_cross_asset_line(result: Any) -> str | None:
+    """Render one compact cross-asset corroboration line for a confirmed
+    event (CL-6mzn), or ``None`` when there is nothing to say.
+
+    ``result`` is a :class:`src.events.cross_asset.CrossAssetResult`.
+    Formats as::
+
+        Cross-asset: BCO_USD +1.8% ✓ · USD_CAD -0.2% ✗ · confirms (2/3)
+
+    or, when the corroboration failed, the operator's fade warning::
+
+        Cross-asset: related assets NOT confirming — fade risk (0/3)
+
+    Returns ``None`` (line omitted) when the read is UNKNOWN — no
+    instrument had usable price data — so we never render a hollow line.
+    Instrument names are HTML-escaped (they come from config, but the
+    line is embedded in a Telegram-HTML body); the numeric/✓✗ suffixes
+    are HTML-safe by construction.
+    """
+    if result is None:
+        return None
+    confirmed = getattr(result, "confirmed", None)
+    details = list(getattr(result, "details", []) or [])
+    # Unknown (no data) → omit entirely; a line with nothing measured is
+    # noise and could be mistaken for "no corroboration".
+    if confirmed is None:
+        return None
+
+    voting = [d for d in details if getattr(d, "agrees", None) is not None]
+    n_voting = len(voting)
+    n_agree = sum(1 for d in voting if d.agrees)
+    if n_voting == 0:  # defensive — confirmed is non-None but nothing voted
+        return None
+
+    parts: list[str] = []
+    for d in voting:
+        move = d.actual_move_pct or 0.0
+        mark = "✓" if d.agrees else "✗"  # ✓ / ✗
+        parts.append(f"{html_escape(str(d.instrument))} {move:+.1f}% {mark}")
+
+    body = " · ".join(parts)  # " · " separator
+    if confirmed:
+        return f"<b>Cross-asset:</b> {body} · confirms ({n_agree}/{n_voting})"
+    return (
+        f"<b>Cross-asset:</b> related assets NOT confirming — fade risk "
+        f"({n_agree}/{n_voting}) · {body}"
+    )
+
+
+def _poly_context_line(poly_signal: Any, theme: str) -> str | None:
+    """One corroboration line for a theme's top prediction market, or
+    None (CL-r1ep). ``Prediction mkt: Hormuz-closure 18% ↑`` — display
+    only, NOT a gate. Fail-soft: any error yields no line. The slug and
+    prob are machine-shaped, but the slug is escaped defensively."""
+    if poly_signal is None:
+        return None
+    try:
+        probs = poly_signal.latest_prob_for_theme(theme)
+    except Exception:
+        logger.debug("poly corroboration lookup failed for %s", theme, exc_info=True)
+        return None
+    if not probs:
+        return None
+    # Cite the highest-probability market in the theme — the most
+    # market-relevant read of the situation.
+    slug, info = max(probs.items(), key=lambda kv: kv[1].get("yes_prob") or 0.0)
+    pct = round(float(info.get("yes_prob") or 0.0) * 100)
+    rising = info.get("rising")
+    arrow = " ↑" if rising is True else (" ↓" if rising is False else "")
+    return f"<i>Prediction mkt:</i> {html_escape(slug)} {pct}%{arrow}"
+
+
 def build_digest(
     results: Sequence[AssessmentResult],
     min_urgency: int = DEFAULT_MIN_URGENCY,
@@ -290,6 +362,7 @@ def build_digest(
     prices: Mapping[str, Mapping[str, Any]] | None = None,
     seen_ats: Mapping[int, Any] | None = None,
     now: datetime | None = None,
+    poly_signal: Any = None,
 ) -> tuple[str, str] | None:
     """Build ``(title, html_message)`` for one assess cycle, or
     ``None`` when nothing qualifies (never send an empty digest).
@@ -354,6 +427,11 @@ def build_digest(
             if age:
                 line += f" ({age} ago)"
             lines.append(line)
+        # Prediction-market corroboration for this theme (CL-r1ep) —
+        # display only, one line, degrades to nothing when absent.
+        poly_line = _poly_context_line(poly_signal, theme)
+        if poly_line:
+            lines.append(poly_line)
         lines.append("")
     if elided:
         lines.append(f"+{elided} more above urgency {min_urgency}")
@@ -401,6 +479,7 @@ def send_digest(
     volume_marks: Mapping[str, float] | None = None,
     prices: Mapping[str, Mapping[str, Any]] | None = None,
     seen_ats: Mapping[int, Any] | None = None,
+    poly_signal: Any = None,
 ) -> DispatchResult | None:
     """Build and dispatch the cycle digest via Telegram.
 
@@ -413,11 +492,15 @@ def send_digest(
     :func:`fetch_volume_marks`) annotates the Watch line;
     ``prices`` / ``seen_ats`` enrich tokens, Ideas lines, and event
     ages (CL-mgcp). ``None`` / ``{}`` for any of them renders that
-    annotation off.
+    annotation off. ``poly_signal`` (a
+    :class:`src.events.polymarket_signal.PolymarketSignal`) adds a
+    per-theme prediction-market corroboration line (CL-r1ep) — display
+    only, never a gate.
     """
     built = build_digest(
         results, min_urgency=min_urgency, max_events=max_events,
         volume_marks=volume_marks, prices=prices, seen_ats=seen_ats,
+        poly_signal=poly_signal,
     )
     if built is None:
         logger.info(
