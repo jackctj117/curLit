@@ -97,7 +97,9 @@ class _FakeIdeaAgent:
             out_dir = Path(hypothesis_dir)
             out_dir.mkdir(parents=True, exist_ok=True)
             out_path = out_dir / f"{slug}.md"
-            out_path.write_text(f"# Hypothesis: {slug}\n")
+            out_path.write_text(
+                spec.get("brief", f"# Hypothesis: {slug}\n"),
+            )
         return IdeaResult(
             status=status,
             strategy_slug=slug,
@@ -638,7 +640,15 @@ class TestGate1:
             extract_store=store, new_extracts=[("h1", "# A\n")],
         )
         idea = _FakeIdeaAgent(responses={
-            "h1": {"status": "PROPOSED", "slug": "alpha"},
+            "h1": {
+                "status": "PROPOSED", "slug": "alpha",
+                "brief": (
+                    "# Hypothesis: SCI filter beats momentum\n\n"
+                    "## Data requirements\n"
+                    "- `prices.{symbol}` for EURUSD and GBPUSD\n"
+                    "- Macro input: FRED `DGS10`\n"
+                ),
+            },
         })
         loop = ResearchLoop(
             ingest_runner=ingest, idea_agent=idea,  # type: ignore[arg-type]
@@ -665,12 +675,16 @@ class TestGate1:
         assert "pending_since" in state.ideas_processed["h1"]
         assert state.ideas_processed["h1"]["hypothesis_path"]
 
-        # Notification body should mention the slug + the approve command
+        # Phone-first HTML body (CL-frn7): bold slug + thesis, which
+        # instruments the plan would trade, reply line with short id.
         assert len(notifications) == 1
         title, message, priority = notifications[0]
         assert "GATE 1" in title
-        assert "alpha" in title
-        assert "research_approve" in message
+        assert "<b>alpha</b>" in message
+        assert "SCI filter beats momentum" in message
+        assert "<b>Trades:</b> EURUSD, GBPUSD" in message
+        assert "<b>Inputs:</b> DGS10" in message
+        assert "Reply: approve h1 | reject h1" in message
         assert priority == 0
 
     def test_skipped_entry_doesnt_reach_implementer(
@@ -817,6 +831,7 @@ def _build_promote_loop(
     notify_fn: Any = None,
     clock: Any = None,
     gate2_timeout_sec: float | None = None,
+    impl_spec: dict[str, Any] | None = None,
 ) -> tuple[ResearchLoop, _FakeRegistrar]:
     """Helper: build a loop wired through to a PROMOTE verdict so the
     test can drive GATE 2 transitions."""
@@ -828,7 +843,7 @@ def _build_promote_loop(
         "h1": {"status": "PROPOSED", "slug": "alpha"},
     })
     impl = _FakeImplementer(
-        responses={"alpha": {"status": "IMPLEMENTED"}},
+        responses={"alpha": impl_spec or {"status": "IMPLEMENTED"}},
         candidate_dir=loop_paths["candidates"],
     )
     transcript = loop_paths["transcripts"] / "alpha" / "transcript.md"
@@ -879,6 +894,22 @@ class TestGate2:
 
         loop, registrar = _build_promote_loop(
             loop_paths, notify_fn=recorder,
+            impl_spec={
+                "status": "IMPLEMENTED",
+                # Real-shaped candidate code so the notification can
+                # extract the instruments (execution symbol first).
+                "code": (
+                    "class Strategy:\n"
+                    "    symbols = ['DXY', 'EURUSD']\n"
+                    "    execution_symbol = 'EURUSD'\n"
+                    "    def fit(self, data):\n        return self\n"
+                    "    def generate_signals(self, data):\n"
+                    "        return None\n"
+                ),
+                "report": {"oos_metrics": {
+                    "sharpe": 0.45, "max_drawdown": -0.021, "n_trades": 12,
+                }},
+            },
         )
         # Pass 1: gate 1 holds.
         loop.run()
@@ -897,14 +928,20 @@ class TestGate2:
         assert "pending_since" in entry
         assert entry["candidate_report_path"]
         # Notification: only the GATE 2 one is priority=1 (deploy
-        # decision); GATE 1 was priority=0 on pass 1.
+        # decision); GATE 1 was priority=0 on pass 1. Phone-first HTML
+        # body (CL-frn7): slug, instruments from the candidate code,
+        # key backtest numbers, reply line.
         gate2_notifs = [n for n in notifications if "GATE 2" in n[0]]
         assert len(gate2_notifs) == 1
         title, message, priority = gate2_notifs[0]
         assert priority == 1
-        assert "alpha" in title
-        assert "research_approve" in message
+        assert "<b>alpha</b>" in message
+        assert "<b>Trades:</b> EURUSD, DXY" in message
+        assert "Sharpe 0.45" in message
+        assert "max DD -2.10%" in message
+        assert "12 trades" in message
         assert "allocation=0" in message
+        assert "Reply: approve alpha | reject alpha" in message
 
     def test_approved_runs_registrar_on_next_pass(
         self, loop_paths: dict[str, Path],

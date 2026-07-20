@@ -321,27 +321,46 @@ class CommandResult:
     state_changed: bool = False
 
 
+def _entry_trades_line(instruments: list[str]) -> str:
+    """Indented ``Trades:`` line for the pending listing. An explicit
+    ``(unknown)`` beats silence — the whole point of showing the
+    listing is telling the operator what would be traded (CL-frn7)."""
+    return "   Trades: " + (", ".join(instruments) or "(unknown)")
+
+
 def render_pending(state: LoopState) -> str:
-    """Human listing of open approvals with the exact reply ids."""
+    """Phone-readable listing of open approvals: numbered, two lines
+    per entry (id + slug, then which instruments it would trade).
+    Plain text — bot replies echo operator input and file content, so
+    staying out of parse_mode means nothing needs escaping."""
+    # Local import: instruments lazily pulls in the backtest stack,
+    # which the bot only needs when actually rendering this listing.
+    from src.research.instruments import (
+        extract_brief_instruments,
+        extract_candidate_instruments,
+    )
+
     g1 = gate1_pending(state)
     g2 = gate2_pending(state)
     if not g1 and not g2:
         return "No gate approvals pending."
-    lines: list[str] = []
-    if g1:
-        lines.append(f"GATE 1 — hypothesis approval ({len(g1)} pending):")
-        lines += [
-            f"  {h[:SHORT_ID_LEN]}  {e.get('slug')} "
-            f"(since {e.get('pending_since', '?')})"
-            for h, e in g1
-        ]
-    if g2:
-        lines.append(f"GATE 2 — deploy confirmation ({len(g2)} pending):")
-        lines += [
-            f"  {slug}  verdict={e.get('verdict')} "
-            f"(since {e.get('pending_since', '?')})"
-            for slug, e in g2
-        ]
+    lines: list[str] = ["Pending approvals:", ""]
+    n = 0
+    for h, e in g1:
+        n += 1
+        lines.append(f"{n}. {h[:SHORT_ID_LEN]} — {e.get('slug')} (gate 1)")
+        brief = e.get("hypothesis_path")
+        tradable = extract_brief_instruments(brief)[0] if brief else []
+        lines.append(_entry_trades_line(tradable))
+    for slug, _e in g2:
+        n += 1
+        lines.append(f"{n}. {slug} (gate 2)")
+        code_path = state.candidates_processed.get(slug, {}).get("code_path")
+        instruments = (
+            extract_candidate_instruments(code_path) if code_path else []
+        )
+        lines.append(_entry_trades_line(instruments))
+    lines.append("")
     lines.append("Reply: approve <id> | reject <id> | skip <id>")
     return "\n".join(lines)
 
@@ -378,11 +397,27 @@ def handle_text(state: LoopState, text: str) -> CommandResult:
     else:
         result = act_gate2(state, target.key, approve=approve, reason=cmd.reason)
     if not result.ok:  # raced with another approver / the loop timeout
-        return CommandResult(reply=f"Refused: {result.message}")
+        return CommandResult(reply=f"⏸ Refused: {result.message}")
     return CommandResult(
-        reply=f"GATE {target.gate} {result.message}",
+        reply=_ack_reply(target, approve=approve, reason=cmd.reason),
         state_changed=True,
     )
+
+
+def _ack_reply(target: GateTarget, approve: bool, reason: str) -> str:
+    """One-line phone-readable acknowledgement (CL-frn7). Minimal
+    emoji — a single ✅/❌ status mark, nothing else."""
+    slug = target.slug
+    if target.gate == 1:
+        if approve:
+            return f"✅ Approved {slug} — will implement next run."
+        return f"❌ Skipped {slug} — {reason or 'skipped by operator'}."
+    if approve:
+        return (
+            f"✅ Deploy approved {slug} — paper-shadow registration "
+            f"next run."
+        )
+    return f"❌ Deploy rejected {slug} — {reason or 'rejected by operator'}."
 
 
 # --------------------------------------------------------------------- #
@@ -508,8 +543,10 @@ class TelegramApprovalBot:
 
     def _send_reply(self, reply: str) -> None:
         assert self.api_call is not None
-        # Plain text, no parse_mode — same reasoning as notifications.py
-        # (slug underscores break Markdown). One retry: live smoke
+        # Plain text, no parse_mode. Gate notifications use HTML
+        # (notifications.py, CL-frn7), but bot replies echo operator
+        # input and error text verbatim — plain text means none of it
+        # needs escaping. One retry: live smoke
         # showed fresh-connection TLS handshakes to api.telegram.org
         # can time out transiently; a second attempt on a new
         # connection usually lands.

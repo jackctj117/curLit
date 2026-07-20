@@ -229,7 +229,11 @@ class TestMutations:
         bot.poll_once(timeout_sec=0)
         reloaded = load_state(state_path)
         assert reloaded.ideas_processed[HASH_A]["status"] == GATE1_APPROVED_STATUS
-        assert any("APPROVED" in m and "alpha" in m for m in api.sent_messages)
+        # One-line phone-readable ack (CL-frn7)
+        assert any(
+            m == "✅ Approved alpha — will implement next run."
+            for m in api.sent_messages
+        )
 
     def test_reject_gate1_is_skip(self, tmp_path: Path) -> None:
         state = _make_state(ideas={HASH_A: _gate1_entry("alpha")})
@@ -260,7 +264,10 @@ class TestMutations:
         bot.poll_once(timeout_sec=0)
         entry = load_state(state_path).debates_completed["vol-carry"]
         assert entry["deploy_status"] == GATE2_APPROVED_STATUS
-        assert any("DEPLOY_APPROVED" in m for m in api.sent_messages)
+        assert any(
+            m.startswith("✅ Deploy approved vol-carry")
+            for m in api.sent_messages
+        )
 
     def test_reject_gate2(self, tmp_path: Path) -> None:
         state = _make_state(debates={"vol-carry": _gate2_entry()})
@@ -446,6 +453,111 @@ class TestHandleText:
 
 
 # --------------------------------------------------------------------- #
+# Phone-readable replies + instrument display (CL-frn7)
+# --------------------------------------------------------------------- #
+
+
+CANDIDATE_CODE = """\
+class Strategy:
+    symbols = ["DXY", "EURUSD"]
+    execution_symbol = "EURUSD"
+
+    def fit(self, data):
+        return self
+
+    def generate_signals(self, data):
+        return None
+"""
+
+BRIEF_TEXT = """\
+# Hypothesis: test thesis
+
+## Data requirements
+- `prices.{symbol}` — daily close for EURUSD and GBPUSD
+- Macro input: FRED `DGS10`
+"""
+
+
+class TestAckReplies:
+    """Ack replies are one-liners with a single status mark."""
+
+    def test_reject_gate1_one_liner(self, tmp_path: Path) -> None:
+        state = _make_state(ideas={HASH_A: _gate1_entry("alpha")})
+        bot, api, _ = _make_bot(
+            tmp_path, batches=[[_update(1, "reject a1b2c3 not novel")]],
+            state=state,
+        )
+        bot.poll_once(timeout_sec=0)
+        assert api.sent_messages == ["❌ Skipped alpha — not novel."]
+
+    def test_reject_gate2_one_liner_default_reason(
+        self, tmp_path: Path,
+    ) -> None:
+        state = _make_state(debates={"vol-carry": _gate2_entry()})
+        bot, api, _ = _make_bot(
+            tmp_path, batches=[[_update(1, "reject vol-carry")]], state=state,
+        )
+        bot.poll_once(timeout_sec=0)
+        assert api.sent_messages == [
+            "❌ Deploy rejected vol-carry — rejected by operator.",
+        ]
+
+    def test_refusal_marked(self) -> None:
+        state = _make_state(
+            ideas={HASH_A: _gate1_entry("alpha", status=GATE1_APPROVED_STATUS)},
+        )
+        # Force the race path: resolve by exact slug of a decided entry
+        # is impossible (not pending), so drive act_gate1 directly via
+        # a state where the entry flips between resolve and act.
+        result = handle_text(state, "approve a1b2c3")
+        assert not result.state_changed
+        assert "Already decided" in result.reply or result.reply.startswith("⏸")
+
+
+class TestPendingFormat:
+    def test_numbered_two_lines_per_entry_with_trades(
+        self, tmp_path: Path,
+    ) -> None:
+        brief_path = tmp_path / "brief.md"
+        brief_path.write_text(BRIEF_TEXT)
+        code_path = tmp_path / "cand.py"
+        code_path.write_text(CANDIDATE_CODE)
+
+        ideas = {HASH_A: _gate1_entry("alpha")}
+        ideas[HASH_A]["hypothesis_path"] = str(brief_path)
+        debates = {"vol-carry": _gate2_entry()}
+        state = _make_state(ideas=ideas, debates=debates)
+        state.candidates_processed["vol-carry"] = {
+            "status": "IMPLEMENTED",
+            "code_path": str(code_path),
+        }
+
+        reply = render_pending(state)
+        lines = reply.splitlines()
+        assert lines[0] == "Pending approvals:"
+        # Gate 1 entry: id + slug then its brief's tradable instruments
+        assert f"1. {HASH_A[:6]} — alpha (gate 1)" in lines
+        i1 = lines.index(f"1. {HASH_A[:6]} — alpha (gate 1)")
+        assert lines[i1 + 1] == "   Trades: EURUSD, GBPUSD"
+        # Gate 2 entry: slug then the candidate code's instruments
+        # (execution symbol first — backtest_runner's canonical read)
+        assert "2. vol-carry (gate 2)" in lines
+        i2 = lines.index("2. vol-carry (gate 2)")
+        assert lines[i2 + 1] == "   Trades: EURUSD, DXY"
+        assert lines[-1] == "Reply: approve <id> | reject <id> | skip <id>"
+
+    def test_unknown_instruments_shown_explicitly(self) -> None:
+        # Brief/code paths that don't exist → fail-safe "(unknown)",
+        # never an exception inside the bot's reply path.
+        state = _make_state(
+            ideas={HASH_A: _gate1_entry("alpha")},
+            debates={"vol-carry": _gate2_entry()},
+        )
+        reply = render_pending(state)
+        assert reply.count("   Trades: (unknown)") == 2
+
+
+# --------------------------------------------------------------------- #
 # Offset persistence
 # --------------------------------------------------------------------- #
 
@@ -597,7 +709,7 @@ class TestTokenSafety:
         with caplog.at_level(logging.WARNING):
             bot.poll_once(timeout_sec=0)
         assert api.send_attempts == 2
-        assert any("APPROVED" in m for m in api.sent_messages)
+        assert any("✅ Approved" in m for m in api.sent_messages)
         joined = "\n".join(r.getMessage() for r in caplog.records)
         assert "retrying" in joined
         assert TOKEN not in joined

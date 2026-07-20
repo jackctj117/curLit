@@ -14,6 +14,8 @@ import pytest
 
 from src.research.notifications import (
     DispatchResult,
+    _html_to_plain,
+    html_escape,
     notify_operator,
 )
 
@@ -135,6 +137,119 @@ class TestGating:
         result = notify_operator(title="t", message="m")
         assert result.pushover_attempted and result.telegram_attempted
         assert len(http_recorder) == 2
+
+
+class TestHtmlHelpers:
+    def test_html_escape_hostile_text(self) -> None:
+        # Headlines/slugs/reasons are interpolated into HTML bodies —
+        # <, & and > must be escaped; underscores stay literal (the
+        # whole reason HTML replaced Markdown, CL-frn7).
+        assert html_escape("<b>x & y</b> a_slug_") == (
+            "&lt;b&gt;x &amp; y&lt;/b&gt; a_slug_"
+        )
+
+    def test_html_escape_non_str(self) -> None:
+        assert html_escape(42) == "42"
+
+    def test_html_to_plain_strips_tags_and_unescapes(self) -> None:
+        assert _html_to_plain(
+            "<b>Trades:</b> EURUSD &amp; DXY\n<i>x &lt; y</i>",
+        ) == "Trades: EURUSD & DXY\nx < y"
+
+
+class TestHtmlMode:
+    def _set_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("PUSHOVER_API_TOKEN", "tok")
+        monkeypatch.setenv("PUSHOVER_USER_KEY", "user")
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "btok")
+        monkeypatch.setenv("TELEGRAM_CHAT_ID", "12345")
+
+    def test_telegram_gets_html_parse_mode_and_bold_title(
+        self, monkeypatch: pytest.MonkeyPatch, http_recorder: list[Any],
+    ) -> None:
+        self._set_env(monkeypatch)
+        result = notify_operator(
+            title="GATE 1 — new trading hypothesis",
+            message="<b>Trades:</b> EURUSD",
+            html=True,
+        )
+        assert result.telegram_succeeded and result.pushover_succeeded
+        telegram = next(
+            c for c in http_recorder if "telegram" in c["url"]
+        )
+        assert telegram["data"]["parse_mode"] == "HTML"
+        assert telegram["data"]["text"] == (
+            "<b>GATE 1 — new trading hypothesis</b>\n\n"
+            "<b>Trades:</b> EURUSD"
+        )
+
+    def test_hostile_title_escaped_for_telegram(
+        self, monkeypatch: pytest.MonkeyPatch, http_recorder: list[Any],
+    ) -> None:
+        self._set_env(monkeypatch)
+        notify_operator(
+            title="Paper <Q3> says risk & carry_trade", message="m", html=True,
+        )
+        telegram = next(c for c in http_recorder if "telegram" in c["url"])
+        assert (
+            "<b>Paper &lt;Q3&gt; says risk &amp; carry_trade</b>"
+            in telegram["data"]["text"]
+        )
+
+    def test_pushover_receives_tag_free_text(
+        self, monkeypatch: pytest.MonkeyPatch, http_recorder: list[Any],
+    ) -> None:
+        self._set_env(monkeypatch)
+        notify_operator(
+            title="GATE 2",
+            message="<b>Trades:</b> EURUSD &amp; DXY\nReply: approve x",
+            html=True,
+        )
+        pushover = next(c for c in http_recorder if "pushover" in c["url"])
+        assert pushover["data"]["message"] == (
+            "Trades: EURUSD & DXY\nReply: approve x"
+        )
+        assert "<" not in pushover["data"]["message"]
+        # parse_mode is a Telegram concept; Pushover payload never has it
+        assert "parse_mode" not in pushover["data"]
+
+    def test_html_400_falls_back_to_plain_text(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A malformed-tag 400 must never silence a gate alert: the
+        dispatcher retries once with tags stripped, no parse_mode."""
+        monkeypatch.delenv("PUSHOVER_API_TOKEN", raising=False)
+        monkeypatch.delenv("PUSHOVER_USER_KEY", raising=False)
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "btok")
+        monkeypatch.setenv("TELEGRAM_CHAT_ID", "12345")
+
+        calls: list[dict[str, Any]] = []
+
+        def flaky_post(url: str, **kwargs: Any) -> _FakeResponse:
+            calls.append({"url": url, **kwargs})
+            if kwargs["data"].get("parse_mode") == "HTML":
+                return _FakeResponse(status_code=400)
+            return _FakeResponse(status_code=200)
+
+        monkeypatch.setattr(
+            "src.research.notifications.httpx.post", flaky_post,
+        )
+        result = notify_operator(
+            title="t", message="<b>broken<b> tags", html=True,
+        )
+        assert result.telegram_succeeded
+        assert len(calls) == 2
+        assert "parse_mode" not in calls[1]["data"]
+        assert calls[1]["data"]["text"] == "t\n\nbroken tags"
+
+    def test_plain_mode_unchanged_for_legacy_callers(
+        self, monkeypatch: pytest.MonkeyPatch, http_recorder: list[Any],
+    ) -> None:
+        self._set_env(monkeypatch)
+        notify_operator(title="t", message="a_b <raw>")
+        telegram = next(c for c in http_recorder if "telegram" in c["url"])
+        assert telegram["data"]["text"] == "t\n\na_b <raw>"
+        assert "parse_mode" not in telegram["data"]
 
 
 class TestErrorContainment:
