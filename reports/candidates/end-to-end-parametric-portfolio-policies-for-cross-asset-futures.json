@@ -1,0 +1,385 @@
+{
+  "schema_version": 1,
+  "strategy_slug": "end-to-end-parametric-portfolio-policies-for-cross-asset-futures",
+  "generated_at": "2026-07-20T16:02:08+00:00",
+  "code_path": "src/strategies/_experimental/end-to-end-parametric-portfolio-policies-for-cross-asset-futures.py",
+  "hypothesis_path": "docs/research/hypotheses/end-to-end-parametric-portfolio-policies-for-cross-asset-futures.md",
+  "prediction": {
+    "predicted_sharpe_range": "[0.0, 0.6]",
+    "predicted_hit_rate_range": "[0.50, 0.57]",
+    "expected_n_trades_per_year": "60",
+    "regime_dependence": "regime-agnostic",
+    "abandon_threshold": "OOS net annualized Sharpe < 0 over any rolling 126-trading-day window (evaluated once at least 126 OOS trading days exist), per the brief's pre-registered abandon condition.",
+    "Note on the deltas vs the brief": "the brief predicts Sharpe [0.3, 0.8] from the paper's full-capacity, autodiff-trained transformer. This implementation is a deliberately tiny single-block attention policy (~1.1k weights) trained by SPSA under a numpy-only sandbox, with gross leverage capped at 1.0 \u2014 I predict the lower band [0.0, 0.6] accordingly. `expected_n_trades_per_year` counts weight-vector rebalances (each touches up to 9 pairs); the 0.15 L1 no-trade band suppresses small daily adjustments, so I expect ~60 rebalances/year rather than the brief's 80."
+  },
+  "data_sources_consumed": [
+    "EURUSD` daily close (prices table, via harness wide DataFrame)",
+    "USDJPY` daily close (prices table)",
+    "GBPUSD` daily close (prices table)",
+    "AUDUSD` daily close (prices table)",
+    "NZDUSD` daily close (prices table)",
+    "USDCAD` daily close (prices table)",
+    "USDCHF` daily close (prices table)",
+    "USDNOK` daily close (prices table)",
+    "USDSEK` daily close (prices table)",
+    "The harness-supplied `close` alias column (= `execution_symbol` prices) is present but **unused**; the strategy is dropped by `reindex(columns=self.symbols)`.",
+    "This matches the brief's data-requirements section exactly \u2014 all nine listed pairs, no external datasets, no FRED series, no `POLY:` features."
+  ],
+  "backtest_metrics": {
+    "oos_metrics": {
+      "sharpe": 0.18697151517123545,
+      "n_trades": 819,
+      "hit_rate": 0.5072115384615384,
+      "max_drawdown": -0.05797298308406595,
+      "profit_factor": 1.0370881316090637,
+      "sortino": 0.231061187345818,
+      "total_return": 0.019305491182984857
+    },
+    "sharpe_ci_95": {
+      "low": -0.9319104222755284,
+      "high": 1.3682141833317643
+    },
+    "is_oos_sharpe_ratio": 2.735694262118248,
+    "edge_concentration": 0.20325135583687456,
+    "regime_diversified": true,
+    "decay_severity": "NONE",
+    "fold_metrics": [
+      {
+        "fold_id": 0,
+        "train_start": "2018-01-01 00:00:00",
+        "train_end": "2020-11-24 00:00:00",
+        "test_start": "2020-11-25 00:00:00",
+        "test_end": "2021-02-19 00:00:00",
+        "train_sharpe": -1.533383646758172,
+        "test_sharpe": -4.6533744791298
+      },
+      {
+        "fold_id": 1,
+        "train_start": "2018-03-29 00:00:00",
+        "train_end": "2021-02-19 00:00:00",
+        "test_start": "2021-02-22 00:00:00",
+        "test_end": "2021-05-19 00:00:00",
+        "train_sharpe": -1.9670564623965776,
+        "test_sharpe": -0.2098969314180015
+      },
+      {
+        "fold_id": 2,
+        "train_start": "2018-06-26 00:00:00",
+        "train_end": "2021-05-19 00:00:00",
+        "test_start": "2021-05-20 00:00:00",
+        "test_end": "2021-08-16 00:00:00",
+        "train_sharpe": -2.807760007315859,
+        "test_sharpe": 0.14645412873559713
+      },
+      {
+        "fold_id": 3,
+        "train_start": "2018-09-21 00:00:00",
+        "train_end": "2021-08-16 00:00:00",
+        "test_start": "2021-08-17 00:00:00",
+        "test_end": "2021-11-11 00:00:00",
+        "train_sharpe": -1.917036123684993,
+        "test_sharpe": -2.4211726378449656
+      },
+      {
+        "fold_id": 4,
+        "train_start": "2018-12-19 00:00:00",
+        "train_end": "2021-11-11 00:00:00",
+        "test_start": "2021-11-12 00:00:00",
+        "test_end": "2022-02-08 00:00:00",
+        "train_sharpe": -3.104978265456918,
+        "test_sharpe": 1.244736523518464
+      },
+      {
+        "fold_id": 5,
+        "train_start": "2019-03-18 00:00:00",
+        "train_end": "2022-02-08 00:00:00",
+        "test_start": "2022-02-09 00:00:00",
+        "test_end": "2022-05-06 00:00:00",
+        "train_sharpe": -1.2010651240682864,
+        "test_sharpe": 6.696849910068906
+      },
+      {
+        "fold_id": 6,
+        "train_start": "2019-06-14 00:00:00",
+        "train_end": "2022-05-06 00:00:00",
+        "test_start": "2022-05-09 00:00:00",
+        "test_end": "2022-08-03 00:00:00",
+        "train_sharpe": -0.4782813112289027,
+        "test_sharpe": -1.19550237688147
+      },
+      {
+        "fold_id": 7,
+        "train_start": "2019-09-11 00:00:00",
+        "train_end": "2022-08-03 00:00:00",
+        "test_start": "2022-08-04 00:00:00",
+        "test_end": "2022-10-31 00:00:00",
+        "train_sharpe": 1.2007633612392135,
+        "test_sharpe": 4.965694310074812
+      },
+      {
+        "fold_id": 8,
+        "train_start": "2019-12-09 00:00:00",
+        "train_end": "2022-10-31 00:00:00",
+        "test_start": "2022-11-01 00:00:00",
+        "test_end": "2023-01-26 00:00:00",
+        "train_sharpe": 0.31170273960419415,
+        "test_sharpe": -0.5439621396321999
+      },
+      {
+        "fold_id": 9,
+        "train_start": "2020-03-05 00:00:00",
+        "train_end": "2023-01-26 00:00:00",
+        "test_start": "2023-01-27 00:00:00",
+        "test_end": "2023-04-25 00:00:00",
+        "train_sharpe": -1.4881251862277325,
+        "test_sharpe": 1.4454260359670046
+      },
+      {
+        "fold_id": 10,
+        "train_start": "2020-06-02 00:00:00",
+        "train_end": "2023-04-25 00:00:00",
+        "test_start": "2023-04-26 00:00:00",
+        "test_end": "2023-07-21 00:00:00",
+        "train_sharpe": 1.1793772861348502,
+        "test_sharpe": -1.1686841741444163
+      },
+      {
+        "fold_id": 11,
+        "train_start": "2020-08-28 00:00:00",
+        "train_end": "2023-07-21 00:00:00",
+        "test_start": "2023-07-24 00:00:00",
+        "test_end": "2023-10-18 00:00:00",
+        "train_sharpe": 0.03215806831646858,
+        "test_sharpe": 2.9152009730722677
+      },
+      {
+        "fold_id": 12,
+        "train_start": "2020-11-25 00:00:00",
+        "train_end": "2023-10-18 00:00:00",
+        "test_start": "2023-10-19 00:00:00",
+        "test_end": "2024-01-15 00:00:00",
+        "train_sharpe": 2.768295808263463,
+        "test_sharpe": -2.389341836565938
+      },
+      {
+        "fold_id": 13,
+        "train_start": "2021-02-22 00:00:00",
+        "train_end": "2024-01-15 00:00:00",
+        "test_start": "2024-01-16 00:00:00",
+        "test_end": "2024-04-11 00:00:00",
+        "train_sharpe": -0.6894625732898829,
+        "test_sharpe": 1.0431714922220547
+      },
+      {
+        "fold_id": 14,
+        "train_start": "2021-05-20 00:00:00",
+        "train_end": "2024-04-11 00:00:00",
+        "test_start": "2024-04-12 00:00:00",
+        "test_end": "2024-07-09 00:00:00",
+        "train_sharpe": 0.00288379680313763,
+        "test_sharpe": 1.0823699968040619
+      },
+      {
+        "fold_id": 15,
+        "train_start": "2021-08-17 00:00:00",
+        "train_end": "2024-07-09 00:00:00",
+        "test_start": "2024-07-10 00:00:00",
+        "test_end": "2024-10-04 00:00:00",
+        "train_sharpe": 1.5080172203299367,
+        "test_sharpe": 0.8267733066964398
+      }
+    ],
+    "_metrics_provenance": {
+      "oos_metrics": "computed from PerformanceAnalytics on walk-forward OOS returns",
+      "sharpe_ci_95": "stationary bootstrap, n=2000",
+      "is_oos_sharpe_ratio": "mean(train_sharpe) / oos_sharpe across folds",
+      "edge_concentration": "PROXY: max|fold_sharpe|/sum|fold_sharpe| across folds, not feature-attribution G5",
+      "regime_diversified": "PROXY: \u22652 folds positive AND not all folds positive \u2014 not regime-decomposed G6",
+      "decay_severity": "PROXY: oldest-third vs newest-third fold-Sharpe comparison \u2014 not full decay test"
+    }
+  },
+  "provenance": {
+    "agent_name": "implementer",
+    "model": "claude-fable-5",
+    "provider": "claude-code",
+    "input_tokens": 211346,
+    "output_tokens": 17996,
+    "usd_cost": 0.0,
+    "elapsed_sec": 422.2643120288849
+  },
+  "gates": {
+    "syntax": "passed",
+    "backtest": "ran"
+  },
+  "oos_metrics": {
+    "sharpe": 0.18697151517123545,
+    "n_trades": 819,
+    "hit_rate": 0.5072115384615384,
+    "max_drawdown": -0.05797298308406595,
+    "profit_factor": 1.0370881316090637,
+    "sortino": 0.231061187345818,
+    "total_return": 0.019305491182984857
+  },
+  "sharpe_ci_95": {
+    "low": -0.9319104222755284,
+    "high": 1.3682141833317643
+  },
+  "is_oos_sharpe_ratio": 2.735694262118248,
+  "edge_concentration": 0.20325135583687456,
+  "regime_diversified": true,
+  "decay_severity": "NONE",
+  "fold_metrics": [
+    {
+      "fold_id": 0,
+      "train_start": "2018-01-01 00:00:00",
+      "train_end": "2020-11-24 00:00:00",
+      "test_start": "2020-11-25 00:00:00",
+      "test_end": "2021-02-19 00:00:00",
+      "train_sharpe": -1.533383646758172,
+      "test_sharpe": -4.6533744791298
+    },
+    {
+      "fold_id": 1,
+      "train_start": "2018-03-29 00:00:00",
+      "train_end": "2021-02-19 00:00:00",
+      "test_start": "2021-02-22 00:00:00",
+      "test_end": "2021-05-19 00:00:00",
+      "train_sharpe": -1.9670564623965776,
+      "test_sharpe": -0.2098969314180015
+    },
+    {
+      "fold_id": 2,
+      "train_start": "2018-06-26 00:00:00",
+      "train_end": "2021-05-19 00:00:00",
+      "test_start": "2021-05-20 00:00:00",
+      "test_end": "2021-08-16 00:00:00",
+      "train_sharpe": -2.807760007315859,
+      "test_sharpe": 0.14645412873559713
+    },
+    {
+      "fold_id": 3,
+      "train_start": "2018-09-21 00:00:00",
+      "train_end": "2021-08-16 00:00:00",
+      "test_start": "2021-08-17 00:00:00",
+      "test_end": "2021-11-11 00:00:00",
+      "train_sharpe": -1.917036123684993,
+      "test_sharpe": -2.4211726378449656
+    },
+    {
+      "fold_id": 4,
+      "train_start": "2018-12-19 00:00:00",
+      "train_end": "2021-11-11 00:00:00",
+      "test_start": "2021-11-12 00:00:00",
+      "test_end": "2022-02-08 00:00:00",
+      "train_sharpe": -3.104978265456918,
+      "test_sharpe": 1.244736523518464
+    },
+    {
+      "fold_id": 5,
+      "train_start": "2019-03-18 00:00:00",
+      "train_end": "2022-02-08 00:00:00",
+      "test_start": "2022-02-09 00:00:00",
+      "test_end": "2022-05-06 00:00:00",
+      "train_sharpe": -1.2010651240682864,
+      "test_sharpe": 6.696849910068906
+    },
+    {
+      "fold_id": 6,
+      "train_start": "2019-06-14 00:00:00",
+      "train_end": "2022-05-06 00:00:00",
+      "test_start": "2022-05-09 00:00:00",
+      "test_end": "2022-08-03 00:00:00",
+      "train_sharpe": -0.4782813112289027,
+      "test_sharpe": -1.19550237688147
+    },
+    {
+      "fold_id": 7,
+      "train_start": "2019-09-11 00:00:00",
+      "train_end": "2022-08-03 00:00:00",
+      "test_start": "2022-08-04 00:00:00",
+      "test_end": "2022-10-31 00:00:00",
+      "train_sharpe": 1.2007633612392135,
+      "test_sharpe": 4.965694310074812
+    },
+    {
+      "fold_id": 8,
+      "train_start": "2019-12-09 00:00:00",
+      "train_end": "2022-10-31 00:00:00",
+      "test_start": "2022-11-01 00:00:00",
+      "test_end": "2023-01-26 00:00:00",
+      "train_sharpe": 0.31170273960419415,
+      "test_sharpe": -0.5439621396321999
+    },
+    {
+      "fold_id": 9,
+      "train_start": "2020-03-05 00:00:00",
+      "train_end": "2023-01-26 00:00:00",
+      "test_start": "2023-01-27 00:00:00",
+      "test_end": "2023-04-25 00:00:00",
+      "train_sharpe": -1.4881251862277325,
+      "test_sharpe": 1.4454260359670046
+    },
+    {
+      "fold_id": 10,
+      "train_start": "2020-06-02 00:00:00",
+      "train_end": "2023-04-25 00:00:00",
+      "test_start": "2023-04-26 00:00:00",
+      "test_end": "2023-07-21 00:00:00",
+      "train_sharpe": 1.1793772861348502,
+      "test_sharpe": -1.1686841741444163
+    },
+    {
+      "fold_id": 11,
+      "train_start": "2020-08-28 00:00:00",
+      "train_end": "2023-07-21 00:00:00",
+      "test_start": "2023-07-24 00:00:00",
+      "test_end": "2023-10-18 00:00:00",
+      "train_sharpe": 0.03215806831646858,
+      "test_sharpe": 2.9152009730722677
+    },
+    {
+      "fold_id": 12,
+      "train_start": "2020-11-25 00:00:00",
+      "train_end": "2023-10-18 00:00:00",
+      "test_start": "2023-10-19 00:00:00",
+      "test_end": "2024-01-15 00:00:00",
+      "train_sharpe": 2.768295808263463,
+      "test_sharpe": -2.389341836565938
+    },
+    {
+      "fold_id": 13,
+      "train_start": "2021-02-22 00:00:00",
+      "train_end": "2024-01-15 00:00:00",
+      "test_start": "2024-01-16 00:00:00",
+      "test_end": "2024-04-11 00:00:00",
+      "train_sharpe": -0.6894625732898829,
+      "test_sharpe": 1.0431714922220547
+    },
+    {
+      "fold_id": 14,
+      "train_start": "2021-05-20 00:00:00",
+      "train_end": "2024-04-11 00:00:00",
+      "test_start": "2024-04-12 00:00:00",
+      "test_end": "2024-07-09 00:00:00",
+      "train_sharpe": 0.00288379680313763,
+      "test_sharpe": 1.0823699968040619
+    },
+    {
+      "fold_id": 15,
+      "train_start": "2021-08-17 00:00:00",
+      "train_end": "2024-07-09 00:00:00",
+      "test_start": "2024-07-10 00:00:00",
+      "test_end": "2024-10-04 00:00:00",
+      "train_sharpe": 1.5080172203299367,
+      "test_sharpe": 0.8267733066964398
+    }
+  ],
+  "_metrics_provenance": {
+    "oos_metrics": "computed from PerformanceAnalytics on walk-forward OOS returns",
+    "sharpe_ci_95": "stationary bootstrap, n=2000",
+    "is_oos_sharpe_ratio": "mean(train_sharpe) / oos_sharpe across folds",
+    "edge_concentration": "PROXY: max|fold_sharpe|/sum|fold_sharpe| across folds, not feature-attribution G5",
+    "regime_diversified": "PROXY: \u22652 folds positive AND not all folds positive \u2014 not regime-decomposed G6",
+    "decay_severity": "PROXY: oldest-third vs newest-third fold-Sharpe comparison \u2014 not full decay test"
+  }
+}
