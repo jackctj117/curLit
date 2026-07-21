@@ -80,7 +80,16 @@ strategies:
       # Minimum LLM urgency (1-10) — only clearly market-moving events.
       min_urgency: 7
       # Minimum LLM confidence (0-1) — drops hedged/ambiguous calls.
-      min_confidence: 0.75
+      # Lowered 0.75 -> 0.60 (CL-0qur): the impact agent is calibrated
+      # conservatively (rarely emits >0.7), so 0.75 rejected even urgency-8
+      # real events (e.g. a Black Sea tanker strike at conf 0.62), leaving
+      # Gate B — the market-confirmation half — with nothing to confirm and
+      # the strategy with 0 lifetime trades. 0.60 lets genuine high-urgency
+      # events reach Gate B, which STILL requires a real intraday move to
+      # confirm, so this loosens the quality gate, not the market gate. Paper
+      # only; the outcome tracker + reflective loop will judge whether 0.60 is
+      # too loose and propose retuning from data.
+      min_confidence: 0.60
       # ---- Confirmation window (minutes from seen_at) ----------------
       # No confirmation before min (knee-jerk spike risk); past max the
       # event EXPIRES — a late move is too stale to chase.
