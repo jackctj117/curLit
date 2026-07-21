@@ -24,6 +24,7 @@ from src.execution.paper_broker import PaperBroker
 from src.execution.rejection import RejectionHandler
 from src.execution.trade_journal import TradeJournal
 from src.models.feature_versioning import FeatureSnapshotStore
+from src.monitoring.data_health import log_startup_health
 from src.monitoring.logging_setup import setup_logging
 from src.nlp.provider import NLPDataProvider
 from src.portfolio import (
@@ -227,6 +228,9 @@ def build_strategies(
     snapshot_store: FeatureSnapshotStore | None = None,
 ) -> list[Any]:
     engine = _build_db_engine()
+    # CL-q4n1: surface data-starved strategies loudly at boot (logs a WARN
+    # report; never blocks startup) so a silently-gated strategy is visible.
+    log_startup_health(engine)
     data_provider = DataProvider(engine)
     nlp_provider = NLPDataProvider(engine)
     # Single shared StrategyStateStore across all strategies — the cold-start
