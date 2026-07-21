@@ -112,6 +112,23 @@ def _row_params(
     instrument_reason = ""
     notes = str(idea.get("notes") or "").strip()
 
+    # Niche/asymmetry metadata (CL-u2ph) — the trade_ideas table has no
+    # niche columns (additive-only rule), so fold the tags into `notes`
+    # as a compact prefix so a persisted niche idea stays self-describing
+    # in the audit trail. hop_count / asymmetry_score / liquidity_flag
+    # travel; torque_reason is already the idea's `notes` body.
+    if idea.get("niche"):
+        hops = _int_or_none(idea.get("hop_count"))
+        asym = _float_or_none(idea.get("asymmetry_score"))
+        marker = "niche"
+        if hops is not None:
+            marker += f" {hops}hop"
+        if asym is not None:
+            marker += f" asym{asym:.2f}"
+        if idea.get("liquidity_flag"):
+            marker += " illiquid"
+        notes = f"[{marker}] {notes}".strip() if notes else f"[{marker}]"
+
     decision = decision_for_idea(idea)
     if decision is not None:
         # Fill ONLY the gaps; the LLM's own values always win when set.

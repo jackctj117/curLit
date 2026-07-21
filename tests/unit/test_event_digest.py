@@ -529,6 +529,81 @@ class TestIdeasSection:
         assert "Ideas:" not in built[1]
 
 
+class TestNicheTag(TestIdeasSection):
+    """CL-u2ph: a merged niche idea renders a compact '🎯 niche (N hops,
+    asym X)' tag with the torque reason, plus a size-small/check-spread
+    caveat when the liquidity floor was tripped. All LLM fields escaped."""
+
+    def _niche_idea(self, **over: Any) -> dict[str, Any]:
+        idea = _idea(
+            ticker="ABC", action="buy_calls", direction="bullish",
+            niche=True, hop_count=4,
+            torque_reason="single-asset junior, high operating leverage",
+            asymmetry_score=0.71, liquidity_flag=False,
+        )
+        idea.update(over)
+        return idea
+
+    def test_niche_tag_renders(self) -> None:
+        message = self._with_ideas(self._niche_idea())
+        assert "🎯 niche (4 hops, asym 0.71)" in message
+        assert "single-asset junior" in message
+
+    def test_singular_hop_label(self) -> None:
+        message = self._with_ideas(self._niche_idea(hop_count=1))
+        assert "🎯 niche (1 hop, asym" in message  # "hop", not "hops"
+
+    def test_illiquid_caveat_when_flagged(self) -> None:
+        message = self._with_ideas(self._niche_idea(liquidity_flag=True))
+        assert "⚠ small/illiquid — size small, check spread" in message
+
+    def test_no_caveat_when_liquid(self) -> None:
+        message = self._with_ideas(self._niche_idea(liquidity_flag=False))
+        assert "size small, check spread" not in message
+
+    def test_non_niche_idea_has_no_tag(self) -> None:
+        message = self._with_ideas(_idea())  # plain, no niche key
+        assert "🎯 niche" not in message
+
+    def test_torque_reason_html_escaped(self) -> None:
+        message = self._with_ideas(
+            self._niche_idea(torque_reason="<script>alert(1)</script> levered"),
+        )
+        assert "<script>" not in message
+        assert "&lt;script&gt;" in message
+
+    def test_missing_asymmetry_renders_question_mark(self) -> None:
+        message = self._with_ideas(self._niche_idea(asymmetry_score=None))
+        assert "asym ?" in message
+
+
+class TestNicheConsolidation(TestIdeasSection):
+    """CL-u2ph: a niche idea corroborated across TWO events still
+    consolidates through the existing (ticker, action) dedup — the merged
+    niche idea is a normal trade_ideas entry, so redundancy reads as
+    conviction, not two duplicate niche lines."""
+
+    def test_niche_idea_consolidates_across_events(self) -> None:
+        niche = {
+            "ticker": "ABC", "action": "buy_calls", "direction": "bullish",
+            "niche": True, "hop_count": 3, "torque_reason": "sole supplier",
+            "asymmetry_score": 0.68, "liquidity_flag": False,
+            "rationale": "chain", "time_horizon": "short", "time_stop_days": 10,
+        }
+        r1 = _res(event_id=1, urgency=8, theme="critical_minerals")
+        r1.assessment["trade_ideas"] = [dict(niche)]
+        r2 = _res(event_id=2, urgency=7, theme="taiwan_strait")
+        r2.assessment["trade_ideas"] = [dict(niche)]
+        built = build_digest([r1, r2])
+        assert built is not None
+        message = built[1]
+        # ONE consolidated ABC idea block (not two), carrying both the
+        # niche tag and the cross-event corroboration note.
+        assert message.count("<b>ABC</b>") == 1
+        assert "🎯 niche (3 hops" in message
+        assert "corroborated by 2 events" in message
+
+
 class TestCorroboration:
     """CL-5mkf: cross-event duplicate ideas are CONVICTION, not noise.
     The kept idea carries a 'corroborated by N events (themes)' note."""
@@ -825,6 +900,12 @@ def pipeline_mod(monkeypatch: pytest.MonkeyPatch) -> Any:
         "src.scanners.relative_volume.RelativeVolumeScanner", _NoopScanner,
     )
     monkeypatch.setattr("sqlalchemy.create_engine", lambda _url: None)
+    # The niche pass (CL-u2ph, default-on) burns a live LLM call — no-op
+    # it in the generic wiring fixture so digest tests stay hermetic. The
+    # dedicated TestPipelineNicheWiring exercises the real step with mocks
+    # (it grabs the original off ``_real_niche_step`` below).
+    mod._real_niche_step = mod._niche_step  # type: ignore[attr-defined]
+    monkeypatch.setattr(mod, "_niche_step", lambda *_a, **_kw: 0)
     return mod
 
 
@@ -1012,6 +1093,118 @@ class TestPipelineIdeaWiring:
         args.digest_min_urgency = 5
         pipeline_mod._cycle(args)  # must not raise
         assert len(calls["sent"]) == 1  # digest still went out
+
+
+class TestPipelineNicheWiring:
+    """CL-u2ph: --niche flag + the _niche_step quota gate + fail-soft.
+    Uses the real _niche_step (the generic fixture no-ops it) but mocks
+    the NicheAgent/SymbolUniverse so no LLM/DB is touched."""
+
+    def test_niche_flag_default_on(self, pipeline_mod: Any) -> None:
+        args = pipeline_mod._build_parser().parse_args(["--assess"])
+        assert args.niche is True
+
+    def test_no_niche_flag(self, pipeline_mod: Any) -> None:
+        args = pipeline_mod._build_parser().parse_args(["--assess", "--no-niche"])
+        assert args.niche is False
+
+    def test_resolve_niche_min_urgency_env(
+        self, pipeline_mod: Any, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("NICHE_MIN_URGENCY", "9")
+        assert pipeline_mod._resolve_niche_min_urgency() == 9
+
+    def test_resolve_niche_min_urgency_default(
+        self, pipeline_mod: Any, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from src.events.niche_agent import DEFAULT_MIN_URGENCY as NICHE_DEFAULT
+
+        monkeypatch.delenv("NICHE_MIN_URGENCY", raising=False)
+        assert pipeline_mod._resolve_niche_min_urgency() == NICHE_DEFAULT
+
+    def _run_niche_step(
+        self,
+        pipeline_mod: Any,
+        monkeypatch: pytest.MonkeyPatch,
+        results: list[AssessmentResult],
+        min_urgency: int = 7,
+        universe_factory: Any = None,
+    ) -> list[int]:
+        """Drive the REAL _niche_step directly (bypassing _cycle's no-op)
+        with a mocked NicheAgent / SymbolUniverse; returns the event_ids
+        the agent's run() was actually called on (the quota-gate probe)."""
+        ran_on: list[int] = []
+
+        class _FakeNicheAgent:
+            def __init__(self, **_kw: Any) -> None:
+                pass
+
+            def run(self, row: dict[str, Any], playbook: Any = None) -> list[Any]:
+                ran_on.append(int(row["id"]))
+                return []  # no ideas → no merge/persist
+
+            def merge_into_assessment(self, *_a: Any, **_kw: Any) -> int:
+                return 0
+
+        monkeypatch.setattr(
+            "src.data.symbols.SymbolUniverse",
+            universe_factory or (lambda _e: object()),
+        )
+        monkeypatch.setattr("src.events.niche_agent.NicheAgent", _FakeNicheAgent)
+        # _niche_step calls _json.dumps + engine.begin() only when ideas
+        # merge; with no ideas it never touches the (None) engine. Use the
+        # ORIGINAL _niche_step (the fixture no-op'd the module attribute).
+        pipeline_mod._real_niche_step(None, results, min_urgency)
+        return ran_on
+
+    def test_niche_runs_on_high_urgency_assessed(
+        self, pipeline_mod: Any, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        ran = self._run_niche_step(
+            pipeline_mod, monkeypatch, [_res(event_id=1, urgency=8)],
+        )
+        assert ran == [1]
+
+    def test_niche_skips_low_urgency(
+        self, pipeline_mod: Any, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # urgency 5 < min 7 → the niche pass never touches it (quota gate).
+        ran = self._run_niche_step(
+            pipeline_mod, monkeypatch, [_res(event_id=2, urgency=5)],
+        )
+        assert ran == []
+
+    def test_niche_skips_dismissed(
+        self, pipeline_mod: Any, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        dismissed = AssessmentResult(
+            event_id=3, headline="junk", theme=None,
+            status="DISMISSED", assessment={"urgency": 9},
+        )
+        ran = self._run_niche_step(pipeline_mod, monkeypatch, [dismissed])
+        assert ran == []
+
+    def test_niche_failure_never_kills_cycle(
+        self, pipeline_mod: Any, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # _niche_step raising must be swallowed by _cycle's try/except.
+        # The generic fixture already no-ops _niche_step, so re-point it
+        # at a raising stub and confirm _cycle survives.
+        def boom(*_a: Any, **_kw: Any) -> int:
+            raise RuntimeError("niche exploded")
+
+        monkeypatch.setattr(pipeline_mod, "_niche_step", boom)
+        monkeypatch.setattr(
+            "src.events.digest.send_digest",
+            lambda *_a, **_kw: DispatchResult(
+                telegram_attempted=True, telegram_succeeded=True,
+            ),
+        )
+        _FakeAgent.results = [_res(event_id=1, urgency=9)]
+        args = pipeline_mod._build_parser().parse_args(["--assess"])
+        args.digest_min_urgency = 5
+        args.niche_min_urgency = 7
+        pipeline_mod._cycle(args)  # must not raise
 
 
 # --------------------------------------------------------------------- #

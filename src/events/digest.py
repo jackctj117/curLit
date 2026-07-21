@@ -284,6 +284,28 @@ def _idea_line(
                 note += f" ({theme_str})"
             block.append(note)
 
+    # Niche / asymmetry tag (CL-u2ph): a multi-hop under-followed name the
+    # obvious trade missed. Show the hop count + asymmetry score + the
+    # torque mechanism, and — when it cleared verification but tripped the
+    # liquidity floor — a size-small/check-spread caveat. torque_reason is
+    # LLM-sourced → escaped; the numbers are HTML-safe by construction.
+    if idea.get("niche"):
+        try:
+            hops = int(idea.get("hop_count") or 0)
+        except (TypeError, ValueError):
+            hops = 0
+        asym = idea.get("asymmetry_score")
+        asym_str = f"{float(asym):.2f}" if isinstance(asym, (int, float)) else "?"
+        torque = _truncate(str(idea.get("torque_reason") or ""), 80)
+        tag = f"  🎯 niche ({hops} hop{'s' if hops != 1 else ''}, asym {asym_str})"
+        if torque:
+            tag += f" — {html_escape(torque)}"
+        block.append(tag)
+        if idea.get("liquidity_flag"):
+            block.append(
+                "  ⚠ small/illiquid — size small, check spread"
+            )
+
     # Robinhood execution proxy (CL-vowz): the operator trades Robinhood,
     # which has no FX/CFDs/futures — so a raw 'XAU_USD LONG' idea is not
     # placeable. Show the tradable version on its own indented line.

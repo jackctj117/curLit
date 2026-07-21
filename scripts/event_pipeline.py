@@ -107,6 +107,14 @@ def _build_parser() -> argparse.ArgumentParser:
              "(default on; --no-poly to disable)",
     )
     p.add_argument(
+        "--niche", action=argparse.BooleanOptionalAction, default=True,
+        help="Run the multi-hop niche/asymmetry pass (CL-u2ph) on "
+             "high-urgency ASSESSED events (urgency >= $NICHE_MIN_URGENCY, "
+             "default 7) — surfaces verified, liquidity-gated under-followed "
+             "names, merged into trade_ideas (default on; --no-niche to "
+             "disable; it burns one extra LLM call per qualifying event)",
+    )
+    p.add_argument(
         "--poly-config", default="configs/polymarket_geo_markets.yaml",
         help="Path to the theme-tagged geo markets config polled by "
              "the --poly step",
@@ -136,6 +144,93 @@ def _resolve_digest_min_urgency(cli_value: int | None) -> int:
             raw, DEFAULT_MIN_URGENCY,
         )
         return DEFAULT_MIN_URGENCY
+
+
+def _resolve_niche_min_urgency() -> int:
+    """$NICHE_MIN_URGENCY (int, 1-10) or the niche agent's module default.
+    Resolved AFTER load_project_env() so .env values count."""
+    from src.events.niche_agent import DEFAULT_MIN_URGENCY  # noqa: PLC0415
+
+    raw = os.environ.get("NICHE_MIN_URGENCY", "")
+    try:
+        return int(raw) if raw.strip() else DEFAULT_MIN_URGENCY
+    except ValueError:
+        logger.warning(
+            "NICHE_MIN_URGENCY=%r is not an int; using %d",
+            raw, DEFAULT_MIN_URGENCY,
+        )
+        return DEFAULT_MIN_URGENCY
+
+
+def _niche_step(engine: object, results: list, min_urgency: int) -> int:
+    """CL-u2ph: multi-hop niche/asymmetry pass on high-urgency ASSESSED
+    events only (quota discipline — one extra LLM call per qualifying
+    event). Surviving VERIFIED, liquidity-gated niche ideas are MERGED
+    into each event's in-memory assessment ``trade_ideas`` (tagged
+    niche=true) AND re-persisted to geo_events so they flow through the
+    downstream enrich/persist/digest path unchanged. Returns how many
+    niche ideas were surfaced across the cycle.
+
+    Fail-soft BY DESIGN: the niche pass is additive advisory colour — any
+    failure (symbol universe unavailable, LLM transport, DB blip) logs
+    and returns, never kills the cycle."""
+    import json as _json  # noqa: PLC0415
+
+    from sqlalchemy import text  # noqa: PLC0415
+
+    from src.data.symbols import SymbolUniverse  # noqa: PLC0415
+    from src.events.niche_agent import NicheAgent  # noqa: PLC0415
+    from src.events.playbooks import load_playbooks  # noqa: PLC0415
+
+    def _urgency(r: object) -> int:
+        try:
+            return int((getattr(r, "assessment", None) or {}).get("urgency", 0))
+        except (TypeError, ValueError):
+            return 0
+
+    qualifying = [
+        r for r in results
+        if getattr(r, "status", "") == "ASSESSED" and _urgency(r) >= min_urgency
+    ]
+    if not qualifying:
+        logger.info("niche: no ASSESSED events at urgency >= %d; skipped", min_urgency)
+        return 0
+
+    universe = SymbolUniverse(engine)  # type: ignore[arg-type]
+    playbooks = load_playbooks("configs/event_playbooks.yaml")
+    agent = NicheAgent(universe=universe)
+    surfaced = 0
+    for r in qualifying:
+        try:
+            row = {
+                "id": r.event_id,
+                "headline": r.headline,
+                "theme": r.theme,
+                "assessment": r.assessment,
+            }
+            playbook = playbooks.get(r.theme or "")
+            ideas = agent.run(row, playbook)
+            if not ideas:
+                continue
+            added = agent.merge_into_assessment(r.assessment, ideas)
+            surfaced += added
+            if added:
+                # Re-persist the enriched assessment so the merged niche
+                # ideas survive into the ledger/digest and the DB row.
+                with engine.begin() as conn:  # type: ignore[attr-defined]
+                    conn.execute(text(
+                        "UPDATE geo_events SET assessment = :a "
+                        "WHERE id = :id AND status = 'ASSESSED'",
+                    ), {"a": _json.dumps(r.assessment), "id": r.event_id})
+        except Exception:
+            logger.exception(
+                "niche pass failed for event id=%s; continuing", r.event_id,
+            )
+    logger.info(
+        "niche: %d qualifying event(s), %d niche idea(s) surfaced+merged",
+        len(qualifying), surfaced,
+    )
+    return surfaced
 
 
 def _result_tickers(result: object) -> set[str]:
@@ -296,6 +391,18 @@ def _cycle(args: argparse.Namespace) -> None:
             len(results), assessed, len(results) - assessed,
         )
 
+        # Multi-hop niche/asymmetry pass (CL-u2ph) BEFORE enrichment so
+        # merged niche ideas flow through the same ledger/digest path.
+        # High-urgency ASSESSED events only (quota discipline); fail-soft.
+        if args.niche:
+            try:
+                niche_min = getattr(args, "niche_min_urgency", None)
+                if niche_min is None:
+                    niche_min = _resolve_niche_min_urgency()
+                _niche_step(engine, results, niche_min)
+            except Exception:
+                logger.exception("niche step failed; continuing")
+
         # Idea ledger + one price batch per cycle (CL-mgcp) — fail-soft.
         prices, seen_ats = _enrich_and_persist(engine, results)
 
@@ -356,6 +463,7 @@ def main(argv: list[str] | None = None) -> int:
     from src.dotenv_bootstrap import load_project_env  # noqa: PLC0415
     load_project_env()
     args.digest_min_urgency = _resolve_digest_min_urgency(args.digest_min_urgency)
+    args.niche_min_urgency = _resolve_niche_min_urgency()
 
     if args.loop is None:
         _cycle(args)
