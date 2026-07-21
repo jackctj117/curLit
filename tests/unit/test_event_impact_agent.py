@@ -68,6 +68,30 @@ class TestSystemPrompt:
         assert "form 483" in low or "import alert" in low
         assert "supply shock" in low or "supply-supply" in low or "input-supply" in low
 
+    def test_primary_leg_preference_present(self) -> None:
+        """CL-5mkf: the prompt must steer BOTH affected[] and trade_ideas
+        to the theme-specific liquid leg first, with gold/silver a
+        conditional SECONDARY leg — never a reflexive geopolitical
+        default."""
+        # Collapse the prompt's line wraps so multi-word phrases that
+        # break across lines still match.
+        low = " ".join(_SYSTEM_PROMPT.lower().split())
+        # The rule is announced and scoped to both legs.
+        assert "primary-leg preference" in low
+        assert "affected" in low and "trade_ideas" in low
+        # Theme-specific liquid legs are named as the primary preference.
+        assert "xcu_usd" in low  # copper for DRC
+        assert "natgas_usd" in low  # Russia energy
+        assert "bco_usd" in low or "wtico_usd" in low  # Hormuz crude
+        assert "miners" in low  # Sahel -> gold miners, not bullion
+        # Gold/silver are pure safe-havens gated to systemic risk-off /
+        # no-theme-leg, and explicitly SECONDARY when included.
+        assert "safe-haven" in low
+        assert "xau_usd" in low and "xag_usd" in low
+        assert "systemic risk-off" in low
+        assert "secondary to the theme-specific leg" in low
+        assert "reflexive default" in low
+
 
 class TestExtractJson:
     def test_bare_json(self) -> None:

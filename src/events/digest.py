@@ -89,6 +89,16 @@ MAX_FADES = 5
 #: Truncation for idea rationales / fade reasons — one phone line.
 _RATIONALE_MAX = 60
 
+#: How many corroborating themes to name inline before a "+N more" tail
+#: on the corroboration note (CL-5mkf) — keeps the line phone-readable.
+_MAX_CORROB_THEMES = 3
+
+#: Pure safe-haven instruments (and their retail proxies) — a
+#: concentration reminder fires when these dominate the advisory ideas
+#: (CL-5mkf). Advisory display only; the machine cap lives in the
+#: EventDrivenStrategy.
+_HAVEN_TICKERS = frozenset({"XAU_USD", "XAG_USD", "GLD", "SLV", "IAU"})
+
 
 def fetch_volume_marks(
     engine: Any,
@@ -251,6 +261,25 @@ def _idea_line(
     if segs:
         block.append("  " + " | ".join(segs))
 
+    # Corroboration note (CL-5mkf): when >1 qualifying event proposed the
+    # SAME (ticker, action), this idea is CONVICTION, not a duplicate to
+    # drop. Name the corroborating themes (capped, +N more). All themes
+    # are LLM/config-sourced → escaped like every interpolated value.
+    corrob = idea.get("corroboration")
+    if isinstance(corrob, Mapping):
+        count = int(corrob.get("count") or 0)
+        themes = [str(t) for t in (corrob.get("themes") or []) if str(t)]
+        if count > 1:
+            shown = themes[:_MAX_CORROB_THEMES]
+            extra = len(themes) - len(shown)
+            theme_str = ", ".join(html_escape(t) for t in shown)
+            if extra > 0:
+                theme_str += f" +{extra} more"
+            note = f"  ✓ corroborated by {count} events"
+            if theme_str:
+                note += f" ({theme_str})"
+            block.append(note)
+
     # Robinhood execution proxy (CL-vowz): the operator trades Robinhood,
     # which has no FX/CFDs/futures — so a raw 'XAU_USD LONG' idea is not
     # placeable. Show the tradable version on its own indented line.
@@ -260,6 +289,43 @@ def _idea_line(
     )
     block.append(f"  RH: {html_escape(proxy)}")
     return "\n".join(block)
+
+
+def _haven_concentration_note(ideas: Sequence[Mapping[str, Any]]) -> str | None:
+    """One compact concentration reminder for the Ideas section
+    (CL-5mkf), or ``None``. Fires when the advisory ideas are heavy on
+    pure safe-havens (gold/silver, or their GLD/SLV/IAU proxies): either
+    one haven idea is corroborated by multiple events, OR two-plus
+    distinct haven ideas exist in the same digest. This is a DISPLAYED
+    reminder for hand-executed trades — the real machine cap lives in
+    the EventDrivenStrategy. Rendered once, not per-idea.
+
+    The count reported is the number of distinct haven ideas plus any
+    extra corroborating events beyond the first on each — i.e. how many
+    ways the operator is being nudged long gold in this one digest.
+    """
+    haven_ideas = [
+        i for i in ideas
+        if str(i.get("ticker") or "").upper() in _HAVEN_TICKERS
+    ]
+    if not haven_ideas:
+        return None
+    n_distinct = len(haven_ideas)
+    total_events = 0
+    for i in haven_ideas:
+        corrob = i.get("corroboration")
+        count = int(corrob.get("count") or 1) if isinstance(corrob, Mapping) else 1
+        total_events += max(1, count)
+    corroborated = any(
+        isinstance(i.get("corroboration"), Mapping)
+        and int(i["corroboration"].get("count") or 1) > 1
+        for i in haven_ideas
+    )
+    if n_distinct < 2 and not corroborated:
+        return None
+    return (
+        f"⚠️ already long gold via {total_events} ideas — watch concentration"
+    )
 
 
 def _fade_line(fade: Mapping[str, Any]) -> str:
@@ -279,9 +345,18 @@ def _advisory_entries(
 ) -> list[dict[str, Any]]:
     """Union the assessments' advisory lists (``trade_ideas`` /
     ``fade_candidates``) across qualifying events, urgency-desc order,
-    deduped on (ticker, action) — first (most urgent) occurrence wins."""
+    deduped on (ticker, action) — first (most urgent) occurrence wins.
+
+    Redundancy is CONVICTION, not noise (CL-5mkf): instead of silently
+    dropping duplicate (ticker, action) entries, we COUNT how many
+    qualifying events proposed each and collect their (distinct) themes,
+    attaching ``corroboration = {"count": N, "themes": [...]}`` to the
+    kept entry. ``count`` is the number of events that proposed it
+    (>= 1); ``themes`` preserves first-seen (urgency-desc) order. The
+    kept entry is a shallow copy so the source assessment is untouched.
+    """
     out: list[dict[str, Any]] = []
-    seen: set[tuple[str, str]] = set()
+    by_key: dict[tuple[str, str], dict[str, Any]] = {}
     for r in qualifying:
         entries = r.assessment.get(key)
         if not isinstance(entries, list):
@@ -292,10 +367,25 @@ def _advisory_entries(
             dedup = (
                 str(entry.get("ticker") or ""), str(entry.get("action") or ""),
             )
-            if not dedup[0] or dedup in seen:
+            if not dedup[0]:
                 continue
-            seen.add(dedup)
-            out.append(entry)
+            theme = str(r.theme or "").strip()
+            kept = by_key.get(dedup)
+            if kept is None:
+                kept = dict(entry)
+                kept["corroboration"] = {
+                    "count": 1,
+                    "themes": [theme] if theme else [],
+                }
+                by_key[dedup] = kept
+                out.append(kept)
+                continue
+            # A later (less-urgent) event proposing the same idea →
+            # corroboration, not a drop. Bump the count; add its theme.
+            corrob = kept["corroboration"]
+            corrob["count"] += 1
+            if theme and theme not in corrob["themes"]:
+                corrob["themes"].append(theme)
     return out
 
 
@@ -469,6 +559,11 @@ def build_digest(
     if ideas:
         lines.append("")
         lines.append("<b>Ideas:</b>")
+        # Haven concentration reminder (CL-5mkf) — once, before the ideas,
+        # when gold/silver dominates (corroborated or multiple distinct).
+        haven_note = _haven_concentration_note(ideas)
+        if haven_note:
+            lines.append(haven_note)
         for idea in ideas[:MAX_IDEAS]:
             lines.append(_idea_line(idea, prices))
             lines.append("")  # blank line between ideas for readability

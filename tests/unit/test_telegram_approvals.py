@@ -820,6 +820,39 @@ class TestIdeasCommand:
         assert "Send 'idea <id>' for the full trade card." in reply
         assert "Read-only" in reply
 
+    def test_consolidates_ticker_action_with_count(self) -> None:
+        # CL-5mkf: three events propose gold LONG → the listing shows ONE
+        # line with '×3 events'; a single-event idea stays plain. The raw
+        # ledger still keeps all per-event rows (audit trail).
+        from datetime import UTC, datetime, timedelta
+
+        from src.events.idea_ledger import list_open, persist_ideas
+        from src.research.telegram_approvals import render_ideas
+
+        engine = _ledger_engine()
+        now = datetime.now(UTC)
+        gold = {"ticker": "XAU_USD", "action": "long", "direction": "bullish",
+                "confidence": 0.7, "rationale": "r", "time_horizon": "short",
+                "holding_period_days": "2-6", "time_stop_days": 5}
+        for eid in (1, 2, 3):
+            persist_ideas(engine, eid, {"trade_ideas": [dict(gold)]},
+                          now=now - timedelta(minutes=eid))
+        persist_ideas(engine, 9, {"trade_ideas": [{
+            "ticker": "BCO_USD", "action": "long", "direction": "bullish",
+            "confidence": 0.6, "rationale": "r", "time_horizon": "short",
+            "holding_period_days": "2-6", "time_stop_days": 5}]},
+            now=now - timedelta(minutes=1))
+
+        reply = render_ideas(engine=engine, get_prices_fn=lambda *a, **k: {})
+        assert "XAU_USD LONG ×3 events" in reply
+        # Single-event idea stays plain (no ×N marker).
+        assert "BCO_USD LONG" in reply
+        assert "BCO_USD LONG ×" not in reply
+        # Two consolidated lines, not four.
+        assert "Open trade ideas (2):" in reply
+        # Audit trail untouched — raw view keeps all four rows.
+        assert len(list_open(engine)) == 4
+
     def test_empty_ledger(self) -> None:
         from src.research.telegram_approvals import render_ideas
 
@@ -987,6 +1020,38 @@ class TestIdeaDetailCommand:
             "zzzzzz", engine=engine, get_prices_fn=lambda *a, **k: {},
         )
         assert "Unknown idea id" in reply
+
+    def test_detail_shows_corroboration_count(self) -> None:
+        # CL-5mkf: the full card notes ×N events when multiple open
+        # geo_events proposed the same (ticker, action).
+        from datetime import UTC, datetime, timedelta
+
+        from src.events.idea_ledger import make_idea_id, persist_ideas
+        from src.research.telegram_approvals import render_idea_detail
+
+        engine = _ledger_engine()
+        now = datetime.now(UTC)
+        gold = {"ticker": "XAU_USD", "action": "long", "direction": "bullish",
+                "confidence": 0.7, "rationale": "r", "time_horizon": "short",
+                "holding_period_days": "2-6", "time_stop_days": 5}
+        for eid in (1, 2):
+            persist_ideas(engine, eid, {"trade_ideas": [dict(gold)]},
+                          now=now - timedelta(minutes=eid))
+        idea_id = make_idea_id(1, "XAU_USD", "long")
+        reply = render_idea_detail(
+            idea_id[:6], engine=engine, get_prices_fn=lambda *a, **k: {},
+        )
+        assert "Corroboration: ×2 events proposed this" in reply
+
+    def test_detail_no_corroboration_for_single(self) -> None:
+        from src.research.telegram_approvals import render_idea_detail
+
+        engine = _ledger_engine()
+        idea_id = self._seed_one(engine)
+        reply = render_idea_detail(
+            idea_id[:6], engine=engine, get_prices_fn=lambda *a, **k: {},
+        )
+        assert "Corroboration:" not in reply
 
     def test_no_live_price_falls_back_to_signal(self) -> None:
         from src.research.telegram_approvals import (

@@ -529,6 +529,108 @@ class TestIdeasSection:
         assert "Ideas:" not in built[1]
 
 
+class TestCorroboration:
+    """CL-5mkf: cross-event duplicate ideas are CONVICTION, not noise.
+    The kept idea carries a 'corroborated by N events (themes)' note."""
+
+    def _gold_idea(self, **kw: Any) -> dict[str, Any]:
+        return _idea(
+            ticker="XAU_USD", action="long", direction="bullish",
+            rationale="risk-off bid", **kw,
+        )
+
+    def test_two_events_same_idea_corroborated_note(self) -> None:
+        r1 = _res(event_id=1, theme="energy_chokepoint", urgency=9)
+        r1.assessment["trade_ideas"] = [self._gold_idea()]
+        r2 = _res(event_id=2, theme="russia_ukraine", urgency=6)
+        r2.assessment["trade_ideas"] = [self._gold_idea()]
+        built = build_digest([r1, r2])
+        assert built is not None
+        message = built[1]
+        # ONE consolidated idea, with a corroboration note naming BOTH
+        # themes (most-urgent-first order).
+        assert message.count("<b>XAU_USD</b>") == 1
+        assert "✓ corroborated by 2 events" in message
+        assert "energy_chokepoint" in message
+        assert "russia_ukraine" in message
+
+    def test_single_event_idea_has_no_note(self) -> None:
+        r = _res(event_id=1, theme="energy_chokepoint", urgency=8)
+        r.assessment["trade_ideas"] = [self._gold_idea()]
+        built = build_digest([r])
+        assert built is not None
+        assert "corroborated by" not in built[1]
+
+    def test_theme_cap_and_escaping(self) -> None:
+        # Four distinct themes proposing the SAME idea → 3 shown + "+1
+        # more"; a hostile theme is HTML-escaped in the note.
+        themes = ["energy_chokepoint", "russia_ukraine", "a<&>b", "sahel_coup"]
+        results = []
+        for i, th in enumerate(themes, 1):
+            r = _res(event_id=i, theme=th, urgency=10 - i)
+            r.assessment["trade_ideas"] = [self._gold_idea()]
+            results.append(r)
+        built = build_digest(results)
+        assert built is not None
+        message = built[1]
+        assert "corroborated by 4 events" in message
+        assert "+1 more" in message
+        # The hostile theme is escaped wherever it lands.
+        assert "a<&>b" not in message
+        # First three themes (urgency-desc) are the ones shown inline.
+        assert "energy_chokepoint" in message
+        assert "russia_ukraine" in message
+
+
+class TestHavenConcentrationNote:
+    """CL-5mkf: a displayed reminder when the advisory ideas pile into
+    gold/silver — corroborated OR multiple distinct haven ideas."""
+
+    def _gold(self, action: str = "long") -> dict[str, Any]:
+        return _idea(ticker="XAU_USD", action=action, direction="bullish",
+                     rationale="risk-off")
+
+    def _silver(self) -> dict[str, Any]:
+        return _idea(ticker="XAG_USD", action="long", direction="bullish",
+                     rationale="risk-off")
+
+    def test_note_when_corroborated_haven(self) -> None:
+        r1 = _res(event_id=1, theme="russia_ukraine", urgency=9)
+        r1.assessment["trade_ideas"] = [self._gold()]
+        r2 = _res(event_id=2, theme="energy_chokepoint", urgency=7)
+        r2.assessment["trade_ideas"] = [self._gold()]
+        built = build_digest([r1, r2])
+        assert built is not None
+        message = built[1]
+        assert "⚠️ already long gold via 2 ideas — watch concentration" in message
+        # Rendered once, in the Ideas section, before the idea blocks.
+        assert message.count("watch concentration") == 1
+        assert message.index("watch concentration") < message.index("<b>XAU_USD</b>")
+
+    def test_note_when_multiple_distinct_havens(self) -> None:
+        r = _res(event_id=1, theme="broad_riskoff", urgency=9)
+        r.assessment["trade_ideas"] = [self._gold(), self._silver()]
+        built = build_digest([r])
+        assert built is not None
+        assert "watch concentration" in built[1]
+
+    def test_no_note_for_single_haven_idea(self) -> None:
+        r = _res(event_id=1, theme="broad_riskoff", urgency=9)
+        r.assessment["trade_ideas"] = [self._gold()]
+        built = build_digest([r])
+        assert built is not None
+        assert "watch concentration" not in built[1]
+
+    def test_no_note_when_no_haven_ideas(self) -> None:
+        r1 = _res(event_id=1, urgency=9)
+        r1.assessment["trade_ideas"] = [_idea(ticker="BCO_USD", action="long")]
+        r2 = _res(event_id=2, urgency=7)
+        r2.assessment["trade_ideas"] = [_idea(ticker="BCO_USD", action="long")]
+        built = build_digest([r1, r2])
+        assert built is not None
+        assert "watch concentration" not in built[1]
+
+
 class TestFadeSection:
     def test_fade_lines(self) -> None:
         r = _res(urgency=7)

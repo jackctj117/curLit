@@ -62,6 +62,14 @@ _FEATURE_SET_NAME = "event_driven"
 _FEATURE_SET_VERSION = "v1"
 _STATE_VERSION = 1
 
+#: Pure safe-haven OANDA instruments (CL-5mkf). Combined open notional
+#: across these is capped at ``haven_max_pct`` of equity so war-heavy
+#: news can't pile the event book into gold/silver. Real enforcement on
+#: the machine legs, additive to event_risk_pct sizing + the event-book
+#: loss cap; separate from (and not a substitute for) the correlation
+#: kill switch.
+HAVEN_INSTRUMENTS = frozenset({"XAU_USD", "XAG_USD"})
+
 
 def _default_instrument_map() -> dict[str, str]:
     """Assessment instrument id → OANDA broker instrument.
@@ -113,6 +121,12 @@ class EventDrivenConfig:
     max_concurrent_event_positions: int = 2
     # Hard TIME STOP: exit after this many hours regardless of P&L.
     event_max_holding_hours: float = 4.0
+    # Combined open notional across HAVEN_INSTRUMENTS (gold/silver) as a
+    # fraction of equity that the event book may hold (CL-5mkf). A new
+    # haven entry that would breach this is reduced to fit, or skipped if
+    # already at/over the cap. Non-haven trades are unaffected. 0.20 =
+    # 20% of equity in safe-havens across all open event positions.
+    haven_max_pct: float = 0.20
     # ---- Event-book protection ----------------------------------------
     # Cumulative realized loss (fraction of equity) that freezes NEW
     # event entries. Exits always still flow.
@@ -474,6 +488,65 @@ class EventDrivenStrategy:
         return breached
 
     # ------------------------------------------------------------------
+    # Haven concentration cap (CL-5mkf)
+    # ------------------------------------------------------------------
+
+    def _open_haven_notional(self) -> float:
+        """Combined open notional across HAVEN_INSTRUMENTS (gold/silver),
+        derived from the strategy's tracked positions — nothing new is
+        persisted. Notional per leg = |quantity| * entry_price (the units
+        the sizing math produces), summed over open haven symbols."""
+        total = 0.0
+        for sym, pos in self.open_positions.items():
+            if sym in HAVEN_INSTRUMENTS:
+                total += abs(pos.quantity) * pos.entry_price
+        return total
+
+    def _haven_capped_size(
+        self,
+        symbol: str,
+        size: float,
+        entry_price: float,
+        equity: float,
+    ) -> float:
+        """Reduce a NEW haven position's signed ``size`` so combined open
+        haven notional stays within ``haven_max_pct`` of equity (CL-5mkf).
+
+        Returns the (possibly reduced) signed size — 0.0 when the book is
+        already at/over the cap (skip). Non-haven symbols never reach here
+        (the caller gates on membership). Logs at WARNING with the current
+        haven exposure whenever it trims or skips. Preserves sign."""
+        if symbol not in HAVEN_INSTRUMENTS or equity <= 0:
+            return size
+        cap_notional = self.config.haven_max_pct * equity
+        current = self._open_haven_notional()
+        headroom = cap_notional - current
+        proposed_notional = abs(size) * entry_price
+        if headroom <= 0:
+            logger.warning(
+                "Haven concentration cap: already at/over %.0f%% of equity "
+                "in %s (open haven notional %.0f >= cap %.0f) — SKIPPING new "
+                "%s entry",
+                self.config.haven_max_pct * 100,
+                "/".join(sorted(HAVEN_INSTRUMENTS)), current, cap_notional,
+                symbol,
+            )
+            return 0.0
+        if proposed_notional <= headroom:
+            return size  # fits under the cap — unchanged
+        # Trim the position to exactly fill the remaining headroom.
+        max_units = headroom / entry_price
+        capped = max_units if size > 0 else -max_units
+        logger.warning(
+            "Haven concentration cap: %s entry reduced from %.0f to %.0f "
+            "units (open haven notional %.0f + proposed %.0f would exceed "
+            "cap %.0f = %.0f%% of equity)",
+            symbol, size, capped, current, proposed_notional, cap_notional,
+            self.config.haven_max_pct * 100,
+        )
+        return capped
+
+    # ------------------------------------------------------------------
     # Entries for a newly-CONFIRMED event
     # ------------------------------------------------------------------
 
@@ -569,6 +642,18 @@ class EventDrivenStrategy:
             stop_price = entry_price * (1 - direction * self.config.event_stop_pct)
             stop_distance = abs(entry_price - stop_price)
             size = equity * self.config.event_risk_pct / max(stop_distance, 1e-9) * direction
+
+            # Haven concentration cap (CL-5mkf) — real enforcement on the
+            # OANDA paper legs. A new gold/silver entry that would push
+            # combined open haven notional past haven_max_pct is trimmed
+            # to fit, or skipped (size 0) if already at/over. Non-haven
+            # symbols pass through untouched. Additive to the event_risk_pct
+            # sizing + the event-book loss cap above.
+            if symbol in HAVEN_INSTRUMENTS:
+                size = self._haven_capped_size(symbol, size, entry_price, equity)
+                if size == 0.0:
+                    skipped.append((symbol, "haven_concentration_cap"))
+                    continue
 
             self.open_positions[symbol] = EventPosition(
                 symbol=symbol, event_id=event_id, entry_ts=now,

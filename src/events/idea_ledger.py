@@ -244,13 +244,56 @@ def expire_stale(engine: Any, now: datetime | None = None) -> int:
 def list_open(engine: Any) -> list[dict[str, Any]]:
     """Pending ideas, newest first, ``created_at`` parsed to an aware
     datetime. Raises on DB errors — the bot command wraps this with a
-    graceful 'unavailable' reply."""
+    graceful 'unavailable' reply.
+
+    This is the RAW per-event view (one row per geo_event that proposed
+    an idea) — the audit trail. For the operator-facing bot listing use
+    :func:`list_open_consolidated`, which collapses (ticker, action)."""
     with engine.connect() as conn:
         rows = [dict(r._mapping) for r in conn.execute(_LIST_OPEN_SQL)]
     for row in rows:
         row["created_at"] = parse_ts(row.get("created_at"))
         row["target_prices"] = _parse_target_prices(row.get("target_prices"))
     return rows
+
+
+def list_open_consolidated(engine: Any) -> list[dict[str, Any]]:
+    """Open ideas CONSOLIDATED on (ticker, action) for the bot display
+    (CL-5mkf). The ``trade_ideas`` table keeps one row per geo_event
+    (the audit trail — :func:`list_open` returns those unchanged); this
+    view shows ONE entry per (ticker, action) so a gold idea proposed by
+    six events reads as one high-conviction idea, not six near-duplicates.
+
+    The kept row is the most-recent/highest-confidence of the group (raw
+    rows are newest-first; ties break on higher confidence), so its
+    levels/short-id are the freshest. An ``event_count`` field carries
+    how many raw rows collapsed into it (1 = a plain single-event idea);
+    the bot renders ``×N events`` when ``event_count > 1``."""
+    rows = list_open(engine)
+    groups: dict[tuple[str, str], dict[str, Any]] = {}
+    order: list[tuple[str, str]] = []
+    for row in rows:
+        key = (
+            str(row.get("ticker") or ""), str(row.get("action") or ""),
+        )
+        existing = groups.get(key)
+        if existing is None:
+            kept = dict(row)
+            kept["event_count"] = 1
+            groups[key] = kept
+            order.append(key)
+            continue
+        existing["event_count"] += 1
+        # Rows arrive newest-first, so the incumbent already wins on
+        # recency; only a strictly-higher confidence unseats it (its
+        # levels are then the ones the operator sees).
+        row_conf = _float_or_none(row.get("confidence"))
+        cur_conf = _float_or_none(existing.get("confidence"))
+        if row_conf is not None and row_conf > (cur_conf if cur_conf is not None else -1.0):
+            kept = dict(row)
+            kept["event_count"] = existing["event_count"]
+            groups[key] = kept
+    return [groups[k] for k in order]
 
 
 _GET_ONE_SQL = text(

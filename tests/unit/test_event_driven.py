@@ -445,6 +445,125 @@ class TestCaps:
 
 
 # =============================================================================
+# Haven concentration cap (CL-5mkf) — real enforcement on gold/silver legs
+# =============================================================================
+
+
+class TestHavenCap:
+    """The machine cap on combined open notional in HAVEN_INSTRUMENTS
+    (XAU_USD, XAG_USD). Injectable equity (FakeBroker) + tracked
+    positions (seed_position); no DB/network needed for the sizing
+    exercise itself — we drive _haven_capped_size directly and via the
+    full confirmed-entry path."""
+
+    def test_default_is_twenty_pct(self, tmp_path: Any) -> None:
+        strat = make_strategy(tmp_path, db=make_db())
+        assert strat.config.haven_max_pct == pytest.approx(0.20)
+
+    def test_reduces_size_when_over_cap(self, tmp_path: Any) -> None:
+        # Equity 100k, cap 20% = 20k haven notional. 12k already open in
+        # gold; a proposed 15k silver leg would total 27k → trimmed to
+        # exactly the 8k headroom (÷ price 1.0 → 8000 units).
+        strat = make_strategy(tmp_path, db=make_db(), haven_max_pct=0.20)
+        strat.open_positions["XAU_USD"] = EventPosition(
+            symbol="XAU_USD", event_id=1, entry_ts=datetime.now(UTC),
+            entry_price=1.0, quantity=12_000.0, direction=1,
+            stop_price=0.99, headline="seeded gold",
+        )
+        capped = strat._haven_capped_size(
+            "XAG_USD", size=15_000.0, entry_price=1.0, equity=100_000.0,
+        )
+        assert capped == pytest.approx(8_000.0)  # fills remaining headroom
+
+    def test_skips_when_already_at_cap(self, tmp_path: Any) -> None:
+        # 20k gold already open == the full 20k cap → a new haven leg is
+        # skipped (size 0), sign preserved regardless of direction.
+        strat = make_strategy(tmp_path, db=make_db(), haven_max_pct=0.20)
+        strat.open_positions["XAU_USD"] = EventPosition(
+            symbol="XAU_USD", event_id=1, entry_ts=datetime.now(UTC),
+            entry_price=1.0, quantity=20_000.0, direction=1,
+            stop_price=0.99, headline="seeded gold",
+        )
+        assert strat._haven_capped_size(
+            "XAG_USD", size=-5_000.0, entry_price=1.0, equity=100_000.0,
+        ) == 0.0
+
+    def test_under_cap_size_unchanged(self, tmp_path: Any) -> None:
+        strat = make_strategy(tmp_path, db=make_db(), haven_max_pct=0.20)
+        # Nothing open; a 5k gold leg is well under the 20k cap → intact.
+        assert strat._haven_capped_size(
+            "XAU_USD", size=5_000.0, entry_price=1.0, equity=100_000.0,
+        ) == pytest.approx(5_000.0)
+
+    def test_non_haven_untouched(self, tmp_path: Any) -> None:
+        # A non-haven symbol never gets capped — even with gold at the cap.
+        strat = make_strategy(tmp_path, db=make_db(), haven_max_pct=0.20)
+        strat.open_positions["XAU_USD"] = EventPosition(
+            symbol="XAU_USD", event_id=1, entry_ts=datetime.now(UTC),
+            entry_price=1.0, quantity=30_000.0, direction=1,
+            stop_price=0.99, headline="seeded gold",
+        )
+        assert strat._haven_capped_size(
+            "BCO_USD", size=99_000.0, entry_price=1.0, equity=100_000.0,
+        ) == pytest.approx(99_000.0)
+
+    def test_confirmed_haven_entry_skipped_at_cap_logs_warning(
+        self, tmp_path: Any, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        # Full confirmed-entry path: silver already at the cap → the new
+        # GOLD entry is skipped (no intent), row stays CONFIRMED, WARNING
+        # names the haven exposure. (Different haven symbol so it isn't
+        # short-circuited as already_open.)
+        db = make_db()
+        affected = [{"instrument": "XAU_USD", "kind": "oanda",
+                     "direction": "long", "reason": "risk-off"}]
+        eid = insert_event(db, affected=affected)
+        strat = make_strategy(
+            tmp_path, db=db, provider=FakeProvider(p0=0.99, daily_vol=0.01),
+            haven_max_pct=0.20, max_concurrent_event_positions=5,
+        )
+        # 20k silver already open (keyed by symbol) = the 20k cap @ 100k.
+        strat.open_positions["XAG_USD"] = EventPosition(
+            symbol="XAG_USD", event_id=99, entry_ts=datetime.now(UTC),
+            entry_price=1.0, quantity=20_000.0, direction=1,
+            stop_price=0.90, headline="seeded silver",
+        )
+        with caplog.at_level(logging.WARNING, logger="src.strategies.event_driven"):
+            intents = run(strat, {"XAU_USD": tick(1.0)}, FakeBroker(equity=100_000))
+        assert intents == []
+        assert get_status(db, eid) == "CONFIRMED"  # confirmed, never traded
+        assert any(
+            "Haven concentration cap" in r.getMessage() for r in caplog.records
+        )
+
+    def test_confirmed_haven_entry_reduced_under_cap(
+        self, tmp_path: Any,
+    ) -> None:
+        # Silver partially open (10k of a 20k cap); a fresh confirmed GOLD
+        # entry is trimmed to the 10k headroom rather than skipped.
+        db = make_db()
+        affected = [{"instrument": "XAU_USD", "kind": "oanda",
+                     "direction": "long", "reason": "risk-off"}]
+        insert_event(db, affected=affected)
+        # event_stop_pct default 0.01, entry 1.0 → stop_distance 0.01;
+        # unconstrained size = 100k * 0.005 / 0.01 = 50k notional (way
+        # over the 10k headroom) → trimmed to 10k units at price 1.0.
+        strat = make_strategy(
+            tmp_path, db=db, provider=FakeProvider(p0=0.99, daily_vol=0.01),
+            haven_max_pct=0.20, max_concurrent_event_positions=5,
+        )
+        strat.open_positions["XAG_USD"] = EventPosition(
+            symbol="XAG_USD", event_id=99, entry_ts=datetime.now(UTC),
+            entry_price=1.0, quantity=10_000.0, direction=1,
+            stop_price=0.90, headline="seeded silver",
+        )
+        intents = run(strat, {"XAU_USD": tick(1.0)}, FakeBroker(equity=100_000))
+        assert len(intents) == 1
+        # Trimmed to the remaining 10k headroom (÷ entry 1.0 = 10k units).
+        assert intents[0].target_position == pytest.approx(10_000.0)
+
+
+# =============================================================================
 # Missing table / missing DB — engine boot must never break
 # =============================================================================
 

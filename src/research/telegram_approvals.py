@@ -419,7 +419,13 @@ def render_ideas(
     Graceful degradation: ledger unreachable (migration 007 not
     applied, DB down) → an 'unavailable' reply, never a crash; price
     resolution failing → lines render without prices. Plain text like
-    every bot reply — no parse_mode, nothing needs escaping."""
+    every bot reply — no parse_mode, nothing needs escaping.
+
+    Consolidated on (ticker, action) (CL-5mkf): the ledger keeps a row
+    per geo_event (audit trail), but a gold idea corroborated by six
+    events reads here as ONE line with ``×6 events`` rather than six
+    near-duplicate lines. The kept row is the freshest/highest-conf of
+    the group, so its short id + levels are current."""
     # Local imports: the ledger/price stack is event-pipeline plumbing
     # the approval bot only needs for this listing.
     from src.events import idea_ledger  # noqa: PLC0415
@@ -427,7 +433,7 @@ def render_ideas(
 
     try:
         engine = engine if engine is not None else _ideas_engine()
-        rows = idea_ledger.list_open(engine)
+        rows = idea_ledger.list_open_consolidated(engine)
     except Exception as exc:
         logger.warning(
             "ideas listing unavailable: %s: %s", type(exc).__name__, exc,
@@ -449,7 +455,13 @@ def render_ideas(
         age = prices_mod.format_age(row.get("created_at"), now=now)
         short_id = str(row.get("idea_id") or "")[:IDEA_SHORT_ID_LEN]
         action = str(row.get("action") or "?").replace("_", " ").upper()
-        parts = [f"{n}. [{short_id}] {row['ticker']} {action}"]
+        head = f"{n}. [{short_id}] {row['ticker']} {action}"
+        # ×N events (CL-5mkf): N distinct geo_events proposed this same
+        # (ticker, action) → conviction, shown as one consolidated line.
+        event_count = int(row.get("event_count") or 1)
+        if event_count > 1:
+            head += f" ×{event_count} events"
+        parts = [head]
         aging = []
         if age:
             aging.append(f"{age} old")
@@ -535,6 +547,20 @@ def render_idea_detail(
 
     action = str(row.get("action") or "?").replace("_", " ").upper()
     lines = [f"{ticker} — {action}"]
+
+    # ×N events (CL-5mkf): how many distinct open geo_events proposed
+    # this same (ticker, action). The card shows one consolidated idea;
+    # this line names the conviction. Best-effort — a lookup failure just
+    # omits the line, never breaks the card.
+    with contextlib.suppress(Exception):
+        raw_action = str(row.get("action") or "")
+        n_events = sum(
+            1 for r in idea_ledger.list_open(engine)
+            if str(r.get("ticker") or "") == ticker
+            and str(r.get("action") or "") == raw_action
+        )
+        if n_events > 1:
+            lines.append(f"Corroboration: ×{n_events} events proposed this")
 
     price_str = prices_mod.format_price(ticker, info)
     if price_str:

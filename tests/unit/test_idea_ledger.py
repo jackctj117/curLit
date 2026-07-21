@@ -396,3 +396,68 @@ class TestListOpen:
         bare = sa.create_engine("sqlite://")
         with pytest.raises(Exception, match="(?i)no such table"):
             list_open(bare)
+
+
+# --------------------------------------------------------------------- #
+# list_open_consolidated (CL-5mkf) — collapse (ticker, action) for display
+# --------------------------------------------------------------------- #
+
+
+class TestListOpenConsolidated:
+    def test_consolidates_ticker_action_with_event_count(
+        self, engine: Any,
+    ) -> None:
+        from src.events.idea_ledger import list_open_consolidated
+
+        # Three events propose gold LONG; one proposes crude LONG. The
+        # TABLE keeps all four rows (audit trail); the consolidated view
+        # collapses gold to one entry with event_count=3.
+        gold = {"ticker": "XAU_USD", "action": "long", "direction": "bullish",
+                "confidence": 0.7, "rationale": "r", "time_horizon": "short",
+                "holding_period_days": "2-6", "time_stop_days": 5}
+        for eid in (1, 2, 3):
+            persist_ideas(engine, eid, _assessment(dict(gold)),
+                          now=NOW + timedelta(minutes=eid))
+        persist_ideas(engine, 4, _assessment({
+            "ticker": "BCO_USD", "action": "long", "direction": "bullish",
+            "confidence": 0.6, "rationale": "r", "time_horizon": "short",
+            "holding_period_days": "2-6", "time_stop_days": 5}),
+            now=NOW + timedelta(minutes=5))
+
+        # Raw view keeps every per-event row (audit trail intact).
+        assert len(list_open(engine)) == 4
+
+        consolidated = list_open_consolidated(engine)
+        by_ticker = {r["ticker"]: r for r in consolidated}
+        assert set(by_ticker) == {"XAU_USD", "BCO_USD"}
+        assert by_ticker["XAU_USD"]["event_count"] == 3
+        assert by_ticker["BCO_USD"]["event_count"] == 1
+
+    def test_same_ticker_different_action_not_merged(self, engine: Any) -> None:
+        from src.events.idea_ledger import list_open_consolidated
+
+        persist_ideas(engine, 1, _assessment({
+            "ticker": "XAU_USD", "action": "long", "direction": "bullish",
+            "confidence": 0.7, "rationale": "r", "time_horizon": "short",
+            "holding_period_days": "2-6", "time_stop_days": 5}), now=NOW)
+        persist_ideas(engine, 2, _assessment({
+            "ticker": "XAU_USD", "action": "buy_calls", "direction": "bullish",
+            "confidence": 0.7, "rationale": "r", "time_horizon": "short",
+            "holding_period_days": "2-6", "time_stop_days": 5}), now=NOW)
+        consolidated = list_open_consolidated(engine)
+        # Two entries — the action differs, so they don't merge.
+        assert len(consolidated) == 2
+        assert all(r["event_count"] == 1 for r in consolidated)
+
+    def test_single_idea_event_count_one(self, engine: Any) -> None:
+        from src.events.idea_ledger import list_open_consolidated
+
+        persist_ideas(engine, 1, _assessment(_idea()), now=NOW)
+        consolidated = list_open_consolidated(engine)
+        assert len(consolidated) == 1
+        assert consolidated[0]["event_count"] == 1
+
+    def test_empty_table(self, engine: Any) -> None:
+        from src.events.idea_ledger import list_open_consolidated
+
+        assert list_open_consolidated(engine) == []

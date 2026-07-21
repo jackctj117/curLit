@@ -111,6 +111,14 @@ strategies:
       max_concurrent_event_positions: 2
       # Hard TIME STOP: exit after this many hours REGARDLESS of P&L.
       event_max_holding_hours: 4
+      # Haven concentration cap (CL-5mkf): combined open notional across
+      # the safe-haven instruments (XAU_USD, XAG_USD) may not exceed this
+      # fraction of equity. A new gold/silver entry that would breach it
+      # is reduced to fit, or skipped if already at/over. Non-haven trades
+      # are unaffected. Additive to event_risk_pct + the event-book loss
+      # cap; separate from the correlation kill switch. (Omit to use the
+      # 0.20 default in src/strategies/event_driven.py.)
+      # haven_max_pct: 0.20
       # ---- Event-book protection -------------------------------------
       # Cumulative realized event-trade loss (fraction of equity) that
       # freezes NEW entries and logs CRITICAL. Exits still flow. State

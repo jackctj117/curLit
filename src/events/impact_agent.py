@@ -95,6 +95,19 @@ Rules:
   more slowly (substitute producers, input costs, freight, currencies).
 - Prefer liquid instruments; propose a thin proxy only when nothing
   liquid carries the exposure.
+- Primary-leg preference (applies to BOTH "affected" and "trade_ideas"):
+  prefer the most specific, liquid, theme-aligned instrument as the
+  primary leg. DRC/copper themes -> copper (XCU_USD) or the exposed
+  miners; Taiwan -> semis (TSM/SOXX) + risk-off yen; Russia energy ->
+  natural gas (NATGAS_USD)/defense; energy chokepoint/Hormuz -> crude
+  (BCO_USD/WTICO_USD) + tanker names; Sahel -> gold MINERS (GOLD/BTG/
+  EDV.TO), not bullion. Recommend pure safe-havens — gold (XAU_USD) and
+  silver (XAG_USD) — ONLY when (a) the event is a broad, systemic
+  risk-off move affecting many assets at once, or (b) no higher-priority
+  theme-specific liquid leg carries the exposure. Do NOT include gold as
+  a reflexive default just because an event is geopolitical. When gold IS
+  included, it should be secondary to the theme-specific leg, not the
+  headline.
 - Territorial events (coups, nationalization, resource nationalism,
   license revocation, or war in a producing region — Africa,
   Russia/Ukraine): from the playbook context, name the specific
