@@ -78,6 +78,8 @@ def _default_single_cycle(monkeypatch: pytest.MonkeyPatch) -> None:
     operator's .env; the iterative/tool tests set them explicitly."""
     monkeypatch.delenv("NICHE_MAX_CYCLES", raising=False)
     monkeypatch.delenv("NICHE_TOOLS_ENABLED", raising=False)
+    monkeypatch.delenv("NICHE_TOOL_AGENT_ENABLED", raising=False)
+    monkeypatch.delenv("MOONSHOT_API_KEY", raising=False)
 
 
 def _liquid_md(tickers: list[str]) -> dict[str, dict[str, Any]]:
@@ -128,6 +130,18 @@ class FakeTools:
     def enrich(self, ideas: Any, universe: Any) -> list[str]:
         self.calls.append([getattr(i, "ticker", "") for i in ideas])
         return [f"--- grounded {getattr(i, 'ticker', '')} ---" for i in ideas]
+
+
+class FakeToolAgent:
+    """Stand-in for the Kimi tool-loop: returns a canned final JSON payload."""
+
+    def __init__(self, payload: str) -> None:
+        self.payload = payload
+        self.calls: list[Any] = []
+
+    def discover(self, event_row: Any, playbook: Any = None) -> str:
+        self.calls.append(event_row.get("id"))
+        return self.payload
 
 
 def _payload(*ideas: dict[str, Any]) -> str:
@@ -649,3 +663,66 @@ class TestToolAugmentedHopping:
         ideas = agent.run(self._event())
         # Enrichment blew up but the run still completes with both names.
         assert {i.ticker for i in ideas} == {"REAL", "FRO"}
+
+
+# --------------------------------------------------------------------- #
+# Agentic Kimi tool-loop delegation (CL-ddzt)
+# --------------------------------------------------------------------- #
+
+
+class TestKimiToolAgentDelegation:
+    def _event(self) -> dict[str, Any]:
+        return {"id": 1, "headline": "China restricts rare-earth exports",
+                "theme": None, "assessment": {}}
+
+    def test_tool_agent_replaces_cycles(self) -> None:
+        payload = _payload(_idea_dict(ticker="REAL", company_name="Real Co Inc"))
+        # The claude-code client must NOT be used when a tool_agent is set.
+        client = MockLLMClient(_payload(_idea_dict(ticker="FRO")))
+        tool_agent = FakeToolAgent(payload)
+        agent = NicheAgent(
+            universe=FakeUniverse(), client=client,  # type: ignore[arg-type]
+            market_data_fn=_liquid_md, tool_agent=tool_agent,
+        )
+        ideas = agent.run(self._event())
+        assert {i.ticker for i in ideas} == {"REAL"}
+        assert tool_agent.calls == [1]      # the Kimi agent did the discovery
+        assert client.calls == []           # cycles path was bypassed
+
+    def test_tool_agent_empty_yields_nothing(self) -> None:
+        agent = NicheAgent(
+            universe=FakeUniverse(),
+            client=MockLLMClient("{}"),  # type: ignore[arg-type]
+            market_data_fn=_liquid_md, tool_agent=FakeToolAgent(""),
+        )
+        assert agent.run(self._event()) == []
+
+    def test_tool_agent_output_still_verified(self) -> None:
+        # A hallucinated ticker from the tool agent is still dropped.
+        payload = _payload(_idea_dict(ticker="FAKE", company_name="Nowhere Inc"))
+        agent = NicheAgent(
+            universe=FakeUniverse(),
+            client=MockLLMClient("{}"),  # type: ignore[arg-type]
+            market_data_fn=_liquid_md, tool_agent=FakeToolAgent(payload),
+        )
+        assert agent.run(self._event()) == []  # FAKE not in universe → dropped
+
+    def test_tool_agent_enabled_via_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("NICHE_TOOL_AGENT_ENABLED", "1")
+        monkeypatch.setenv("MOONSHOT_API_KEY", "sk-test")
+        agent = NicheAgent(
+            universe=FakeUniverse(),
+            client=MockLLMClient("{}"),  # type: ignore[arg-type]
+        )
+        assert agent.tool_agent is not None
+
+    def test_tool_agent_env_without_key_stays_off(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("NICHE_TOOL_AGENT_ENABLED", "1")
+        monkeypatch.delenv("MOONSHOT_API_KEY", raising=False)
+        agent = NicheAgent(
+            universe=FakeUniverse(),
+            client=MockLLMClient("{}"),  # type: ignore[arg-type]
+        )
+        assert agent.tool_agent is None  # no key → no agent

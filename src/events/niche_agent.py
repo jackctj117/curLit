@@ -644,6 +644,8 @@ class NicheAgent:
         tools: Any = None,
         tools_enabled: bool | None = None,
         tools_max_entities: int | None = None,
+        tool_agent: Any = None,
+        tool_agent_enabled: bool | None = None,
     ) -> None:
         # ``universe`` is a SymbolUniverse (or any object exposing
         # exists/get/resolve_name/robinhood_tradeable).
@@ -693,6 +695,25 @@ class NicheAgent:
                 ))
             except ValueError:
                 self.tools_max_entities = DEFAULT_TOOLS_MAX_ENTITIES
+        # Agentic Kimi tool-loop (CL-ddzt) — an ALTERNATIVE discovery source
+        # where the model itself drives the tools, on the API-billed Kimi
+        # provider. Explicit agent wins; else construct one when enabled AND a
+        # key is present. When set it REPLACES the claude-code cycles for
+        # discovery; verification/scoring downstream are identical.
+        if tool_agent_enabled is None:
+            tool_agent_enabled = _env_flag("NICHE_TOOL_AGENT_ENABLED", default=False)
+        if tool_agent is not None:
+            self.tool_agent = tool_agent
+        elif tool_agent_enabled and os.environ.get("MOONSHOT_API_KEY"):
+            from src.events.kimi_tool_agent import KimiToolAgent  # noqa: PLC0415
+            from src.events.research_tools import ResearchTools  # noqa: PLC0415
+
+            self.tool_agent = KimiToolAgent(
+                universe=self.universe,
+                tools=self.tools or ResearchTools(),
+            )
+        else:
+            self.tool_agent = None
 
     # -- prompt ---------------------------------------------------------
 
@@ -787,16 +808,67 @@ class NicheAgent:
     def run(
         self, event_row: Mapping[str, Any], playbook: Playbook | None = None,
     ) -> list[NicheIdea]:
-        """Full niche pass for one event: one or more LLM cycles → parse →
-        verify → score/gate. Returns ONLY the surviving (verified, liquidity-
-        cleared, above-threshold) ideas, score-desc.
+        """Full niche pass for one event: DISCOVER raw ideas → verify →
+        score/gate. Returns ONLY the surviving (verified, liquidity-cleared,
+        above-threshold) ideas, score-desc. Never raises.
 
-        Iterative hopping (CL-2dnf): cycle 1 is the base multi-hop pass; each
-        further cycle (up to ``max_cycles``) feeds the discovered names back in
-        and asks for DEEPER/WIDER connected names, deduped on ticker-or-company
-        and stopping early once a cycle adds nothing new. Fail-soft: a cycle-1
-        transport failure or unparseable reply yields ``[]``; a later-cycle
-        failure keeps whatever earlier cycles found. Never raises."""
+        Discovery source: the agentic Kimi tool-loop (CL-ddzt) when a
+        ``tool_agent`` is configured, else the claude-code iterative multi-hop
+        cycles (CL-2dnf/CL-2czc). Verification + scoring are identical either
+        way, so no unverified ticker survives regardless of source."""
+        raw_accum = (
+            self._discover_via_tool_agent(event_row, playbook)
+            if self.tool_agent is not None
+            else self._discover_via_cycles(event_row, playbook)
+        )
+        source = "kimi" if self.tool_agent is not None else "cycles"
+        if not raw_accum:
+            return []
+        verified = verify_ideas(raw_accum, self.universe)
+        if not verified:
+            logger.info(
+                "niche agent: all %d proposed ideas failed verification "
+                "for event id=%s", len(raw_accum), event_row.get("id"),
+            )
+            return []
+        market_data = {}
+        try:
+            market_data = self.market_data_fn([i.ticker for i in verified])
+        except Exception:
+            logger.warning(
+                "niche agent: market-data fetch failed; scoring data-free",
+                exc_info=True,
+            )
+        surviving, logged = score_and_gate(verified, market_data, self.config)
+        logger.info(
+            "niche agent: event id=%s [%s] — %d proposed, %d verified, "
+            "%d surfaced, %d logged (below threshold/illiquid)",
+            event_row.get("id"), source, len(raw_accum), len(verified),
+            len(surviving), len(logged),
+        )
+        return surviving
+
+    def _discover_via_tool_agent(
+        self, event_row: Mapping[str, Any], playbook: Playbook | None,
+    ) -> list[NicheIdea]:
+        """Agentic Kimi tool-loop discovery (CL-ddzt): the model drives the
+        SEC/ticker tools, then we parse + dedup its final JSON. Fail-soft []."""
+        text = self.tool_agent.discover(event_row, playbook)
+        seen: set[str] = set()
+        out: list[NicheIdea] = []
+        for idea in (parse_niche_ideas(text) if text else []):
+            key = _idea_key(idea)
+            if key not in seen:
+                seen.add(key)
+                out.append(idea)
+        return out
+
+    def _discover_via_cycles(
+        self, event_row: Mapping[str, Any], playbook: Playbook | None,
+    ) -> list[NicheIdea]:
+        """Iterative claude-code multi-hop cycles (CL-2dnf) with optional
+        between-cycle SEC grounding (CL-2czc) → raw deduped ideas. Fail-soft:
+        a cycle-1 failure yields []; a later-cycle failure keeps earlier finds."""
         raw_accum: list[NicheIdea] = []
         seen: set[str] = set()
         grounding: list[str] = []
@@ -856,31 +928,11 @@ class NicheAgent:
                             exc_info=True,
                         )
 
-        if not raw_accum:
-            return []
-        verified = verify_ideas(raw_accum, self.universe)
-        if not verified:
-            logger.info(
-                "niche agent: all %d proposed ideas failed verification "
-                "for event id=%s", len(raw_accum), event_row.get("id"),
-            )
-            return []
-        market_data = {}
-        try:
-            market_data = self.market_data_fn([i.ticker for i in verified])
-        except Exception:
-            logger.warning(
-                "niche agent: market-data fetch failed; scoring data-free",
-                exc_info=True,
-            )
-        surviving, logged = score_and_gate(verified, market_data, self.config)
-        logger.info(
-            "niche agent: event id=%s — %d cycle(s), %d proposed, %d verified, "
-            "%d surfaced, %d logged (below threshold/illiquid)",
-            event_row.get("id"), cycles_run, len(raw_accum), len(verified),
-            len(surviving), len(logged),
+        logger.debug(
+            "niche cycles: event id=%s — %d cycle(s), %d raw ideas",
+            event_row.get("id"), cycles_run, len(raw_accum),
         )
-        return surviving
+        return raw_accum
 
     def merge_into_assessment(
         self,
