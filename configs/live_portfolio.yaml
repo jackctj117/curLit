@@ -111,14 +111,27 @@ strategies:
       max_concurrent_event_positions: 2
       # Hard TIME STOP: exit after this many hours REGARDLESS of P&L.
       event_max_holding_hours: 4
+      # Per-instrument concentration cap (CL-wbmw): combined open notional
+      # in ANY single event instrument may not exceed this fraction of
+      # equity. A general CEILING that conviction/corroboration sizing may
+      # grow toward — it does NOT shrink the base event_risk_pct sizing,
+      # only trims a new leg (or skips it) when that instrument's COMBINED
+      # open exposure would exceed the cap. Applies to every instrument,
+      # haven or not. (Omit to use the 0.25 default in
+      # src/strategies/event_driven.py.)
+      # per_instrument_max_pct: 0.55
       # Haven concentration cap (CL-5mkf): combined open notional across
       # the safe-haven instruments (XAU_USD, XAG_USD) may not exceed this
-      # fraction of equity. A new gold/silver entry that would breach it
-      # is reduced to fit, or skipped if already at/over. Non-haven trades
-      # are unaffected. Additive to event_risk_pct + the event-book loss
-      # cap; separate from the correlation kill switch. (Omit to use the
-      # 0.20 default in src/strategies/event_driven.py.)
-      # haven_max_pct: 0.20
+      # fraction of equity — an ADDITIONAL, tighter CLUSTER cap layered on
+      # top of per_instrument_max_pct (a 0.25 per-name cap alone would
+      # allow 0.25 gold + 0.25 silver = 0.50 havens; this 0.20 group cap
+      # prevents that). A new haven leg is trimmed to satisfy BOTH caps
+      # (smaller headroom wins), or skipped if either is at/over. Non-haven
+      # trades see only the per-instrument cap. Additive to event_risk_pct
+      # + the event-book loss cap; separate from the correlation kill
+      # switch. (Omit to use the 0.20 default in
+      # src/strategies/event_driven.py.)
+      # haven_max_pct: 0.60
       # ---- Event-book protection -------------------------------------
       # Cumulative realized event-trade loss (fraction of equity) that
       # freezes NEW entries and logs CRITICAL. Exits still flow. State

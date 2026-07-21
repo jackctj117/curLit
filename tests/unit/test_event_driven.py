@@ -309,10 +309,20 @@ class TestWindow:
 
 
 class TestSizing:
+    # The base event_risk_pct sizing here produces a 50k-notional leg on a
+    # 100k account (50% notional — its RISK at the 1% stop is only 0.5% of
+    # equity). That is over the default 25% per-instrument cap (CL-wbmw),
+    # so these tests raise the cap out of the way to exercise the base
+    # sizing FORMULA in isolation; the cap's own trimming has its own
+    # class (TestConcentrationCap).
+
     def test_long_size_and_stop(self, tmp_path: Any) -> None:
         db = make_db()
         insert_event(db)
-        strat = make_strategy(tmp_path, db=db, provider=confirming_provider())
+        strat = make_strategy(
+            tmp_path, db=db, provider=confirming_provider(),
+            per_instrument_max_pct=1.0,
+        )
         intents = run(strat, CONFIRM_PRICES, FakeBroker(equity=100_000))
         assert len(intents) == 1
         # equity * risk / stop_distance = 100000 * 0.005 / (1.0 * 0.01)
@@ -328,7 +338,10 @@ class TestSizing:
         affected = [{"instrument": "USD_CAD", "kind": "oanda",
                      "direction": "short", "reason": "test"}]
         insert_event(db, affected=affected, direction="bearish")
-        strat = make_strategy(tmp_path, db=db, provider=FakeProvider(p0=1.02, daily_vol=0.01))
+        strat = make_strategy(
+            tmp_path, db=db, provider=FakeProvider(p0=1.02, daily_vol=0.01),
+            per_instrument_max_pct=1.0,
+        )
         intents = run(strat, {"USD_CAD": tick(1.0)}, FakeBroker(equity=100_000))
         assert len(intents) == 1
         assert intents[0].target_position == pytest.approx(-50_000.0)
@@ -445,75 +458,152 @@ class TestCaps:
 
 
 # =============================================================================
-# Haven concentration cap (CL-5mkf) — real enforcement on gold/silver legs
+# Concentration caps (CL-wbmw generalizes CL-5mkf) — real enforcement
 # =============================================================================
 
 
-class TestHavenCap:
-    """The machine cap on combined open notional in HAVEN_INSTRUMENTS
-    (XAU_USD, XAG_USD). Injectable equity (FakeBroker) + tracked
-    positions (seed_position); no DB/network needed for the sizing
-    exercise itself — we drive _haven_capped_size directly and via the
-    full confirmed-entry path."""
+def _seed(strat: EventDrivenStrategy, symbol: str, units: float,
+          price: float = 1.0, stop_price: float | None = None) -> None:
+    """Seed a tracked open position (notional = |units| * price). Default
+    stop is a far-away 0.5 so the full-path tests' exit check (against the
+    FakeProvider's p0=0.99 fallback price) doesn't close the seed before
+    the new entry is sized."""
+    strat.open_positions[symbol] = EventPosition(
+        symbol=symbol, event_id=1, entry_ts=datetime.now(UTC),
+        entry_price=price, quantity=units, direction=1 if units >= 0 else -1,
+        stop_price=stop_price if stop_price is not None else 0.5,
+        headline=f"seeded {symbol}",
+    )
 
-    def test_default_is_twenty_pct(self, tmp_path: Any) -> None:
+
+class TestConcentrationCap:
+    """The generalized machine cap: a per-instrument cap on EVERY event
+    instrument (per_instrument_max_pct) plus the tighter haven-cluster cap
+    (haven_max_pct) on gold+silver. Injectable equity (FakeBroker) +
+    tracked positions; we drive _concentration_capped_size directly and
+    via the full confirmed-entry path."""
+
+    def test_defaults(self, tmp_path: Any) -> None:
         strat = make_strategy(tmp_path, db=make_db())
-        assert strat.config.haven_max_pct == pytest.approx(0.20)
+        # Ceilings ABOVE one base leg (~50% notional) so the first leg
+        # passes intact and the caps bind on accumulation (CL-wbmw retune).
+        assert strat.config.per_instrument_max_pct == pytest.approx(0.55)
+        assert strat.config.haven_max_pct == pytest.approx(0.60)
 
-    def test_reduces_size_when_over_cap(self, tmp_path: Any) -> None:
-        # Equity 100k, cap 20% = 20k haven notional. 12k already open in
-        # gold; a proposed 15k silver leg would total 27k → trimmed to
-        # exactly the 8k headroom (÷ price 1.0 → 8000 units).
-        strat = make_strategy(tmp_path, db=make_db(), haven_max_pct=0.20)
-        strat.open_positions["XAU_USD"] = EventPosition(
-            symbol="XAU_USD", event_id=1, entry_ts=datetime.now(UTC),
-            entry_price=1.0, quantity=12_000.0, direction=1,
-            stop_price=0.99, headline="seeded gold",
-        )
-        capped = strat._haven_capped_size(
-            "XAG_USD", size=15_000.0, entry_price=1.0, equity=100_000.0,
-        )
-        assert capped == pytest.approx(8_000.0)  # fills remaining headroom
+    # ---- per-instrument cap on a NON-haven single name (e.g. BCO_USD) ----
 
-    def test_skips_when_already_at_cap(self, tmp_path: Any) -> None:
-        # 20k gold already open == the full 20k cap → a new haven leg is
-        # skipped (size 0), sign preserved regardless of direction.
-        strat = make_strategy(tmp_path, db=make_db(), haven_max_pct=0.20)
-        strat.open_positions["XAU_USD"] = EventPosition(
-            symbol="XAU_USD", event_id=1, entry_ts=datetime.now(UTC),
-            entry_price=1.0, quantity=20_000.0, direction=1,
-            stop_price=0.99, headline="seeded gold",
+    def test_per_instrument_trims_non_haven(self, tmp_path: Any) -> None:
+        # Equity 100k, per-instrument cap 25% = 25k. 20k BCO_USD already
+        # open; a proposed 15k leg would total 35k → trimmed to the 5k
+        # headroom (÷ price 1.0 → 5000 units).
+        strat = make_strategy(tmp_path, db=make_db(), per_instrument_max_pct=0.25)
+        _seed(strat, "BCO_USD", 20_000.0)
+        capped = strat._concentration_capped_size(
+            "BCO_USD", size=15_000.0, entry_price=1.0, equity=100_000.0,
         )
-        assert strat._haven_capped_size(
-            "XAG_USD", size=-5_000.0, entry_price=1.0, equity=100_000.0,
+        assert capped == pytest.approx(5_000.0)
+
+    def test_per_instrument_skips_when_exhausted(self, tmp_path: Any) -> None:
+        # 25k BCO_USD open == the full 25k cap → a new leg is skipped
+        # (size 0), sign preserved regardless of direction.
+        strat = make_strategy(tmp_path, db=make_db(), per_instrument_max_pct=0.25)
+        _seed(strat, "BCO_USD", 25_000.0)
+        assert strat._concentration_capped_size(
+            "BCO_USD", size=-9_000.0, entry_price=1.0, equity=100_000.0,
         ) == 0.0
 
-    def test_under_cap_size_unchanged(self, tmp_path: Any) -> None:
-        strat = make_strategy(tmp_path, db=make_db(), haven_max_pct=0.20)
-        # Nothing open; a 5k gold leg is well under the 20k cap → intact.
-        assert strat._haven_capped_size(
-            "XAU_USD", size=5_000.0, entry_price=1.0, equity=100_000.0,
+    def test_under_cap_unchanged(self, tmp_path: Any) -> None:
+        # Nothing open; a 5k BCO leg is well under the 25k cap → intact.
+        # The cap is a ceiling, not a flat limiter — under-cap passes as-is.
+        strat = make_strategy(tmp_path, db=make_db(), per_instrument_max_pct=0.25)
+        assert strat._concentration_capped_size(
+            "BCO_USD", size=5_000.0, entry_price=1.0, equity=100_000.0,
         ) == pytest.approx(5_000.0)
 
-    def test_non_haven_untouched(self, tmp_path: Any) -> None:
-        # A non-haven symbol never gets capped — even with gold at the cap.
-        strat = make_strategy(tmp_path, db=make_db(), haven_max_pct=0.20)
-        strat.open_positions["XAU_USD"] = EventPosition(
-            symbol="XAU_USD", event_id=1, entry_ts=datetime.now(UTC),
-            entry_price=1.0, quantity=30_000.0, direction=1,
-            stop_price=0.99, headline="seeded gold",
-        )
-        assert strat._haven_capped_size(
-            "BCO_USD", size=99_000.0, entry_price=1.0, equity=100_000.0,
-        ) == pytest.approx(99_000.0)
+    def test_other_instrument_open_does_not_count(self, tmp_path: Any) -> None:
+        # BCO's per-instrument headroom ignores an unrelated open name.
+        strat = make_strategy(tmp_path, db=make_db(), per_instrument_max_pct=0.25)
+        _seed(strat, "WTICO_USD", 24_000.0)  # near-cap in a DIFFERENT name
+        assert strat._concentration_capped_size(
+            "BCO_USD", size=20_000.0, entry_price=1.0, equity=100_000.0,
+        ) == pytest.approx(20_000.0)  # BCO itself is empty → full leg
 
-    def test_confirmed_haven_entry_skipped_at_cap_logs_warning(
+    # ---- haven-cluster cap: the tighter of the two binds ----
+
+    def test_haven_cluster_binds_over_per_instrument(self, tmp_path: Any) -> None:
+        # A pure haven-cluster case: 12k SILVER already open. GOLD itself is
+        # empty (per-instrument headroom 25k) but the haven cluster headroom
+        # is only 20k - 12k = 8k → the cluster cap (smaller) binds. A 15k
+        # gold leg is trimmed to 8k, NOT 25k.
+        strat = make_strategy(
+            tmp_path, db=make_db(),
+            per_instrument_max_pct=0.25, haven_max_pct=0.20,
+        )
+        _seed(strat, "XAG_USD", 12_000.0)
+        capped = strat._concentration_capped_size(
+            "XAU_USD", size=15_000.0, entry_price=1.0, equity=100_000.0,
+        )
+        assert capped == pytest.approx(8_000.0)  # haven-cluster headroom
+
+    def test_per_instrument_binds_on_haven(self, tmp_path: Any) -> None:
+        # A haven where the per-instrument cap is the tighter one: nothing
+        # else haven-open, but 23k GOLD already open. Per-instrument
+        # headroom 25k - 23k = 2k; haven-cluster headroom 20k - 23k = -3k...
+        # cluster would SKIP. To isolate per-instrument-binds we lift the
+        # haven cap above the per-name exposure so the per-name cap wins.
+        strat = make_strategy(
+            tmp_path, db=make_db(),
+            per_instrument_max_pct=0.25, haven_max_pct=0.40,
+        )
+        _seed(strat, "XAU_USD", 23_000.0)
+        capped = strat._concentration_capped_size(
+            "XAU_USD", size=10_000.0, entry_price=1.0, equity=100_000.0,
+        )
+        # per-instrument headroom 25k - 23k = 2k binds (cluster headroom
+        # 40k - 23k = 17k is looser).
+        assert capped == pytest.approx(2_000.0)
+
+    def test_haven_skips_when_cluster_exhausted(self, tmp_path: Any) -> None:
+        # 20k silver open == the full 20k haven cluster cap → a fresh GOLD
+        # leg is skipped even though GOLD's own per-instrument headroom
+        # (25k) is wide open. Either cap exhausted → skip.
+        strat = make_strategy(
+            tmp_path, db=make_db(),
+            per_instrument_max_pct=0.25, haven_max_pct=0.20,
+        )
+        _seed(strat, "XAG_USD", 20_000.0)
+        assert strat._concentration_capped_size(
+            "XAU_USD", size=15_000.0, entry_price=1.0, equity=100_000.0,
+        ) == 0.0
+
+    # ---- full confirmed-entry path ----
+
+    def test_per_instrument_warning_names_the_cap(
         self, tmp_path: Any, caplog: pytest.LogCaptureFixture,
     ) -> None:
-        # Full confirmed-entry path: silver already at the cap → the new
-        # GOLD entry is skipped (no intent), row stays CONFIRMED, WARNING
-        # names the haven exposure. (Different haven symbol so it isn't
-        # short-circuited as already_open.)
+        # 22k BCO_USD open (per-instrument cap 25k @ 100k); a 50k proposed
+        # leg is trimmed to the 3k headroom and the WARNING names the
+        # per-instrument cap (the general-instrument path, not haven).
+        strat = make_strategy(
+            tmp_path, db=make_db(), per_instrument_max_pct=0.25,
+        )
+        _seed(strat, "BCO_USD", 22_000.0)
+        with caplog.at_level(logging.WARNING, logger="src.strategies.event_driven"):
+            capped = strat._concentration_capped_size(
+                "BCO_USD", size=50_000.0, entry_price=1.0, equity=100_000.0,
+            )
+        assert capped == pytest.approx(3_000.0)
+        assert any(
+            "Concentration cap [per-instrument]" in r.getMessage()
+            for r in caplog.records
+        )
+
+    def test_confirmed_haven_entry_skipped_at_cluster_cap_logs_warning(
+        self, tmp_path: Any, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        # Full path: silver already at the haven cluster cap → the new GOLD
+        # entry is skipped (no intent), row stays CONFIRMED, WARNING names
+        # the haven-cluster cap.
         db = make_db()
         affected = [{"instrument": "XAU_USD", "kind": "oanda",
                      "direction": "long", "reason": "risk-off"}]
@@ -522,44 +612,36 @@ class TestHavenCap:
             tmp_path, db=db, provider=FakeProvider(p0=0.99, daily_vol=0.01),
             haven_max_pct=0.20, max_concurrent_event_positions=5,
         )
-        # 20k silver already open (keyed by symbol) = the 20k cap @ 100k.
-        strat.open_positions["XAG_USD"] = EventPosition(
-            symbol="XAG_USD", event_id=99, entry_ts=datetime.now(UTC),
-            entry_price=1.0, quantity=20_000.0, direction=1,
-            stop_price=0.90, headline="seeded silver",
-        )
+        # 20k silver open (keyed by symbol) = the 20k haven cap @ 100k.
+        _seed(strat, "XAG_USD", 20_000.0)
         with caplog.at_level(logging.WARNING, logger="src.strategies.event_driven"):
             intents = run(strat, {"XAU_USD": tick(1.0)}, FakeBroker(equity=100_000))
         assert intents == []
         assert get_status(db, eid) == "CONFIRMED"  # confirmed, never traded
         assert any(
-            "Haven concentration cap" in r.getMessage() for r in caplog.records
+            "Concentration cap [haven-cluster" in r.getMessage()
+            for r in caplog.records
         )
 
-    def test_confirmed_haven_entry_reduced_under_cap(
+    def test_confirmed_haven_entry_reduced_under_cluster_cap(
         self, tmp_path: Any,
     ) -> None:
-        # Silver partially open (10k of a 20k cap); a fresh confirmed GOLD
-        # entry is trimmed to the 10k headroom rather than skipped.
+        # Silver partially open (10k of a 20k cluster cap); a fresh confirmed
+        # GOLD entry is trimmed to the 10k cluster headroom (the tighter of
+        # per-instrument 25k vs cluster 10k) rather than skipped.
         db = make_db()
         affected = [{"instrument": "XAU_USD", "kind": "oanda",
                      "direction": "long", "reason": "risk-off"}]
         insert_event(db, affected=affected)
-        # event_stop_pct default 0.01, entry 1.0 → stop_distance 0.01;
-        # unconstrained size = 100k * 0.005 / 0.01 = 50k notional (way
-        # over the 10k headroom) → trimmed to 10k units at price 1.0.
         strat = make_strategy(
             tmp_path, db=db, provider=FakeProvider(p0=0.99, daily_vol=0.01),
-            haven_max_pct=0.20, max_concurrent_event_positions=5,
+            haven_max_pct=0.20, per_instrument_max_pct=0.25,
+            max_concurrent_event_positions=5,
         )
-        strat.open_positions["XAG_USD"] = EventPosition(
-            symbol="XAG_USD", event_id=99, entry_ts=datetime.now(UTC),
-            entry_price=1.0, quantity=10_000.0, direction=1,
-            stop_price=0.90, headline="seeded silver",
-        )
+        _seed(strat, "XAG_USD", 10_000.0)
         intents = run(strat, {"XAU_USD": tick(1.0)}, FakeBroker(equity=100_000))
         assert len(intents) == 1
-        # Trimmed to the remaining 10k headroom (÷ entry 1.0 = 10k units).
+        # Trimmed to the 10k cluster headroom (÷ entry 1.0 = 10k units).
         assert intents[0].target_position == pytest.approx(10_000.0)
 
 

@@ -582,9 +582,11 @@ class TestCorroboration:
         assert "russia_ukraine" in message
 
 
-class TestHavenConcentrationNote:
-    """CL-5mkf: a displayed reminder when the advisory ideas pile into
-    gold/silver — corroborated OR multiple distinct haven ideas."""
+class TestConcentrationNote:
+    """CL-wbmw (generalizes CL-5mkf): a displayed reminder when the
+    advisory ideas pile into ANY instrument — corroborated by >1 event OR
+    repeated across >= 2 distinct ideas — plus a gold/silver CLUSTER
+    variant. Additive display only; never removes/hides an idea."""
 
     def _gold(self, action: str = "long") -> dict[str, Any]:
         return _idea(ticker="XAU_USD", action=action, direction="bullish",
@@ -594,25 +596,81 @@ class TestHavenConcentrationNote:
         return _idea(ticker="XAG_USD", action="long", direction="bullish",
                      rationale="risk-off")
 
-    def test_note_when_corroborated_haven(self) -> None:
+    # ---- general per-instrument note (now fires for ANY instrument) ----
+
+    def test_note_when_corroborated_general_instrument(self) -> None:
+        # A NON-gold instrument (BCO_USD) corroborated by 2 events → the
+        # generalized per-instrument note fires (proves it's no longer
+        # gold-only).
+        oil = _idea(ticker="BCO_USD", action="long", direction="bullish")
+        r1 = _res(event_id=1, theme="energy_chokepoint", urgency=9)
+        r1.assessment["trade_ideas"] = [oil]
+        r2 = _res(event_id=2, theme="russia_ukraine", urgency=7)
+        r2.assessment["trade_ideas"] = [oil]
+        built = build_digest([r1, r2])
+        assert built is not None
+        message = built[1]
+        assert (
+            "⚠️ already exposed to BCO_USD via 2 ideas — watch concentration"
+            in message
+        )
+        # Rendered once, in the Ideas section, before the idea blocks.
+        assert message.count("watch concentration") == 1
+        assert message.index("watch concentration") < message.index("<b>BCO_USD</b>")
+
+    def test_note_when_two_distinct_oil_ideas(self) -> None:
+        # Two DISTINCT ideas on the same instrument (different actions) →
+        # flagged by the >= 2-ideas rule even without corroboration.
+        r = _res(event_id=1, theme="energy_chokepoint", urgency=9)
+        r.assessment["trade_ideas"] = [
+            _idea(ticker="BCO_USD", action="long"),
+            _idea(ticker="BCO_USD", action="buy_calls"),
+        ]
+        built = build_digest([r])
+        assert built is not None
+        assert "already exposed to BCO_USD" in built[1]
+
+    def test_escaping_and_line_cap(self) -> None:
+        # Four distinct over-weight instruments (each corroborated by 2
+        # events) → 3 lines + "+1 more"; a hostile ticker is HTML-escaped.
+        tickers = ["BCO_USD", "USD_CAD", "a<&>b", "NAS100_USD"]
+        r1 = _res(event_id=1, urgency=9)
+        r2 = _res(event_id=2, urgency=8)
+        r1.assessment["trade_ideas"] = [_idea(ticker=t, action="long") for t in tickers]
+        r2.assessment["trade_ideas"] = [_idea(ticker=t, action="long") for t in tickers]
+        built = build_digest([r1, r2])
+        assert built is not None
+        message = built[1]
+        note_lines = [ln for ln in message.split("\n") if "watch concentration" in ln]
+        assert len(note_lines) == 3
+        assert "+1 more over-weight instruments" in message
+        assert "a<&>b" not in message  # raw hostile ticker escaped
+
+    # ---- haven-cluster variant ----
+
+    def test_cluster_note_when_multiple_distinct_havens(self) -> None:
+        # Gold + silver, one idea each (neither individually over-weight) →
+        # the haven-cluster line fires for the group.
+        r = _res(event_id=1, theme="broad_riskoff", urgency=9)
+        r.assessment["trade_ideas"] = [self._gold(), self._silver()]
+        built = build_digest([r])
+        assert built is not None
+        assert "⚠️ watch gold/silver (haven) concentration" in built[1]
+
+    def test_prefer_specific_over_cluster(self) -> None:
+        # Gold corroborated by 2 events (individually over-weight) + one
+        # silver idea. Gold gets its OWN specific line; the remaining lone
+        # silver is NOT enough for a cluster line → no double-warn.
         r1 = _res(event_id=1, theme="russia_ukraine", urgency=9)
-        r1.assessment["trade_ideas"] = [self._gold()]
+        r1.assessment["trade_ideas"] = [self._gold(), self._silver()]
         r2 = _res(event_id=2, theme="energy_chokepoint", urgency=7)
         r2.assessment["trade_ideas"] = [self._gold()]
         built = build_digest([r1, r2])
         assert built is not None
         message = built[1]
-        assert "⚠️ already long gold via 2 ideas — watch concentration" in message
-        # Rendered once, in the Ideas section, before the idea blocks.
-        assert message.count("watch concentration") == 1
-        assert message.index("watch concentration") < message.index("<b>XAU_USD</b>")
-
-    def test_note_when_multiple_distinct_havens(self) -> None:
-        r = _res(event_id=1, theme="broad_riskoff", urgency=9)
-        r.assessment["trade_ideas"] = [self._gold(), self._silver()]
-        built = build_digest([r])
-        assert built is not None
-        assert "watch concentration" in built[1]
+        assert "already exposed to XAU_USD" in message
+        # Only silver remains for the cluster, which alone isn't over-weight.
+        assert "watch gold/silver (haven) concentration" not in message
 
     def test_no_note_for_single_haven_idea(self) -> None:
         r = _res(event_id=1, theme="broad_riskoff", urgency=9)
@@ -621,14 +679,36 @@ class TestHavenConcentrationNote:
         assert built is not None
         assert "watch concentration" not in built[1]
 
-    def test_no_note_when_no_haven_ideas(self) -> None:
+    def test_no_note_for_single_distinct_idea(self) -> None:
         r1 = _res(event_id=1, urgency=9)
         r1.assessment["trade_ideas"] = [_idea(ticker="BCO_USD", action="long")]
-        r2 = _res(event_id=2, urgency=7)
-        r2.assessment["trade_ideas"] = [_idea(ticker="BCO_USD", action="long")]
-        built = build_digest([r1, r2])
+        built = build_digest([r1])
         assert built is not None
         assert "watch concentration" not in built[1]
+
+    def test_variety_preserved_distinct_niche_ideas(self) -> None:
+        # GUARDRAIL: 5 DISTINCT niche ideas (all count=1, distinct tickers)
+        # render in FULL with NO consolidation and NO concentration note.
+        # The variety of niche puts/shorts/longs is the alpha — the
+        # concentration work must never reduce it.
+        r = _res(event_id=1, theme="pharma_api_supply", urgency=9)
+        r.assessment["trade_ideas"] = [
+            _idea(ticker="TEVA", action="buy_puts", direction="bearish"),
+            _idea(ticker="RDY", action="buy_puts", direction="bearish"),
+            _idea(ticker="DHT", action="buy_calls", direction="bullish"),
+            _idea(ticker="FRO", action="buy_calls", direction="bullish"),
+            _idea(ticker="NVDA", action="short", direction="bearish"),
+        ]
+        built = build_digest([r])
+        assert built is not None
+        message = built[1]
+        # All five distinct tickers present, each rendered once.
+        for t in ("TEVA", "RDY", "DHT", "FRO", "NVDA"):
+            assert message.count(f"<b>{t}</b>") == 1
+        # No consolidation, no concentration note, no idea elided.
+        assert "watch concentration" not in message
+        assert "corroborated by" not in message
+        assert "more ideas" not in message
 
 
 class TestFadeSection:

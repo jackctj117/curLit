@@ -93,11 +93,15 @@ _RATIONALE_MAX = 60
 #: on the corroboration note (CL-5mkf) — keeps the line phone-readable.
 _MAX_CORROB_THEMES = 3
 
-#: Pure safe-haven instruments (and their retail proxies) — a
-#: concentration reminder fires when these dominate the advisory ideas
-#: (CL-5mkf). Advisory display only; the machine cap lives in the
-#: EventDrivenStrategy.
+#: Pure safe-haven instruments (and their retail proxies) — the
+#: haven-CLUSTER concentration reminder fires when these dominate the
+#: advisory ideas as a group (CL-5mkf). Advisory display only; the
+#: machine cap lives in the EventDrivenStrategy.
 _HAVEN_TICKERS = frozenset({"XAU_USD", "XAG_USD", "GLD", "SLV", "IAU"})
+
+#: Max per-instrument concentration reminder lines before a "+N more"
+#: tail (CL-wbmw) — keeps the Ideas section phone-readable.
+_MAX_CONCENTRATION_NOTES = 3
 
 
 def fetch_volume_marks(
@@ -291,41 +295,99 @@ def _idea_line(
     return "\n".join(block)
 
 
-def _haven_concentration_note(ideas: Sequence[Mapping[str, Any]]) -> str | None:
-    """One compact concentration reminder for the Ideas section
-    (CL-5mkf), or ``None``. Fires when the advisory ideas are heavy on
-    pure safe-havens (gold/silver, or their GLD/SLV/IAU proxies): either
-    one haven idea is corroborated by multiple events, OR two-plus
-    distinct haven ideas exist in the same digest. This is a DISPLAYED
-    reminder for hand-executed trades — the real machine cap lives in
-    the EventDrivenStrategy. Rendered once, not per-idea.
+def _idea_event_count(idea: Mapping[str, Any]) -> int:
+    """How many events back this idea: its corroboration count (>= 1),
+    or 1 when it carries no corroboration block."""
+    corrob = idea.get("corroboration")
+    if isinstance(corrob, Mapping):
+        return max(1, int(corrob.get("count") or 1))
+    return 1
 
-    The count reported is the number of distinct haven ideas plus any
-    extra corroborating events beyond the first on each — i.e. how many
-    ways the operator is being nudged long gold in this one digest.
+
+def _concentration_notes(ideas: Sequence[Mapping[str, Any]]) -> list[str]:
+    """Concentration reminders for the Ideas section (CL-wbmw, generalizes
+    CL-5mkf's gold-only note), or ``[]``. Rendered ONCE, before the idea
+    blocks, not per-idea.
+
+    These are DISPLAYED reminders for hand-executed Robinhood trades — we
+    can't ENFORCE concentration on trades the operator places by hand, so
+    this is honestly just a nudge. The real machine cap
+    (per_instrument_max_pct + haven_max_pct) lives in the
+    EventDrivenStrategy and applies only to the OANDA paper legs.
+
+    Two flavours:
+
+      * Per-instrument line, for ANY over-weight instrument — one that is
+        (a) corroborated by multiple events (corroboration.count > 1) OR
+        (b) appears in >= 2 distinct ideas in this digest:
+        ``⚠️ already exposed to <INSTRUMENT> via N ideas — watch
+        concentration``. N = distinct ideas + extra corroborating events
+        beyond the first on each (how many ways the operator is nudged
+        into that name). Capped at _MAX_CONCENTRATION_NOTES lines with a
+        ``+N more`` tail, most-exposed first.
+      * Haven-CLUSTER line, when combined gold/silver ideas are over-weight
+        AS A GROUP: ``⚠️ watch gold/silver (haven) concentration``.
+
+    Don't double-warn: a haven instrument already flagged by its own
+    per-instrument line is excluded from the cluster tally — we prefer the
+    specific line. The cluster line fires only for a group over-weight the
+    individual lines don't already cover.
+
+    Instrument names are HTML-escaped (LLM/config-sourced); the fixed
+    prose is HTML-safe by construction.
     """
-    haven_ideas = [
+    # Tally exposure per instrument (distinct-idea count + extra
+    # corroborating events), preserving first-seen (urgency-desc) order.
+    order: list[str] = []
+    distinct: dict[str, int] = {}
+    events: dict[str, int] = {}
+    corroborated: dict[str, bool] = {}
+    for idea in ideas:
+        ticker = str(idea.get("ticker") or "")
+        if not ticker:
+            continue
+        count = _idea_event_count(idea)
+        if ticker not in distinct:
+            order.append(ticker)
+            distinct[ticker] = 0
+            events[ticker] = 0
+            corroborated[ticker] = False
+        distinct[ticker] += 1
+        events[ticker] += count
+        if count > 1:
+            corroborated[ticker] = True
+
+    # Over-weight = corroborated by >1 event OR appears in >= 2 ideas.
+    overweight = [
+        t for t in order
+        if corroborated[t] or distinct[t] >= 2
+    ]
+
+    notes: list[str] = []
+    for ticker in overweight[:_MAX_CONCENTRATION_NOTES]:
+        notes.append(
+            f"⚠️ already exposed to {html_escape(ticker)} via "
+            f"{events[ticker]} ideas — watch concentration"
+        )
+    extra = len(overweight) - _MAX_CONCENTRATION_NOTES
+    if extra > 0:
+        notes.append(f"+{extra} more over-weight instruments")
+
+    # Haven-cluster line: the metals as a GROUP, but ONLY counting havens
+    # NOT already covered by a specific per-instrument line above (no
+    # double-warning — the specific line wins).
+    overweight_havens = {t for t in overweight if t.upper() in _HAVEN_TICKERS}
+    cluster_ideas = [
         i for i in ideas
         if str(i.get("ticker") or "").upper() in _HAVEN_TICKERS
+        and str(i.get("ticker") or "") not in overweight_havens
     ]
-    if not haven_ideas:
-        return None
-    n_distinct = len(haven_ideas)
-    total_events = 0
-    for i in haven_ideas:
-        corrob = i.get("corroboration")
-        count = int(corrob.get("count") or 1) if isinstance(corrob, Mapping) else 1
-        total_events += max(1, count)
-    corroborated = any(
-        isinstance(i.get("corroboration"), Mapping)
-        and int(i["corroboration"].get("count") or 1) > 1
-        for i in haven_ideas
-    )
-    if n_distinct < 2 and not corroborated:
-        return None
-    return (
-        f"⚠️ already long gold via {total_events} ideas — watch concentration"
-    )
+    cluster_distinct = len({str(i.get("ticker") or "") for i in cluster_ideas})
+    cluster_corroborated = any(_idea_event_count(i) > 1 for i in cluster_ideas)
+    if cluster_distinct >= 2 or cluster_corroborated:
+        notes.append("⚠️ watch gold/silver (haven) concentration")
+
+    return notes
 
 
 def _fade_line(fade: Mapping[str, Any]) -> str:
@@ -559,11 +621,12 @@ def build_digest(
     if ideas:
         lines.append("")
         lines.append("<b>Ideas:</b>")
-        # Haven concentration reminder (CL-5mkf) — once, before the ideas,
-        # when gold/silver dominates (corroborated or multiple distinct).
-        haven_note = _haven_concentration_note(ideas)
-        if haven_note:
-            lines.append(haven_note)
+        # Concentration reminders (CL-wbmw, generalizes CL-5mkf) — once,
+        # before the ideas: a line per over-weight instrument (corroborated
+        # or repeated across ideas) plus a gold/silver cluster line when the
+        # havens are over-weight as a group. Displayed nudges only — can't
+        # enforce hand-executed Robinhood trades.
+        lines.extend(_concentration_notes(ideas))
         for idea in ideas[:MAX_IDEAS]:
             lines.append(_idea_line(idea, prices))
             lines.append("")  # blank line between ideas for readability

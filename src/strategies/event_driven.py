@@ -64,10 +64,12 @@ _STATE_VERSION = 1
 
 #: Pure safe-haven OANDA instruments (CL-5mkf). Combined open notional
 #: across these is capped at ``haven_max_pct`` of equity so war-heavy
-#: news can't pile the event book into gold/silver. Real enforcement on
-#: the machine legs, additive to event_risk_pct sizing + the event-book
-#: loss cap; separate from (and not a substitute for) the correlation
-#: kill switch.
+#: news can't pile the event book into gold/silver — an ADDITIONAL,
+#: tighter CLUSTER cap on top of the general per-instrument cap
+#: (CL-wbmw), since a per-name limit can't see correlated metals as one
+#: basket. Real enforcement on the machine legs, additive to
+#: event_risk_pct sizing + the event-book loss cap; separate from (and
+#: not a substitute for) the correlation kill switch.
 HAVEN_INSTRUMENTS = frozenset({"XAU_USD", "XAG_USD"})
 
 
@@ -121,12 +123,27 @@ class EventDrivenConfig:
     max_concurrent_event_positions: int = 2
     # Hard TIME STOP: exit after this many hours regardless of P&L.
     event_max_holding_hours: float = 4.0
+    # Per-instrument concentration cap (CL-wbmw): combined open notional
+    # in ANY single event instrument, as a fraction of equity. A CEILING
+    # that catches ACCUMULATION — it does NOT halve the base leg. Note
+    # the base leg notional = equity * event_risk_pct / event_stop_pct =
+    # 0.005/0.01 = ~50% of equity (large notional, but only 0.5% RISK at
+    # the 1% stop). So this cap sits just ABOVE one base leg: the first
+    # legitimate leg in a name passes intact; a SECOND leg in the same
+    # instrument is trimmed/skipped. Gold's down-weighting lives at
+    # SELECTION (the impact prompt prefers theme-specific legs), so
+    # sizing must not double-penalize it. 0.55 = one full base leg + buffer.
+    per_instrument_max_pct: float = 0.55
     # Combined open notional across HAVEN_INSTRUMENTS (gold/silver) as a
-    # fraction of equity that the event book may hold (CL-5mkf). A new
-    # haven entry that would breach this is reduced to fit, or skipped if
-    # already at/over the cap. Non-haven trades are unaffected. 0.20 =
-    # 20% of equity in safe-havens across all open event positions.
-    haven_max_pct: float = 0.20
+    # fraction of equity (CL-5mkf). ADDITIONAL cluster cap on top of the
+    # per-instrument cap: correlated metals need a group limit a per-name
+    # cap misses (per-name 0.55 alone would allow 0.55 gold + 0.55 silver
+    # = 1.10 havens). Set to allow ONE full haven leg (~0.50) plus a small
+    # second, but not two full metal legs stacking correlated gap risk. A
+    # new haven leg is trimmed to satisfy BOTH caps (smaller headroom
+    # wins), or skipped if EITHER is exhausted; non-haven trades see only
+    # the per-instrument cap. 0.60 = ~1.2 base legs of combined metals.
+    haven_max_pct: float = 0.60
     # ---- Event-book protection ----------------------------------------
     # Cumulative realized loss (fraction of equity) that freezes NEW
     # event entries. Exits always still flow.
@@ -488,8 +505,34 @@ class EventDrivenStrategy:
         return breached
 
     # ------------------------------------------------------------------
-    # Haven concentration cap (CL-5mkf)
+    # Concentration caps (CL-wbmw generalizes CL-5mkf)
+    #
+    # Two layers, both real enforcement on the OANDA paper legs, both
+    # additive to event_risk_pct sizing + the event-book loss cap, both
+    # separate from (and not a substitute for) the correlation kill
+    # switch:
+    #
+    #   * per-instrument cap (per_instrument_max_pct) — applies to EVERY
+    #     event instrument. A general CEILING conviction sizes toward.
+    #   * haven-cluster cap (haven_max_pct) — an ADDITIONAL, tighter group
+    #     limit across HAVEN_INSTRUMENTS (gold + silver), because a
+    #     per-name cap can't see correlated metals as one basket.
+    #
+    # A new leg is trimmed to satisfy BOTH (the smaller headroom binds),
+    # or skipped when EITHER is exhausted.
     # ------------------------------------------------------------------
+
+    def _open_instrument_notional(self, symbol: str) -> float:
+        """Open notional in a SINGLE instrument, from tracked positions
+        (nothing new is persisted). Notional = |quantity| * entry_price,
+        the units the sizing math produces. Positions are keyed by symbol
+        so at most one leg contributes today, but summing is robust to
+        that changing."""
+        total = 0.0
+        for sym, pos in self.open_positions.items():
+            if sym == symbol:
+                total += abs(pos.quantity) * pos.entry_price
+        return total
 
     def _open_haven_notional(self) -> float:
         """Combined open notional across HAVEN_INSTRUMENTS (gold/silver),
@@ -502,47 +545,73 @@ class EventDrivenStrategy:
                 total += abs(pos.quantity) * pos.entry_price
         return total
 
-    def _haven_capped_size(
+    def _concentration_capped_size(
         self,
         symbol: str,
         size: float,
         entry_price: float,
         equity: float,
     ) -> float:
-        """Reduce a NEW haven position's signed ``size`` so combined open
-        haven notional stays within ``haven_max_pct`` of equity (CL-5mkf).
+        """Reduce a NEW event leg's signed ``size`` so it satisfies the
+        concentration caps (CL-wbmw). Two layers:
 
-        Returns the (possibly reduced) signed size — 0.0 when the book is
-        already at/over the cap (skip). Non-haven symbols never reach here
-        (the caller gates on membership). Logs at WARNING with the current
-        haven exposure whenever it trims or skips. Preserves sign."""
-        if symbol not in HAVEN_INSTRUMENTS or equity <= 0:
+          1. per-instrument cap (``per_instrument_max_pct``) — ALWAYS,
+             for every symbol: combined open notional in THIS instrument
+             stays within the cap.
+          2. haven-cluster cap (``haven_max_pct``) — additionally, when
+             ``symbol`` is a haven: combined open gold+silver notional
+             stays within the tighter group cap.
+
+        The binding constraint is the SMALLER of the two headrooms. The
+        cap is a ceiling the base sizing grows toward — under-cap legs
+        pass through UNCHANGED (we never shrink a leg that fits). Returns
+        the (possibly reduced) signed size — 0.0 when EITHER cap is
+        already at/over (skip). Logs at WARNING naming which cap bound it
+        and the current exposure. Preserves sign."""
+        if equity <= 0:
             return size
-        cap_notional = self.config.haven_max_pct * equity
-        current = self._open_haven_notional()
-        headroom = cap_notional - current
+
+        # Layer 1: per-instrument headroom (every symbol).
+        per_cap = self.config.per_instrument_max_pct * equity
+        per_open = self._open_instrument_notional(symbol)
+        headroom = per_cap - per_open
+        binding = "per-instrument"
+        cap_pct = self.config.per_instrument_max_pct
+        open_exposure = per_open
+        cap_notional = per_cap
+
+        # Layer 2: haven-cluster headroom (havens only) — take the tighter.
+        if symbol in HAVEN_INSTRUMENTS:
+            haven_cap = self.config.haven_max_pct * equity
+            haven_open = self._open_haven_notional()
+            haven_headroom = haven_cap - haven_open
+            if haven_headroom < headroom:
+                headroom = haven_headroom
+                cluster = "/".join(sorted(HAVEN_INSTRUMENTS))
+                binding = f"haven-cluster ({cluster})"
+                cap_pct = self.config.haven_max_pct
+                open_exposure = haven_open
+                cap_notional = haven_cap
+
         proposed_notional = abs(size) * entry_price
         if headroom <= 0:
             logger.warning(
-                "Haven concentration cap: already at/over %.0f%% of equity "
-                "in %s (open haven notional %.0f >= cap %.0f) — SKIPPING new "
-                "%s entry",
-                self.config.haven_max_pct * 100,
-                "/".join(sorted(HAVEN_INSTRUMENTS)), current, cap_notional,
-                symbol,
+                "Concentration cap [%s]: already at/over %.0f%% of equity "
+                "(open notional %.0f >= cap %.0f) — SKIPPING new %s entry",
+                binding, cap_pct * 100, open_exposure, cap_notional, symbol,
             )
             return 0.0
         if proposed_notional <= headroom:
-            return size  # fits under the cap — unchanged
+            return size  # fits under the (more binding) cap — unchanged
         # Trim the position to exactly fill the remaining headroom.
         max_units = headroom / entry_price
         capped = max_units if size > 0 else -max_units
         logger.warning(
-            "Haven concentration cap: %s entry reduced from %.0f to %.0f "
-            "units (open haven notional %.0f + proposed %.0f would exceed "
-            "cap %.0f = %.0f%% of equity)",
-            symbol, size, capped, current, proposed_notional, cap_notional,
-            self.config.haven_max_pct * 100,
+            "Concentration cap [%s]: %s entry reduced from %.0f to %.0f "
+            "units (open notional %.0f + proposed %.0f would exceed cap "
+            "%.0f = %.0f%% of equity)",
+            binding, symbol, size, capped, open_exposure, proposed_notional,
+            cap_notional, cap_pct * 100,
         )
         return capped
 
@@ -643,17 +712,21 @@ class EventDrivenStrategy:
             stop_distance = abs(entry_price - stop_price)
             size = equity * self.config.event_risk_pct / max(stop_distance, 1e-9) * direction
 
-            # Haven concentration cap (CL-5mkf) — real enforcement on the
-            # OANDA paper legs. A new gold/silver entry that would push
-            # combined open haven notional past haven_max_pct is trimmed
-            # to fit, or skipped (size 0) if already at/over. Non-haven
-            # symbols pass through untouched. Additive to the event_risk_pct
-            # sizing + the event-book loss cap above.
-            if symbol in HAVEN_INSTRUMENTS:
-                size = self._haven_capped_size(symbol, size, entry_price, equity)
-                if size == 0.0:
-                    skipped.append((symbol, "haven_concentration_cap"))
-                    continue
+            # Concentration caps (CL-wbmw) — real enforcement on the OANDA
+            # paper legs. A new leg that would push THIS instrument's
+            # combined open notional past per_instrument_max_pct (and, for
+            # havens, the tighter haven_max_pct cluster cap) is trimmed to
+            # fit, or skipped (size 0) if EITHER cap is already at/over.
+            # The cap is a ceiling the base event_risk_pct sizing grows
+            # toward — legs already under it pass through untouched.
+            # Additive to the event-book loss cap above.
+            capped = self._concentration_capped_size(
+                symbol, size, entry_price, equity,
+            )
+            if capped == 0.0:
+                skipped.append((symbol, "concentration_cap"))
+                continue
+            size = capped
 
             self.open_positions[symbol] = EventPosition(
                 symbol=symbol, event_id=event_id, entry_ts=now,
