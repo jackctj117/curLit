@@ -124,8 +124,10 @@ class PolymarketFetcher:
                 f"Current implied probabilities: {price_summary}\n\n"
                 f"Description: {description[:1500]}"
             )
+            # Polymarket's user-facing URL is /event/<slug>; the old /market/
+            # path 404s (CL-7j3k).
             url = (
-                f"https://polymarket.com/market/"
+                f"https://polymarket.com/event/"
                 f"{m.get('slug', m.get('id', ''))}"
             )
             out.append(Paper(

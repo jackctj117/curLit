@@ -17,15 +17,6 @@ markets:
   yes_prob: 0.0155
   discovered_volume_usd: 18848089.0
   end_date: '2026-07-31'
-- slug: strait-of-hormuz-traffic-returns-to-normal-by-july-15
-  question: Strait of Hormuz traffic returns to normal by July 15?
-  yes_token_id: '89075579425844467185868633488322759623361856543369509366205030098390192743019'
-  theme: energy_chokepoint
-  matched_term: strait of hormuz
-  discovered_at: '2026-07-20T22:25:43+00:00'
-  yes_prob: 0.0005
-  discovered_volume_usd: 11690057.0
-  end_date: '2026-07-15'
 - slug: strait-of-hormuz-traffic-returns-to-normal-by-december-31
   question: Strait of Hormuz traffic returns to normal by December 31?
   yes_token_id: '83783489454659420807679723574840032660002326710045123865554753994450797728825'
@@ -62,12 +53,3 @@ markets:
   yes_prob: 0.235
   discovered_volume_usd: 379233.0
   end_date: '2026-09-30'
-- slug: will-the-houthis-successfully-target-shipping-by-july-31-2026-20260708165455693
-  question: Will the Houthis successfully target shipping by July 31, 2026?
-  yes_token_id: '11553285742256622965902391811056783122042804173189054211722148787777433742322'
-  theme: red_sea_shipping
-  matched_term: houthi
-  discovered_at: '2026-07-20T22:25:43+00:00'
-  yes_prob: 0.56
-  discovered_volume_usd: 151904.0
-  end_date: '2026-07-31'
