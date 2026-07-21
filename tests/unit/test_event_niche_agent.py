@@ -73,10 +73,11 @@ class MultiResponseClient:
 
 @pytest.fixture(autouse=True)
 def _default_single_cycle(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keep the niche agent single-pass (CL-2dnf) regardless of a leaked
-    NICHE_MAX_CYCLES from the operator's .env; iterative tests set max_cycles
-    explicitly on the agent."""
+    """Keep the niche agent single-pass + tool-free (CL-2dnf / CL-2czc)
+    regardless of a leaked NICHE_MAX_CYCLES / NICHE_TOOLS_ENABLED from the
+    operator's .env; the iterative/tool tests set them explicitly."""
     monkeypatch.delenv("NICHE_MAX_CYCLES", raising=False)
+    monkeypatch.delenv("NICHE_TOOLS_ENABLED", raising=False)
 
 
 def _liquid_md(tickers: list[str]) -> dict[str, dict[str, Any]]:
@@ -113,6 +114,20 @@ class FakeUniverse:
             if row["security_name"] and q in row["security_name"].lower()
         ]
         return out[:limit]
+
+    def get_cik(self, ticker: str) -> int | None:
+        return {"REAL": 111, "FRO": 222}.get((ticker or "").strip().upper())
+
+
+class FakeTools:
+    """Records enrich() calls and returns a canned grounding block."""
+
+    def __init__(self) -> None:
+        self.calls: list[list[str]] = []
+
+    def enrich(self, ideas: Any, universe: Any) -> list[str]:
+        self.calls.append([getattr(i, "ticker", "") for i in ideas])
+        return [f"--- grounded {getattr(i, 'ticker', '')} ---" for i in ideas]
 
 
 def _payload(*ideas: dict[str, Any]) -> str:
@@ -554,3 +569,83 @@ class TestIterativeHopping:
                         max_cycles=0)
         assert hi.max_cycles == 5
         assert lo.max_cycles == 1
+
+
+# --------------------------------------------------------------------- #
+# Tool-augmented hopping (CL-2czc)
+# --------------------------------------------------------------------- #
+
+
+class TestToolAugmentedHopping:
+    def _event(self) -> dict[str, Any]:
+        return {"id": 1, "headline": "China restricts rare-earth exports",
+                "theme": None, "assessment": {}}
+
+    def test_tools_ground_the_next_cycle(self) -> None:
+        c1 = _payload(_idea_dict(ticker="REAL", company_name="Real Co Inc"))
+        c2 = _payload(_idea_dict(ticker="FRO", company_name="Frontline Ltd"))
+        client = MultiResponseClient([c1, c2])
+        tools = FakeTools()
+        agent = NicheAgent(
+            universe=FakeUniverse(), client=client,  # type: ignore[arg-type]
+            market_data_fn=_liquid_md, max_cycles=2, tools=tools,
+        )
+        agent.run(self._event())
+        # Cycle-1's REAL (a valid ticker) was enriched before cycle 2...
+        assert tools.calls == [["REAL"]]
+        # ...and its grounding block landed in the cycle-2 prompt.
+        followup = client.calls[1]["messages"][1].content
+        assert "grounded REAL" in followup
+        assert "REAL RESEARCH DATA" in followup
+
+    def test_tools_respect_max_entities(self) -> None:
+        c1 = _payload(
+            _idea_dict(ticker="REAL", company_name="Real Co Inc"),
+            _idea_dict(ticker="FRO", company_name="Frontline Ltd"),
+        )
+        client = MultiResponseClient([c1, _payload()])
+        tools = FakeTools()
+        agent = NicheAgent(
+            universe=FakeUniverse(), client=client,  # type: ignore[arg-type]
+            market_data_fn=_liquid_md, max_cycles=2, tools=tools,
+            tools_max_entities=1,
+        )
+        agent.run(self._event())
+        assert tools.calls == [["REAL"]]  # capped at 1 entity despite 2 fresh
+
+    def test_no_tools_no_enrichment(self) -> None:
+        c1 = _payload(_idea_dict(ticker="REAL"))
+        client = MultiResponseClient([c1, _payload()])
+        agent = NicheAgent(
+            universe=FakeUniverse(), client=client,  # type: ignore[arg-type]
+            market_data_fn=_liquid_md, max_cycles=2,  # tools default off
+        )
+        assert agent.tools is None
+        agent.run(self._event())  # no crash, no grounding
+        followup = client.calls[1]["messages"][1].content
+        assert "REAL RESEARCH DATA" not in followup
+
+    def test_tools_enabled_via_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("NICHE_TOOLS_ENABLED", "1")
+        agent = NicheAgent(
+            universe=FakeUniverse(),
+            client=MockLLMClient("{}"),  # type: ignore[arg-type]
+        )
+        # A real ResearchTools is constructed when enabled.
+        assert agent.tools is not None
+
+    def test_tools_enrichment_failure_is_soft(self) -> None:
+        class _BoomTools:
+            def enrich(self, ideas: Any, universe: Any) -> list[str]:
+                raise RuntimeError("sec exploded")
+
+        c1 = _payload(_idea_dict(ticker="REAL"))
+        c2 = _payload(_idea_dict(ticker="FRO", company_name="Frontline Ltd"))
+        client = MultiResponseClient([c1, c2])
+        agent = NicheAgent(
+            universe=FakeUniverse(), client=client,  # type: ignore[arg-type]
+            market_data_fn=_liquid_md, max_cycles=2, tools=_BoomTools(),
+        )
+        ideas = agent.run(self._event())
+        # Enrichment blew up but the run still completes with both names.
+        assert {i.ticker for i in ideas} == {"REAL", "FRO"}

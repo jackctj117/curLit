@@ -87,6 +87,21 @@ DEFAULT_MIN_URGENCY = 7
 DEFAULT_MAX_CYCLES = 1
 MAX_CYCLES_CAP = 5
 
+#: Tool-augmented hopping (CL-2czc): between cycles, ground the top few
+#: discovered names in REAL SEC-filing / company data and feed it into the
+#: next cycle's prompt. OPT-IN (``NICHE_TOOLS_ENABLED``) since it adds HTTP
+#: latency + SEC calls; only meaningful with max_cycles > 1. The per-cycle
+#: entity cap (``NICHE_TOOLS_MAX_ENTITIES``) bounds the SEC call volume +
+#: prompt size.
+DEFAULT_TOOLS_MAX_ENTITIES = 2
+
+
+def _env_flag(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
 #: Cap on niche ideas the LLM may return (bounds a pathological reply).
 MAX_NICHE_IDEAS = 6
 
@@ -626,6 +641,9 @@ class NicheAgent:
         config: AsymmetryConfig | None = None,
         max_tokens: int = 1500,
         max_cycles: int | None = None,
+        tools: Any = None,
+        tools_enabled: bool | None = None,
+        tools_max_entities: int | None = None,
     ) -> None:
         # ``universe`` is a SymbolUniverse (or any object exposing
         # exists/get/resolve_name/robinhood_tradeable).
@@ -652,6 +670,29 @@ class NicheAgent:
             except ValueError:
                 max_cycles = DEFAULT_MAX_CYCLES
         self.max_cycles = max(1, min(MAX_CYCLES_CAP, max_cycles))
+        # Tool-augmented hopping (CL-2czc). Explicit tools win; else construct
+        # the default ResearchTools when enabled (env opt-in). Disabled → the
+        # loop skips grounding entirely (pure-reasoning hops, as before).
+        if tools_enabled is None:
+            tools_enabled = _env_flag("NICHE_TOOLS_ENABLED", default=False)
+        self.tools_enabled = tools_enabled
+        if tools is not None:
+            self.tools = tools
+        elif tools_enabled:
+            from src.events.research_tools import ResearchTools  # noqa: PLC0415
+
+            self.tools = ResearchTools()
+        else:
+            self.tools = None
+        if tools_max_entities is not None:
+            self.tools_max_entities = tools_max_entities
+        else:
+            try:
+                self.tools_max_entities = int(os.environ.get(
+                    "NICHE_TOOLS_MAX_ENTITIES", DEFAULT_TOOLS_MAX_ENTITIES,
+                ))
+            except ValueError:
+                self.tools_max_entities = DEFAULT_TOOLS_MAX_ENTITIES
 
     # -- prompt ---------------------------------------------------------
 
@@ -697,10 +738,13 @@ class NicheAgent:
         event_row: Mapping[str, Any],
         playbook: Playbook | None,
         discovered: list[NicheIdea],
+        grounding: list[str] | None = None,
     ) -> str:
         """Cycle-2+ prompt (CL-2dnf): feed back the names found so far and
         push the model DEEPER/WIDER along explicit tree-of-thought branches,
-        stopping it from repeating what's already on the table."""
+        stopping it from repeating what's already on the table. When
+        tool-augmented (CL-2czc), ``grounding`` carries REAL SEC-filing /
+        profile data on those names so the next hops build on fact."""
         lines = []
         for idea in discovered[:12]:
             tkr = f" ({idea.ticker})" if idea.ticker else ""
@@ -708,13 +752,23 @@ class NicheAgent:
                 f"  - {idea.company_name or '?'}{tkr} [hop {idea.hop_count}]",
             )
         found = "\n".join(lines) or "  (none yet)"
+        ground_block = ""
+        if grounding:
+            joined = "\n\n".join(grounding[:6])
+            ground_block = (
+                "\nREAL RESEARCH DATA on names found so far — ground your next "
+                "hops in THIS (actual filings/profiles, not memory); name the "
+                "specific customers / suppliers / competitors it reveals:\n"
+                f"{joined}\n"
+            )
         return (
             f"EVENT: {event_row.get('headline')}\n"
             f"THEME: {event_row.get('theme') or 'unmatched'}\n\n"
             f"{self._playbook_context(playbook)}\n\n"
             "Entities discovered SO FAR (do NOT repeat these — go DEEPER and "
             "WIDER, further out the chain):\n"
-            f"{found}\n\n"
+            f"{found}\n"
+            f"{ground_block}\n"
             "Now surface ADDITIONAL under-followed, high-torque names connected "
             "to this event and to those entities, exploring EACH branch:\n"
             "  A. Upstream — deeper-tier suppliers, raw inputs, sole-source "
@@ -745,12 +799,15 @@ class NicheAgent:
         failure keeps whatever earlier cycles found. Never raises."""
         raw_accum: list[NicheIdea] = []
         seen: set[str] = set()
+        grounding: list[str] = []
         cycles_run = 0
         for cycle in range(1, self.max_cycles + 1):
             cycles_run = cycle
             user = (
                 self._user_prompt(event_row, playbook) if cycle == 1
-                else self._followup_prompt(event_row, playbook, raw_accum)
+                else self._followup_prompt(
+                    event_row, playbook, raw_accum, grounding,
+                )
             )
             try:
                 resp = self.client.complete(
@@ -782,6 +839,22 @@ class NicheAgent:
                     "(event id=%s)", cycle, event_row.get("id"),
                 )
                 break
+            # Tool-augment for the NEXT cycle (CL-2czc): ground the top few
+            # fresh names with a REAL ticker in SEC-filing / profile data.
+            if self.tools is not None and cycle < self.max_cycles and fresh:
+                candidates = [
+                    i for i in fresh
+                    if i.ticker and self.universe.exists(i.ticker)
+                ][: self.tools_max_entities]
+                if candidates:
+                    try:
+                        grounding.extend(self.tools.enrich(candidates, self.universe))
+                    except Exception:
+                        logger.warning(
+                            "niche tools: enrichment failed for event id=%s; "
+                            "continuing without grounding", event_row.get("id"),
+                            exc_info=True,
+                        )
 
         if not raw_accum:
             return []

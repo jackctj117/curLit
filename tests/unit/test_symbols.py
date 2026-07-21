@@ -383,6 +383,25 @@ def test_refresh_sec_names_enriches_existing(engine):
     assert row[1] == 320193
 
 
+def test_get_cik_after_enrichment(engine):
+    uni = SymbolUniverse(
+        engine, http_get=_fake_http(BOTH_OK), sec_http_get=_fake_sec(SEC_BODY),
+    )
+    uni.refresh()
+    assert uni.get_cik("AAPL") is None  # not yet enriched
+    uni.refresh_sec_names()
+    assert uni.get_cik("AAPL") == 320193
+    assert uni.get_cik("aapl") == 320193  # case-insensitive
+    assert uni.get_cik("ZZZZFAKE") is None
+    assert uni.get_cik("") is None
+
+
+def test_get_cik_none_without_columns(engine_no_sec):
+    uni = SymbolUniverse(engine_no_sec, http_get=_fake_http(BOTH_OK))
+    uni.refresh()
+    assert uni.get_cik("AAPL") is None  # no cik column → graceful None
+
+
 def test_refresh_sec_names_does_not_insert_unknown(engine):
     uni = SymbolUniverse(
         engine, http_get=_fake_http(BOTH_OK), sec_http_get=_fake_sec(SEC_BODY),

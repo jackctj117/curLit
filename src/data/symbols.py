@@ -505,6 +505,28 @@ class SymbolUniverse:
         """
         return self.exists(ticker)
 
+    def get_cik(self, ticker: str) -> int | None:
+        """SEC CIK for a ticker (CL-2czc), or None.
+
+        Powers the tool-augmented niche pass — the CIK is the key to a
+        company's EDGAR filings. Populated by the SEC enrichment (CL-9xha);
+        returns None when the ``cik`` column is absent (pre migration 011),
+        the ticker is unknown, or it had no SEC match (class-share / non-US).
+        """
+        if not ticker or not self._has_sec_columns():
+            return None
+        try:
+            with self.engine.connect() as conn:
+                row = conn.execute(
+                    text("SELECT cik FROM symbols WHERE upper(symbol) = :s"),
+                    {"s": ticker.strip().upper()},
+                ).fetchone()
+            if row is not None and row[0] is not None:
+                return int(row[0])
+        except Exception:
+            logger.debug("get_cik(%s) failed", ticker, exc_info=True)
+        return None
+
     @staticmethod
     def _name_rank(query: str, name: str) -> int | None:
         """Rank ``name`` against a lower-cased ``query``: 0 = exact whole-word
