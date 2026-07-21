@@ -1079,3 +1079,85 @@ class TestExpiredAlertEnrichment:
             m for t, m, _ in sent_alerts if t == "Event expired unconfirmed"
         )
         assert "Top idea" not in message
+
+
+# =============================================================================
+# Phantom-position reconciliation (CL-v9g4)
+# =============================================================================
+
+
+class _BrokerWithPositions:
+    def __init__(self, held: set[str]) -> None:
+        self._held = held
+
+    def get_account(self) -> Any:
+        return SimpleNamespace(balance=100_000.0, equity=100_000.0, margin_used=0.0)
+
+    def get_positions(self) -> list[Any]:
+        return [SimpleNamespace(symbol=s, quantity=1.0, avg_price=1.0)
+                for s in self._held]
+
+
+class _BrokerRaises:
+    def get_account(self) -> Any:
+        return SimpleNamespace(balance=100_000.0, equity=100_000.0, margin_used=0.0)
+
+    def get_positions(self) -> list[Any]:
+        raise RuntimeError("broker positions unavailable")
+
+
+def _pos(symbol: str, minutes_ago: float) -> EventPosition:
+    return EventPosition(
+        symbol=symbol, event_id=1,
+        entry_ts=datetime.now(UTC) - timedelta(minutes=minutes_ago),
+        entry_price=1.0, quantity=100.0, direction=1, stop_price=0.99,
+        headline="x",
+    )
+
+
+class TestPhantomReconciliation:
+    def test_norm_symbol_matches_across_underscore(self) -> None:
+        assert EventDrivenStrategy._norm_symbol("USD_NOK") == "USDNOK"
+        assert EventDrivenStrategy._norm_symbol("usdnok") == "USDNOK"
+
+    def test_prunes_old_phantom_not_held(self, tmp_path: Any) -> None:
+        strat = make_strategy(tmp_path, position_reconcile_grace_sec=120)
+        strat.open_positions = {"BCO_USD": _pos("BCO_USD", minutes_ago=10)}
+        strat._reconcile_positions(_BrokerWithPositions(set()), datetime.now(UTC))
+        assert "BCO_USD" not in strat.open_positions  # phantom pruned
+
+    def test_keeps_held_position_across_format(self, tmp_path: Any) -> None:
+        strat = make_strategy(tmp_path)
+        strat.open_positions = {"USD_NOK": _pos("USD_NOK", minutes_ago=10)}
+        # Broker reports it OANDA-underscore-stripped (USDNOK); norm must match.
+        strat._reconcile_positions(
+            _BrokerWithPositions({"USDNOK"}), datetime.now(UTC))
+        assert "USD_NOK" in strat.open_positions
+
+    def test_grace_window_protects_fresh_position(self, tmp_path: Any) -> None:
+        strat = make_strategy(tmp_path, position_reconcile_grace_sec=120)
+        # Recorded 30s ago (< 120s grace) — a real fill may not show broker-side
+        # yet, so it must NOT be pruned even though the broker doesn't hold it.
+        strat.open_positions = {"USD_CAD": _pos("USD_CAD", minutes_ago=0.5)}
+        strat._reconcile_positions(_BrokerWithPositions(set()), datetime.now(UTC))
+        assert "USD_CAD" in strat.open_positions
+
+    def test_fail_safe_prunes_nothing_on_broker_error(self, tmp_path: Any) -> None:
+        strat = make_strategy(tmp_path)
+        strat.open_positions = {"BCO_USD": _pos("BCO_USD", minutes_ago=10)}
+        strat._reconcile_positions(_BrokerRaises(), datetime.now(UTC))
+        assert "BCO_USD" in strat.open_positions  # broker error -> keep state
+
+    def test_reconcile_frees_the_cap_for_real_legs(self, tmp_path: Any) -> None:
+        # Two old phantoms fill the cap=2; after reconciliation (broker holds
+        # none) both are pruned, freeing the slots.
+        strat = make_strategy(
+            tmp_path, max_concurrent_event_positions=2,
+            position_reconcile_grace_sec=120)
+        strat.open_positions = {
+            "BCO_USD": _pos("BCO_USD", minutes_ago=10),
+            "NATGAS_USD": _pos("NATGAS_USD", minutes_ago=10),
+        }
+        assert len(strat.open_positions) >= strat.config.max_concurrent_event_positions
+        strat._reconcile_positions(_BrokerWithPositions(set()), datetime.now(UTC))
+        assert len(strat.open_positions) == 0  # cap freed

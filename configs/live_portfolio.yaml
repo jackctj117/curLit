@@ -163,16 +163,21 @@ strategies:
       # the LLM might emit. (Omit this key to use the identical default
       # map in src/strategies/event_driven.py.)
       instrument_map:
-        # New-theme commodity/FX legs (CL-01zt). Names follow OANDA
-        # conventions but are unverified against the live practice
-        # account — a rejected instrument surfaces as an order
-        # rejection, not a crash. Remove any that OANDA rejects.
-        XCU_USD: XCU_USD      # copper CFD (DRC/Zambia supply themes)
-        XPT_USD: XPT_USD      # platinum (South Africa PGM theme)
-        XPD_USD: XPD_USD      # palladium (SA + Russia supply)
-        USD_ZAR: USD_ZAR      # rand (Africa risk proxy)
-        WHEAT_USD: WHEAT_USD  # wheat CFD (Black Sea grain theme)
-        CORN_USD: CORN_USD    # corn CFD (Black Sea grain theme)
+        # TRADEABLE-ONLY (CL-v9g4). This OANDA practice account is FX-ONLY —
+        # commodity/metal/index CFDs (BCO_USD, XAU_USD, SPX500_USD, NATGAS_USD,
+        # XCU/XPT/XPD, WHEAT/CORN, NAS100) are "not tradeable on this account"
+        # and were 400-rejected. A rejected leg used to be recorded as an open
+        # position anyway (event_driven.py), phantom-filling the
+        # max_concurrent_event_positions cap and BLOCKING the tradeable FX legs.
+        # So only instruments this account can actually trade are mapped here;
+        # an unmapped instrument is skipped BEFORE any position is recorded, so
+        # it costs no concurrency slot. Confluence still reads the CFD price
+        # moves for CONFIRMATION (it falls back to the raw id), so events still
+        # confirm on the best signal (oil) — we just trade the FX proxy
+        # (USD_NOK/USD_CAD/USD_JPY). Re-add CFDs here if the account gains CFD
+        # access. (A dynamic broker-tradeability filter is the portable fix —
+        # follow-up.)
+        USD_ZAR: USD_ZAR
         EUR_USD: EUR_USD
         GBP_USD: GBP_USD
         USD_JPY: USD_JPY
@@ -186,13 +191,6 @@ strategies:
         USD_CNH: USD_CNH
         EUR_GBP: EUR_GBP
         EUR_JPY: EUR_JPY
-        XAU_USD: XAU_USD
-        XAG_USD: XAG_USD
-        BCO_USD: BCO_USD
-        WTICO_USD: WTICO_USD
-        NATGAS_USD: NATGAS_USD
-        SPX500_USD: SPX500_USD
-        NAS100_USD: NAS100_USD
         EURUSD: EUR_USD
         GBPUSD: GBP_USD
         USDJPY: USD_JPY
@@ -200,11 +198,6 @@ strategies:
         USDCHF: USD_CHF
         AUDUSD: AUD_USD
         NZDUSD: NZD_USD
-        XAUUSD: XAU_USD
-        XAGUSD: XAG_USD
-        GOLD: XAU_USD
-        BRENT: BCO_USD
-        WTI: WTICO_USD
 
 risk:
   max_total_leverage: 2.0

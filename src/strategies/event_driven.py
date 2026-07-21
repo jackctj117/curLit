@@ -34,7 +34,7 @@ import json
 import logging
 import os
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -121,6 +121,15 @@ class EventDrivenConfig:
     event_stop_pct: float = 0.01
     # Max simultaneous event positions across ALL events.
     max_concurrent_event_positions: int = 2
+    # Phantom-position reconciliation (CL-v9g4): a leg is recorded in
+    # open_positions when its OrderIntent is EMITTED, before the broker fill
+    # is known — so a REJECTED order (e.g. an instrument this account can't
+    # trade, or a margin/halt reject) leaves a phantom that consumes the
+    # concurrency cap and blocks real legs. Each cycle we prune open_positions
+    # entries OLDER than this grace window that the broker doesn't actually
+    # hold. The grace window protects a just-recorded position from being
+    # pruned before it appears in the broker's positions.
+    position_reconcile_grace_sec: int = 120
     # Hard TIME STOP: exit after this many hours regardless of P&L.
     event_max_holding_hours: float = 4.0
     # Per-instrument concentration cap (CL-wbmw): combined open notional
@@ -424,6 +433,50 @@ class EventDrivenStrategy:
         except Exception:
             return None
         return float(value) if value is not None else None
+
+    @staticmethod
+    def _norm_symbol(sym: str) -> str:
+        """Compare-form for matching an open_positions key (USD_NOK) against a
+        broker Position.symbol (USDNOK): strip separators, upper-case."""
+        return str(sym).replace("_", "").upper()
+
+    def _reconcile_positions(self, broker: Any, now: datetime) -> None:
+        """Prune phantom open_positions (CL-v9g4).
+
+        A leg is recorded in ``open_positions`` when its OrderIntent is emitted,
+        before the fill is known, so a REJECTED order leaves a phantom that eats
+        the concurrency cap and blocks real legs. Each cycle, drop entries OLDER
+        than the grace window that the broker does not actually hold. Fail-safe:
+        if the broker's positions can't be read, prune NOTHING (so a transient
+        broker error can never drop a real position); the grace window protects
+        a just-recorded position from being pruned before it shows up broker-side.
+        """
+        if not self.open_positions:
+            return
+        try:
+            held = {self._norm_symbol(p.symbol) for p in broker.get_positions()}
+        except Exception:
+            logger.debug(
+                "event_driven: broker positions unavailable — skipping phantom "
+                "reconciliation", exc_info=True,
+            )
+            return
+        grace = timedelta(seconds=self.config.position_reconcile_grace_sec)
+        pruned = 0
+        for symbol in list(self.open_positions.keys()):
+            pos = self.open_positions[symbol]
+            if now - pos.entry_ts <= grace:
+                continue  # too fresh — a real fill may not show broker-side yet
+            if self._norm_symbol(symbol) not in held:
+                logger.warning(
+                    "event_driven: pruning phantom position %s (event id=%s) — "
+                    "broker does not hold it (order likely rejected)",
+                    symbol, pos.event_id,
+                )
+                del self.open_positions[symbol]
+                pruned += 1
+        if pruned:
+            self._save_state()
 
     def _check_exits(self, prices: dict[str, Any], now: datetime) -> list[OrderIntent]:
         exits: list[OrderIntent] = []
@@ -1066,6 +1119,9 @@ class EventDrivenStrategy:
         self, prices: dict[str, Any], broker: Any,
     ) -> list[OrderIntent]:
         now = datetime.now(UTC)
+        # Prune phantom positions from earlier rejected orders BEFORE the cap
+        # check, so a rejected leg can't keep blocking real entries (CL-v9g4).
+        self._reconcile_positions(broker, now)
         intents = self._check_exits(prices, now)
 
         rows = self._fetch_assessed()
