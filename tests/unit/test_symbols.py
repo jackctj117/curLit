@@ -9,6 +9,7 @@ fetch-failure tolerance.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -17,9 +18,11 @@ from sqlalchemy import create_engine, text
 from src.data.symbols import (
     NASDAQ_LISTED_URL,
     OTHER_LISTED_URL,
+    SEC_COMPANY_TICKERS_URL,
     SymbolUniverse,
     parse_nasdaq_listed,
     parse_other_listed,
+    parse_sec_company_tickers,
 )
 
 # --------------------------------------------------------------------------- #
@@ -62,25 +65,74 @@ def _fake_http(bodies: dict[str, str]):
 
 BOTH_OK = {NASDAQ_LISTED_URL: NASDAQ_BODY, OTHER_LISTED_URL: OTHER_BODY}
 
+# SEC company_tickers.json shape (CL-9xha): object keyed by index string,
+# each {cik_str, ticker, title}. AAPL/TEVA/WEIRD are in the mocked universe;
+# ZUEXTRA is not (→ unmatched, never inserted); the blank-ticker row is
+# dropped at parse. WEIRD's SEC title deliberately shares NO word with its
+# NASDAQ "Weird Exchange Co" name, so a "Wonderful" query can only resolve via
+# the SEC name — proving resolve_name searches it.
+SEC_BODY = json.dumps({
+    "0": {"cik_str": 320193, "ticker": "AAPL", "title": "Apple Inc."},
+    "1": {"cik_str": 12345,
+          "ticker": "TEVA", "title": "Teva Pharmaceutical Industries Ltd"},
+    "2": {"cik_str": 99999,
+          "ticker": "WEIRD", "title": "Wonderful Alphabet Holdings Corp"},
+    "3": {"cik_str": 55555,
+          "ticker": "ZUEXTRA", "title": "Ghost Co Not In Universe"},
+    "4": {"cik_str": 0, "ticker": "", "title": "Blank Ticker Row"},
+})
+
+
+def _fake_sec(body: str):
+    """SEC http_get shim serving a canned JSON body (asserts the SEC URL)."""
+    def _get(url: str) -> str:
+        assert url == SEC_COMPANY_TICKERS_URL
+        return body
+    return _get
+
+
+def _raising_sec(url: str) -> str:
+    raise RuntimeError("simulated SEC fetch failure")
+
 
 # --------------------------------------------------------------------------- #
 # fixtures
 # --------------------------------------------------------------------------- #
 
 
-@pytest.fixture
-def engine(tmp_path: Path):
-    """Sqlite engine with the symbols migration applied (shimmed for sqlite)."""
+def _apply_migration(eng, path: str) -> None:
+    """Apply a migration .sql to a sqlite engine, shimming Postgres-isms."""
     from migrations.run import _strip_sql_comments
 
-    eng = create_engine(f"sqlite:///{tmp_path / 'symbols.db'}")
-    sql = _strip_sql_comments(
-        Path("migrations/010_symbols.sql").read_text(),
+    sql = _strip_sql_comments(Path(path).read_text())
+    sql = (
+        sql.replace("TIMESTAMPTZ", "TEXT")
+        .replace("BIGSERIAL", "INTEGER")
+        # sqlite ADD COLUMN has no IF NOT EXISTS (fresh table per test anyway).
+        .replace("ADD COLUMN IF NOT EXISTS", "ADD COLUMN")
     )
-    sql = sql.replace("TIMESTAMPTZ", "TEXT").replace("BIGSERIAL", "INTEGER")
     with eng.begin() as conn:
         for stmt in [s.strip() for s in sql.split(";") if s.strip()]:
             conn.execute(text(stmt))
+
+
+@pytest.fixture
+def engine_no_sec(tmp_path: Path):
+    """Sqlite engine with ONLY migration 010 — no SEC columns (pre-011 schema).
+
+    Exercises the graceful-degradation path where SEC enrichment no-ops.
+    """
+    eng = create_engine(f"sqlite:///{tmp_path / 'symbols.db'}")
+    _apply_migration(eng, "migrations/010_symbols.sql")
+    return eng
+
+
+@pytest.fixture
+def engine(tmp_path: Path):
+    """Sqlite engine with migrations 010 + 011 applied (shimmed for sqlite)."""
+    eng = create_engine(f"sqlite:///{tmp_path / 'symbols.db'}")
+    _apply_migration(eng, "migrations/010_symbols.sql")
+    _apply_migration(eng, "migrations/011_symbols_sec.sql")
     return eng
 
 
@@ -285,3 +337,126 @@ def test_refresh_both_files_down_returns_zero(engine):
     uni = SymbolUniverse(engine, http_get=_fake_http(bodies))
     counts = uni.refresh()
     assert counts == {"inserted": 0, "updated": 0, "skipped": 0}
+
+
+# --------------------------------------------------------------------------- #
+# SEC EDGAR name enrichment (CL-9xha)
+# --------------------------------------------------------------------------- #
+
+
+def test_parse_sec_company_tickers():
+    rows = {r["symbol"]: r for r in parse_sec_company_tickers(SEC_BODY)}
+    # Blank-ticker row dropped; the other four kept.
+    assert set(rows) == {"AAPL", "TEVA", "WEIRD", "ZUEXTRA"}
+    assert rows["AAPL"]["sec_name"] == "Apple Inc."
+    assert rows["AAPL"]["cik"] == 320193
+
+
+def test_parse_sec_company_tickers_bad_json():
+    assert parse_sec_company_tickers("not json at all") == []
+    assert parse_sec_company_tickers("") == []
+
+
+def test_parse_sec_company_tickers_tolerates_missing_fields():
+    body = json.dumps({
+        "0": {"ticker": "NOCIK", "title": "No Cik Co"},  # cik_str absent
+        "1": {"cik_str": 7, "ticker": "NONAME"},          # title absent
+    })
+    rows = {r["symbol"]: r for r in parse_sec_company_tickers(body)}
+    assert rows["NOCIK"]["cik"] is None
+    assert rows["NONAME"]["sec_name"] is None
+
+
+def test_refresh_sec_names_enriches_existing(engine):
+    uni = SymbolUniverse(
+        engine, http_get=_fake_http(BOTH_OK), sec_http_get=_fake_sec(SEC_BODY),
+    )
+    uni.refresh()
+    counts = uni.refresh_sec_names()
+    # AAPL, TEVA, WEIRD are in the universe; ZUEXTRA is not.
+    assert counts == {"matched": 3, "unmatched": 1, "skipped": 0}
+    with engine.connect() as conn:
+        row = conn.execute(text(
+            "SELECT sec_name, cik FROM symbols WHERE symbol = 'AAPL'",
+        )).one()
+    assert row[0] == "Apple Inc."
+    assert row[1] == 320193
+
+
+def test_refresh_sec_names_does_not_insert_unknown(engine):
+    uni = SymbolUniverse(
+        engine, http_get=_fake_http(BOTH_OK), sec_http_get=_fake_sec(SEC_BODY),
+    )
+    uni.refresh()
+    uni.refresh_sec_names()
+    # SEC-only ticker must never be added to the US-listed universe.
+    assert uni.exists("ZUEXTRA") is False
+    with engine.connect() as conn:
+        total = conn.execute(text("SELECT COUNT(*) FROM symbols")).scalar()
+    assert total == 8  # unchanged from the NASDAQ ingest
+
+
+def test_refresh_sec_names_preserves_nasdaq_display_name(engine):
+    uni = SymbolUniverse(
+        engine, http_get=_fake_http(BOTH_OK), sec_http_get=_fake_sec(SEC_BODY),
+    )
+    uni.refresh()
+    uni.refresh_sec_names()
+    # get() keeps returning the NASDAQ security name + its stable 4-key shape.
+    assert uni.get("AAPL") == {
+        "symbol": "AAPL",
+        "security_name": "Apple Inc. - Common Stock",
+        "exchange": "NASDAQ",
+        "is_etf": False,
+    }
+
+
+def test_resolve_name_matches_via_sec_name(engine):
+    uni = SymbolUniverse(
+        engine, http_get=_fake_http(BOTH_OK), sec_http_get=_fake_sec(SEC_BODY),
+    )
+    uni.refresh()
+    # Before enrichment: "Wonderful" matches nothing (NASDAQ name is
+    # "Weird Exchange Co").
+    assert uni.resolve_name("Wonderful") == []
+    uni.refresh_sec_names()
+    # After: it resolves to WEIRD purely via the SEC official name.
+    hits = uni.resolve_name("Wonderful")
+    assert [h["symbol"] for h in hits] == ["WEIRD"]
+
+
+def test_refresh_sec_names_tolerates_fetch_failure(engine):
+    uni = SymbolUniverse(
+        engine, http_get=_fake_http(BOTH_OK), sec_http_get=_raising_sec,
+    )
+    uni.refresh()
+    counts = uni.refresh_sec_names()
+    assert counts == {"matched": 0, "unmatched": 0, "skipped": 0}
+    # Existing NASDAQ data untouched and still usable.
+    assert uni.exists("AAPL") is True
+    assert uni.get("AAPL")["security_name"] == "Apple Inc. - Common Stock"
+
+
+def test_refresh_sec_names_tolerates_bad_json(engine):
+    uni = SymbolUniverse(
+        engine, http_get=_fake_http(BOTH_OK), sec_http_get=_fake_sec("garbage"),
+    )
+    uni.refresh()
+    assert uni.refresh_sec_names() == {
+        "matched": 0, "unmatched": 0, "skipped": 0,
+    }
+
+
+def test_refresh_sec_names_noop_without_columns(engine_no_sec):
+    """On a pre-011 schema, enrichment no-ops and core lookups still work."""
+    uni = SymbolUniverse(
+        engine_no_sec,
+        http_get=_fake_http(BOTH_OK),
+        sec_http_get=_fake_sec(SEC_BODY),
+    )
+    uni.refresh()
+    counts = uni.refresh_sec_names()
+    assert counts == {"matched": 0, "unmatched": 0, "skipped": 0}
+    # Core NASDAQ-backed lookups are unaffected by the missing SEC columns.
+    assert uni.exists("AAPL") is True
+    assert any(h["symbol"] == "TEVA" for h in uni.resolve_name("Teva"))
