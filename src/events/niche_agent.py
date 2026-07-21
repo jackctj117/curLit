@@ -11,6 +11,13 @@ obvious ones. It complements CL-5mkf (anti-reflexive-consensus): the
 main assessment names the liquid trade; this pass hunts the
 non-consensus second/third-order name with more upside torque.
 
+ITERATIVE HOPPING (CL-2dnf): optionally runs several LLM cycles per event
+(``NICHE_MAX_CYCLES``, default 1). Cycle 1 is the base multi-hop pass; each
+further cycle feeds the discovered names back in and pushes the model DEEPER
+and WIDER along explicit tree-of-thought branches (upstream / downstream /
+substitutes / financial), deduping on ticker-or-company and stopping early once
+a cycle surfaces nothing new — deeper discovery at a bounded extra cost.
+
 Three hard guards keep this from being a hallucination-and-fiction
 generator (LLM small-cap / junior knowledge is training-vintage and a
 confident wrong ticker on an illiquid name is real money on fiction):
@@ -47,6 +54,7 @@ The agent proposes; it never trades. Advisory equities only.
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
@@ -67,6 +75,17 @@ DEFAULT_MODEL = "claude-sonnet-4-6"
 #: second subscription LLM call, so we gate hard on urgency (shared
 #: quota discipline). Overridable via NICHE_MIN_URGENCY.
 DEFAULT_MIN_URGENCY = 7
+
+#: Iterative-hopping depth (CL-2dnf): how many LLM cycles the agent runs
+#: per event. Cycle 1 is the base multi-hop pass; each further cycle feeds
+#: the names found so far back in and asks for DEEPER / WIDER connected
+#: names (tree-of-thought branches A-D), stopping early when a cycle adds
+#: nothing new. 1 = single pass (original behavior). Each extra cycle is
+#: another subscription call, so this is OPT-IN via NICHE_MAX_CYCLES and
+#: clamped to [1, 5]. Combined with the urgency gate + triage, that keeps
+#: the added quota bounded.
+DEFAULT_MAX_CYCLES = 1
+MAX_CYCLES_CAP = 5
 
 #: Cap on niche ideas the LLM may return (bounds a pathological reply).
 MAX_NICHE_IDEAS = 6
@@ -386,6 +405,13 @@ def parse_niche_ideas(raw_text: str) -> list[NicheIdea]:
     return ideas
 
 
+def _idea_key(idea: NicheIdea) -> str:
+    """Cross-cycle dedup key (CL-2dnf): the ticker when present, else the
+    normalized company name — so the same name proposed in a later hopping
+    cycle is recognised and not re-counted as a fresh discovery."""
+    return idea.ticker.upper() if idea.ticker else idea.company_name.strip().lower()
+
+
 # ---------------------------------------------------------------------- #
 # Verification (anti-hallucination guard)
 # ---------------------------------------------------------------------- #
@@ -599,6 +625,7 @@ class NicheAgent:
         market_data_fn: MarketDataFn | None = None,
         config: AsymmetryConfig | None = None,
         max_tokens: int = 1500,
+        max_cycles: int | None = None,
     ) -> None:
         # ``universe`` is a SymbolUniverse (or any object exposing
         # exists/get/resolve_name/robinhood_tradeable).
@@ -615,6 +642,16 @@ class NicheAgent:
         self.market_data_fn: MarketDataFn = market_data_fn or yfinance_market_data
         self.config = config or AsymmetryConfig()
         self.max_tokens = max_tokens
+        # Iterative-hopping depth (CL-2dnf) — explicit arg wins, else env,
+        # else single-pass. Clamped to [1, MAX_CYCLES_CAP].
+        if max_cycles is None:
+            try:
+                max_cycles = int(
+                    os.environ.get("NICHE_MAX_CYCLES", DEFAULT_MAX_CYCLES),
+                )
+            except ValueError:
+                max_cycles = DEFAULT_MAX_CYCLES
+        self.max_cycles = max(1, min(MAX_CYCLES_CAP, max_cycles))
 
     # -- prompt ---------------------------------------------------------
 
@@ -655,40 +692,104 @@ class NicheAgent:
             "Respond with the JSON object only."
         )
 
+    def _followup_prompt(
+        self,
+        event_row: Mapping[str, Any],
+        playbook: Playbook | None,
+        discovered: list[NicheIdea],
+    ) -> str:
+        """Cycle-2+ prompt (CL-2dnf): feed back the names found so far and
+        push the model DEEPER/WIDER along explicit tree-of-thought branches,
+        stopping it from repeating what's already on the table."""
+        lines = []
+        for idea in discovered[:12]:
+            tkr = f" ({idea.ticker})" if idea.ticker else ""
+            lines.append(
+                f"  - {idea.company_name or '?'}{tkr} [hop {idea.hop_count}]",
+            )
+        found = "\n".join(lines) or "  (none yet)"
+        return (
+            f"EVENT: {event_row.get('headline')}\n"
+            f"THEME: {event_row.get('theme') or 'unmatched'}\n\n"
+            f"{self._playbook_context(playbook)}\n\n"
+            "Entities discovered SO FAR (do NOT repeat these — go DEEPER and "
+            "WIDER, further out the chain):\n"
+            f"{found}\n\n"
+            "Now surface ADDITIONAL under-followed, high-torque names connected "
+            "to this event and to those entities, exploring EACH branch:\n"
+            "  A. Upstream — deeper-tier suppliers, raw inputs, sole-source "
+            "components.\n"
+            "  B. Downstream — customers whose demand is destroyed or created.\n"
+            "  C. Substitutes / competitors — who gains share or volume.\n"
+            "  D. Financial / secondary — insurers, shippers, royalty & "
+            "streaming holders, lenders/creditors, equipment lessors levered to "
+            "this chain.\n"
+            "Prefer names NOT already listed and further out the chain (higher "
+            "hop_count). Same JSON schema. Respond with the JSON object only."
+        )
+
     # -- run ------------------------------------------------------------
 
     def run(
         self, event_row: Mapping[str, Any], playbook: Playbook | None = None,
     ) -> list[NicheIdea]:
-        """Full niche pass for one event: LLM call → parse → verify →
-        score/gate. Returns ONLY the surviving (verified, liquidity-
-        cleared, above-threshold) ideas, score-desc. Fail-soft: a
-        transport failure or unparseable reply yields ``[]`` (the caller
-        just merges nothing), never a raise."""
-        try:
-            resp = self.client.complete(
-                messages=[
-                    Message(role="system", content=_SYSTEM_PROMPT),
-                    Message(role="user", content=self._user_prompt(event_row, playbook)),
-                ],
-                model=self.model,
-                max_tokens=self.max_tokens,
-            )
-        except Exception as exc:
-            logger.warning(
-                "niche agent transport failure for event id=%s: %s",
-                event_row.get("id"), str(exc)[:200],
-            )
-            return []
+        """Full niche pass for one event: one or more LLM cycles → parse →
+        verify → score/gate. Returns ONLY the surviving (verified, liquidity-
+        cleared, above-threshold) ideas, score-desc.
 
-        parsed = parse_niche_ideas(resp.text)
-        if not parsed:
+        Iterative hopping (CL-2dnf): cycle 1 is the base multi-hop pass; each
+        further cycle (up to ``max_cycles``) feeds the discovered names back in
+        and asks for DEEPER/WIDER connected names, deduped on ticker-or-company
+        and stopping early once a cycle adds nothing new. Fail-soft: a cycle-1
+        transport failure or unparseable reply yields ``[]``; a later-cycle
+        failure keeps whatever earlier cycles found. Never raises."""
+        raw_accum: list[NicheIdea] = []
+        seen: set[str] = set()
+        cycles_run = 0
+        for cycle in range(1, self.max_cycles + 1):
+            cycles_run = cycle
+            user = (
+                self._user_prompt(event_row, playbook) if cycle == 1
+                else self._followup_prompt(event_row, playbook, raw_accum)
+            )
+            try:
+                resp = self.client.complete(
+                    messages=[
+                        Message(role="system", content=_SYSTEM_PROMPT),
+                        Message(role="user", content=user),
+                    ],
+                    model=self.model,
+                    max_tokens=self.max_tokens,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "niche agent transport failure (cycle %d) for event id=%s: %s",
+                    cycle, event_row.get("id"), str(exc)[:200],
+                )
+                if cycle == 1:
+                    return []
+                break  # keep what earlier cycles found
+            parsed = parse_niche_ideas(resp.text)
+            fresh = [i for i in parsed if _idea_key(i) not in seen]
+            for idea in fresh:
+                seen.add(_idea_key(idea))
+            raw_accum.extend(fresh)
+            if cycle == 1 and not parsed:
+                break  # nothing to deepen
+            if cycle > 1 and not fresh:
+                logger.info(
+                    "niche agent: cycle %d added no new names — stopping "
+                    "(event id=%s)", cycle, event_row.get("id"),
+                )
+                break
+
+        if not raw_accum:
             return []
-        verified = verify_ideas(parsed, self.universe)
+        verified = verify_ideas(raw_accum, self.universe)
         if not verified:
             logger.info(
                 "niche agent: all %d proposed ideas failed verification "
-                "for event id=%s", len(parsed), event_row.get("id"),
+                "for event id=%s", len(raw_accum), event_row.get("id"),
             )
             return []
         market_data = {}
@@ -701,9 +802,9 @@ class NicheAgent:
             )
         surviving, logged = score_and_gate(verified, market_data, self.config)
         logger.info(
-            "niche agent: event id=%s — %d proposed, %d verified, %d "
-            "surfaced, %d logged (below threshold/illiquid)",
-            event_row.get("id"), len(parsed), len(verified),
+            "niche agent: event id=%s — %d cycle(s), %d proposed, %d verified, "
+            "%d surfaced, %d logged (below threshold/illiquid)",
+            event_row.get("id"), cycles_run, len(raw_accum), len(verified),
             len(surviving), len(logged),
         )
         return surviving

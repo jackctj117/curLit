@@ -17,6 +17,8 @@ import json
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 from src.events.niche_agent import (
     AsymmetryConfig,
     NicheAgent,
@@ -51,6 +53,35 @@ class MockLLMClient:
 class _RaisingLLMClient:
     def complete(self, messages: Any, model: str, **kwargs: Any) -> Any:
         raise RuntimeError("simulated LLM transport failure")
+
+
+class MultiResponseClient:
+    """Returns successive canned texts, one per call (the last one repeats)."""
+
+    def __init__(self, texts: list[str]) -> None:
+        self.texts = texts
+        self.calls: list[dict[str, Any]] = []
+
+    def complete(self, messages: Any, model: str, **kwargs: Any) -> SimpleNamespace:
+        idx = min(len(self.calls), len(self.texts) - 1)
+        self.calls.append({"messages": messages, "model": model})
+        return SimpleNamespace(
+            text=self.texts[idx], model=model, provider="mock",
+            input_tokens=10, output_tokens=10, usd_cost=0.0, elapsed_sec=0.01,
+        )
+
+
+@pytest.fixture(autouse=True)
+def _default_single_cycle(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the niche agent single-pass (CL-2dnf) regardless of a leaked
+    NICHE_MAX_CYCLES from the operator's .env; iterative tests set max_cycles
+    explicitly on the agent."""
+    monkeypatch.delenv("NICHE_MAX_CYCLES", raising=False)
+
+
+def _liquid_md(tickers: list[str]) -> dict[str, dict[str, Any]]:
+    """Market-data stub: every ticker small-cap + liquid (clears the gate)."""
+    return {t: {"market_cap": 2e8, "avg_dollar_volume": 5e6} for t in tickers}
 
 
 class FakeUniverse:
@@ -423,3 +454,103 @@ class TestMerge:
         added = agent.merge_into_assessment(assessment, ideas, max_total=3)
         assert added == 3
         assert len(assessment["trade_ideas"]) == 3
+
+
+# --------------------------------------------------------------------- #
+# Iterative multi-cycle hopping (CL-2dnf)
+# --------------------------------------------------------------------- #
+
+
+class TestIterativeHopping:
+    def _event(self) -> dict[str, Any]:
+        return {"id": 1, "headline": "China restricts rare-earth exports",
+                "theme": None, "assessment": {}}
+
+    def test_default_is_single_cycle(self) -> None:
+        client = MockLLMClient(_payload(_idea_dict(ticker="REAL")))
+        agent = NicheAgent(
+            universe=FakeUniverse(), client=client,  # type: ignore[arg-type]
+            market_data_fn=_liquid_md,
+        )
+        assert agent.max_cycles == 1
+        agent.run(self._event())
+        assert len(client.calls) == 1  # exactly one pass, original behavior
+
+    def test_accumulates_new_names_across_cycles(self) -> None:
+        c1 = _payload(_idea_dict(ticker="REAL", company_name="Real Co Inc"))
+        c2 = _payload(_idea_dict(ticker="FRO", company_name="Frontline Ltd",
+                                 hop_count=5))
+        client = MultiResponseClient([c1, c2])
+        agent = NicheAgent(
+            universe=FakeUniverse(), client=client,  # type: ignore[arg-type]
+            market_data_fn=_liquid_md, max_cycles=2,
+        )
+        ideas = agent.run(self._event())
+        assert {i.ticker for i in ideas} == {"REAL", "FRO"}
+        assert len(client.calls) == 2  # cycle 1 + a genuine deeper cycle
+
+    def test_early_stop_when_cycle_adds_nothing(self) -> None:
+        same = _payload(_idea_dict(ticker="REAL"))
+        client = MultiResponseClient([same])  # every call returns REAL
+        agent = NicheAgent(
+            universe=FakeUniverse(), client=client,  # type: ignore[arg-type]
+            market_data_fn=_liquid_md, max_cycles=3,
+        )
+        ideas = agent.run(self._event())
+        assert {i.ticker for i in ideas} == {"REAL"}
+        # cycle 2 was dry → stopped early (2 calls, not the full 3).
+        assert len(client.calls) == 2
+
+    def test_later_cycle_failure_keeps_earlier(self) -> None:
+        class _FailSecond:
+            def __init__(self, first: str) -> None:
+                self.first = first
+                self.calls: list[int] = []
+
+            def complete(self, messages: Any, model: str, **kwargs: Any) -> Any:
+                self.calls.append(1)
+                if len(self.calls) == 1:
+                    return SimpleNamespace(
+                        text=self.first, model=model, provider="mock",
+                        input_tokens=10, output_tokens=10, usd_cost=0.0,
+                        elapsed_sec=0.01,
+                    )
+                raise RuntimeError("cycle 2 transport down")
+
+        client = _FailSecond(_payload(_idea_dict(ticker="REAL")))
+        agent = NicheAgent(
+            universe=FakeUniverse(), client=client,  # type: ignore[arg-type]
+            market_data_fn=_liquid_md, max_cycles=2,
+        )
+        ideas = agent.run(self._event())
+        assert {i.ticker for i in ideas} == {"REAL"}  # cycle-1 result survives
+
+    def test_followup_prompt_lists_discovered_and_branches(self) -> None:
+        c1 = _payload(_idea_dict(ticker="REAL", company_name="Real Co Inc"))
+        client = MultiResponseClient([c1, _payload()])  # cycle 2 empty
+        agent = NicheAgent(
+            universe=FakeUniverse(), client=client,  # type: ignore[arg-type]
+            market_data_fn=_liquid_md, max_cycles=2,
+        )
+        agent.run({"id": 1, "headline": "Rare-earth ban",
+                   "theme": "sanctions_trade", "assessment": {}})
+        followup = client.calls[1]["messages"][1].content
+        # It feeds back what was found and pushes the tree-of-thought branches.
+        assert "Real Co Inc" in followup and "REAL" in followup
+        assert "Upstream" in followup and "Downstream" in followup
+        assert "Substitutes" in followup and "Financial" in followup
+
+    def test_max_cycles_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("NICHE_MAX_CYCLES", "3")
+        agent = NicheAgent(
+            universe=FakeUniverse(), client=MockLLMClient("{}"),  # type: ignore[arg-type]
+        )
+        assert agent.max_cycles == 3
+
+    def test_max_cycles_clamped(self) -> None:
+        hi = NicheAgent(FakeUniverse(), client=MockLLMClient("{}"),  # type: ignore[arg-type]
+                        max_cycles=99)
+        lo = NicheAgent(FakeUniverse(), client=MockLLMClient("{}"),  # type: ignore[arg-type]
+                        max_cycles=0)
+        assert hi.max_cycles == 5
+        assert lo.max_cycles == 1
