@@ -80,6 +80,7 @@ def _default_single_cycle(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("NICHE_TOOLS_ENABLED", raising=False)
     monkeypatch.delenv("NICHE_TOOL_AGENT_ENABLED", raising=False)
     monkeypatch.delenv("MOONSHOT_API_KEY", raising=False)
+    monkeypatch.delenv("NICHE_CRITIC_ENABLED", raising=False)
 
 
 def _liquid_md(tickers: list[str]) -> dict[str, dict[str, Any]]:
@@ -142,6 +143,26 @@ class FakeToolAgent:
     def discover(self, event_row: Any, playbook: Any = None) -> str:
         self.calls.append(event_row.get("id"))
         return self.payload
+
+
+class FakeCritic:
+    """Red-team stand-in: drops any idea whose ticker is in ``refute``."""
+
+    enabled = True
+
+    def __init__(self, refute: set[str]) -> None:
+        self.refute = {t.upper() for t in refute}
+        self.calls: list[Any] = []
+
+    def apply(self, ideas: Any, event_row: Any) -> list[Any]:
+        self.calls.append(event_row.get("id"))
+        out = []
+        for i in ideas:
+            if i.ticker.upper() in self.refute:
+                continue
+            i.red_team_note = "survived"
+            out.append(i)
+        return out
 
 
 def _payload(*ideas: dict[str, Any]) -> str:
@@ -726,3 +747,48 @@ class TestKimiToolAgentDelegation:
             client=MockLLMClient("{}"),  # type: ignore[arg-type]
         )
         assert agent.tool_agent is None  # no key → no agent
+
+
+# --------------------------------------------------------------------- #
+# Adversarial red-team critic integration (CL-3v56)
+# --------------------------------------------------------------------- #
+
+
+class TestRedTeamCritic:
+    def _event(self) -> dict[str, Any]:
+        return {"id": 1, "headline": "rare-earth ban", "theme": None,
+                "assessment": {}}
+
+    def test_critic_drops_refuted_ideas(self) -> None:
+        c1 = _payload(
+            _idea_dict(ticker="REAL", company_name="Real Co Inc"),
+            _idea_dict(ticker="FRO", company_name="Frontline Ltd"),
+        )
+        critic = FakeCritic(refute={"FRO"})
+        agent = NicheAgent(
+            universe=FakeUniverse(), client=MockLLMClient(c1),  # type: ignore[arg-type]
+            market_data_fn=_liquid_md, critic=critic,
+        )
+        ideas = agent.run(self._event())
+        assert {i.ticker for i in ideas} == {"REAL"}  # FRO refuted
+        assert critic.calls == [1]
+
+    def test_no_critic_keeps_all(self) -> None:
+        c1 = _payload(
+            _idea_dict(ticker="REAL", company_name="Real Co Inc"),
+            _idea_dict(ticker="FRO", company_name="Frontline Ltd"),
+        )
+        agent = NicheAgent(
+            universe=FakeUniverse(), client=MockLLMClient(c1),  # type: ignore[arg-type]
+            market_data_fn=_liquid_md,  # critic off by default
+        )
+        assert agent.critic is None
+        assert {i.ticker for i in agent.run(self._event())} == {"REAL", "FRO"}
+
+    def test_critic_enabled_via_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("NICHE_CRITIC_ENABLED", "1")
+        agent = NicheAgent(
+            universe=FakeUniverse(),
+            client=MockLLMClient("{}"),  # type: ignore[arg-type]
+        )
+        assert agent.critic is not None

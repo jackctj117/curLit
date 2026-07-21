@@ -193,6 +193,9 @@ class NicheIdea:
     market_cap: float | None = None
     avg_dollar_volume: float | None = None
     dropped_reason: str | None = None
+    #: Set by the adversarial red-team critic (CL-3v56) on survivors.
+    red_team_note: str = ""
+    red_team_verdict: str = ""
     #: For the honest self-scored components (debugging / logging).
     components: dict[str, float] = field(default_factory=dict)
 
@@ -202,6 +205,11 @@ class NicheIdea:
         tags. ``time_horizon`` defaults to "short" (a niche event trade
         is tactical) so the ledger's selector/expiry logic has a value."""
         bullish = self.action in _BULLISH_NICHE_ACTIONS or self.direction == "bullish"
+        # Fold the surviving red-team attack (CL-3v56) into the operator-visible
+        # notes so the bear case rides along with the idea, not just the bull.
+        notes = self.torque_reason
+        if self.red_team_note:
+            notes = f"{notes} | ⚠ survived red-team; top risk: {self.red_team_note}"
         return {
             "ticker": self.ticker,
             "action": self.action,
@@ -217,7 +225,7 @@ class NicheIdea:
             "invalidation": "",
             "suggested_entry": "",
             "preferred_instrument": "",
-            "notes": self.torque_reason,
+            "notes": notes,
             # -- niche tags (additive; existing consumers ignore unknown keys)
             "niche": True,
             "company_name": self.company_name,
@@ -227,6 +235,7 @@ class NicheIdea:
             "liquidity_flag": self.liquidity_flag,
             "exchange": self.exchange,
             "robinhood_tradeable": self.robinhood_tradeable,
+            "red_team_verdict": self.red_team_verdict or None,
         }
 
 
@@ -646,6 +655,8 @@ class NicheAgent:
         tools_max_entities: int | None = None,
         tool_agent: Any = None,
         tool_agent_enabled: bool | None = None,
+        critic: Any = None,
+        critic_enabled: bool | None = None,
     ) -> None:
         # ``universe`` is a SymbolUniverse (or any object exposing
         # exists/get/resolve_name/robinhood_tradeable).
@@ -714,6 +725,17 @@ class NicheAgent:
             )
         else:
             self.tool_agent = None
+        # Adversarial red-team critic (CL-3v56) — attacks surviving ideas on
+        # the claude-code subscription (an INDEPENDENT adversary, free). Opt-in.
+        if critic_enabled is None:
+            critic_enabled = _env_flag("NICHE_CRITIC_ENABLED", default=False)
+        if critic is not None:
+            self.critic = critic
+        elif critic_enabled:
+            from src.events.adversarial_critic import AdversarialCritic  # noqa: PLC0415
+            self.critic = AdversarialCritic(client=self.client)
+        else:
+            self.critic = None
 
     # -- prompt ---------------------------------------------------------
 
@@ -840,11 +862,20 @@ class NicheAgent:
                 exc_info=True,
             )
         surviving, logged = score_and_gate(verified, market_data, self.config)
+        # Adversarial red-team pass (CL-3v56): attack the survivors; drop the
+        # refuted, annotate the rest with the surviving bear case. Fail-open.
+        gated = len(surviving)
+        if (
+            self.critic is not None
+            and getattr(self.critic, "enabled", True)
+            and surviving
+        ):
+            surviving = self.critic.apply(surviving, event_row)
         logger.info(
             "niche agent: event id=%s [%s] — %d proposed, %d verified, "
-            "%d surfaced, %d logged (below threshold/illiquid)",
+            "%d gated, %d surfaced after red-team, %d logged",
             event_row.get("id"), source, len(raw_accum), len(verified),
-            len(surviving), len(logged),
+            gated, len(surviving), len(logged),
         )
         return surviving
 
