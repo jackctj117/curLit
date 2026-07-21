@@ -35,6 +35,7 @@ from src.events.playbooks import (
     all_tradable_instruments,
     load_playbooks,
 )
+from src.events.triage import EventTriage
 from src.events.x_ingest import source_credibility_note
 from src.research.llm import Message, get_client
 from src.research.llm.client import LLMClient
@@ -573,6 +574,7 @@ class EventImpactAgent:
         model: str = DEFAULT_MODEL,
         playbooks_path: Path | str = DEFAULT_PLAYBOOKS_PATH,
         max_tokens: int = 2000,
+        triage: EventTriage | None = None,
     ) -> None:
         self.engine = engine
         self.client = client if client is not None else get_client("claude-code")
@@ -580,6 +582,15 @@ class EventImpactAgent:
         self.max_tokens = max_tokens
         self.playbooks = load_playbooks(playbooks_path)
         self._fallback_tradables = all_tradable_instruments(self.playbooks)
+        # Fast triage tier (CL-cunh): a cheap Haiku batch pre-filter that lets
+        # us skip the expensive full assessment on clearly-irrelevant events.
+        # Shares this agent's subscription client. Disabled unless
+        # EVENT_TRIAGE_ENABLED is set (opt-in), so existing callers are
+        # unchanged until the operator turns it on.
+        self.triage = (
+            triage if triage is not None
+            else EventTriage(client=self.client)
+        )
 
     # -- prompt ---------------------------------------------------------
 
@@ -687,7 +698,14 @@ class EventImpactAgent:
     def assess_new_events(self, limit: int = 20) -> list[AssessmentResult]:
         """Process up to ``limit`` NEW rows (newest first — freshest
         events are the only ones with any edge left) and persist each
-        outcome. Returns per-event results for summary logging."""
+        outcome. Returns per-event results for summary logging.
+
+        When the triage tier is enabled (CL-cunh), the whole batch is first
+        scored in one cheap Haiku call; events that fall below the relevance
+        bar are DISMISSED without paying for the full assessment. Triage fails
+        OPEN — a missing verdict escalates — so this can only save cost, never
+        silently drop a real event.
+        """
         with self.engine.connect() as conn:
             rows = [
                 dict(r._mapping)
@@ -697,8 +715,46 @@ class EventImpactAgent:
                     "ORDER BY seen_at DESC LIMIT :lim",
                 ), {"lim": limit})
             ]
+
+        verdicts: dict[int, Any] = {}
+        if self.triage is not None and self.triage.enabled and rows:
+            verdicts = self.triage.score_batch(rows)
+            skipped = sum(
+                1 for r in rows
+                if (v := verdicts.get(int(r["id"]))) is not None
+                and not v.escalate
+            )
+            logger.info(
+                "triage: %d scored, %d escalated, %d skipped (model=%s)",
+                len(rows), len(rows) - skipped, skipped, self.triage.model,
+            )
+
         results: list[AssessmentResult] = []
         for row in rows:
+            verdict = verdicts.get(int(row["id"]))
+            if verdict is not None and not verdict.escalate:
+                # Triaged out — cheap DISMISS, no expensive assessment call.
+                logger.debug(
+                    "triaged out event id=%s (relevance=%d): %.70s",
+                    row.get("id"), verdict.relevance, row.get("headline"),
+                )
+                result = AssessmentResult(
+                    event_id=int(row["id"]),
+                    headline=str(row["headline"]),
+                    theme=row.get("theme"),
+                    status="DISMISSED",
+                    assessment={
+                        "rationale": (
+                            f"triaged out (relevance={verdict.relevance}): "
+                            f"{verdict.reason}"
+                        )[:500],
+                        "triaged": True,
+                        "triage_relevance": verdict.relevance,
+                    },
+                )
+                self._persist(result)
+                results.append(result)
+                continue
             result = self.assess_row(row)
             if result.status != "NEW":  # transport failure = no write,
                 self._persist(result)   # row stays queued for retry

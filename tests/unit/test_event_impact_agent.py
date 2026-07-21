@@ -659,3 +659,114 @@ class TestSourceCredibilityProvenance:
         )
         prompt = self._prompt_for(engine, "x:2")
         assert "SOURCE: X/@SomeNewHandle" in prompt
+
+
+# ---------------------------------------------------------------------- #
+# Fast triage tier (CL-cunh) — batch pre-filter in front of the assessment
+# ---------------------------------------------------------------------- #
+
+
+class _TwoTierMock:
+    """Model-dispatching mock: returns the triage array for the Haiku tier
+    and the full assessment object for anything else (Sonnet)."""
+
+    def __init__(self, triage_text: str, assess_text: str) -> None:
+        self.triage_text = triage_text
+        self.assess_text = assess_text
+        self.calls: list[dict] = []
+
+    def complete(self, messages: Any, model: str, **kwargs: Any) -> SimpleNamespace:
+        self.calls.append({"messages": messages, "model": model})
+        out = self.triage_text if "haiku" in model else self.assess_text
+        return SimpleNamespace(
+            text=out, model=model, provider="mock",
+            input_tokens=10, output_tokens=10, usd_cost=0.0, elapsed_sec=0.01,
+        )
+
+
+def _numeric_ids(engine: Engine) -> dict[str, int]:
+    with engine.connect() as conn:
+        return {
+            r[0]: r[1]
+            for r in conn.execute(text("SELECT external_id, id FROM geo_events"))
+        }
+
+
+class TestTriageTier:
+    def test_triage_skips_junk_and_escalates_real(self, engine: Engine) -> None:
+        from src.events.triage import EventTriage
+
+        _insert_event(engine, "e1", "Iran moves to close Hormuz",
+                      seen_at="2026-07-14T10:00:00")
+        _insert_event(engine, "e2", "Opinion: why oil forecasts are usually wrong",
+                      seen_at="2026-07-14T09:00:00")
+        ids = _numeric_ids(engine)
+        triage_arr = json.dumps([
+            {"id": ids["e1"], "relevance": 9, "tradable": True, "reason": "chokepoint"},
+            {"id": ids["e2"], "relevance": 1, "tradable": False, "reason": "opinion"},
+        ])
+        client = _TwoTierMock(triage_arr, json.dumps(_valid_payload()))
+        agent = EventImpactAgent(
+            engine, client=client,  # type: ignore[arg-type]
+            triage=EventTriage(client=client, enabled=True, min_relevance=4),  # type: ignore[arg-type]
+        )
+        agent.assess_new_events()
+
+        # The junk was DISMISSED by triage without a full assessment.
+        junk = _fetch(engine, "e2")
+        assert junk["status"] == "DISMISSED"
+        assert junk["assessment"]["triaged"] is True
+        assert junk["assessment"]["triage_relevance"] == 1
+        # The real event got the full assessment.
+        assert _fetch(engine, "e1")["status"] == "ASSESSED"
+        # Exactly ONE batch triage call + ONE full assessment call — the
+        # skipped event never paid for Sonnet.
+        haiku = [c for c in client.calls if "haiku" in c["model"]]
+        sonnet = [c for c in client.calls if "sonnet" in c["model"]]
+        assert len(haiku) == 1
+        assert len(sonnet) == 1
+
+    def test_triage_fails_open_assesses_everything(self, engine: Engine) -> None:
+        """A triage transport failure must not drop events — all escalate."""
+        from src.events.triage import EventTriage
+
+        class _RaisingTriageClient:
+            def __init__(self) -> None:
+                self.calls: list[dict] = []
+
+            def complete(self, messages: Any, model: str, **kwargs: Any) -> Any:
+                self.calls.append({"model": model})
+                if "haiku" in model:
+                    raise RuntimeError("triage outage")
+                return SimpleNamespace(
+                    text=json.dumps(_valid_payload()), model=model,
+                    provider="mock", input_tokens=10, output_tokens=10,
+                    usd_cost=0.0, elapsed_sec=0.01,
+                )
+
+        _insert_event(engine, "e1", "Iran moves to close Hormuz")
+        _insert_event(engine, "e2", "Some other Hormuz development",
+                      seen_at="2026-07-14T08:00:00")
+        client = _RaisingTriageClient()
+        agent = EventImpactAgent(
+            engine, client=client,  # type: ignore[arg-type]
+            triage=EventTriage(client=client, enabled=True),  # type: ignore[arg-type]
+        )
+        agent.assess_new_events()
+        # Triage blew up → both events still got assessed (nothing lost).
+        assert _fetch(engine, "e1")["status"] == "ASSESSED"
+        assert _fetch(engine, "e2")["status"] == "ASSESSED"
+
+    def test_triage_disabled_by_default_no_extra_call(
+        self, engine: Engine, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """With triage off (the default), behavior is exactly as before:
+        one assessment call per event, no triage call."""
+        monkeypatch.delenv("EVENT_TRIAGE_ENABLED", raising=False)
+        _insert_event(engine, "e1", "Iran moves to close Hormuz")
+        client = MockLLMClient(json.dumps(_valid_payload()))
+        agent = EventImpactAgent(engine, client=client)  # type: ignore[arg-type]
+        assert agent.triage.enabled is False
+        agent.assess_new_events()
+        assert _fetch(engine, "e1")["status"] == "ASSESSED"
+        assert len(client.calls) == 1  # only the assessment, no triage
