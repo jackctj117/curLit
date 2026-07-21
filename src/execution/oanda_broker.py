@@ -148,7 +148,17 @@ class OandaBroker(Broker):
 
     @staticmethod
     def _to_oanda(sym: str) -> str:
-        return f"{sym[:3]}_{sym[3:]}"
+        # Idempotent (CL-03f5): event legs already arrive OANDA-formatted
+        # (BCO_USD, XAU_USD, EUR_USD) and must NOT be re-split — the old
+        # f"{sym[:3]}_{sym[3:]}" turned EUR_USD into EUR__USD and NATGAS_USD
+        # into NAT_GAS_USD, which OANDA 400-rejects as malformed, so NO event
+        # order ever placed. Only a plain 6-char FX pair (EURUSD) needs the
+        # underscore inserted.
+        if "_" in sym:
+            return sym
+        if len(sym) == 6:
+            return f"{sym[:3]}_{sym[3:]}"
+        return sym
 
     @staticmethod
     def _from_oanda(sym: str) -> str:
