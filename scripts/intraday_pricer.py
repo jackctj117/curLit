@@ -20,6 +20,7 @@ import os
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 from sqlalchemy import create_engine
 
@@ -69,6 +70,10 @@ def main(argv: list[str] | None = None) -> int:
                         help="Comma-separated OANDA ids (default: playbook set).")
     parser.add_argument("--retention-hours", type=int, default=24,
                         help="Prune quotes older than this each cycle.")
+    parser.add_argument("--no-candles", action="store_true",
+                        help="Skip the daily-candle vol backfill (CL-lb03).")
+    parser.add_argument("--candles-count", type=int, default=60,
+                        help="Daily candles to backfill per unmapped instrument.")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args(argv)
 
@@ -99,16 +104,47 @@ def main(argv: list[str] | None = None) -> int:
         len(instruments), practice, args.retention_hours,
     )
 
+    # Daily-candle vol backfill (CL-lb03) for the unmapped instruments — the
+    # ones with no canonical daily series, run once at startup and once per
+    # UTC-day rollover (daily bars don't change intraday).
+    from datetime import UTC, datetime  # noqa: PLC0415
+
+    from src.data.oanda_candles import (  # noqa: PLC0415
+        refresh_daily_candles,
+        unmapped_tradables,
+    )
+    candle_instruments = [] if args.no_candles else unmapped_tradables(instruments)
+    last_candle_date: Any = None
+
+    def _maybe_refresh_candles() -> None:
+        nonlocal last_candle_date
+        if not candle_instruments:
+            return
+        today = datetime.now(UTC).date()
+        if today == last_candle_date:
+            return
+        refresh_daily_candles(
+            engine, candle_instruments, api_key, account_id,
+            practice=practice, count=args.candles_count,
+        )
+        last_candle_date = today
+
+    if candle_instruments:
+        logger.info("daily-candle backfill for %d unmapped instruments: %s",
+                    len(candle_instruments), ", ".join(candle_instruments))
+
     if args.loop:
         logger.info("looping every %ds (Ctrl-C to stop)", args.loop)
         try:
             while True:
+                _maybe_refresh_candles()
                 pricer.poll_once()
                 time.sleep(args.loop)
         except KeyboardInterrupt:
             logger.info("intraday pricer: stopped")
         return 0
 
+    _maybe_refresh_candles()
     counts = pricer.poll_once()
     print(
         f"intraday: wrote={counts['written']} pruned={counts['pruned']} "
