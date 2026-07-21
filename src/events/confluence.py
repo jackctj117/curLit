@@ -108,6 +108,12 @@ class ConfluenceConfig:
     vol_spike_check_enabled: bool = False
     vol_spike_window: int = 5
     vol_spike_ratio: float = 1.5
+    # Intraday quote staleness bound (CL-dz71): a quote from intraday_quotes
+    # only counts as the reference/current price if it is within this many
+    # minutes of the lookup time. Keeps a stalled poller from feeding an old
+    # price as "now", and requires a real quote near seen_at. Beyond it, the
+    # daily close is used (pre-CL-dz71 behavior).
+    intraday_max_staleness_minutes: int = 15
 
 
 @dataclass
@@ -360,11 +366,36 @@ class EventConfluence:
     def _provider_price(self, symbol: str, as_of: datetime) -> float | None:
         if self.data is None:
             return None
+        # Intraday quote store first (CL-dz71) — a real, timestamped price at
+        # this instant, so the seen_at reference and the current price are BOTH
+        # event-timescale rather than a stale (possibly days-old) daily close.
+        intraday = self._intraday_price(symbol, as_of)
+        if intraday is not None:
+            return intraday
         try:
             value = self.data.get_latest_value(symbol, as_of)
         except Exception as exc:
             logger.debug(
                 "Provider price lookup failed for %s @ %s: %s: %s",
+                symbol, as_of, type(exc).__name__, exc,
+            )
+            return None
+        return float(value) if value is not None else None
+
+    def _intraday_price(self, symbol: str, as_of: datetime) -> float | None:
+        """Nearest intraday quote at/before ``as_of`` within the staleness
+        bound, or None. Guarded by getattr so providers without the intraday
+        method (older fixtures) simply skip straight to the daily fallback."""
+        getter = getattr(self.data, "get_intraday_value", None)
+        if getter is None:
+            return None
+        try:
+            value = getter(
+                symbol, as_of, self.config.intraday_max_staleness_minutes,
+            )
+        except Exception as exc:
+            logger.debug(
+                "Intraday price lookup failed for %s @ %s: %s: %s",
                 symbol, as_of, type(exc).__name__, exc,
             )
             return None
@@ -416,7 +447,7 @@ class EventConfluence:
                         "old": old,
                     },
                 )
-            return res.rowcount == 1
+            return bool(res.rowcount == 1)
         except Exception:
             logger.exception(
                 "geo_events transition %s → %s failed for id=%s", old, new, event_id,

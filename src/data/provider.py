@@ -1,7 +1,7 @@
 """Data provider — query aligned time-series data from the database."""
 
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 import numpy as np
@@ -269,6 +269,59 @@ class DataProvider:
             logger.warning(
                 "get_latest_value(%s, %s) failed: %s: %s",
                 series_id, as_of, type(exc).__name__, exc,
+            )
+        return None
+
+    def get_intraday_value(
+        self,
+        symbol: str,
+        as_of: datetime,
+        max_staleness_minutes: int | None = None,
+    ) -> float | None:
+        """Most recent intraday mid at or before ``as_of`` from
+        ``intraday_quotes`` (CL-dz71), or None.
+
+        Keyed by the RAW OANDA instrument id (XAU_USD, BCO_USD, ...) — the
+        feed's own vocabulary — so this deliberately does NOT call
+        ``_normalize_symbol``; that also lets it serve instruments with no
+        daily prices-table series (XAG_USD, NATGAS_USD, ...).
+
+        ``max_staleness_minutes`` bounds how old the nearest quote may be
+        (so a dead poller doesn't hand back an ancient price as "current",
+        and a seen_at with no nearby quote returns None → the caller falls
+        back to the daily close). A missing ``intraday_quotes`` table (pre
+        migration 012) is caught and returns None.
+        """
+        floor = (
+            as_of - timedelta(minutes=max_staleness_minutes)
+            if max_staleness_minutes is not None else None
+        )
+        try:
+            with self.engine.connect() as conn:
+                if floor is not None:
+                    row = conn.execute(
+                        text("""
+                            SELECT mid FROM intraday_quotes
+                            WHERE symbol = :sid AND ts <= :as_of AND ts >= :floor
+                            ORDER BY ts DESC LIMIT 1
+                        """),
+                        {"sid": symbol, "as_of": as_of, "floor": floor},
+                    ).fetchone()
+                else:
+                    row = conn.execute(
+                        text("""
+                            SELECT mid FROM intraday_quotes
+                            WHERE symbol = :sid AND ts <= :as_of
+                            ORDER BY ts DESC LIMIT 1
+                        """),
+                        {"sid": symbol, "as_of": as_of},
+                    ).fetchone()
+                if row is not None and row[0] is not None:
+                    return float(row[0])
+        except Exception as exc:
+            logger.debug(
+                "get_intraday_value(%s, %s) failed (table missing?): %s: %s",
+                symbol, as_of, type(exc).__name__, exc,
             )
         return None
 

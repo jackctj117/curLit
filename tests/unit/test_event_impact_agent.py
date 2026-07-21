@@ -30,6 +30,15 @@ FALLBACK = all_tradable_instruments(PLAYBOOKS)
 HORMUZ = PLAYBOOKS["energy_chokepoint"]
 
 
+@pytest.fixture(autouse=True)
+def _triage_disabled_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the fast triage tier (CL-cunh) OFF for the assessment-tier tests
+    regardless of the operator's .env — which load_project_env() may have
+    leaked into os.environ earlier in the run. TestTriageTier constructs an
+    explicitly-enabled EventTriage, so it is unaffected by this."""
+    monkeypatch.delenv("EVENT_TRIAGE_ENABLED", raising=False)
+
+
 def _valid_payload(**overrides: Any) -> dict:
     base: dict = {
         "core_event": "Iran announces closure of the Strait of Hormuz",
