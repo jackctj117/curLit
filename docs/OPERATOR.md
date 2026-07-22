@@ -1,5 +1,10 @@
 # OPERATOR runbook (CL-mf6o)
 
+> **See [`CURRENT_OPERATIONS.md`](CURRENT_OPERATIONS.md) first** — it is the
+> living map of the 9 running daemons, the two paper venues (OANDA FX events
+> + Alpaca options), every gate/cap/env knob, and the restart rules. This
+> runbook covers the older engine-centric procedures.
+
 Human-oriented operations guide. **For copy-paste startup/shutdown, see
 `docs/BOOT.md`.** This document covers what to do once the system is
 running: morning checks, alert response, dashboard reading, kill-switch

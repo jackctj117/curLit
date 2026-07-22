@@ -1,5 +1,14 @@
 # curLit — Technical Architecture
 
+> **2026-07 addendum**: the event-driven layer grew substantially — Haiku
+> triage, an agentic Kimi tool-loop niche stack with SEC/technicals/options
+> grounding, an adversarial red-team critic, intraday OANDA quotes feeding
+> market confirmation, foreign-rates ingestion (Bundesbank/ECB), Alpaca
+> paper options execution, and a closed outcome-tracking → reflective-review
+> learning loop. The operational ground truth for what runs and under what
+> policies is [`CURRENT_OPERATIONS.md`](CURRENT_OPERATIONS.md); the
+> per-module map is in `CLAUDE.md` §Architecture Overview.
+
 ## Table of Contents
 
 - [Tech Stack Summary](#tech-stack-summary)
