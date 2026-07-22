@@ -176,13 +176,23 @@ _HANDLE_CREDIBILITY: dict[str, str] = {
 
 
 def source_credibility_note(source: str, category: str | None = None) -> str | None:
-    """One line of provenance for an ``x:<handle>`` ``geo_events.source``.
+    """One line of provenance for an ``x:<handle>`` or ``reddit:<sub>``
+    ``geo_events.source``.
 
-    Returns ``None`` for non-X sources (e.g. plain ``gdelt``) so the
+    Returns ``None`` for other sources (e.g. plain ``gdelt``) so the
     prompt builder adds nothing. ``category`` is optional context: it is
     unavailable when only the persisted row is in hand, so the handle
     mapping carries the load, falling back to the category framing.
     """
+    if source and source.startswith("reddit:"):
+        sub = source[len("reddit:"):].strip()
+        return (
+            f"SOURCE: Reddit r/{sub} (community post — crowd-surfaced and "
+            "unverified; sometimes carries early primary data — freight "
+            "fixtures, AIS observations, local reporting — but treat any "
+            "single-source claim as unconfirmed and be skeptical of "
+            "editorialised titles)."
+        )
     if not source or not source.startswith("x:"):
         return None
     handle = source[len("x:"):].strip()

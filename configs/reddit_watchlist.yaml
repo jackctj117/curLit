@@ -1,0 +1,102 @@
+# Reddit subreddit watchlist — scripts/reddit_monitor.py (CL-okww).
+#
+# Mirrors the X watchlist pattern: posts from these subreddits are theme-
+# matched against the playbooks' watch_terms and ingested as NEW geo_events
+# rows (source "reddit:<subreddit>"), so the EXISTING triage -> impact-agent
+# pipeline assesses them. No second assessment path, no raw forwarding.
+#
+# Schema per subreddit:
+#   name:      subreddit (no r/ prefix)
+#   tier:      1 = poll every cycle, 2 = every 2nd, 3 = every 4th
+#   listing:   new | hot | rising  (tier 1 uses `new` for speed; slower tiers
+#              use `hot` so the community has already upvote-filtered)
+#   min_score: skip posts below this score (0 for `new` — fresh posts start
+#              at 1; higher for `hot` where score is meaningful)
+#   note:      why it's on the list
+#
+# Curated 2026-07-21 from the operator's guide, filtered to the themes the
+# playbooks actually cover (Hormuz/energy, Russia-Ukraine, Africa minerals,
+# China-Taiwan, shipping, pharma APIs). Broad market-reaction subs are
+# deliberately Tier 3 — context, not signal.
+
+subreddits:
+  # ---- Tier 1: highest signal-to-noise for our themes -------------------
+  - name: geopolitics
+    tier: 1
+    listing: new
+    min_score: 0
+    note: "Core geopolitics discussion; strong primary-source link posts."
+  - name: ShippingStocks
+    tier: 1
+    listing: new
+    min_score: 0
+    note: "Tanker rates, VLCC fixtures, real freight data — often earliest on chokepoint economics."
+  - name: energy
+    tier: 1
+    listing: new
+    min_score: 0
+    note: "Energy policy + supply news."
+  - name: Commodities
+    tier: 1
+    listing: new
+    min_score: 0
+    note: "Commodity supply/demand + positioning chatter."
+  - name: LessCredibleDefence
+    tier: 1
+    listing: new
+    min_score: 0
+    note: "Unfiltered but often-early military analysis (incl. PLA)."
+  - name: CredibleDefense
+    tier: 1
+    listing: new
+    min_score: 0
+    note: "Higher-rigor military analysis; slower but better-sourced."
+
+  # ---- Tier 2: good depth ----------------------------------------------
+  - name: WarCollege
+    tier: 2
+    listing: hot
+    min_score: 10
+    note: "Military-theory depth; second-order context."
+  - name: oil
+    tier: 2
+    listing: hot
+    min_score: 5
+    note: "Oil-specific supply/logistics discussion."
+  - name: mining
+    tier: 2
+    listing: hot
+    min_score: 5
+    note: "Mining sector incl. Africa/critical minerals."
+  - name: UkraineRussiaReport
+    tier: 2
+    listing: hot
+    min_score: 10
+    note: "Russia-Ukraine theatre reporting (mixed credibility — theme-gated)."
+  - name: taiwan
+    tier: 2
+    listing: hot
+    min_score: 5
+    note: "Taiwan politics/strait tensions."
+  - name: supplychain
+    tier: 2
+    listing: hot
+    min_score: 5
+    note: "Logistics/supply-chain disruptions incl. pharma APIs."
+
+  # ---- Tier 3: context / sentiment -------------------------------------
+  - name: worldnews
+    tier: 3
+    listing: hot
+    min_score: 100
+    note: "Broad news firehose — high min_score so only big stories pass."
+  - name: China
+    tier: 3
+    listing: hot
+    min_score: 25
+    note: "China policy/economy context."
+  - name: Gold
+    tier: 3
+    listing: hot
+    min_score: 10
+    note: "Gold/haven sentiment."
