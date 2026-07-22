@@ -29,7 +29,9 @@ the next run picks up exactly where the previous one stopped.
 Side-effects (paper-shadow registration, Telegram alerting)
 are intentionally out of scope here — those are separate beads
 (CL-3xn1, CL-o2vb) that read the loop's verdict log and act on it.
-The loop's job is to populate that log.
+The loop's job is to populate that log. Gate/escalate notification
+formatting + dispatch lives in ``src.research.loop_notifications``
+(LoopNotifier port, split per the 2026-07-21 review §6.2.3).
 
 Designed for dependency injection: the constructor takes already-built
 ingest_runner / idea / implementer / orchestrator / verdict_rules so
@@ -38,8 +40,11 @@ tests run with mocked components and no LLM/network/Postgres.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
+import os
+import tempfile
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
@@ -55,15 +60,7 @@ from src.research.ingest import (
     FeedConfig,
     IngestRunner,
 )
-from src.research.instruments import (
-    extract_brief_instruments,
-    extract_candidate_instruments,
-)
-from src.research.notifications import (
-    DispatchResult,
-    html_escape,
-    notify_operator,
-)
+from src.research.loop_notifications import LoopNotifier, NotifyFn
 from src.research.orchestrator import DebateOrchestrator
 from src.research.promote import PromoteRegistrar, RegistrationResult
 from src.research.verdict import (
@@ -208,73 +205,26 @@ def load_state(path: Path | str = DEFAULT_STATE_PATH) -> LoopState:
 
 
 def save_state(state: LoopState, path: Path | str = DEFAULT_STATE_PATH) -> None:
-    """Persist state JSON. Creates parent dirs if missing."""
+    """Persist state JSON atomically (tmp file + ``os.replace``);
+    creates parent dirs if missing. Mirrors
+    ``approvals.save_state_atomic`` — this file is the pipeline's
+    entire memory, so a crash mid-write must never leave a torn
+    ``state.json`` and a concurrently-reading approver (CLI / Telegram
+    bot) must never see a half-written file. Serialization is unchanged
+    (asdict + indent=2 + default=str), so the CL-837v
+    ``transient``/``attempts`` retry fields round-trip exactly."""
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(asdict(state), indent=2, default=str))
-
-
-# --------------------------------------------------------------------------- #
-# Notification formatting helpers (CL-frn7)
-# --------------------------------------------------------------------------- #
-
-
-def _fmt_instruments(instruments: list[str]) -> str:
-    """Comma-joined, HTML-escaped instrument list; explicit fallback so
-    the operator sees that extraction found nothing rather than a
-    silently missing line."""
-    if not instruments:
-        return "(unknown)"
-    return html_escape(", ".join(instruments))
-
-
-def _brief_thesis(brief_path: Path) -> str:
-    """One-line thesis: the brief's first ``# `` heading with the
-    'Hypothesis:' prefix stripped. Empty string when unavailable."""
+    payload = json.dumps(asdict(state), indent=2, default=str)
+    fd, tmp_name = tempfile.mkstemp(dir=p.parent, prefix=f".{p.name}.", suffix=".tmp")
     try:
-        text = brief_path.read_text()
-    except OSError:
-        return ""
-    for line in text.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("# "):
-            thesis = stripped[2:].strip()
-            if thesis.lower().startswith("hypothesis:"):
-                thesis = thesis[len("hypothesis:"):].strip()
-            return thesis
-    return ""
-
-
-def _report_oos_metrics(report_path: str | Path) -> dict[str, Any]:
-    """OOS metrics dict from a candidate report JSON; {} on any
-    problem. Handles both nesting shapes the pipeline has produced
-    (``backtest_metrics.oos_metrics`` and top-level ``oos_metrics``)."""
-    try:
-        report = json.loads(Path(report_path).read_text())
-    except (OSError, ValueError):
-        return {}
-    if not isinstance(report, dict):
-        return {}
-    oos = report.get("backtest_metrics", {}).get(
-        "oos_metrics", {},
-    ) or report.get("oos_metrics", {})
-    return oos if isinstance(oos, dict) else {}
-
-
-def _fmt_backtest_line(oos: dict[str, Any]) -> str:
-    """Key backtest numbers on one line; empty string when none are
-    available (line is then omitted from the message)."""
-    parts: list[str] = []
-    sharpe = oos.get("sharpe")
-    if isinstance(sharpe, (int, float)):
-        parts.append(f"Sharpe {sharpe:.2f}")
-    max_dd = oos.get("max_drawdown")
-    if isinstance(max_dd, (int, float)):
-        parts.append(f"max DD {max_dd:.2%}")
-    n_trades = oos.get("n_trades")
-    if isinstance(n_trades, (int, float)):
-        parts.append(f"{int(n_trades)} trades")
-    return " · ".join(parts)
+        with os.fdopen(fd, "w") as fh:
+            fh.write(payload)
+        os.replace(tmp_name, p)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp_name)
+        raise
 
 
 # --------------------------------------------------------------------------- #
@@ -320,14 +270,6 @@ class RunSummary:
 # configured REVIEW_RULES.md once per run; tests inject a fixed list.
 RulesLoader = Callable[[], list[ParsedRule]]
 
-# GATE 1 notifier. Default = production Telegram via
-# src.research.notifications.notify_operator; tests inject a recorder.
-# Signature: (title, message, priority) → DispatchResult.
-# The loop builds ``message`` as Telegram-HTML (interpolations escaped
-# via html_escape); the default notifier passes html=True so Telegram
-# renders it (CL-frn7).
-NotifyFn = Callable[[str, str, int], DispatchResult]
-
 
 class ResearchLoop:
     """One full pipeline pass per ``run()`` call.
@@ -353,6 +295,7 @@ class ResearchLoop:
         candidate_dir: Path | str = DEFAULT_CANDIDATE_DIR,
         experimental_code_dir: Path | str = DEFAULT_EXPERIMENTAL_CODE_DIR,
         notify_fn: NotifyFn | None = None,
+        notifier: LoopNotifier | None = None,
         gate1_timeout_sec: float = DEFAULT_GATE1_TIMEOUT_SEC,
         gate2_timeout_sec: float = DEFAULT_GATE2_TIMEOUT_SEC,
         registrar: PromoteRegistrar | None = None,
@@ -374,12 +317,11 @@ class ResearchLoop:
         self.hypothesis_dir = Path(hypothesis_dir)
         self.candidate_dir = Path(candidate_dir)
         self.experimental_code_dir = Path(experimental_code_dir)
-        # Default notifier hits prod channels (no-op when env-vars
-        # unset). html=True: the loop's messages are Telegram-HTML.
-        self.notify_fn: NotifyFn = notify_fn or (
-            lambda t, m, p: notify_operator(
-                title=t, message=m, priority=p, html=True,
-            )
+        # Notification port (src.research.loop_notifications): inject a
+        # LoopNotifier, or just a notify_fn dispatch callable (the test
+        # seam) — default hits prod Telegram (no-op when env-vars unset).
+        self.notifier: LoopNotifier = notifier or LoopNotifier(
+            notify_fn=notify_fn,
         )
         self.gate1_timeout_sec = gate1_timeout_sec
         self.gate2_timeout_sec = gate2_timeout_sec
@@ -510,7 +452,8 @@ class ResearchLoop:
                         if result.hypothesis_path else None
                     ),
                 }
-                self._notify_gate1(result, summary, extract_hash)
+                if self.notifier.notify_gate1(result, extract_hash):
+                    summary.gate1_notifications_sent += 1
             else:
                 summary.ideas_declined += 1
                 state.ideas_processed[extract_hash] = {
@@ -558,50 +501,6 @@ class ResearchLoop:
                     "GATE 1 auto-skipped expired pending entry %s",
                     extract_hash,
                 )
-
-    def _notify_gate1(
-        self,
-        result: Any,
-        summary: RunSummary,
-        extract_hash: str,
-    ) -> None:
-        """Fire pre-research approval notification. Best-effort —
-        notifier failures don't kill the loop, they just get logged.
-
-        Phone-first Telegram-HTML layout (CL-frn7): bold header via the
-        title, slug + one-line thesis, which instruments the plan would
-        trade (from the brief's Data requirements), and the reply line.
-        """
-        title = "GATE 1 — new trading hypothesis"
-        tradable: list[str] = []
-        inputs: list[str] = []
-        thesis = ""
-        if result.hypothesis_path:
-            tradable, inputs = extract_brief_instruments(result.hypothesis_path)
-            thesis = _brief_thesis(Path(result.hypothesis_path))
-        # Short id for the Telegram approval bot (CL-b1l6) — a prefix
-        # of the extract hash; the bot resolves any unambiguous prefix.
-        short_id = extract_hash[:6]
-        lines = [f"<b>{html_escape(result.strategy_slug)}</b>"]
-        if thesis:
-            lines.append(html_escape(thesis))
-        lines.append("")
-        lines.append(f"<b>Trades:</b> {_fmt_instruments(tradable)}")
-        if inputs:
-            lines.append(f"<b>Inputs:</b> {_fmt_instruments(inputs)}")
-        lines.append("")
-        lines.append(f"Reply: approve {short_id} | reject {short_id}")
-        message = "\n".join(lines)
-        try:
-            disp = self.notify_fn(title, message, 0)
-        except Exception as exc:
-            logger.warning(
-                "GATE 1 notification dispatch raised: %s: %s",
-                type(exc).__name__, exc,
-            )
-            return
-        if disp.any_attempted:
-            summary.gate1_notifications_sent += 1
 
     # ------------------------------------------------------------------ #
     # Phase 3 — implementer
@@ -758,24 +657,25 @@ class ResearchLoop:
                     timespec="seconds",
                 )
                 new_entry["candidate_report_path"] = str(report_path)
-                self._notify_gate2(
-                    slug, new_entry, summary,
+                if self.notifier.notify_gate2(
+                    slug, new_entry,
                     code_path=state.candidates_processed.get(slug, {}).get(
                         "code_path",
                     ),
-                )
+                ):
+                    summary.gate2_notifications_sent += 1
             # ESCALATE: fire operator alert with debate context. Dedup
             # is automatic — a slug only gets debated once (the outer
             # loop skips slugs already in debates_completed), so this
             # notification fires exactly once per escalated candidate.
             elif verdict.verdict == Verdict.ESCALATE:
-                self._notify_escalate(
+                if self.notifier.notify_escalate(
                     slug=slug, verdict=verdict,
                     candidate_report_path=report_path,
                     transcript_path=debate_result.transcript_path,
                     candidate_report=candidate_report_dict,
-                    summary=summary,
-                )
+                ):
+                    summary.escalate_notifications_sent += 1
             state.debates_completed[slug] = new_entry
 
     def _auto_approve_gate1(self, state: LoopState) -> None:
@@ -884,118 +784,6 @@ class ResearchLoop:
             entry["deploy_reason"] = result.error or "registrar reported failure"
             summary.deployments_failed += 1
             summary.errors.append(f"deploy/{slug}: {result.error}")
-
-    def _notify_escalate(
-        self,
-        slug: str,
-        verdict: VerdictResult,
-        candidate_report_path: Path,
-        transcript_path: Path,
-        candidate_report: dict[str, Any],
-        summary: RunSummary,
-    ) -> None:
-        """Fire ESCALATE alert (CL-o2vb). priority=1 so the operator
-        notices; the dedup invariant holds because the outer phase
-        skips slugs already in debates_completed."""
-        # Identify which rule(s) triggered ESCALATE: missing metrics
-        # are the most common cause; ambiguous-positions case shows up
-        # in verdict.reason.
-        problem_rules = [
-            f"{e.rule_id} ({e.detail})"
-            for e in verdict.rule_evaluations
-            if e.missing or not e.passed
-        ]
-        oos = candidate_report.get("backtest_metrics", {}).get(
-            "oos_metrics", {},
-        ) or candidate_report.get("oos_metrics", {})
-        metrics_blurb = ", ".join(
-            f"{k}={v}" for k, v in oos.items()
-        ) if isinstance(oos, dict) else ""
-        title = f"ESCALATE: debate result needs operator review — {slug}"
-        # Telegram-HTML, phone-first (CL-frn7): every interpolated
-        # value escaped; short lines, blank-line separation.
-        lines = [
-            f"<b>{html_escape(slug)}</b>",
-            f"Verdict: ESCALATE — {html_escape(verdict.reason)}",
-            f"Bull: {html_escape(verdict.bull_position)} · "
-            f"Bear: {html_escape(verdict.bear_position)}",
-            "",
-            "<b>Problem rules:</b>",
-        ]
-        if problem_rules:
-            lines += [f"- {html_escape(r)}" for r in problem_rules]
-        else:
-            lines.append("(none — agent positions diverged)")
-        if metrics_blurb:
-            lines.append(f"OOS: {html_escape(metrics_blurb)}")
-        lines += [
-            "",
-            f"Transcript: {html_escape(transcript_path)}",
-            f"Candidate report: {html_escape(candidate_report_path)}",
-            "Review the debate, then retry / archive / data-seed.",
-        ]
-        message = "\n".join(lines)
-        try:
-            disp = self.notify_fn(title, message, 1)
-        except Exception as exc:
-            logger.warning(
-                "ESCALATE notification dispatch raised: %s: %s",
-                type(exc).__name__, exc,
-            )
-            return
-        if disp.any_attempted:
-            summary.escalate_notifications_sent += 1
-
-    def _notify_gate2(
-        self,
-        slug: str,
-        entry: dict[str, Any],
-        summary: RunSummary,
-        code_path: str | None = None,
-    ) -> None:
-        """Fire pre-deploy confirmation notification. priority=1 since
-        this is a deploy decision and we want the operator to notice.
-
-        Phone-first Telegram-HTML layout (CL-frn7): slug, which
-        instruments the candidate code trades, verdict + key backtest
-        numbers, reply line.
-        """
-        title = "GATE 2 — strategy ready to deploy"
-        instruments = (
-            extract_candidate_instruments(code_path) if code_path else []
-        )
-        reason = str(entry.get("reason") or "").strip()
-        if len(reason) > 200:
-            reason = reason[:197] + "..."
-        verdict_line = "Verdict: PROMOTE" + (
-            f" — {html_escape(reason)}" if reason else ""
-        )
-        backtest_line = _fmt_backtest_line(
-            _report_oos_metrics(entry.get("candidate_report_path", "")),
-        )
-        lines = [
-            f"<b>{html_escape(slug)}</b>",
-            "",
-            f"<b>Trades:</b> {_fmt_instruments(instruments)}",
-            verdict_line,
-        ]
-        if backtest_line:
-            lines.append(backtest_line)
-        lines.append("Paper-shadow at allocation=0 — no real-money risk.")
-        lines.append("")
-        lines.append(f"Reply: approve {html_escape(slug)} | "
-                     f"reject {html_escape(slug)}")
-        message = "\n".join(lines)
-        try:
-            disp = self.notify_fn(title, message, 1)
-        except Exception as exc:
-            logger.warning(
-                "GATE 2 notification dispatch raised: %s: %s",
-                type(exc).__name__, exc,
-            )
-            return
-        if disp.any_attempted:
-            summary.gate2_notifications_sent += 1
 
     # ------------------------------------------------------------------ #
     # Run-summary persistence

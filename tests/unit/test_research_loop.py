@@ -318,6 +318,37 @@ class TestStatePersistence:
         loaded = load_state(path)
         assert loaded == original
 
+    def test_crash_mid_write_leaves_original_intact(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """save_state is atomic (tmp + os.replace): a crash mid-write
+        must never corrupt the existing state file — it is the whole
+        pipeline's memory."""
+        import src.research.loop as loop_mod
+
+        path = tmp_path / "state.json"
+        original = LoopState(
+            ideas_processed={"abc": {
+                "status": "ERROR", "slug": "x", "reason": "boom",
+                # CL-837v transient-retry fields must survive verbatim
+                "transient": True, "attempts": 2,
+            }},
+        )
+        save_state(original, path)
+
+        def crash(_src: str, _dst: str) -> None:
+            raise OSError("simulated crash during rename")
+
+        monkeypatch.setattr(loop_mod.os, "replace", crash)
+        with pytest.raises(OSError, match="simulated crash"):
+            save_state(LoopState(), path)
+
+        # Original file is intact, parseable, and byte-identical in
+        # content — including the retry metadata.
+        assert load_state(path) == original
+        # The failed write's tmp file was cleaned up.
+        assert list(tmp_path.glob(".state.json.*")) == []
+
 
 # --------------------------------------------------------------------------- #
 # Happy-path run
