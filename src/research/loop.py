@@ -95,6 +95,62 @@ GATE1_APPROVED_STATUS: str = "APPROVED"
 GATE1_SKIPPED_STATUS: str = "SKIPPED"
 DEFAULT_GATE1_TIMEOUT_SEC: float = 7 * 24 * 60 * 60  # 7 days
 
+# Transient-error retry (CL-837v). An ERROR recorded from a TRANSIENT
+# failure (timeout / connection / rate limit — e.g. the 07-17 outage's
+# APITimeoutError wedged 3 approved hypotheses permanently) is retried on
+# subsequent runs up to this many attempts; content failures stay terminal
+# (retrying reproduces the same bad output — same posture as the impact
+# agent's transport-vs-content split).
+ERROR_RETRY_ATTEMPT_CAP: int = 3
+
+#: Exception-type-name fragments that mark a failure as transient.
+_TRANSIENT_NAME_FRAGMENTS: tuple[str, ...] = (
+    "timeout", "connection", "unavailable", "ratelimit", "rate_limit",
+    "toomanyrequests", "serviceunavailable",
+)
+
+
+def _is_transient_error(exc: BaseException) -> bool:
+    """Timeout/connection/rate-limit failures — retryable next run.
+
+    Name-fragment based on top of the builtin hierarchies, so SDK-specific
+    types (APITimeoutError, APIConnectionError, httpx.ConnectTimeout, ...)
+    classify without importing every SDK."""
+    if isinstance(exc, (TimeoutError, ConnectionError)):
+        return True
+    name = type(exc).__name__.lower()
+    return any(frag in name for frag in _TRANSIENT_NAME_FRAGMENTS)
+
+
+def _should_retry(entry: dict[str, Any] | None) -> bool:
+    """True when a processed-map entry is a retryable transient ERROR."""
+    if entry is None:
+        return False
+    if entry.get("status") != "ERROR" or not entry.get("transient"):
+        return False
+    try:
+        attempts = int(entry.get("attempts", 1))
+    except (TypeError, ValueError):
+        attempts = 1
+    return attempts < ERROR_RETRY_ATTEMPT_CAP
+
+
+def _error_entry(
+    exc: BaseException, prev: dict[str, Any] | None, **extra: Any,
+) -> dict[str, Any]:
+    """Build an ERROR entry carrying transient/attempts retry metadata."""
+    try:
+        prev_attempts = int((prev or {}).get("attempts", 0))
+    except (TypeError, ValueError):
+        prev_attempts = 0
+    return {
+        "status": "ERROR",
+        "reason": f"{type(exc).__name__}: {exc}",
+        "transient": _is_transient_error(exc),
+        "attempts": prev_attempts + 1,
+        **extra,
+    }
+
 # GATE 2: pre-deploy operator confirmation (CL-yta6).
 #
 # After verdict=PROMOTE, the loop holds at deploy_status=
@@ -415,8 +471,14 @@ class ResearchLoop:
         logger.info("phase 2: ideas — scanning %s", extract_root)
         for extract_path in sorted(extract_root.glob("*.md")):
             extract_hash = extract_path.stem
-            if extract_hash in state.ideas_processed:
+            prev = state.ideas_processed.get(extract_hash)
+            if prev is not None and not _should_retry(prev):
                 continue
+            if prev is not None:
+                logger.info(
+                    "retrying transient-ERROR extract %s (attempt %d)",
+                    extract_hash, int(prev.get("attempts", 1)) + 1,
+                )
             try:
                 result = self.idea_agent.ideate(
                     extract_path=extract_path,
@@ -426,11 +488,9 @@ class ResearchLoop:
                 logger.exception(
                     "idea agent failed for extract %s", extract_hash,
                 )
-                state.ideas_processed[extract_hash] = {
-                    "status": "ERROR",
-                    "slug": None,
-                    "reason": f"{type(exc).__name__}: {exc}",
-                }
+                state.ideas_processed[extract_hash] = _error_entry(
+                    exc, prev, slug=None,
+                )
                 summary.errors.append(
                     f"idea/{extract_hash}: {type(exc).__name__}: {exc}"
                 )
@@ -556,8 +616,16 @@ class ResearchLoop:
             if entry.get("status") != GATE1_APPROVED_STATUS:
                 continue
             slug = entry.get("slug")
-            if not slug or slug in state.candidates_processed:
+            if not slug:
                 continue
+            prev = state.candidates_processed.get(slug)
+            if prev is not None and not _should_retry(prev):
+                continue
+            if prev is not None:
+                logger.info(
+                    "retrying transient-ERROR candidate %s (attempt %d)",
+                    slug, int(prev.get("attempts", 1)) + 1,
+                )
             hyp_path = self.hypothesis_dir / f"{slug}.md"
             if not hyp_path.exists():
                 logger.warning(
@@ -581,12 +649,9 @@ class ResearchLoop:
                 )
             except Exception as exc:
                 logger.exception("implementer failed for slug %s", slug)
-                state.candidates_processed[slug] = {
-                    "status": "ERROR",
-                    "reason": f"{type(exc).__name__}: {exc}",
-                    "code_path": None,
-                    "report_path": None,
-                }
+                state.candidates_processed[slug] = _error_entry(
+                    exc, prev, code_path=None, report_path=None,
+                )
                 summary.errors.append(
                     f"implement/{slug}: {type(exc).__name__}: {exc}"
                 )

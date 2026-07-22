@@ -1176,3 +1176,108 @@ class TestEscalateAlert:
         # State still recorded the verdict
         state = load_state(loop_paths["state"])
         assert state.debates_completed["alpha"]["verdict"] == "ESCALATE"
+
+
+# =============================================================================
+# Transient-error retry (CL-837v)
+# =============================================================================
+
+from src.research.loop import (  # noqa: E402
+    ERROR_RETRY_ATTEMPT_CAP,
+    _error_entry,
+    _is_transient_error,
+    _should_retry,
+)
+
+
+class _APITimeoutError(Exception):
+    """SDK-style name — must classify transient via the name fragment."""
+
+
+class _FlakyIdeaAgent(_FakeIdeaAgent):
+    """Raises ``exc`` for the first ``fail_times`` calls, then delegates."""
+
+    def __init__(self, responses, exc: Exception, fail_times: int = 1) -> None:
+        super().__init__(responses)
+        self._exc = exc
+        self._fail_times = fail_times
+
+    def ideate(self, extract_path, **kwargs):
+        if len(self.calls) < self._fail_times:
+            self.calls.append(extract_path)
+            raise self._exc
+        return super().ideate(extract_path, **kwargs)
+
+
+class TestTransientErrorRetry:
+    def test_transient_classification(self) -> None:
+        assert _is_transient_error(TimeoutError("t"))
+        assert _is_transient_error(ConnectionError("c"))
+        assert _is_transient_error(_APITimeoutError("sdk"))  # name fragment
+        assert not _is_transient_error(ValueError("bad json"))
+        assert not _is_transient_error(KeyError("schema"))
+
+    def test_error_entry_and_retry_cap(self) -> None:
+        e1 = _error_entry(TimeoutError("t"), None)
+        assert e1["transient"] is True and e1["attempts"] == 1
+        assert _should_retry(e1)
+        e2 = _error_entry(TimeoutError("t"), e1)
+        assert e2["attempts"] == 2
+        e_cap = _error_entry(TimeoutError("t"), {"attempts": ERROR_RETRY_ATTEMPT_CAP - 1})
+        assert e_cap["attempts"] == ERROR_RETRY_ATTEMPT_CAP
+        assert not _should_retry(e_cap)  # cap reached
+        assert not _should_retry(_error_entry(ValueError("v"), None))  # content
+        assert not _should_retry(None)
+        assert not _should_retry({"status": "IMPLEMENTED"})
+
+    def _make_loop(self, loop_paths, idea):
+        store = _FakeExtractStore(root=loop_paths["extracts"])
+        ingest = _FakeIngestRunner(
+            extract_store=store, new_extracts=[("hash1", "# Paper A\nbody")],
+        )
+        return ResearchLoop(
+            ingest_runner=ingest, idea_agent=idea,  # type: ignore[arg-type]
+            implementer=_FakeImplementer(
+                responses={}, candidate_dir=loop_paths["candidates"]),  # type: ignore[arg-type]
+            debate_orchestrator=_FakeOrchestrator(results={}),  # type: ignore[arg-type]
+            rules_loader=lambda: [], feed_configs=[],
+            extract_store=store,  # type: ignore[arg-type]
+            state_path=loop_paths["state"],
+            runs_dir=loop_paths["runs"],
+            hypothesis_dir=loop_paths["hypotheses"],
+            candidate_dir=loop_paths["candidates"],
+            notify_fn=_silent_notifier,
+        )
+
+    def test_idea_phase_retries_transient_then_succeeds(
+        self, loop_paths: dict[str, Path],
+    ) -> None:
+        idea = _FlakyIdeaAgent(
+            responses={"hash1": {"status": "PROPOSED", "slug": "alpha"}},
+            exc=TimeoutError("network outage"), fail_times=1,
+        )
+        loop = self._make_loop(loop_paths, idea)
+        loop.run()  # run 1: transient ERROR recorded
+        state1 = json.loads(loop_paths["state"].read_text())
+        entry = state1["ideas_processed"]["hash1"]
+        assert entry["status"] == "ERROR"
+        assert entry["transient"] is True and entry["attempts"] == 1
+        loop.run()  # run 2: retried -> PROPOSED (previously wedged forever)
+        state2 = json.loads(loop_paths["state"].read_text())
+        assert state2["ideas_processed"]["hash1"]["status"] == (
+            "PENDING_OPERATOR_APPROVAL")
+        assert len(idea.calls) == 2
+
+    def test_idea_phase_content_error_stays_terminal(
+        self, loop_paths: dict[str, Path],
+    ) -> None:
+        idea = _FlakyIdeaAgent(
+            responses={"hash1": {"status": "PROPOSED", "slug": "alpha"}},
+            exc=ValueError("unparseable output"), fail_times=99,
+        )
+        loop = self._make_loop(loop_paths, idea)
+        loop.run()
+        loop.run()  # must NOT retry a content failure
+        assert len(idea.calls) == 1
+        state = json.loads(loop_paths["state"].read_text())
+        assert state["ideas_processed"]["hash1"]["transient"] is False
