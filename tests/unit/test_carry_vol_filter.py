@@ -350,8 +350,11 @@ class TestInterface:
         assert "EURUSD" in strat.symbols
         assert "USDJPY" in strat.symbols
 
-    def test_fit_and_generate_signals_noop(self) -> None:
+    def test_no_dead_backtest_protocol_stubs(self) -> None:
+        # CL-e6lx: live-only strategies dropped the no-op fit()/
+        # generate_signals() stubs — nothing in the live path calls them
+        # (only the walk-forward backtest protocol does, and this
+        # strategy never runs through it).
         strat = CarryVolFilterStrategy()
-        # Don't raise.
-        strat.fit(None)
-        assert strat.generate_signals(None) is None
+        assert not hasattr(strat, "fit")
+        assert not hasattr(strat, "generate_signals")

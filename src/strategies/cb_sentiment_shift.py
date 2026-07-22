@@ -105,11 +105,10 @@ class CBSentimentShiftStrategy:
     def signal_interval_seconds(self) -> int:
         return self.config.signal_interval_seconds
 
-    def fit(self, train_data: Any) -> None:
-        pass
-
-    def generate_signals(self, data: Any) -> None:
-        return None
+    # NOTE: no fit()/generate_signals() — those belong to the walk-forward
+    # backtest protocol (src/backtest/walkforward.Strategy); live-only
+    # strategies are driven exclusively via generate_intents() and the
+    # dead no-op stubs were removed (CL-e6lx).
 
     def _refresh_thresholds(self) -> None:
         if self.nlp is None:

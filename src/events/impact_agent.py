@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -452,6 +452,165 @@ def _normalise_fade_candidates(raw: Any) -> list[dict[str, str]]:
     return fades
 
 
+@dataclass
+class Assessment:
+    """Typed form of the per-event ``assessment`` payload (CL-e6lx).
+
+    The DICT shape is the cross-layer contract — it is what gets
+    json.dumps'd into ``geo_events.assessment`` and what confluence
+    Gate A, the strategy's entry path, alert bodies, and the digest all
+    read — so :meth:`to_dict` reproduces it EXACTLY (same keys, same
+    insertion order → byte-identical ``json.dumps``) and
+    :meth:`from_dict` round-trips it. The nested ``affected`` /
+    ``trade_ideas`` / ``fade_candidates`` entries deliberately stay
+    plain dicts: trade-idea persistence is owned by the execution/DB
+    layer and typing it is tracked separately.
+    """
+
+    core_event: str
+    direction: str    # VALID_EVENT_DIRECTIONS
+    urgency: int      # 1-10
+    horizon: str      # VALID_HORIZONS
+    confidence: float  # 0.0-1.0
+    affected: list[dict[str, str]] = field(default_factory=list)
+    rationale: str = ""
+    trade_ideas: list[dict[str, Any]] = field(default_factory=list)
+    fade_candidates: list[dict[str, str]] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        """The canonical persisted dict — exactly the historical
+        ``normalise_assessment`` return shape, key order included."""
+        return {
+            "core_event": self.core_event,
+            "direction": self.direction,
+            "urgency": self.urgency,
+            "horizon": self.horizon,
+            "confidence": self.confidence,
+            "affected": self.affected,
+            "rationale": self.rationale,
+            # Optional advisory extras (CL-01zt) — always present as lists so
+            # downstream .get() consumers see a stable shape; empty when the
+            # LLM offered nothing actionable.
+            "trade_ideas": self.trade_ideas,
+            "fade_candidates": self.fade_candidates,
+        }
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> Assessment:
+        """Rehydrate from the canonical dict (a :meth:`to_dict` product /
+        a stored ``geo_events.assessment``). The advisory lists default
+        empty for rows persisted before CL-01zt added them."""
+        return cls(
+            core_event=payload["core_event"],
+            direction=payload["direction"],
+            urgency=payload["urgency"],
+            horizon=payload["horizon"],
+            confidence=payload["confidence"],
+            affected=list(payload.get("affected") or []),
+            rationale=payload.get("rationale", ""),
+            trade_ideas=list(payload.get("trade_ideas") or []),
+            fade_candidates=list(payload.get("fade_candidates") or []),
+        )
+
+    @classmethod
+    def from_llm_payload(
+        cls,
+        payload: dict[str, Any],
+        headline: str,
+        playbook: Playbook | None,
+        fallback_tradables: set[str],
+    ) -> Assessment:
+        """Schema-validate + clamp a parsed LLM payload into a typed
+        Assessment. Raises ``ValueError`` on unrecoverable schema
+        violations (→ row is DISMISSED); silently drops bad ``affected``
+        entries and clamps out-of-range numbers.
+        """
+        direction = str(payload.get("direction", "")).strip().lower()
+        if direction not in VALID_EVENT_DIRECTIONS:
+            msg = f"invalid direction {direction!r}"
+            raise ValueError(msg)
+
+        horizon = str(payload.get("horizon", "")).strip().lower().rstrip("s") + "s"
+        if horizon not in VALID_HORIZONS:
+            msg = f"invalid horizon {payload.get('horizon')!r}"
+            raise ValueError(msg)
+
+        try:
+            urgency = clamp_int(payload.get("urgency"), 1, 10)
+            confidence = clamp_float(payload.get("confidence"), 0.0, 1.0)
+        except (TypeError, ValueError) as exc:
+            msg = f"non-numeric urgency/confidence: {exc}"
+            raise ValueError(msg) from exc
+
+        core_event = str(payload.get("core_event", "")).strip() or headline
+        rationale = str(payload.get("rationale", "")).strip()
+
+        raw_affected = payload.get("affected")
+        if raw_affected is None:
+            raw_affected = []
+        if not isinstance(raw_affected, list):
+            msg = "'affected' is not a list"
+            raise ValueError(msg)
+
+        playbook_instruments = (
+            {i.instrument for i in playbook.instruments} if playbook else set()
+        )
+        affected: list[dict[str, str]] = []
+        seen: set[str] = set()
+        for entry in raw_affected:
+            if not isinstance(entry, dict):
+                continue
+            instrument = str(entry.get("instrument", "")).strip()
+            kind = str(entry.get("kind", "")).strip().lower()
+            adir = str(entry.get("direction", "")).strip().lower()
+            reason = str(entry.get("reason", "")).strip()
+            if not instrument or kind not in VALID_AFFECTED_KINDS:
+                logger.debug("dropping affected entry (bad kind): %r", entry)
+                continue
+            if adir not in VALID_AFFECTED_DIRECTIONS:
+                adir = "watch"
+            if kind == "equity_watch":
+                adir = "watch"  # equities are alert-only, always
+            if kind in ("oanda", "fx"):
+                instrument = instrument.upper().replace("/", "_").replace("-", "_")
+                if not INSTRUMENT_RE.match(instrument):
+                    logger.debug("dropping unreachable tradable: %r", entry)
+                    continue
+                # Whitelist gate: playbook mapping first, any playbook's
+                # tradable second. An OANDA-shaped symbol outside both is
+                # demoted to watch rather than dropped — the shape says
+                # reachable, but nobody pre-researched it.
+                known = instrument in playbook_instruments or instrument in fallback_tradables
+                if not known and adir != "watch":
+                    logger.debug(
+                        "demoting un-vetted tradable %s to watch", instrument,
+                    )
+                    adir = "watch"
+            if instrument in seen:
+                continue
+            seen.add(instrument)
+            affected.append({
+                "instrument": instrument,
+                "kind": kind,
+                "direction": adir,
+                "reason": reason,
+            })
+
+        return cls(
+            core_event=core_event,
+            direction=direction,
+            urgency=urgency,
+            horizon=horizon,
+            confidence=confidence,
+            affected=affected,
+            rationale=rationale,
+            trade_ideas=_normalise_trade_ideas(payload.get("trade_ideas")),
+            fade_candidates=_normalise_fade_candidates(
+                payload.get("fade_candidates"),
+            ),
+        )
+
+
 def normalise_assessment(
     payload: dict[str, Any],
     headline: str,
@@ -459,97 +618,15 @@ def normalise_assessment(
     fallback_tradables: set[str],
 ) -> dict[str, Any]:
     """Schema-validate + clamp a parsed LLM payload into the shared
-    ``assessment`` shape. Raises ``ValueError`` on unrecoverable schema
-    violations (→ row is DISMISSED); silently drops bad ``affected``
-    entries and clamps out-of-range numbers.
+    ``assessment`` dict shape. Thin wrapper over
+    :meth:`Assessment.from_llm_payload` (the typed boundary, CL-e6lx) —
+    kept because the dict is the persisted cross-layer contract and
+    existing callers/tests consume it directly. Raises ``ValueError``
+    on unrecoverable schema violations (→ row is DISMISSED).
     """
-    direction = str(payload.get("direction", "")).strip().lower()
-    if direction not in VALID_EVENT_DIRECTIONS:
-        msg = f"invalid direction {direction!r}"
-        raise ValueError(msg)
-
-    horizon = str(payload.get("horizon", "")).strip().lower().rstrip("s") + "s"
-    if horizon not in VALID_HORIZONS:
-        msg = f"invalid horizon {payload.get('horizon')!r}"
-        raise ValueError(msg)
-
-    try:
-        urgency = clamp_int(payload.get("urgency"), 1, 10)
-        confidence = clamp_float(payload.get("confidence"), 0.0, 1.0)
-    except (TypeError, ValueError) as exc:
-        msg = f"non-numeric urgency/confidence: {exc}"
-        raise ValueError(msg) from exc
-
-    core_event = str(payload.get("core_event", "")).strip() or headline
-    rationale = str(payload.get("rationale", "")).strip()
-
-    raw_affected = payload.get("affected")
-    if raw_affected is None:
-        raw_affected = []
-    if not isinstance(raw_affected, list):
-        msg = "'affected' is not a list"
-        raise ValueError(msg)
-
-    playbook_instruments = (
-        {i.instrument for i in playbook.instruments} if playbook else set()
-    )
-    affected: list[dict[str, str]] = []
-    seen: set[str] = set()
-    for entry in raw_affected:
-        if not isinstance(entry, dict):
-            continue
-        instrument = str(entry.get("instrument", "")).strip()
-        kind = str(entry.get("kind", "")).strip().lower()
-        adir = str(entry.get("direction", "")).strip().lower()
-        reason = str(entry.get("reason", "")).strip()
-        if not instrument or kind not in VALID_AFFECTED_KINDS:
-            logger.debug("dropping affected entry (bad kind): %r", entry)
-            continue
-        if adir not in VALID_AFFECTED_DIRECTIONS:
-            adir = "watch"
-        if kind == "equity_watch":
-            adir = "watch"  # equities are alert-only, always
-        if kind in ("oanda", "fx"):
-            instrument = instrument.upper().replace("/", "_").replace("-", "_")
-            if not INSTRUMENT_RE.match(instrument):
-                logger.debug("dropping unreachable tradable: %r", entry)
-                continue
-            # Whitelist gate: playbook mapping first, any playbook's
-            # tradable second. An OANDA-shaped symbol outside both is
-            # demoted to watch rather than dropped — the shape says
-            # reachable, but nobody pre-researched it.
-            known = instrument in playbook_instruments or instrument in fallback_tradables
-            if not known and adir != "watch":
-                logger.debug(
-                    "demoting un-vetted tradable %s to watch", instrument,
-                )
-                adir = "watch"
-        if instrument in seen:
-            continue
-        seen.add(instrument)
-        affected.append({
-            "instrument": instrument,
-            "kind": kind,
-            "direction": adir,
-            "reason": reason,
-        })
-
-    return {
-        "core_event": core_event,
-        "direction": direction,
-        "urgency": urgency,
-        "horizon": horizon,
-        "confidence": confidence,
-        "affected": affected,
-        "rationale": rationale,
-        # Optional advisory extras (CL-01zt) — always present as lists so
-        # downstream .get() consumers see a stable shape; empty when the
-        # LLM offered nothing actionable.
-        "trade_ideas": _normalise_trade_ideas(payload.get("trade_ideas")),
-        "fade_candidates": _normalise_fade_candidates(
-            payload.get("fade_candidates"),
-        ),
-    }
+    return Assessment.from_llm_payload(
+        payload, headline, playbook, fallback_tradables,
+    ).to_dict()
 
 
 # ---------------------------------------------------------------------- #
@@ -666,9 +743,12 @@ class EventImpactAgent:
             )
         try:
             payload = extract_json_object(resp.text)
-            assessment = normalise_assessment(
+            # Typed boundary (CL-e6lx): validate into the Assessment model,
+            # then persist its canonical dict form — byte-identical to the
+            # pre-model normalise_assessment output.
+            assessment = Assessment.from_llm_payload(
                 payload, row["headline"], playbook, self._fallback_tradables,
-            )
+            ).to_dict()
             status = "ASSESSED"
         except Exception as exc:
             # Content failure on a successful response → DISMISSED with

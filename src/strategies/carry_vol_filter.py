@@ -174,12 +174,10 @@ class CarryVolFilterStrategy:
     def signal_interval_seconds(self) -> int:
         return self.config.signal_interval_seconds
 
-    def fit(self, train_data: Any) -> None:
-        """No-op fit — strategy state lives entirely in config + live state."""
-        return None
-
-    def generate_signals(self, data: Any) -> None:
-        return None
+    # NOTE: no fit()/generate_signals() — those belong to the walk-forward
+    # backtest protocol (src/backtest/walkforward.Strategy); live-only
+    # strategies are driven exclusively via generate_intents() and the
+    # dead no-op stubs were removed (CL-e6lx).
 
     # ------------------------------------------------------------------
     # Pair / currency conventions

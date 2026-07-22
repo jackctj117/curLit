@@ -19,6 +19,7 @@ from sqlalchemy.engine import Engine
 
 from src.events.impact_agent import (
     _SYSTEM_PROMPT,
+    Assessment,
     EventImpactAgent,
     extract_json_object,
     normalise_assessment,
@@ -225,6 +226,67 @@ class TestNormalise:
         out = self._norm(_valid_payload())
         assert out["trade_ideas"] == []
         assert out["fade_candidates"] == []
+
+
+class TestAssessmentModel:
+    """CL-e6lx typed Assessment boundary: the dataclass must reproduce
+    the historical dict contract EXACTLY — the dict is what confluence,
+    the strategy, alerts, and the digest all read, and what is
+    json.dumps'd into geo_events.assessment."""
+
+    def _norm_dict(self, payload: dict) -> dict:
+        return normalise_assessment(payload, "headline", HORMUZ, FALLBACK)
+
+    def test_from_llm_payload_to_dict_matches_normalise(self) -> None:
+        payload = _valid_payload()
+        model = Assessment.from_llm_payload(payload, "headline", HORMUZ, FALLBACK)
+        assert model.to_dict() == self._norm_dict(payload)
+
+    def test_round_trip_is_exact(self) -> None:
+        # from_dict(to_dict) and to_dict(from_dict) both reproduce the
+        # canonical dict — including advisory extras.
+        d = self._norm_dict(_valid_payload(
+            trade_ideas=[{
+                "ticker": "FRO", "action": "long", "direction": "bullish",
+                "confidence": 0.6, "rationale": "tanker rates",
+                "time_horizon": "short", "holding_period_days": "2-5",
+                "time_stop_days": 5, "stop_loss_pct": 0.07,
+                "target_pct": [0.08, 0.15],
+                "entry_trigger": "on confirmed closure",
+                "invalidation": "reopening announced",
+            }],
+            fade_candidates=[{"ticker": "SPY", "action": "fade the dip",
+                              "reason": "knee-jerk risk-off"}],
+        ))
+        model = Assessment.from_dict(d)
+        assert model.to_dict() == d
+        assert Assessment.from_dict(model.to_dict()) == model
+
+    def test_round_trip_json_is_byte_identical(self) -> None:
+        # geo_events.assessment stores json.dumps(dict) with insertion
+        # order — the model must not reorder or add/drop keys.
+        d = self._norm_dict(_valid_payload())
+        assert json.dumps(Assessment.from_dict(d).to_dict()) == json.dumps(d)
+
+    def test_from_dict_defaults_advisory_lists_for_old_rows(self) -> None:
+        # Rows persisted before CL-01zt lack the advisory keys.
+        d = self._norm_dict(_valid_payload())
+        legacy = {k: v for k, v in d.items()
+                  if k not in ("trade_ideas", "fade_candidates")}
+        model = Assessment.from_dict(legacy)
+        assert model.trade_ideas == []
+        assert model.fade_candidates == []
+        assert model.to_dict() == d
+
+    def test_typed_fields_match_dict_values(self) -> None:
+        model = Assessment.from_llm_payload(
+            _valid_payload(), "headline", HORMUZ, FALLBACK,
+        )
+        assert model.direction == "bearish"
+        assert model.urgency == 9
+        assert model.horizon == "hours"
+        assert model.confidence == pytest.approx(0.8)
+        assert model.affected[0]["instrument"] == "BCO_USD"
 
 
 class TestTradeIdeas:
