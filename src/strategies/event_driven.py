@@ -388,6 +388,7 @@ class EventDrivenStrategy:
         equity: float | None,
         now: datetime,
         cross_asset: Any = None,
+        broker_positions: list[Any] | None = None,
     ) -> tuple[
         list[OrderIntent],
         list[tuple[str, str, str, float, str]],
@@ -478,7 +479,22 @@ class EventDrivenStrategy:
                 )
                 skipped.append((symbol, "pending_exit"))
                 continue
-            if len(self.open_positions) >= self.config.max_concurrent_event_positions:
+            if symbol in self.book.pending_entries:
+                # ENTRY half of CL-hqyj: an entry for this symbol is already
+                # submitted and awaiting its fill — a second submit would
+                # race it and double the position. The slot is committed.
+                logger.info(
+                    "Event entry %s skipped — entry pending broker fill "
+                    "confirmation (event id=%s)", symbol, event_id,
+                )
+                skipped.append((symbol, "pending_entry"))
+                continue
+            # SLOT/CAP accounting counts pending entries at their intended
+            # magnitude (accounting_positions), so a submitted-but-unfilled
+            # leg still occupies a slot and can't be over-submitted past the
+            # cap while its fill is in flight (ENTRY half of CL-hqyj).
+            accounting = self.book.accounting_positions()
+            if len(accounting) >= self.config.max_concurrent_event_positions:
                 logger.warning(
                     "max_concurrent_event_positions=%d reached — skipping %s "
                     "(event id=%s)",
@@ -486,7 +502,7 @@ class EventDrivenStrategy:
                 )
                 skipped.append((symbol, "max_concurrent"))
                 continue
-            if symbol in self.open_positions:
+            if symbol in accounting:
                 skipped.append((symbol, "already_open"))
                 continue
 
@@ -520,11 +536,20 @@ class EventDrivenStrategy:
                 continue
             size = capped
 
-            self.book.record_entry(EventPosition(
-                symbol=symbol, event_id=event_id, entry_ts=now,
-                entry_price=entry_price, quantity=size, direction=direction,
-                stop_price=stop_price, headline=headline[:200],
-            ))
+            # Park the leg in pending_entries at its INTENDED size and
+            # capture the submit-time broker baseline (ENTRY half of
+            # CL-hqyj): confirm_entries promotes it into open_positions at
+            # the ACTUAL fill next tick, so the book never records the
+            # intended phantom the reconciler would flag.
+            self.book.record_entry(
+                EventPosition(
+                    symbol=symbol, event_id=event_id, entry_ts=now,
+                    entry_price=entry_price, quantity=size, direction=direction,
+                    stop_price=stop_price, headline=headline[:200],
+                ),
+                broker_positions,
+                now,
+            )
             logger.info(
                 "Event entry %s %s: size=%.0f entry=%.5f stop=%.5f event_id=%s "
                 "headline=%r",
@@ -574,6 +599,25 @@ class EventDrivenStrategy:
             )
             return None
 
+    @staticmethod
+    def _fetch_entry_baseline(broker: Any) -> list[Any] | None:
+        """One broker position snapshot for the entry submit-time baseline
+        (ENTRY half of CL-hqyj), used only when reconcile() returned None
+        (all books empty). Fail-safe: an unreadable broker yields None, and
+        record_entry then falls back to its best-effort baseline-None
+        promote/reject path — never crash the tick, never guess a baseline."""
+        if not hasattr(broker, "get_positions"):
+            return None
+        try:
+            return list(broker.get_positions())
+        except Exception:
+            logger.debug(
+                "event_driven: broker positions unavailable for entry "
+                "baseline — record_entry will fall back to baseline-None",
+                exc_info=True,
+            )
+            return None
+
     async def generate_intents(
         self, prices: dict[str, Any], broker: Any,
     ) -> list[OrderIntent]:
@@ -587,6 +631,17 @@ class EventDrivenStrategy:
         # confirm nothing and keep retrying — never finalize blind.
         broker_positions = self.book.reconcile(broker, now)
         if broker_positions is not None:
+            # confirm_entries runs FIRST, from the freshest snapshot, so a
+            # just-filled entry promotes into open_positions THIS tick and
+            # is immediately eligible for stop/time-stop evaluation below —
+            # and the book's reconciler-facing size converges to the broker
+            # size within one tick (ENTRY half of CL-hqyj). Same-tick
+            # promotion is also what keeps the submit→confirm window from
+            # accumulating an alignment-mismatch streak: the 300s alignment
+            # timer would need TWO consecutive mismatched checks
+            # (_ALIGNMENT_MISMATCH_STREAK_TO_FLAG=2) to flag, and promotion
+            # closes the window inside one strategy tick.
+            self.book.confirm_entries(broker_positions, now)
             self.book.confirm_exits(broker_positions)
         # The same snapshot feeds check_exits so a leg triggering THIS
         # tick captures trigger_broker_qty for residual/phantom
@@ -598,6 +653,15 @@ class EventDrivenStrategy:
             return intents  # geo_events unreachable — NO-OP (logged once)
 
         equity = self._get_equity(broker) if rows else None
+        # ENTRY half of CL-hqyj: record_entry captures the submit-time
+        # broker baseline (entry_broker_qty) from a snapshot so
+        # confirm_entries can measure OUR fill as a delta and stay co-held-
+        # safe. reconcile() returns None when all books were empty (the
+        # common case on the very first entry), so fetch ONE snapshot here
+        # if we have events to trade and don't already hold one — never a
+        # baseline of None when the broker is actually readable.
+        if rows and broker_positions is None:
+            broker_positions = self._fetch_entry_baseline(broker)
         expired_alerts_sent = 0
 
         for row in rows:
@@ -632,6 +696,7 @@ class EventDrivenStrategy:
             entry_intents, entered, skipped = self._enter_confirmed(
                 row, assessment, prices, equity, now,
                 cross_asset=result.cross_asset,
+                broker_positions=broker_positions,
             )
             # Stamp the cross-asset read onto the persisted trade ideas'
             # notes so `idea <id>` surfaces it later (CL-6mzn). Additive,

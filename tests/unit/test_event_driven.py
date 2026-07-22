@@ -1533,8 +1533,383 @@ class TestTriggerBrokerCapture:
                 },
             },
         }))
-        with pytest.raises(ValueError, match="BOTH open_positions and pending_exits"):
+        with pytest.raises(
+            ValueError, match="appear in more than one of open_positions",
+        ):
             make_strategy(tmp_path, db=make_db())
+
+
+# =============================================================================
+# Entry confirmed-fill lifecycle (ENTRY half of CL-hqyj) — the book records
+# the ACTUAL broker fill, never the intended size, so a partial/over/rejected
+# fill can never trip the portfolio reconciler's reconciliation_failure kill
+# switch (book -308 vs broker -214 was the P1 live halt).
+# =============================================================================
+
+
+class TestEntryLifecycle:
+    """A newly-submitted entry parks in ``pending_entries`` at INTENDED
+    size (for slot/cap accounting only) and PROMOTES into open_positions at
+    the OBSERVED broker fill — the co-held-safe delta from a submit-time
+    baseline — or REJECTS (booking nothing) with no fill after grace.
+    Pending entries value the RECONCILER-facing view at confirmed_qty (0
+    until filled), so the intended phantom is never exposed."""
+
+    def _confirmed_entry_strat(
+        self, tmp_path: Any, broker: Any,
+    ) -> tuple[EventDrivenStrategy, int]:
+        """Confirm one long-USD_CAD event and run a tick against ``broker``;
+        the leg lands in pending_entries at its intended 50k size."""
+        db = make_db()
+        eid = insert_event(db)  # long USD_CAD, confirming setup
+        strat = make_strategy(
+            tmp_path, db=db, provider=confirming_provider(),
+            per_instrument_max_pct=1.0,
+        )
+        intents = run(strat, CONFIRM_PRICES, broker)
+        assert len(intents) == 1
+        assert intents[0].target_position == pytest.approx(50_000.0)
+        assert "USD_CAD" in strat.book.pending_entries
+        # NOT yet in open_positions — awaiting the broker fill.
+        assert strat.book.open_positions == {}
+        return strat, eid
+
+    def test_partial_fill_books_actual_not_intended(self, tmp_path: Any) -> None:
+        # THE root-cause fix: intended 50k long, broker fills only 30k. The
+        # book must record the ACTUAL 30k, never the intended 50k — the
+        # -308-vs-214 divergence that tripped reconciliation_failure.
+        broker = _BrokerWithNetQty({})  # flat at submit → baseline 0
+        strat, _ = self._confirmed_entry_strat(tmp_path, broker)
+        assert strat.book.pending_entries["USD_CAD"].entry_broker_qty == (
+            pytest.approx(0.0)
+        )
+        # Broker fills 30k of the 50k order.
+        broker.net = {"USDCAD": 30_000.0}
+        run(strat, {"USD_CAD": tick(1.0)}, broker)
+        assert strat.book.pending_entries == {}
+        booked = strat.book.open_positions["USD_CAD"]
+        assert booked.quantity == pytest.approx(30_000.0)  # ACTUAL, not 50k
+        assert booked.entry_price == pytest.approx(1.0)  # preserved
+        assert booked.stop_price == pytest.approx(0.99)
+        # Reconciler-facing size now equals the broker fill.
+        assert strat.open_positions["USD_CAD"].quantity == pytest.approx(30_000.0)
+
+    def test_full_fill_promotes_at_broker_delta(self, tmp_path: Any) -> None:
+        broker = _BrokerWithNetQty({})
+        strat, _ = self._confirmed_entry_strat(tmp_path, broker)
+        broker.net = {"USDCAD": 50_000.0}  # full fill
+        promoted = strat.book.confirm_entries(broker.get_positions(),
+                                              datetime.now(UTC))
+        assert [p.quantity for p in promoted] == [pytest.approx(50_000.0)]
+        assert strat.book.open_positions["USD_CAD"].quantity == (
+            pytest.approx(50_000.0))
+        assert strat.book.pending_entries == {}
+
+    def test_rejected_entry_leaves_zero_residue(self, tmp_path: Any) -> None:
+        # No fill ever appears; after grace the pending entry is REJECTED
+        # and NOTHING is booked — no open leg, no pending, no P&L.
+        broker = _BrokerWithNetQty({})  # broker flat, stays flat
+        strat, _ = self._confirmed_entry_strat(
+            tmp_path, broker,
+        )
+        # Age the submit past the grace window, then confirm.
+        entry = strat.book.pending_entries["USD_CAD"]
+        entry.submitted_ts = datetime.now(UTC) - timedelta(seconds=200)
+        promoted = strat.book.confirm_entries(broker.get_positions(),
+                                              datetime.now(UTC))
+        assert promoted == []
+        assert strat.book.pending_entries == {}
+        assert strat.book.open_positions == {}
+        assert strat.open_positions == {}  # zero residue, reconciler sees none
+        assert strat.book.realized_pnl == 0.0
+        assert strat.book.closed_trades == 0
+
+    def test_within_grace_no_fill_stays_pending(self, tmp_path: Any) -> None:
+        broker = _BrokerWithNetQty({})
+        strat, _ = self._confirmed_entry_strat(tmp_path, broker)
+        # Fresh submit, broker still flat → NOT rejected yet, still pending.
+        promoted = strat.book.confirm_entries(broker.get_positions(),
+                                              datetime.now(UTC))
+        assert promoted == []
+        assert "USD_CAD" in strat.book.pending_entries
+        assert strat.book.open_positions == {}
+
+    def test_coheld_entry_books_only_our_delta(self, tmp_path: Any) -> None:
+        # A sibling strategy (rate_diff) already holds 40k USD_CAD → the
+        # account net is 40k at submit. Our 50k order must book from the
+        # DELTA, not the account net: when net rises to 90k our fill is
+        # 90k - 40k = 50k, and we book 50k, NOT the 90k account total.
+        broker = _BrokerWithNetQty({"USDCAD": 40_000.0})  # co-holder baseline
+        strat, _ = self._confirmed_entry_strat(tmp_path, broker)
+        assert strat.book.pending_entries["USD_CAD"].entry_broker_qty == (
+            pytest.approx(40_000.0))
+        broker.net = {"USDCAD": 90_000.0}  # our 50k fills on top
+        run(strat, {"USD_CAD": tick(1.0)}, broker)
+        booked = strat.book.open_positions["USD_CAD"]
+        assert booked.quantity == pytest.approx(50_000.0)  # our delta, not 90k
+
+    def test_pending_entry_occupies_a_slot(self, tmp_path: Any) -> None:
+        # A submitted-but-unfilled entry must count against
+        # max_concurrent_event_positions so the strategy can't over-submit
+        # while the fill is in flight. cap=1: after the first entry parks
+        # pending, a second confirmed event on a DIFFERENT symbol is
+        # slot-blocked.
+        db = make_db()
+        insert_event(db)  # long USD_CAD
+        affected2 = [{"instrument": "BCO_USD", "kind": "oanda",
+                      "direction": "long", "reason": "second"}]
+        eid2 = insert_event(db, affected=affected2)
+        strat = make_strategy(
+            tmp_path, db=db, provider=confirming_provider(),
+            max_concurrent_event_positions=1, per_instrument_max_pct=1.0,
+        )
+        broker = _BrokerWithNetQty({})  # never fills → first stays pending
+        prices = {"USD_CAD": tick(1.0), "BCO_USD": tick(1.0)}
+        intents = run(strat, prices, broker)
+        # Only ONE entry intent — the pending leg occupies the single slot.
+        assert len(intents) == 1
+        assert "USD_CAD" in strat.book.pending_entries
+        # The second symbol was slot-blocked, its row stays CONFIRMED.
+        assert get_status(db, eid2) == "CONFIRMED"
+
+    def test_pending_entry_counts_toward_concentration_cap(
+        self, tmp_path: Any,
+    ) -> None:
+        # A pending entry occupies its INTENDED notional against the
+        # per-instrument cap (accounting view), so a second leg in the same
+        # name can't blow the cap while the first is unfilled.
+        strat = make_strategy(
+            tmp_path, db=make_db(), per_instrument_max_pct=0.25,
+        )
+        # Park a pending 20k BCO_USD entry (intended).
+        strat.book.record_entry(
+            EventPosition(
+                symbol="BCO_USD", event_id=1, entry_ts=datetime.now(UTC),
+                entry_price=1.0, quantity=20_000.0, direction=1,
+                stop_price=0.99, headline="pending",
+            ),
+            [], datetime.now(UTC),
+        )
+        # 25k cap @ 100k, 20k pending → 5k headroom for a second leg.
+        capped = strat._concentration_capped_size(
+            "BCO_USD", size=15_000.0, entry_price=1.0, equity=100_000.0,
+        )
+        assert capped == pytest.approx(5_000.0)
+
+    def test_pending_entry_hidden_from_reconciler_until_filled(
+        self, tmp_path: Any,
+    ) -> None:
+        # The reconciler-facing open_positions view values a pending entry
+        # at confirmed_qty (0), NOT its intended 50k — so the phantom that
+        # tripped reconciliation_failure is never exposed. After the fill it
+        # converges to the broker size.
+        broker = _BrokerWithNetQty({})
+        strat, _ = self._confirmed_entry_strat(tmp_path, broker)
+        # Reconciler view: symbol present but quantity 0 (no phantom size).
+        assert strat.open_positions["USD_CAD"].quantity == pytest.approx(0.0)
+        # Accounting view still counts the intended magnitude for slots/caps.
+        assert strat.book.accounting_positions()["USD_CAD"].quantity == (
+            pytest.approx(50_000.0))
+        broker.net = {"USDCAD": 50_000.0}
+        strat.book.confirm_entries(broker.get_positions(), datetime.now(UTC))
+        assert strat.open_positions["USD_CAD"].quantity == pytest.approx(50_000.0)
+
+    def test_promoted_entry_is_eligible_for_time_stop(
+        self, tmp_path: Any,
+    ) -> None:
+        # A promoted leg gets full stop/time-stop evaluation. A pending
+        # entry does NOT (no exposure yet) — only after promotion.
+        broker = _BrokerWithNetQty({})
+        strat, _ = self._confirmed_entry_strat(tmp_path, broker)
+        # Backdate the pending entry so it would time-stop IF it were open.
+        strat.book.pending_entries["USD_CAD"].position.entry_ts = (
+            datetime.now(UTC) - timedelta(hours=5)
+        )
+        # Fill it: promotion carries the backdated entry_ts, so the SAME
+        # tick's check_exits time-stops it.
+        broker.net = {"USDCAD": 50_000.0}
+        intents = run(strat, {"USD_CAD": tick(1.0)}, broker)
+        # Promoted then immediately time-stopped → an exit intent this tick.
+        assert [i.target_position for i in intents] == [0]
+        assert strat.book.pending_entries == {}
+        assert "USD_CAD" in strat.book.pending_exits
+
+    def test_no_reentry_while_entry_pending(self, tmp_path: Any) -> None:
+        # A newly-CONFIRMED event on a symbol with an entry already pending
+        # must NOT submit a second order (would double the position).
+        db = make_db()
+        insert_event(db)  # long USD_CAD
+        strat = make_strategy(
+            tmp_path, db=db, provider=confirming_provider(),
+            per_instrument_max_pct=1.0,
+        )
+        broker = _BrokerWithNetQty({})  # never fills
+        run(strat, CONFIRM_PRICES, broker)
+        assert "USD_CAD" in strat.book.pending_entries
+        # A SECOND confirming event for the same symbol on the next tick.
+        eid2 = insert_event(db)
+        intents = run(strat, CONFIRM_PRICES, broker)
+        assert intents == []  # no second submit
+        assert get_status(db, eid2) == "CONFIRMED"  # confirmed, not traded
+
+    def test_state_round_trip_with_pending_entries(self, tmp_path: Any) -> None:
+        broker = _BrokerWithNetQty({"USDCAD": 40_000.0})
+        strat, _ = self._confirmed_entry_strat(tmp_path, broker)
+        del strat
+        # "Restart": the pending entry reloads with its baseline intact and
+        # still promotes at OUR delta once the broker shows the fill.
+        strat2 = make_strategy(tmp_path, db=make_db())
+        entry = strat2.book.pending_entries["USD_CAD"]
+        assert entry.entry_broker_qty == pytest.approx(40_000.0)
+        assert entry.position.quantity == pytest.approx(50_000.0)  # intended
+        assert entry.submitted_ts.tzinfo is not None
+        broker.net = {"USDCAD": 90_000.0}
+        strat2.book.confirm_entries(broker.get_positions(), datetime.now(UTC))
+        assert strat2.book.open_positions["USD_CAD"].quantity == (
+            pytest.approx(50_000.0))  # our 50k delta, not the 90k net
+
+    def test_legacy_state_without_pending_entries_key_loads_empty(
+        self, tmp_path: Any,
+    ) -> None:
+        # The LIVE data/event_book_state.json predates pending_entries — the
+        # missing key MUST default to empty, every legacy field untouched
+        # (backward compat is REQUIRED: the strategy is live with state).
+        state_path = tmp_path / "event_book_state.json"
+        state_path.write_text(json.dumps({
+            "version": 1, "realized_pnl": -250.0, "closed_trades": 2,
+            "open_positions": {
+                "USD_CAD": {
+                    "event_id": 7,
+                    "entry_ts": datetime.now(UTC).isoformat(),
+                    "entry_price": 1.0, "quantity": 1000.0,
+                    "direction": 1, "stop_price": 0.99, "headline": "legacy",
+                },
+            },
+            "pending_exits": {},
+            # NO pending_entries key.
+        }))
+        strat = make_strategy(tmp_path, db=make_db())
+        assert strat.book.pending_entries == {}
+        assert strat.book.realized_pnl == pytest.approx(-250.0)
+        assert strat.book.closed_trades == 2
+        assert strat.book.open_positions["USD_CAD"].quantity == pytest.approx(1000.0)
+
+    def test_symbol_in_pending_entry_and_open_refuses_to_load(
+        self, tmp_path: Any,
+    ) -> None:
+        # Overlap fail-loud extends to pending_entries: a symbol in BOTH
+        # pending_entries and open_positions is corrupt state → refuse.
+        now = datetime.now(UTC)
+        pos_payload = {
+            "event_id": 1, "entry_ts": now.isoformat(), "entry_price": 1.0,
+            "quantity": 1000.0, "direction": 1, "stop_price": 0.99,
+            "headline": "dup",
+        }
+        (tmp_path / "event_book_state.json").write_text(json.dumps({
+            "version": 1, "realized_pnl": 0.0, "closed_trades": 0,
+            "open_positions": {"USD_CAD": pos_payload},
+            "pending_exits": {},
+            "pending_entries": {
+                "USD_CAD": {
+                    "position": pos_payload,
+                    "submitted_ts": now.isoformat(),
+                    "entry_broker_qty": 0.0, "confirmed_qty": 0.0,
+                },
+            },
+        }))
+        with pytest.raises(
+            ValueError, match="appear in more than one of open_positions",
+        ):
+            make_strategy(tmp_path, db=make_db())
+
+    def test_submit_confirm_window_never_flags_reconciliation(
+        self, tmp_path: Any,
+    ) -> None:
+        # STEP 5 (option b): confirm_entries runs at the START of every
+        # generate_intents tick from the freshest snapshot, so a normal fill
+        # promotes within ONE strategy tick and the reconciler-facing size
+        # equals the broker size on every alignment check thereafter.
+        #
+        # WORST CASE modeled here: the 300s alignment timer fires in the
+        # window AFTER the broker fills but BEFORE the next strategy tick
+        # promotes — the one tick where the book (confirmed_qty=0) lags the
+        # broker (50k). That is a single orphaned_broker mismatch → streak
+        # goes to 1. The next strategy tick promotes → MATCHED → streak
+        # resets to 0. Since _ALIGNMENT_MISMATCH_STREAK_TO_FLAG=2, the
+        # reconciliation_failure kill switch NEVER fires across the window.
+        from src.runtime.live_engine import _ALIGNMENT_MISMATCH_STREAK_TO_FLAG
+
+        broker = _BrokerWithNetQty({})
+        strat, _ = self._confirmed_entry_strat(tmp_path, broker)
+        recon = _entry_reconciler(broker, strat)
+
+        # Model the live-engine streak fold (live_engine._record_alignment_report).
+        streak = 0
+
+        def fold(report: Any) -> int:
+            nonlocal streak
+            if report is None:
+                return streak
+            streak = streak + 1 if report.has_mismatches else 0
+            return streak
+
+        # --- Check #1: submitted, broker not yet filled. Book 0, broker 0 →
+        # both flat → MATCHED. Streak stays 0.
+        fold(recon.check_alignment())
+        assert streak == 0
+
+        # --- Broker FILLS (order accepted) but confirm_entries has NOT run.
+        broker.net = {"USDCAD": 50_000.0}
+        # --- Check #2 lands in the window: book 0 vs broker 50k → mismatch.
+        fold(recon.check_alignment())
+        assert streak == 1  # one mismatch — NOT yet at the flag threshold
+        assert streak < _ALIGNMENT_MISMATCH_STREAK_TO_FLAG
+
+        # --- Next strategy tick: confirm_entries promotes to the ACTUAL fill.
+        run(strat, {"USD_CAD": tick(1.0)}, broker)
+        assert strat.book.open_positions["USD_CAD"].quantity == (
+            pytest.approx(50_000.0))
+
+        # --- Check #3: book 50k vs broker 50k → MATCHED → streak RESETS.
+        fold(recon.check_alignment())
+        assert streak == 0  # never reached 2 → reconciliation_failure never fires
+
+    def test_stale_genuine_mismatch_still_flags(self, tmp_path: Any) -> None:
+        # The freshness handling must NOT mask a GENUINE, persistent
+        # mismatch: a promoted leg whose broker size diverges and STAYS
+        # diverged (not a submit-window artifact) accumulates the streak and
+        # WOULD flag. Proves step 5(b) doesn't blanket-suppress mismatches.
+        from src.runtime.live_engine import _ALIGNMENT_MISMATCH_STREAK_TO_FLAG
+
+        broker = _BrokerWithNetQty({})
+        strat, _ = self._confirmed_entry_strat(tmp_path, broker)
+        # Fill and promote to 50k.
+        broker.net = {"USDCAD": 50_000.0}
+        run(strat, {"USD_CAD": tick(1.0)}, broker)
+        # Now the broker size DRIFTS to 30k and stays there (a real, ongoing
+        # divergence — e.g. a partial external close) while the book holds
+        # 50k. Every alignment check is a size_mismatch → the streak climbs.
+        broker.net = {"USDCAD": 30_000.0}
+        recon = _entry_reconciler(broker, strat)
+        streak = 0
+        for _ in range(_ALIGNMENT_MISMATCH_STREAK_TO_FLAG):
+            report = recon.check_alignment()
+            assert report is not None and report.has_mismatches
+            streak = streak + 1 if report.has_mismatches else 0
+        assert streak >= _ALIGNMENT_MISMATCH_STREAK_TO_FLAG  # genuine → flags
+
+
+def _entry_reconciler(broker: Any, strat: EventDrivenStrategy) -> Any:
+    """A PositionReconciler wired to the event strategy's book for the
+    window/alignment test (step 5)."""
+    from src.portfolio.reconciler import PositionReconciler
+
+    return PositionReconciler(
+        broker,  # type: ignore[arg-type]
+        SimpleNamespace(submit_intent=lambda *a, **k: None),  # type: ignore[arg-type]
+        SimpleNamespace(get_current_position=lambda sid: None),  # type: ignore[arg-type]
+        strategies=[strat],
+    )
 
 
 # =============================================================================

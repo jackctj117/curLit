@@ -29,6 +29,21 @@ cleanly with no pending exits. CL-9dhg added the additive per-entry
 and made a symbol appearing in BOTH ``open_positions`` and
 ``pending_exits`` a fail-loud load error (corrupt state refuses to
 start rather than silently losing realized P&L).
+
+ENTRY half of CL-hqyj (mirrors the CL-8cw1 exit lifecycle): before this,
+:meth:`record_entry` put the INTENDED-size leg straight into
+``open_positions`` and only the phantom pruner (CL-v9g4) ever corrected
+it — and it checks PRESENCE, not QUANTITY, so a PARTIAL fill (book
+intends -308, broker fills -214) was never corrected and permanently
+tripped the portfolio reconciler's ``reconciliation_failure`` kill
+switch. Now a new leg parks in ``pending_entries`` (additive state key —
+a file WITHOUT it loads as empty) at intended size for SLOT/CAP
+accounting only; :meth:`confirm_entries` polls the broker each tick,
+computes the co-held-safe fill delta from a submit-time baseline, and
+PROMOTES the leg into ``open_positions`` at the ACTUAL broker fill (or
+REJECTS it, booking nothing, after grace with no fill). Only a promoted
+leg is reconciler-facing exposure and only it gets stop/time-stop
+evaluation — so the reconciler never sees the intended phantom.
 """
 
 from __future__ import annotations
@@ -128,6 +143,36 @@ class PendingExit:
     trigger_broker_qty: float | None = None
 
 
+@dataclass
+class PendingEntry:
+    """A leg whose entry OrderIntent was emitted but whose broker fill is
+    not yet CONFIRMED (ENTRY half of CL-hqyj — mirror of :class:`PendingExit`).
+
+    ``position`` carries the INTENDED signed quantity (for logging,
+    analytics, and SLOT/CAP accounting) — it NEVER drives live exposure or
+    the portfolio reconciler, which see ``confirmed_qty`` instead.
+    :meth:`EventBook.confirm_entries` computes the co-held-safe observed
+    fill as ``broker_net_now(canon) - entry_broker_qty`` and, once it
+    crosses the min-fill threshold with the intended sign, PROMOTES the leg
+    into ``open_positions`` at the OBSERVED fill (the partial-fill fix). A
+    leg with no fill after ``grace`` is REJECTED, booking nothing (mirror
+    of the phantom prune, for the pending path)."""
+
+    position: EventPosition
+    submitted_ts: datetime
+    #: Broker ACCOUNT-NET quantity for this symbol's canonical form captured
+    #: from the snapshot AT SUBMIT TIME (co-held siblings included). The fill
+    #: is the DELTA from this baseline — never the raw account net (a
+    #: co-holder would otherwise be counted as our fill). ``None`` = broker
+    #: unreadable at submit (rare double-degradation): best-effort
+    #: promote/reject after grace (see :meth:`EventBook.confirm_entries`).
+    entry_broker_qty: float | None = None
+    #: Observed signed fill from the latest :meth:`confirm_entries` pass
+    #: (0.0 until the broker shows the fill). The reconciler-facing and
+    #: concentration-cap-*notional* quantity for a not-yet-promoted leg.
+    confirmed_qty: float = 0.0
+
+
 class EventBook:
     """Owns the event strategy's per-event position state.
 
@@ -156,6 +201,11 @@ class EventBook:
         # Triggered-but-not-broker-confirmed exits (CL-8cw1) — see
         # PendingExit. Keys never overlap open_positions (legs MOVE here).
         self.pending_exits: dict[str, PendingExit] = {}
+        # Emitted-but-not-broker-confirmed entries (ENTRY half of CL-hqyj)
+        # — see PendingEntry. A leg lives here from record_entry until
+        # confirm_entries PROMOTES it (fill seen) or REJECTS it (no fill
+        # after grace). Keys never overlap open_positions/pending_exits.
+        self.pending_entries: dict[str, PendingEntry] = {}
         self.realized_pnl: float = 0.0
         self.closed_trades: int = 0
         # Loss-cap breach is CRITICAL once per activation, WARNING after.
@@ -190,21 +240,26 @@ class EventBook:
             except OSError:
                 logger.exception("Could not back up corrupt event book state")
             return
-        # Fail LOUD on a symbol present in BOTH books (CL-9dhg finding
-        # 11): a leg either awaits its stop (open) or awaits broker flat
-        # confirmation (pending) — never both. Silently preferring one
-        # would either double-track broker risk or drop a triggered
-        # exit's realized P&L. Repo rule: corrupt state refuses to start.
+        # Fail LOUD on a symbol present in more than one book (CL-9dhg
+        # finding 11; extended to pending_entries by the entry half of
+        # CL-hqyj): a leg awaits its stop (open), awaits broker flat
+        # confirmation (pending_exit), or awaits its fill (pending_entry)
+        # — never more than one. Silently preferring one would double-track
+        # broker risk, drop a triggered exit's realized P&L, or resurrect a
+        # rejected entry. Repo rule: corrupt state refuses to start.
+        open_syms = set(payload.get("open_positions") or {})
+        pending_exit_syms = set(payload.get("pending_exits") or {})
+        pending_entry_syms = set(payload.get("pending_entries") or {})
         overlap = sorted(
-            set(payload.get("open_positions") or {})
-            & set(payload.get("pending_exits") or {})
+            (open_syms & pending_exit_syms)
+            | (pending_entry_syms & (open_syms | pending_exit_syms))
         )
         if overlap:
             raise ValueError(
                 f"Event book state {path} is corrupt: symbol(s) {overlap} "
-                "appear in BOTH open_positions and pending_exits — refusing "
-                "to start. Repair the state file by hand (a leg belongs in "
-                "exactly one of the two books)."
+                "appear in more than one of open_positions / pending_exits / "
+                "pending_entries — refusing to start. Repair the state file "
+                "by hand (a leg belongs in exactly one book)."
             )
         self.realized_pnl = float(payload.get("realized_pnl", 0.0))
         self.closed_trades = int(payload.get("closed_trades", 0))
@@ -240,6 +295,27 @@ class EventBook:
             except (KeyError, TypeError, ValueError):
                 logger.warning(
                     "Skipping unparseable persisted pending exit %r", sym,
+                )
+        # pending_entries is ABSENT from every pre-CL-hqyj-entry state file
+        # (the live format at rollout) — a missing key MUST load as an empty
+        # dict (backward compat with data/event_book_state.json).
+        for sym, entry in (payload.get("pending_entries") or {}).items():
+            try:
+                submitted_ts = datetime.fromisoformat(entry["submitted_ts"])
+                if submitted_ts.tzinfo is None:
+                    submitted_ts = submitted_ts.replace(tzinfo=UTC)
+                qty_raw = entry.get("entry_broker_qty")
+                self.pending_entries[sym] = PendingEntry(
+                    position=self._position_from_payload(sym, entry["position"]),
+                    submitted_ts=submitted_ts,
+                    entry_broker_qty=(
+                        float(qty_raw) if qty_raw is not None else None
+                    ),
+                    confirmed_qty=float(entry.get("confirmed_qty", 0.0)),
+                )
+            except (KeyError, TypeError, ValueError):
+                logger.warning(
+                    "Skipping unparseable persisted pending entry %r", sym,
                 )
 
     @staticmethod
@@ -293,6 +369,15 @@ class EventBook:
                 }
                 for sym, entry in self.pending_exits.items()
             },
+            "pending_entries": {
+                sym: {
+                    "position": self._position_payload(entry.position),
+                    "submitted_ts": entry.submitted_ts.isoformat(),
+                    "entry_broker_qty": entry.entry_broker_qty,
+                    "confirmed_qty": entry.confirmed_qty,
+                }
+                for sym, entry in self.pending_entries.items()
+            },
             "updated_at": datetime.now(UTC).isoformat(),
         }
         try:
@@ -307,25 +392,116 @@ class EventBook:
     # Leg lifecycle
     # ------------------------------------------------------------------
 
-    def record_entry(self, position: EventPosition) -> None:
-        """Track a newly-entered leg and persist immediately (the intent
-        is already emitted — the book must survive a crash right after)."""
-        self.open_positions[position.symbol] = position
+    def record_entry(
+        self,
+        position: EventPosition,
+        broker_positions: Iterable[Any] | None = None,
+        now: datetime | None = None,
+    ) -> None:
+        """Park a newly-submitted entry leg in ``pending_entries`` at its
+        INTENDED size and persist immediately (ENTRY half of CL-hqyj —
+        mirror of the CL-8cw1 exit trigger capture).
+
+        The intent is already emitted, so the book must survive a crash
+        right after — but the fill is UNKNOWN. The leg does NOT enter
+        ``open_positions`` (and thus is not reconciler-facing exposure and
+        gets no stop/time-stop evaluation) until :meth:`confirm_entries`
+        sees the actual broker fill and PROMOTES it at the observed size.
+
+        ``broker_positions`` is the snapshot :meth:`reconcile` already
+        fetched this tick (None = broker unreadable at submit): the
+        account-wide NET quantity for this symbol's canonical form is
+        captured as ``entry_broker_qty`` — the BASELINE from which
+        :meth:`confirm_entries` measures OUR fill as a delta (a co-holding
+        sibling strategy is thus never counted as our fill). A None baseline
+        means the broker was unreadable at submit (rare double-degradation):
+        confirm falls back to a best-effort promote/reject after grace."""
+        now = now or datetime.now(UTC)
+        entry_broker_qty: float | None = None
+        if broker_positions is not None:
+            net = self._net_broker_quantities(broker_positions)
+            entry_broker_qty = net.get(self._norm_symbol(position.symbol), 0.0)
+        self.pending_entries[position.symbol] = PendingEntry(
+            position=position,
+            submitted_ts=now,
+            entry_broker_qty=entry_broker_qty,
+            confirmed_qty=0.0,
+        )
         self.save()
 
     def held_positions(self) -> dict[str, EventPosition]:
-        """Every leg the broker may still hold: OPEN legs plus
-        PENDING-EXIT legs (triggered, exit intent emitted, not yet
-        confirmed flat — CL-8cw1). This is the view the strategy exposes
-        as ``open_positions`` to the portfolio reconciler and uses for
-        entry-slot accounting: until the broker confirms flat, a
-        pending-exit leg is REAL broker risk that must not be classified
-        ``orphaned_broker`` (and double-flattened) and must keep its
-        concurrency slot occupied. Returns a fresh merged dict — mutate
-        ``open_positions`` / ``pending_exits`` directly, not this."""
+        """RECONCILER-facing view: every leg valued at the quantity the
+        broker actually holds for us.
+
+        OPEN legs (their signed quantity), plus PENDING-EXIT legs
+        (triggered, exit intent emitted, not yet confirmed flat — CL-8cw1;
+        still REAL broker risk, must not be classified ``orphaned_broker``
+        and double-flattened), plus PENDING-ENTRY legs valued at
+        ``confirmed_qty`` — the ACTUAL observed fill, NOT the intended size
+        (ENTRY half of CL-hqyj). Valuing a pending entry at its intended
+        size is exactly the bug that tripped the reconciliation_failure kill
+        switch (book -308 vs broker -214); until the broker shows the fill,
+        confirmed_qty is 0.0 and the leg contributes nothing to the
+        reconciler's internal_qty. Returns a fresh merged dict — mutate
+        ``open_positions`` / ``pending_exits`` / ``pending_entries``
+        directly, not this. For SLOT/CAP accounting (which must count a
+        pending entry at its intended magnitude so the strategy can't
+        over-submit past max legs while a fill is in flight) use
+        :meth:`accounting_positions` instead."""
         merged = dict(self.open_positions)
         for sym, entry in self.pending_exits.items():
             merged.setdefault(sym, entry.position)
+        for sym, pending in self.pending_entries.items():
+            if sym in merged:
+                continue
+            pos = pending.position
+            # Reconciler-facing size is the CONFIRMED fill, never intended.
+            merged[sym] = EventPosition(
+                symbol=pos.symbol, event_id=pos.event_id,
+                entry_ts=pos.entry_ts, entry_price=pos.entry_price,
+                quantity=pending.confirmed_qty,
+                direction=pos.direction, stop_price=pos.stop_price,
+                headline=pos.headline,
+            )
+        return merged
+
+    def accounting_positions(self) -> dict[str, EventPosition]:
+        """SLOT/CAP-accounting view (ENTRY half of CL-hqyj): like
+        :meth:`held_positions` but a not-yet-confirmed PENDING-ENTRY leg is
+        valued at its INTENDED magnitude, not ``confirmed_qty``.
+
+        The two views split because they answer different questions. The
+        reconciler asks "what does the broker hold for us right now?" —
+        confirmed only, or an in-flight order looks like a phantom. Slot and
+        concentration-cap enforcement ask "how much are we COMMITTED to?" —
+        a submitted-but-unfilled leg must occupy its concurrency slot and
+        count toward the per-instrument/haven notional so the strategy
+        cannot over-submit past ``max_concurrent_event_positions`` (or blow
+        the concentration cap) while an entry is pending. Once
+        ``confirm_entries`` has an observed fill, both views agree on it.
+        Returns a fresh merged dict — mutate the underlying books, not
+        this."""
+        merged = dict(self.open_positions)
+        for sym, entry in self.pending_exits.items():
+            merged.setdefault(sym, entry.position)
+        for sym, pending in self.pending_entries.items():
+            if sym in merged:
+                continue
+            pos = pending.position
+            # Count the LARGER of intended and observed fill: a pending leg
+            # commits its intended magnitude; a partially-promoted-but-still-
+            # pending leg (shouldn't happen — promotion removes it) would
+            # still not under-count.
+            qty = pos.quantity if pending.confirmed_qty == 0.0 else (
+                pos.quantity if abs(pos.quantity) >= abs(pending.confirmed_qty)
+                else pending.confirmed_qty
+            )
+            merged[sym] = EventPosition(
+                symbol=pos.symbol, event_id=pos.event_id,
+                entry_ts=pos.entry_ts, entry_price=pos.entry_price,
+                quantity=qty, direction=pos.direction,
+                stop_price=pos.stop_price, headline=pos.headline,
+            )
         return merged
 
     def _pending_exit_record(self, symbol: str, entry: PendingExit) -> ExitRecord:
@@ -456,6 +632,12 @@ class EventBook:
     #: broker position units — 1 unit of an FX pair is dust).
     _FLAT_QTY = 1.0
 
+    #: Minimum |observed fill| (broker units) for a pending entry to PROMOTE
+    #: (ENTRY half of CL-hqyj). Below this the fill is dust — a rejected or
+    #: not-yet-visible order — and the leg stays pending until grace expires,
+    #: then REJECTS. Same 1-unit dust floor the exit side uses for "flat".
+    _MIN_ENTRY_FILL = 1.0
+
     def confirm_exits(self, broker_positions: Iterable[Any]) -> list[ExitRecord]:
         """Finalize pending exits the broker CONFIRMS are out (CL-8cw1;
         residual + phantom semantics CL-9dhg findings 1 + 2).
@@ -542,6 +724,137 @@ class EventBook:
             records.append(record)
         return records
 
+    def confirm_entries(
+        self, broker_positions: Iterable[Any], now: datetime,
+    ) -> list[EventPosition]:
+        """Confirm pending entries against the broker (ENTRY half of
+        CL-hqyj — mirror of :meth:`confirm_exits`).
+
+        ``broker_positions`` is the SAME snapshot :meth:`reconcile` fetched
+        this tick (one broker call per tick). For each pending entry the
+        OBSERVED fill is the co-held-safe delta from the submit-time
+        baseline: ``broker_net_now(canon) - entry_broker_qty``. Then:
+
+          * PROMOTE when ``|observed_fill| >= _MIN_ENTRY_FILL`` AND its sign
+            matches the intended direction — move the leg into
+            ``open_positions`` as an :class:`EventPosition` whose quantity
+            is the OBSERVED FILL (the partial-fill fix: intended -308,
+            broker delta -214 → books -214), preserving
+            entry_price/stop/event_id/headline/entry_ts. Only now is it
+            reconciler-facing exposure and eligible for stop/time-stop.
+          * REJECT when ``now - submitted_ts > grace`` and no qualifying
+            fill — drop from ``pending_entries``, book NOTHING, WARNING
+            (mirror of the phantom prune for the pending path).
+          * else stay pending (``confirmed_qty`` updated each call).
+
+        ``entry_broker_qty is None`` (broker unreadable at submit — rare
+        double-degradation): best-effort. After grace, promote at
+        ``min(|intended|, |broker_net_now|)`` with the intended sign, or
+        REJECT if the broker is flat in the symbol. We cannot isolate our
+        share of a co-held net without the baseline, so we cap the promoted
+        size at our intended magnitude (never over-book someone else's
+        position) and never wait past grace.
+
+        Idempotent: promoted/rejected legs leave ``pending_entries``, so a
+        repeat call with the same snapshot is a no-op. Returns the list of
+        newly-PROMOTED positions (for logging/analytics; the strategy does
+        not re-emit on promotion)."""
+        if not self.pending_entries:
+            return []
+        net = self._net_broker_quantities(broker_positions)
+        grace = timedelta(seconds=self._reconcile_grace_sec)
+        promoted: list[EventPosition] = []
+        for symbol, entry in list(self.pending_entries.items()):
+            pos = entry.position
+            broker_now = net.get(self._norm_symbol(symbol), 0.0)
+            if broker_now is None:
+                continue  # quantity unreadable — never promote/reject blind
+            aged_out = now - entry.submitted_ts > grace
+
+            if entry.entry_broker_qty is not None:
+                observed_fill = broker_now - entry.entry_broker_qty
+                entry.confirmed_qty = observed_fill
+                sign_ok = (observed_fill > 0) == (pos.direction > 0)
+                if abs(observed_fill) >= self._MIN_ENTRY_FILL and sign_ok:
+                    self._promote_entry(symbol, entry, observed_fill, promoted)
+                    continue
+                if aged_out:
+                    self._reject_entry(symbol, entry, broker_now)
+                    continue
+                # A qualifying-magnitude fill in the WRONG direction before
+                # grace is left pending (a co-holder moving against us);
+                # grace will REJECT it if our fill never materializes.
+                self.save()  # persist the updated confirmed_qty
+                continue
+
+            # entry_broker_qty is None — broker unreadable at submit. We
+            # cannot measure a delta, so wait for grace, then best-effort.
+            if not aged_out:
+                continue
+            if abs(broker_now) < self._FLAT_QTY:
+                self._reject_entry(symbol, entry, broker_now)
+                continue
+            # Promote at min(|intended|, |broker net|) with the intended
+            # sign — never over-book a co-holder's share we can't isolate.
+            magnitude = min(abs(pos.quantity), abs(broker_now))
+            best_effort = magnitude if pos.direction > 0 else -magnitude
+            entry.confirmed_qty = best_effort
+            logger.warning(
+                "Event entry %s: broker was unreadable at submit — "
+                "best-effort promoting at %.0f (min of intended %.0f and "
+                "broker net %.0f, intended sign) after grace (event_id=%s)",
+                symbol, best_effort, pos.quantity, broker_now, pos.event_id,
+            )
+            self._promote_entry(symbol, entry, best_effort, promoted)
+        return promoted
+
+    def _promote_entry(
+        self,
+        symbol: str,
+        entry: PendingEntry,
+        fill: float,
+        promoted: list[EventPosition],
+    ) -> None:
+        """Move a confirmed pending entry into ``open_positions`` at the
+        ACTUAL broker fill (the partial-fill fix), persist, and log."""
+        pos = entry.position
+        confirmed = EventPosition(
+            symbol=pos.symbol, event_id=pos.event_id, entry_ts=pos.entry_ts,
+            entry_price=pos.entry_price, quantity=fill, direction=pos.direction,
+            stop_price=pos.stop_price, headline=pos.headline,
+        )
+        del self.pending_entries[symbol]
+        self.open_positions[symbol] = confirmed
+        promoted.append(confirmed)
+        self.save()
+        if abs(abs(fill) - abs(pos.quantity)) > self._MIN_ENTRY_FILL:
+            logger.warning(
+                "Event entry %s PARTIALLY filled: booked %.0f vs intended "
+                "%.0f (event_id=%s) — book now tracks the ACTUAL broker size",
+                symbol, fill, pos.quantity, pos.event_id,
+            )
+        else:
+            logger.info(
+                "Event entry %s confirmed: filled %.0f (intended %.0f) "
+                "event_id=%s — promoted to open, stop/time-stop now active",
+                symbol, fill, pos.quantity, pos.event_id,
+            )
+
+    def _reject_entry(
+        self, symbol: str, entry: PendingEntry, broker_now: float,
+    ) -> None:
+        """Drop a pending entry that never filled within grace — book
+        NOTHING (mirror of the phantom prune, for the pending path)."""
+        pos = entry.position
+        del self.pending_entries[symbol]
+        self.save()
+        logger.warning(
+            "Event entry %s REJECTED — no qualifying fill within grace "
+            "(broker net %.0f, intended %.0f, event_id=%s); dropping WITHOUT "
+            "booking any position (order likely rejected)",
+            symbol, broker_now, pos.quantity, pos.event_id,
+        )
+
     # ------------------------------------------------------------------
     # Phantom-position reconciliation (CL-v9g4)
     # ------------------------------------------------------------------
@@ -566,13 +879,22 @@ class EventBook:
         never drop a real position.
 
         Returns the raw ``broker.get_positions()`` list so the caller can
-        feed :meth:`confirm_exits` from the SAME snapshot (one broker call
-        per tick), or None when there was nothing to fetch or the broker
-        was unreadable (fail-safe: prune nothing, confirm nothing).
-        Pending-exit legs are never phantom-pruned — a pending symbol the
-        broker no longer holds is a CONFIRMED exit whose P&L
-        :meth:`confirm_exits` must book, not a phantom to drop."""
-        if not self.open_positions and not self.pending_exits:
+        feed :meth:`confirm_exits` and :meth:`confirm_entries` from the SAME
+        snapshot (one broker call per tick), or None when there was nothing
+        to fetch or the broker was unreadable (fail-safe: prune nothing,
+        confirm nothing). Pending-exit legs are never phantom-pruned — a
+        pending symbol the broker no longer holds is a CONFIRMED exit whose
+        P&L :meth:`confirm_exits` must book, not a phantom to drop.
+        Pending-ENTRY legs are likewise never pruned here — their own
+        promote/reject lifecycle (:meth:`confirm_entries`) is the correct
+        backstop; the phantom pruner now only backstops LEGACY
+        ``open_positions`` legs (record_entry no longer creates prunable
+        open legs — ENTRY half of CL-hqyj)."""
+        if (
+            not self.open_positions
+            and not self.pending_exits
+            and not self.pending_entries
+        ):
             return None
         try:
             positions = list(broker.get_positions())
@@ -643,11 +965,14 @@ class EventBook:
 
     def _open_instrument_notional(self, symbol: str) -> float:
         """Open notional (|quantity| * entry_price, the sizing units) in a
-        SINGLE instrument, from tracked positions (open + pending-exit —
-        a pending leg is still broker exposure until confirmed flat,
-        CL-8cw1) — nothing new persisted."""
+        SINGLE instrument, from tracked positions (open + pending-exit +
+        pending-ENTRY at its intended magnitude — a pending exit is still
+        broker exposure until confirmed flat (CL-8cw1) and a pending entry
+        is a committed submission that must count against the cap before it
+        confirms, ENTRY half of CL-hqyj) — uses the accounting view,
+        nothing new persisted."""
         total = 0.0
-        for sym, pos in self.held_positions().items():
+        for sym, pos in self.accounting_positions().items():
             if sym == symbol:
                 total += abs(pos.quantity) * pos.entry_price
         return total
@@ -655,9 +980,9 @@ class EventBook:
     def _open_haven_notional(self) -> float:
         """Combined open notional (|quantity| * entry_price) across
         HAVEN_INSTRUMENTS (gold/silver), from tracked positions (open +
-        pending-exit, as above)."""
+        pending-exit + pending-entry at intended magnitude, as above)."""
         total = 0.0
-        for sym, pos in self.held_positions().items():
+        for sym, pos in self.accounting_positions().items():
             if sym in HAVEN_INSTRUMENTS:
                 total += abs(pos.quantity) * pos.entry_price
         return total
