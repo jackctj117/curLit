@@ -211,6 +211,50 @@ def test_interactive_init_writes_atomically_with_0600(
     assert unseal(json.loads(vault.read_text()), key) == b"{}"
 
 
+def test_interactive_init_crash_mid_write_leaves_no_sentinel(
+    tmp_path, monkeypatch
+):
+    """CL-9dhg finding 12: vault.enc existing is the refuse-to-reinitialize
+    sentinel, so it must be written LAST. Simulate a crash between writes
+    (second atomic write raises): the sentinel must be absent afterwards —
+    a half-initialized vault would otherwise be permanently undecryptable
+    (no salt/recovery) AND refuse re-initialization."""
+    import scripts.initialize_vault as iv
+
+    vault = tmp_path / "vault.enc"
+    monkeypatch.setenv("VAULT_PATH", str(vault))
+    monkeypatch.setenv("VAULT_SALT", str(tmp_path / "vault.salt"))
+    monkeypatch.setenv("RECOVERY_PATH", str(tmp_path / "recovery.enc"))
+    monkeypatch.setattr("builtins.input", lambda *_a: "")
+    monkeypatch.setattr(os, "system", lambda *_a: 0)
+
+    real_write = iv.atomic_write_bytes
+    calls: list[Path] = []
+
+    def crash_on_second(path: Path, payload: bytes, mode: int = 0o600) -> None:
+        calls.append(path)
+        if len(calls) == 2:
+            raise OSError("simulated crash mid-initialization")
+        real_write(path, payload, mode)
+
+    monkeypatch.setattr(iv, "atomic_write_bytes", crash_on_second)
+
+    with pytest.raises(OSError, match="simulated crash"):
+        main([])
+
+    # The sentinel did NOT land — re-initialization remains possible...
+    assert not vault.exists()
+    # ...and vault.enc was the LAST scheduled write, after salt + recovery.
+    assert calls == [tmp_path / "vault.salt", tmp_path / "recovery.enc"]
+
+    # Prove it: re-running init on the same paths now succeeds cleanly
+    # (crash_on_second only raises on call #2; calls 3-5 pass through).
+    assert main([]) == 0
+    for name in ("vault.enc", "vault.salt", "recovery.enc"):
+        assert (tmp_path / name).exists()
+    assert not list(tmp_path.glob("*.tmp*"))
+
+
 def test_passphrase_strips_exactly_one_trailing_newline(tmp_path, monkeypatch):
     """`printf '%s\\n' "$PASS" | ...` appends one newline — it must not become
     part of the passphrase, but an embedded newline must survive."""

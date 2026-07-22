@@ -8,7 +8,6 @@ is atomic (tmp + os.replace, mode 0600) so a crash mid-write can never
 leave a torn vault.enc. CLI behavior is unchanged.
 """
 
-import contextlib
 import getpass
 import json
 import os
@@ -22,24 +21,23 @@ _REPO_ROOT = str(Path(__file__).resolve().parent.parent)
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-from src.security.vault_codec import derive_key, seal, unseal  # noqa: E402
+from src.security.vault_codec import (  # noqa: E402
+    atomic_write_bytes,
+    derive_key,
+    seal,
+    unseal,
+)
 
 
 def _write_vault_atomic(vault_path: Path, vault: dict, key: bytes) -> None:
-    """Seal via vault_codec and replace the vault file atomically (0600)."""
+    """Seal via vault_codec and replace the vault file atomically (0600).
+
+    The write itself goes through vault_codec.atomic_write_bytes — the ONE
+    canonical tmp + flush/fsync + os.replace helper (CL-9dhg consolidated the
+    drifted per-script copies; the drifted one skipped fsync, so power loss
+    after the rename could leave a truncated vault.enc)."""
     payload = json.dumps(seal(json.dumps(vault).encode(), key)).encode()
-    tmp = vault_path.with_name(f"{vault_path.name}.tmp-{os.getpid()}")
-    try:
-        with open(tmp, "wb") as f:
-            f.write(payload)
-            f.flush()
-            os.fsync(f.fileno())
-        os.chmod(tmp, 0o600)
-        os.replace(tmp, vault_path)
-    except BaseException:
-        with contextlib.suppress(OSError):
-            os.unlink(tmp)
-        raise
+    atomic_write_bytes(vault_path, payload)
 
 
 def open_vault() -> tuple[dict, bytes, Path]:

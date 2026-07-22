@@ -24,9 +24,12 @@ iterations, 32 bytes) so the two sides can never drift again.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import math
+import os
 import secrets
+from pathlib import Path
 from typing import Any
 
 # 600k PBKDF2-HMAC-SHA256 iterations meets the current (OWASP) floor for
@@ -120,6 +123,31 @@ def require_strong_passphrase(passphrase: str) -> None:
 
 def derive_key(passphrase: str, salt: bytes, iterations: int = PBKDF2_ITERATIONS) -> bytes:
     return hashlib.pbkdf2_hmac("sha256", passphrase.encode(), salt, iterations, 32)
+
+
+def atomic_write_bytes(path: Path, payload: bytes, mode: int = 0o600) -> None:
+    """The ONE atomic durable-write helper for vault files (CL-9dhg).
+
+    Same-directory tmp file, ``flush`` + ``os.fsync`` so the data is on disk
+    BEFORE the rename, chmod (default 0600) before the rename so there is no
+    umask-readable window, then ``os.replace``. A crash or power loss at any
+    point leaves either the old file or nothing — never a torn or truncated
+    write. Scripts must use this instead of growing private copies: the last
+    drifted copy omitted the fsync, so power loss after the rename could
+    surface a truncated vault.enc.
+    """
+    tmp = path.with_name(f"{path.name}.tmp-{os.getpid()}")
+    try:
+        with open(tmp, "wb") as f:
+            f.write(payload)
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(tmp, mode)
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
 
 
 def seal(plaintext: bytes, key: bytes) -> dict[str, Any]:

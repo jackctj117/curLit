@@ -17,7 +17,6 @@ still rotate its own secrets.
 """
 
 import argparse
-import contextlib
 import getpass
 import hashlib
 import json
@@ -66,28 +65,12 @@ def generate_recovery_seed() -> tuple[bytes, list[str]]:
 # write {"ct": ...} while vault_agent read data["ciphertext"], so vaults it
 # created could never be opened. Both sides now share vault_codec.
 from src.security.vault_codec import (  # noqa: E402
+    atomic_write_bytes,
     derive_key,
     passphrase_weakness,
     require_strong_passphrase,
 )
 from src.security.vault_codec import seal as encrypt  # noqa: E402
-
-
-def _atomic_write(path: Path, payload: bytes) -> None:
-    """tmp + os.replace in the same directory, mode 0600 before the rename —
-    a crash leaves either the old file or nothing, never a torn write."""
-    tmp = path.with_name(f"{path.name}.tmp-{os.getpid()}")
-    try:
-        with open(tmp, "wb") as f:
-            f.write(payload)
-            f.flush()
-            os.fsync(f.fileno())
-        os.chmod(tmp, 0o600)
-        os.replace(tmp, path)
-    except BaseException:
-        with contextlib.suppress(OSError):
-            os.unlink(tmp)
-        raise
 
 
 def reseal(args: argparse.Namespace) -> int:
@@ -150,10 +133,10 @@ def reseal(args: argparse.Namespace) -> int:
             return 2
     else:
         salt = secrets.token_bytes(16)
-        _atomic_write(salt_path, salt)
+        atomic_write_bytes(salt_path, salt)
 
     sealed = encrypt(plaintext, derive_key(passphrase, salt))
-    _atomic_write(encrypted_path, json.dumps(sealed).encode())
+    atomic_write_bytes(encrypted_path, json.dumps(sealed).encode())
     print(f"Sealed {len(plaintext)} plaintext bytes -> {encrypted_path}")
     return 0
 
@@ -180,12 +163,16 @@ def interactive_init() -> None:
     vault_data = encrypt(b"{}", vault_key)
     recovery_data = encrypt(vault_key, recovery_key)
 
-    # Atomic + 0600 BEFORE the rename (same _atomic_write the reseal path
-    # uses) — the old write_text-then-chmod left a umask-readable window
-    # and a torn-write window between file creation and chmod.
-    _atomic_write(vault_path, json.dumps(vault_data).encode())
-    _atomic_write(salt_path, salt)
-    _atomic_write(recovery_path, json.dumps(recovery_data).encode())
+    # Atomic + 0600 via the shared vault_codec helper. WRITE ORDER MATTERS
+    # (CL-9dhg): vault.enc existing is the refuse-to-reinitialize sentinel
+    # (checked at the top of this function), so it must land LAST. The old
+    # order wrote vault.enc first — a crash before salt/recovery landed left
+    # a permanently undecryptable vault that ALSO refused re-init. With salt
+    # and recovery committed first, a crash at any point leaves the sentinel
+    # absent and re-running this script starts cleanly.
+    atomic_write_bytes(salt_path, salt)
+    atomic_write_bytes(recovery_path, json.dumps(recovery_data).encode())
+    atomic_write_bytes(vault_path, json.dumps(vault_data).encode())
 
     checksum = hashlib.sha256(entropy).hexdigest()[:8]
     print("\n" + "=" * 56)

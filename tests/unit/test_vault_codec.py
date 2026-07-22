@@ -121,3 +121,58 @@ def test_existing_weak_passphrase_vault_still_unseals(tmp_path):
     assert decrypt_vault(vault_file, weak_key) == {"K": "v"}
     # ...and the policy check that main_async logs a WARNING from still flags it
     assert passphrase_weakness(LEGACY_PHRASE) is not None
+
+
+# --- Canonical atomic write helper (CL-9dhg) -------------------------------
+
+import stat  # noqa: E402
+
+from src.security.vault_codec import atomic_write_bytes  # noqa: E402
+
+
+def test_atomic_write_bytes_writes_0600_and_replaces(tmp_path):
+    target = tmp_path / "vault.enc"
+    target.write_text("old contents")
+
+    atomic_write_bytes(target, b"new contents")
+
+    assert target.read_bytes() == b"new contents"
+    assert stat.S_IMODE(target.stat().st_mode) == 0o600
+    assert not list(tmp_path.glob("*.tmp*"))  # staging file replaced away
+
+
+def test_atomic_write_bytes_fsyncs_before_replace(tmp_path, monkeypatch):
+    """The durability contract: data must be fsynced to disk BEFORE the
+    rename — the drifted vault_add-era copy skipped this, so power loss
+    after the rename could surface a truncated vault.enc (CL-9dhg)."""
+    import os
+
+    calls: list[str] = []
+    real_fsync, real_replace = os.fsync, os.replace
+    monkeypatch.setattr(
+        os, "fsync", lambda fd: (calls.append("fsync"), real_fsync(fd))[1])
+    monkeypatch.setattr(
+        os, "replace",
+        lambda a, b: (calls.append("replace"), real_replace(a, b))[1])
+
+    atomic_write_bytes(tmp_path / "vault.enc", b"payload")
+
+    assert calls == ["fsync", "replace"]
+
+
+def test_atomic_write_bytes_failure_leaves_old_file_and_no_litter(
+    tmp_path, monkeypatch
+):
+    import os
+
+    target = tmp_path / "vault.enc"
+    target.write_text("old contents")
+    monkeypatch.setattr(
+        os, "replace",
+        lambda *a: (_ for _ in ()).throw(OSError("simulated crash")))
+
+    with pytest.raises(OSError, match="simulated crash"):
+        atomic_write_bytes(target, b"new contents")
+
+    assert target.read_text() == "old contents"  # old file intact
+    assert not list(tmp_path.glob("*.tmp*"))  # staging file cleaned up
