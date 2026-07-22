@@ -58,18 +58,42 @@ def main(argv: list[str] | None = None) -> int:
         logger.error("TRUTH_STUDY_ENABLED is off — exiting")
         return 3
 
+    from sqlalchemy import text  # noqa: PLC0415
+
     from src.data.truth_reactions import measure_pending  # noqa: PLC0415
     from src.data.truth_social import ingest_posts  # noqa: PLC0415
     from src.events.truth_classifier import classify_pending  # noqa: PLC0415
 
     engine = create_engine(_build_db_url())
 
+    def _backlogs() -> tuple[int, int]:
+        with engine.connect() as conn:
+            unclassified = conn.execute(text("""
+                SELECT COUNT(*) FROM truth_posts p
+                LEFT JOIN truth_classifications c ON c.post_id = p.post_id
+                WHERE c.post_id IS NULL
+            """)).scalar() or 0
+            unmeasured = conn.execute(text("""
+                SELECT COUNT(*) FROM truth_classifications c
+                WHERE c.is_market_relevant
+                  AND NOT EXISTS (SELECT 1 FROM truth_market_reactions r
+                                  WHERE r.post_id = c.post_id)
+            """)).scalar() or 0
+        return int(unclassified), int(unmeasured)
+
     def _run() -> None:
         new = ingest_posts(engine)
         labeled = classify_pending(engine)
         measured = measure_pending(engine)
+        unclassified, unmeasured = _backlogs()
+        # Backlog watch: at 10 classifications/cycle a backlog >50 means
+        # >25 min of lag — visible drift toward silently-stale labels.
+        if unclassified > 50:
+            logger.warning("truth study: classification backlog %d — "
+                           "drain rate may be too slow", unclassified)
         print(f"truth study: ingested={new} classified={labeled} "
-              f"measured={measured}")
+              f"measured={measured} backlog_unclassified={unclassified} "
+              f"backlog_unmeasured={unmeasured}")
 
     if args.loop:
         logger.info("truth study: looping every %ds", args.loop)

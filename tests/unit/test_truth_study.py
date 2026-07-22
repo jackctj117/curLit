@@ -86,6 +86,26 @@ def test_ingest_dedups(engine):
     assert ingest_posts(engine, http_get=lambda _u: _FEED) == 0  # idempotent
 
 
+def test_ingest_warns_on_zero_overlap_gap(engine, caplog):
+    """Feed is a sliding window: zero overlap with stored posts means the
+    daemon was likely down past the window — posts in between are missing.
+    Must WARN, never silently continue."""
+    ingest_posts(engine, http_get=lambda _u: _FEED)
+    disjoint = _FEED.replace("116963738416841583", "999000000000000001") \
+                    .replace("116964025218558981", "999000000000000002") \
+                    .replace("statuses/40212", "statuses/50001") \
+                    .replace("statuses/40213", "statuses/50002")
+    import logging as _logging
+    with caplog.at_level(_logging.WARNING, logger="src.data.truth_social"):
+        assert ingest_posts(engine, http_get=lambda _u: disjoint) == 2
+    assert any("GAP" in r.message for r in caplog.records)
+    # overlap present → no gap warning
+    caplog.clear()
+    with caplog.at_level(_logging.WARNING, logger="src.data.truth_social"):
+        ingest_posts(engine, http_get=lambda _u: _FEED)
+    assert not any("GAP" in r.message for r in caplog.records)
+
+
 # --------------------------------------------------------------------------- #
 # classifier
 # --------------------------------------------------------------------------- #

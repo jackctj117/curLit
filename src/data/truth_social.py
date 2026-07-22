@@ -120,7 +120,13 @@ def ingest_posts(
                        exc_info=True)
         return 0
     if not posts:
+        logger.warning("truth feed: feed returned ZERO items — possible "
+                       "feed outage; posts published now may be missed")
         return 0
+    with engine.connect() as conn:
+        had_rows = conn.execute(
+            text("SELECT 1 FROM truth_posts LIMIT 1"),
+        ).scalar() is not None
     new = 0
     with engine.begin() as conn:
         for p in posts:
@@ -132,6 +138,16 @@ def ingest_posts(
             """), {"i": p.post_id, "t": p.posted_at, "x": p.text,
                    "u": p.url, "n": now})
             new += int(result.rowcount or 0)
+    # Gap detection: the feed is a sliding window (~100 posts). If NOTHING
+    # in the current feed was already stored, the daemon was likely down
+    # longer than the window and posts in between are silently missing —
+    # say so loudly (a silent cluster miss is worse than a noisy warning).
+    if had_rows and posts and new == len(posts):
+        logger.warning(
+            "truth feed: ZERO overlap between feed (%d items) and stored "
+            "posts — possible ingestion GAP; posts between the last stored "
+            "item and the oldest feed item may be missing", len(posts),
+        )
     if new:
         logger.info("truth feed: %d new post(s) ingested", new)
     return new
