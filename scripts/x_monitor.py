@@ -39,7 +39,11 @@ from pathlib import Path
 from types import FrameType
 from typing import Any
 
-from src.data.x_monitor import (
+# Make `src` importable when launched as a file (scripts/x_monitor.py),
+# matching scripts/event_pipeline.py. Harmless under `python -m`.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from src.data.x_monitor import (  # noqa: E402
     DEFAULT_STATE_PATH,
     DEFAULT_USER_IDS_PATH,
     DEFAULT_WATCHLIST_PATH,
@@ -49,7 +53,7 @@ from src.data.x_monitor import (
     build_transport,
     load_watchlist,
 )
-from src.research.notifications import notify_operator
+from src.research.notifications import notify_operator  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
