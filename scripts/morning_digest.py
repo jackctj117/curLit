@@ -30,24 +30,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from src.data.db_env import build_db_url  # noqa: E402
+
 logger = logging.getLogger(__name__)
 
 STATE_PATH = Path(
     os.environ.get("MORNING_DIGEST_STATE", "data/morning_digest_state.json"),
 )
 _OANDA_BASE = "https://api-fxpractice.oanda.com/v3/accounts"
-
-
-def _build_db_url() -> str:
-    explicit = os.environ.get("DATABASE_URL")
-    if explicit:
-        return explicit
-    user = os.environ.get("POSTGRES_USER", "fx")
-    password = os.environ.get("POSTGRES_PASSWORD", "changeme")
-    host = os.environ.get("POSTGRES_HOST", "localhost")
-    port = os.environ.get("POSTGRES_PORT", "5432")
-    db = os.environ.get("POSTGRES_DB", "fx")
-    return f"postgresql+psycopg2://{user}:{password}@{host}:{port}/{db}"
 
 
 def _load_last_sent() -> str | None:
@@ -251,7 +241,7 @@ def run_once(now: datetime | None = None, *, force: bool = False) -> bool:
     if not force and not should_send(now, _load_last_sent(), send_time):
         return False
 
-    engine = create_engine(_build_db_url())
+    engine = create_engine(build_db_url())
     balances: dict[str, str] = {}
     if (b := _fetch_oanda_balance()) is not None:
         balances["OANDA"] = b

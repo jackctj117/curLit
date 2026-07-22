@@ -4,12 +4,13 @@ Run: python -m migrations.run
 """
 
 import logging
-import os
 import re
 from pathlib import Path
 from typing import Any
 
 from sqlalchemy import create_engine, text
+
+from src.data.db_env import build_db_url
 
 logger = logging.getLogger(__name__)
 
@@ -31,15 +32,10 @@ def _strip_sql_comments(sql: str) -> str:
 
 
 def get_engine() -> Any:
-    db_url = (
-        f"postgresql+psycopg2://"
-        f"{os.environ.get('POSTGRES_USER', 'fx')}:"
-        f"{os.environ.get('POSTGRES_PASSWORD', 'changeme')}@"
-        f"{os.environ.get('POSTGRES_HOST', 'localhost')}:"
-        f"{os.environ.get('POSTGRES_PORT', '5432')}/"
-        f"{os.environ.get('POSTGRES_DB', 'fx')}"
-    )
-    return create_engine(db_url)
+    """Engine from the shared env-var convention (CL-8cw1: delegated to
+    src.data.db_env.build_db_url — DATABASE_URL override, changeme warning,
+    percent-safe password)."""
+    return create_engine(build_db_url())
 
 
 def run_migrations(engine: Any = None) -> None:
