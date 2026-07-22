@@ -36,6 +36,7 @@ import os
 from dataclasses import dataclass
 from typing import Any
 
+from src.events._util import env_flag
 from src.research.llm import Message, get_client
 from src.research.llm.client import LLMClient
 
@@ -84,13 +85,6 @@ class TriageVerdict:
     tradable: bool
     reason: str
     escalate: bool  # True → run the full impact assessment
-
-
-def _env_flag(name: str, default: bool) -> bool:
-    raw = os.environ.get(name)
-    if raw is None:
-        return default
-    return raw.strip().lower() in ("1", "true", "yes", "on")
 
 
 def extract_json_array(raw_text: str) -> list[Any]:
@@ -171,7 +165,7 @@ class EventTriage:
                 self.min_relevance = DEFAULT_MIN_RELEVANCE
         self.enabled = (
             enabled if enabled is not None
-            else _env_flag("EVENT_TRIAGE_ENABLED", default=False)
+            else env_flag("EVENT_TRIAGE_ENABLED", default=False)
         )
         self.max_tokens = max_tokens
 

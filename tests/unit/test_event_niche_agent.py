@@ -9,6 +9,10 @@ Covers, with a mocked LLM + mocked SymbolUniverse + mocked market data
     floor penalizes/hard-drops illiquid names; the threshold gates;
   * quota gate — the niche pass is skipped for urgency < min;
   * the merge into an assessment's trade_ideas (deduped, tagged niche).
+
+The pure pieces (parse/verify/score) live in ``src.events.niche_scoring``
+since CL-ikz2 (review §6.2.2) and are imported from there; ``niche_agent``
+re-exports them, which ``TestModuleSplit`` pins down.
 """
 
 from __future__ import annotations
@@ -19,9 +23,9 @@ from typing import Any
 
 import pytest
 
-from src.events.niche_agent import (
+from src.events.niche_agent import NicheAgent
+from src.events.niche_scoring import (
     AsymmetryConfig,
-    NicheAgent,
     NicheIdea,
     asymmetry_score,
     parse_niche_ideas,
@@ -792,3 +796,43 @@ class TestRedTeamCritic:
             client=MockLLMClient("{}"),  # type: ignore[arg-type]
         )
         assert agent.critic is not None
+
+
+# --------------------------------------------------------------------- #
+# Module split (CL-ikz2 — review §6.2.2)
+# --------------------------------------------------------------------- #
+
+
+class TestModuleSplit:
+    """Pure scoring moved to ``niche_scoring``; ``niche_agent`` must keep
+    re-exporting the SAME objects so every existing import (tests, scripts,
+    monkeypatch targets) keeps working unchanged."""
+
+    def test_niche_agent_reexports_scoring_surface(self) -> None:
+        from src.events import niche_agent, niche_scoring
+
+        for name in (
+            "MAX_NICHE_IDEAS",
+            "VALID_NICHE_ACTIONS",
+            "AsymmetryConfig",
+            "NicheIdea",
+            "asymmetry_score",
+            "parse_niche_ideas",
+            "score_and_gate",
+            "torque_from_reason",
+            "verify_ideas",
+        ):
+            assert getattr(niche_agent, name) is getattr(niche_scoring, name), name
+
+    def test_legacy_import_surface_intact(self) -> None:
+        # The exact import shape used across the repo before the split.
+        from src.events.niche_agent import (  # noqa: F401
+            DEFAULT_MIN_URGENCY,
+            AsymmetryConfig,
+            NicheAgent,
+            NicheIdea,
+            asymmetry_score,
+            parse_niche_ideas,
+            score_and_gate,
+            verify_ideas,
+        )

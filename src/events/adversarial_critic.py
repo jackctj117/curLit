@@ -28,6 +28,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from src.events._util import env_flag
 from src.events.impact_agent import extract_json_object
 from src.research.llm import Message
 from src.research.llm.client import LLMClient
@@ -39,13 +40,6 @@ logger = logging.getLogger(__name__)
 DEFAULT_CRITIC_MODEL = "claude-sonnet-4-6"
 
 VALID_VERDICTS = frozenset({"confirmed", "weakened", "refuted"})
-
-
-def _env_flag(name: str, default: bool) -> bool:
-    raw = os.environ.get(name)
-    if raw is None:
-        return default
-    return raw.strip().lower() in ("1", "true", "yes", "on")
 
 
 @dataclass(frozen=True)
@@ -114,7 +108,7 @@ class AdversarialCritic:
         )
         self.enabled = (
             enabled if enabled is not None
-            else _env_flag("NICHE_CRITIC_ENABLED", default=False)
+            else env_flag("NICHE_CRITIC_ENABLED", default=False)
         )
         self.max_tokens = max_tokens
 

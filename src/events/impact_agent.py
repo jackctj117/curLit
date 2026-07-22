@@ -28,6 +28,7 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
+from src.events._util import clamp_float, clamp_int
 from src.events.playbooks import (
     DEFAULT_PLAYBOOKS_PATH,
     INSTRUMENT_RE,
@@ -337,14 +338,6 @@ def extract_json_object(raw_text: str) -> dict[str, Any]:
     raise ValueError(msg)
 
 
-def _clamp_int(value: Any, lo: int, hi: int) -> int:
-    return max(lo, min(hi, int(round(float(value)))))
-
-
-def _clamp_float(value: Any, lo: float, hi: float) -> float:
-    return max(lo, min(hi, float(value)))
-
-
 def _optional_fraction(value: Any, lo: float, hi: float) -> float | None:
     """Parse an optional decimal fraction (stop/target %), clamped to
     ``[lo, hi]``. ``None`` when absent or unparseable — a missing level
@@ -400,11 +393,11 @@ def _normalise_trade_ideas(raw: Any) -> list[dict[str, Any]]:
         if direction not in ("bullish", "bearish"):
             direction = "bullish" if action in _BULLISH_IDEA_ACTIONS else "bearish"
         try:
-            confidence = _clamp_float(entry.get("confidence"), 0.0, 1.0)
+            confidence = clamp_float(entry.get("confidence"), 0.0, 1.0)
         except (TypeError, ValueError):
             confidence = 0.5  # advisory default, not worth dropping over
         try:
-            time_stop = _clamp_int(entry.get("time_stop_days"), 1, 120)
+            time_stop = clamp_int(entry.get("time_stop_days"), 1, 120)
         except (TypeError, ValueError):
             time_stop = _DEFAULT_TIME_STOP_DAYS[horizon]
         # Concrete levels (CL-jiqq) — the LLM's PERCENTAGES, clamped to
@@ -481,8 +474,8 @@ def normalise_assessment(
         raise ValueError(msg)
 
     try:
-        urgency = _clamp_int(payload.get("urgency"), 1, 10)
-        confidence = _clamp_float(payload.get("confidence"), 0.0, 1.0)
+        urgency = clamp_int(payload.get("urgency"), 1, 10)
+        confidence = clamp_float(payload.get("confidence"), 0.0, 1.0)
     except (TypeError, ValueError) as exc:
         msg = f"non-numeric urgency/confidence: {exc}"
         raise ValueError(msg) from exc
