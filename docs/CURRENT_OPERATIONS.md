@@ -255,3 +255,35 @@ Cost controls: triage relevance gate, niche urgency ≥ 7 gate,
 - **Paper-phase relaxations to re-tighten before real money**: Alpaca
   confidence 0.45 + gates off; event Gate A 0.60. The reflective loop is
   expected to propose the re-tightening from data.
+
+---
+
+## 8. Hardening posture (2026-07-22 review remediation)
+
+All P0/P1/P2 items from the July code review + ultrareview are closed
+(CL-xdnh, CL-qyav, CL-e6lx; only repo-wide ruff/format debt remains,
+filed separately). Operationally visible changes:
+
+- **Broker mode never lies**: missing `OANDA_API_KEY/ACCOUNT_ID` with an
+  oanda-* mode now CRASHES the engine at boot (`BrokerCredentialsError`)
+  instead of silently paper-trading. `ALLOW_PAPER_FALLBACK=1` is the
+  explicit opt-in (CRITICAL log; status reports say "paper").
+- **Slippage is enforced, not just journaled**: intents' `max_slippage_bps`
+  becomes a direction-aware FOK `priceBound` on OANDA orders (venue
+  rejects fills beyond tolerance); PaperBroker simulates the same check
+  (`SLIPPAGE_EXCEEDED` rejection). Pricing-fetch failure is fail-open by
+  design — that path carries kill-switch flattens.
+- **No sync broker I/O on the engine's event loop**: OMS submits, health
+  ticks, and alignment checks run via `asyncio.to_thread` /
+  `submit_intent_async`.
+- **Vault**: socket accepts same-UID peers only (kernel-verified;
+  activates on next vault-agent restart); new seals require ≥12 chars /
+  ≥60 bits; the live passphrase is KNOWN-WEAK (~31 bits) — rotate with
+  `python -m scripts.rotate_secrets --rotate-passphrase` at a maintenance
+  window (re-run recovery setup after; the old printed document only
+  covers the .bak files).
+- **Stress tests can't fabricate zeros**: missing data skips the scenario
+  with a named WARNING or raises if nothing is priceable.
+- **Structure**: event book state lives in `src/strategies/event_book.py`
+  (reconciler contract unchanged); impact-agent assessments are typed
+  (`Assessment` dataclass, byte-identical persisted format).
