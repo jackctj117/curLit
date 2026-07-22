@@ -217,7 +217,12 @@ class RateDiffMRStrategy:
                          self._model["r_squared"], self._model["beta"],
                          self._model["residual_std"], len(df))
         except Exception:
-            logger.exception("Model refit failed")
+            # Broad by design: a failed refit keeps the previous model; the
+            # tick must survive. Logged loudly with strategy context (CL-gmr1).
+            logger.exception(
+                "Model refit failed for %s (%s) — keeping previous model",
+                self.id, self.config.pair,
+            )
 
     def _compute_z_score(self, price: float, spread: float) -> float | None:
         if self._model is None:
@@ -427,7 +432,14 @@ class RateDiffMRStrategy:
                 try:
                     quote = self.data.get_latest_value(c.carry_quote_rate_series, now)
                     base = self.data.get_latest_value(c.carry_base_rate_series, now)
-                except Exception:
+                except Exception as exc:
+                    # Broad by design: a rate-lookup failure is handled as a
+                    # data gap below (which warns once, latched) — but keep
+                    # the underlying error visible for diagnosis (CL-gmr1).
+                    logger.debug(
+                        "%s: carry rate lookup failed: %s: %s",
+                        self.id, type(exc).__name__, exc,
+                    )
                     quote = base = None  # treated as a data gap below
             carry: float | None = None
             passed = True
@@ -520,8 +532,14 @@ class RateDiffMRStrategy:
                 )
                 if spread_data is not None and len(spread_data) > 0:
                     current_spread = float(spread_data["US_10Y"].iloc[-1] - spread_data["DE_10Y"].iloc[-1])
-            except Exception:
-                logger.debug("Spread query failed — using fallback 0.5")
+            except Exception as exc:
+                # Broad by design: the tick must survive a data-provider
+                # failure — but a fallback spread distorts the z-score, so
+                # log it visibly (CL-gmr1). warning w/o traceback per CL-2yta.
+                logger.warning(
+                    "%s: spread query failed (%s: %s) — using fallback 0.5",
+                    self.id, type(exc).__name__, exc,
+                )
 
         z = self._compute_z_score(current_price, current_spread)
         if z is None:

@@ -313,8 +313,14 @@ class AggressiveShortFXStrategy:
                 since=idx[0].to_pydatetime() if hasattr(idx[0], "to_pydatetime") else idx[0],
                 cbs=[target_cb],
             )
-        except Exception:
-            logger.debug("sentiment signal: NLP provider failed", exc_info=True)
+        except Exception as exc:
+            # Broad by design: signal generation must survive a provider
+            # failure, but a dead NLP feed is not "no sentiment" — log it
+            # visibly (CL-gmr1). warning without traceback per CL-2yta.
+            logger.warning(
+                "%s: sentiment signal NLP provider failed (%s: %s) — "
+                "sentiment leg contributes 0", self.id, type(exc).__name__, exc,
+            )
             return out
         if not events:
             return out
@@ -331,7 +337,14 @@ class AggressiveShortFXStrategy:
             try:
                 ev_ts_pd = pd.Timestamp(ev_ts)
                 pos = out.index.get_indexer([ev_ts_pd], method="nearest")[0]
-            except Exception:
+            except (ValueError, TypeError):
+                # Narrowed from bare `except Exception` (CL-gmr1): the intent
+                # here is strictly "unparsable event timestamp / non-monotonic
+                # index" — anything else should surface.
+                logger.debug(
+                    "%s: skipping sentiment event with unusable ts %r",
+                    self.id, ev_ts,
+                )
                 continue
             if 0 <= pos < len(out):
                 # Hawkish CB ⇒ short pair (-1); dovish ⇒ long (+1).

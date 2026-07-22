@@ -292,7 +292,15 @@ class EventDrivenStrategy:
             return None
         try:
             value = self.data.get_latest_value(symbol, now)
-        except Exception:
+        except Exception as exc:
+            # Broad by design: the exit-check price fallback must not break
+            # the tick — but a dead data provider is not "no price", so it
+            # must not be swallowed silently (CL-gmr1). warning without
+            # traceback per CL-2yta.
+            logger.warning(
+                "%s: price fallback get_latest_value failed for %s: %s: %s",
+                self.id, symbol, type(exc).__name__, exc,
+            )
             return None
         return float(value) if value is not None else None
 
@@ -506,8 +514,13 @@ class EventDrivenStrategy:
     def _get_equity(broker: Any) -> float | None:
         try:
             return float(broker.get_account().equity)
-        except Exception:
-            logger.warning("broker.get_account() failed — cannot size event entries")
+        except Exception as exc:
+            # Broad by design: broker hiccups must not break the tick, but
+            # include the actual error for diagnosis (CL-gmr1).
+            logger.warning(
+                "broker.get_account() failed (%s: %s) — cannot size event "
+                "entries", type(exc).__name__, exc,
+            )
             return None
 
     async def generate_intents(

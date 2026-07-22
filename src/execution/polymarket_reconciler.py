@@ -91,8 +91,14 @@ def fetch_onchain_fills(
     """
     # eth_utils is optional. Production runs have it via web3; tests
     # don't pull the EVM stack just for an EIP-55 case-fold step.
+    # `str` (not ChecksumAddress) since the ImportError fallback keeps the
+    # caller-supplied plain string; ChecksumAddress is a str NewType so the
+    # checksummed branch assigns cleanly.
+    funder_cs: str
     try:
-        from eth_utils import to_checksum_address as _checksum
+        # Import from the canonical submodule — the eth_utils package
+        # re-exports to_checksum_address without declaring it for mypy.
+        from eth_utils.address import to_checksum_address as _checksum
         funder_cs = _checksum(funder_address)
     except ImportError:
         funder_cs = funder_address

@@ -126,8 +126,14 @@ class CBSentimentShiftStrategy:
                     if len(cb_data) > 0:
                         self._historical_diffs[cb] = cb_data.tolist()
                 self._last_refresh = now
-        except Exception:
-            logger.debug("Threshold refresh skipped — NLP not available")
+        except Exception as exc:
+            # Broad by design: a threshold refresh must never break the tick
+            # (previous thresholds stay in force), but the failure has to be
+            # visible (CL-gmr1). warning without traceback per CL-2yta.
+            logger.warning(
+                "%s: threshold refresh failed (%s: %s) — keeping previous "
+                "thresholds", self.id, type(exc).__name__, exc,
+            )
 
     def _get_thresholds(self, cb: str) -> tuple[float, float]:
         diffs = self._historical_diffs.get(cb, [])
@@ -150,7 +156,14 @@ class CBSentimentShiftStrategy:
                 since=now - timedelta(hours=2),
                 cbs=list(self.config.cb_to_pair.keys()),
             )
-        except Exception:
+        except Exception as exc:
+            # Broad by design: the strategy tick must survive a provider
+            # failure — but a dead NLP feed is NOT "no events", so it must
+            # never be swallowed silently (CL-gmr1 review call-out).
+            logger.warning(
+                "%s: get_recent_diff_events failed (%s: %s) — treating as no "
+                "events this tick", self.id, type(exc).__name__, exc,
+            )
             return []
         signals = []
         for event in (events or []):
