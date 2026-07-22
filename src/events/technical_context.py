@@ -42,6 +42,10 @@ HistoryFn = Callable[[str], Any]
 
 _TREND_UP, _TREND_DOWN, _TREND_SIDEWAYS = "uptrend", "downtrend", "sideways"
 _AT_HIGHS, _AT_LOWS, _RANGE = "at_highs", "at_lows", "range"
+#: Within 2% of a 20d extreme but not AT it — compression toward a level
+#: (the objective version of "approaching a breakout"). Contributes 0 to
+#: alignment (only a CONFIRMED at-level state moves the score).
+_APPROACHING_HIGH, _APPROACHING_LOW = "approaching_high", "approaching_low"
 
 
 @dataclass(frozen=True)
@@ -55,8 +59,12 @@ class TechnicalContext:
     pct_from_20d_low: float         # >= 0 (0 = at the low)
     support: float | None           # 20d swing low (excl. last bar)
     resistance: float | None        # 20d swing high (excl. last bar)
-    breakout_state: str             # at_highs | at_lows | range
+    breakout_state: str             # at_highs|at_lows|approaching_*|range
     volume_ratio: float | None      # mean(5d vol) / mean(20d vol)
+    #: How many prior bars TESTED the resistance band (high within 1.5%) —
+    #: a level tested many times is more meaningful when it breaks.
+    resistance_tests: int = 0
+    support_tests: int = 0
 
 
 def yfinance_history(ticker: str) -> Any:
@@ -108,8 +116,23 @@ def compute_context(ticker: str, df: Any) -> TechnicalContext | None:
             breakout = _AT_HIGHS
         elif pct_from_low <= 0.01:
             breakout = _AT_LOWS
+        elif pct_from_high >= -0.02:
+            breakout = _APPROACHING_HIGH
+        elif pct_from_low <= 0.02:
+            breakout = _APPROACHING_LOW
         else:
             breakout = _RANGE
+
+        # Level-test counts: prior bars whose High probed the resistance
+        # band (within 1.5%) / Low probed the support band. A level tested
+        # 4 times means more when it finally breaks than one touched once.
+        resistance_tests = support_tests = 0
+        if resistance is not None and resistance > 0 and len(highs):
+            resistance_tests = int(
+                (highs >= resistance * 0.985).sum(),
+            )
+        if support is not None and support > 0 and len(lows):
+            support_tests = int((lows <= support * 1.015).sum())
 
         volume_ratio = None
         if "Volume" in df:
@@ -125,6 +148,8 @@ def compute_context(ticker: str, df: Any) -> TechnicalContext | None:
             pct_from_20d_low=pct_from_low, support=support,
             resistance=resistance, breakout_state=breakout,
             volume_ratio=volume_ratio,
+            resistance_tests=resistance_tests,
+            support_tests=support_tests,
         )
     except Exception:
         logger.debug("technical context: compute failed for %s", ticker,
@@ -177,9 +202,15 @@ def format_context_block(ctx: TechnicalContext) -> str:
         f"({ctx.breakout_state})",
     ]
     if ctx.support is not None and ctx.resistance is not None:
+        tests = ""
+        if ctx.resistance_tests or ctx.support_tests:
+            tests = (f" (resistance tested {ctx.resistance_tests}x, "
+                     f"support {ctx.support_tests}x — well-tested levels "
+                     "mean more when broken)")
         lines.append(
             f"  swing support ~{ctx.support:.2f}, resistance "
-            f"~{ctx.resistance:.2f} — use THESE for entry/invalidation levels",
+            f"~{ctx.resistance:.2f} — use THESE for entry/invalidation "
+            f"levels{tests}",
         )
     if ctx.volume_ratio is not None:
         lines.append(f"  5d volume {ctx.volume_ratio:.1f}x its 20d average")

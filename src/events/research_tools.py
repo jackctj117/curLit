@@ -231,6 +231,18 @@ class ResearchTools:
         if ctx is not None:
             from src.events.technical_context import format_context_block  # noqa: PLC0415
             parts.append(format_context_block(ctx))
+        # Options-activity confirmation (CL-mtum) — free chain-snapshot read
+        # (P/C skew, volume vs baseline). Uses the universe's DB engine when
+        # present; silently absent otherwise.
+        db_engine = getattr(universe, "engine", None)
+        if db_engine is not None:
+            try:
+                from src.events.options_activity import activity_note  # noqa: PLC0415
+                note = activity_note(db_engine, ticker)
+            except Exception:
+                note = None
+            if note:
+                parts.append(note)
         if len(parts) == 1:  # header only → no real data gathered
             return None
         return "\n".join(parts)
