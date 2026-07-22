@@ -13,7 +13,7 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from src.execution.oms import OrderIntent
+from src.execution.oms import OrderIntent, Urgency
 from src.execution.paper_broker import PaperBroker
 from src.portfolio.coordinator import (
     PortfolioConstraints,
@@ -338,6 +338,30 @@ class TestAggregateBySymbol:
         ]
         agg = coord._aggregate_by_symbol(intents)
         assert agg["EURUSD"]["urgency"] == "urgent"
+
+    def test_non_canonical_urgency_never_escalates(self) -> None:
+        """The rank map is derived from the canonical Urgency enum
+        (CL-ikz2): any value outside it — like the legacy event-exit
+        "high" — ranks 0 and cannot escalate past a canonical value."""
+        coord, *_ = _make_coord()
+        intents = [
+            OrderIntent(
+                strategy_id="s1", symbol="EURUSD",
+                target_position=100, urgency="normal",
+            ),
+            OrderIntent(
+                strategy_id="s2", symbol="EURUSD",
+                target_position=100, urgency="high",  # legacy, non-canonical
+            ),
+        ]
+        agg = coord._aggregate_by_symbol(intents)
+        assert agg["EURUSD"]["urgency"] == "normal"
+
+    def test_rank_map_matches_enum_order(self) -> None:
+        from src.portfolio.coordinator import _URGENCY_RANK
+
+        assert _URGENCY_RANK == {"passive": 0, "normal": 1, "urgent": 2}
+        assert [u.value for u in Urgency] == ["passive", "normal", "urgent"]
 
 
 # =============================================================================

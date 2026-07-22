@@ -8,19 +8,20 @@ Consumer half of the current-events pipeline. Every poll it:
   2. Polls ``geo_events`` for ASSESSED rows and runs them through
      :class:`src.events.confluence.EventConfluence` (Gate A quality +
      Gate B market confirmation).
-  3. For events it newly CONFIRMED: alerts the operator (Telegram /
-     Telegram via ``notify_operator``) and emits tightly-risked
-     OrderIntents for the tradable affected instruments, then marks the
-     row TRADED. Sizing: ``equity * event_risk_pct / stop_distance``
-     with the stop ``event_stop_pct`` from entry.
+  3. For events it newly CONFIRMED: alerts the operator (via the
+     injected :class:`src.events.event_notifier.EventNotifier`, which
+     owns all alert formatting + ``notify_operator`` dispatch) and emits
+     tightly-risked OrderIntents for the tradable affected instruments,
+     then marks the row TRADED. Sizing:
+     ``equity * event_risk_pct / stop_distance`` with the stop
+     ``event_stop_pct`` from entry.
   4. EXPIRED events with urgency >= ``expired_alert_min_urgency`` get a
      brief "expired unconfirmed" info alert (capped at one per run).
 
-Event-book protection: cumulative realized P&L of event trades persists
-in ``data/event_book_state.json`` (atomic tmp+rename, same pattern as
-the equity trailing stop). Breaching ``event_book_max_loss_pct`` of
-equity blocks NEW entries and logs CRITICAL — exits always still flow.
-Kill-switch integration can come later; for now this logs loudly.
+Event-book protection: cumulative realized P&L persists in
+``data/event_book_state.json`` (atomic tmp+rename). Breaching
+``event_book_max_loss_pct`` of equity blocks NEW entries and logs
+CRITICAL — exits always still flow.
 
 Boot safety: if the ``geo_events`` table doesn't exist yet (producer
 migration not applied), the strategy is a NO-OP that logs ONCE — the
@@ -29,7 +30,6 @@ engine must never fail to boot because the sibling half hasn't landed.
 
 from __future__ import annotations
 
-import contextlib
 import json
 import logging
 import os
@@ -47,14 +47,13 @@ from src.events.confluence import (
     EventConfluence,
     mid_price,
 )
-from src.events.prices import format_age
-from src.execution.oms import OrderIntent
+from src.events.event_notifier import EventNotifier
+from src.execution.oms import OrderIntent, Urgency
 from src.models.feature_versioning import (
     FeatureSnapshot,
     FeatureSnapshotStore,
     attach_snapshot_payload,
 )
-from src.research.notifications import notify_operator
 
 logger = logging.getLogger(__name__)
 
@@ -63,24 +62,17 @@ _FEATURE_SET_VERSION = "v1"
 _STATE_VERSION = 1
 
 #: Pure safe-haven OANDA instruments (CL-5mkf). Combined open notional
-#: across these is capped at ``haven_max_pct`` of equity so war-heavy
-#: news can't pile the event book into gold/silver — an ADDITIONAL,
-#: tighter CLUSTER cap on top of the general per-instrument cap
-#: (CL-wbmw), since a per-name limit can't see correlated metals as one
-#: basket. Real enforcement on the machine legs, additive to
-#: event_risk_pct sizing + the event-book loss cap; separate from (and
-#: not a substitute for) the correlation kill switch.
+#: across these is capped at ``haven_max_pct`` of equity — a tighter
+#: CLUSTER cap on top of the per-instrument cap (CL-wbmw), because a
+#: per-name limit can't see correlated metals as one basket.
 HAVEN_INSTRUMENTS = frozenset({"XAU_USD", "XAG_USD"})
 
 
 def _default_instrument_map() -> dict[str, str]:
-    """Assessment instrument id → OANDA broker instrument.
-
-    Covers every tradable id in configs/event_playbooks.yaml (OANDA ids
-    pass through) plus compact aliases an LLM might emit. Anything NOT
-    in this map is skipped with a warning at trade time — never traded
-    blind, never a crash.
-    """
+    """Assessment instrument id → OANDA broker instrument. Covers every
+    tradable id in configs/event_playbooks.yaml plus compact aliases an
+    LLM might emit; anything NOT in the map is skipped with a warning at
+    trade time — never traded blind, never a crash."""
     return {
         # OANDA-native ids pass through unchanged.
         "EUR_USD": "EUR_USD", "GBP_USD": "GBP_USD", "USD_JPY": "USD_JPY",
@@ -121,37 +113,24 @@ class EventDrivenConfig:
     event_stop_pct: float = 0.01
     # Max simultaneous event positions across ALL events.
     max_concurrent_event_positions: int = 2
-    # Phantom-position reconciliation (CL-v9g4): a leg is recorded in
-    # open_positions when its OrderIntent is EMITTED, before the broker fill
-    # is known — so a REJECTED order (e.g. an instrument this account can't
-    # trade, or a margin/halt reject) leaves a phantom that consumes the
-    # concurrency cap and blocks real legs. Each cycle we prune open_positions
-    # entries OLDER than this grace window that the broker doesn't actually
-    # hold. The grace window protects a just-recorded position from being
-    # pruned before it appears in the broker's positions.
+    # Phantom-position reconciliation grace window (CL-v9g4): open_positions
+    # entries OLDER than this that the broker doesn't hold are pruned each
+    # cycle — see _reconcile_positions for the full rationale.
     position_reconcile_grace_sec: int = 120
     # Hard TIME STOP: exit after this many hours regardless of P&L.
     event_max_holding_hours: float = 4.0
-    # Per-instrument concentration cap (CL-wbmw): combined open notional
-    # in ANY single event instrument, as a fraction of equity. A CEILING
-    # that catches ACCUMULATION — it does NOT halve the base leg. Note
-    # the base leg notional = equity * event_risk_pct / event_stop_pct =
-    # 0.005/0.01 = ~50% of equity (large notional, but only 0.5% RISK at
-    # the 1% stop). So this cap sits just ABOVE one base leg: the first
-    # legitimate leg in a name passes intact; a SECOND leg in the same
-    # instrument is trimmed/skipped. Gold's down-weighting lives at
-    # SELECTION (the impact prompt prefers theme-specific legs), so
-    # sizing must not double-penalize it. 0.55 = one full base leg + buffer.
+    # Per-instrument concentration cap (CL-wbmw): combined open notional in
+    # ANY single event instrument as a fraction of equity. A CEILING that
+    # catches ACCUMULATION, sized just ABOVE one base leg (base notional =
+    # event_risk_pct / event_stop_pct = ~50% of equity, only 0.5% RISK at
+    # the 1% stop): the first leg in a name passes intact, a SECOND leg in
+    # the same instrument is trimmed/skipped. 0.55 = one base leg + buffer.
     per_instrument_max_pct: float = 0.55
     # Combined open notional across HAVEN_INSTRUMENTS (gold/silver) as a
-    # fraction of equity (CL-5mkf). ADDITIONAL cluster cap on top of the
-    # per-instrument cap: correlated metals need a group limit a per-name
-    # cap misses (per-name 0.55 alone would allow 0.55 gold + 0.55 silver
-    # = 1.10 havens). Set to allow ONE full haven leg (~0.50) plus a small
-    # second, but not two full metal legs stacking correlated gap risk. A
-    # new haven leg is trimmed to satisfy BOTH caps (smaller headroom
-    # wins), or skipped if EITHER is exhausted; non-haven trades see only
-    # the per-instrument cap. 0.60 = ~1.2 base legs of combined metals.
+    # fraction of equity (CL-5mkf) — the tighter CLUSTER cap correlated
+    # metals need (per-name 0.55 alone would allow 1.10 of havens). Allows
+    # one full haven leg (~0.50) plus a small second, never two full metal
+    # legs of stacked gap risk. 0.60 = ~1.2 base legs of combined metals.
     haven_max_pct: float = 0.60
     # ---- Event-book protection ----------------------------------------
     # Cumulative realized loss (fraction of equity) that freezes NEW
@@ -164,12 +143,10 @@ class EventDrivenConfig:
     # is enabled — an ENTRY gate on the machine legs.
     cross_asset_checks_path: str = "configs/cross_asset_checks.yaml"
     # ENTRY GATE (CL-6mzn, gating half): when True, a confirmed event whose
-    # cross-asset read POSITIVELY FAILS (confirmed is False — the related
-    # assets moved against the theme, i.e. contradictory) has its machine
-    # legs SKIPPED (reason 'cross_asset_veto'). The event still confirms,
-    # still alerts (with the veto noted), advisory ideas still flow — only
-    # the auto-traded legs are blocked. Fade risk should not be machine-
-    # traded.
+    # cross-asset read POSITIVELY FAILS (confirmed is False — contradictory)
+    # has its machine legs SKIPPED (reason 'cross_asset_veto'). The event
+    # still confirms/alerts and advisory ideas still flow — only the
+    # auto-traded legs are blocked; fade risk isn't machine-traded.
     cross_asset_gate_enabled: bool = False
     # Stricter mode: ALSO veto when the cross-asset read is UNAVAILABLE
     # (confirmed is None — instruments unmapped / no price data). Default
@@ -210,15 +187,24 @@ class EventDrivenStrategy:
         state_store: Any = None,
         snapshot_store: FeatureSnapshotStore | None = None,
         db_engine: Any = None,
+        notifier: EventNotifier | None = None,
     ) -> None:
         self.config = config or EventDrivenConfig()
         self.data = data_provider
         self.state = state_store
         self.snapshot_store = snapshot_store
         self.db = db_engine
-        # Cross-asset corroboration config (CL-6mzn) — best-effort load;
-        # a missing/broken config degrades the confirmation layer to "no
-        # cross-asset annotation", never a boot failure.
+        # Operator alerting lives in the events layer (CL-ikz2) — the
+        # notifier owns alert formatting + notify_operator dispatch.
+        self.notifier = notifier or EventNotifier(
+            event_risk_pct=self.config.event_risk_pct,
+            event_stop_pct=self.config.event_stop_pct,
+            event_max_holding_hours=self.config.event_max_holding_hours,
+            confirm_window_max_minutes=self.config.confirm_window_max_minutes,
+            db_engine=db_engine,
+            price_resolver=self._current_price,
+        )
+        # Cross-asset corroboration config (CL-6mzn) — best-effort load.
         cross_asset_config = self._load_cross_asset_config()
         self.confluence = EventConfluence(
             config=ConfluenceConfig(
@@ -250,9 +236,8 @@ class EventDrivenStrategy:
 
     def _load_cross_asset_config(self) -> Any:
         """Load the cross-asset checks config (CL-6mzn), or None on any
-        problem. The corroboration is an operator-facing annotation, so a
-        missing/broken config must never break event confirmation — it
-        just means confirmed-event alerts carry no cross-asset line."""
+        problem — a missing/broken config must never break confirmation,
+        it just means alerts carry no cross-asset line."""
         try:
             from src.events.cross_asset import load_cross_asset_config  # noqa: PLC0415
 
@@ -462,12 +447,11 @@ class EventDrivenStrategy:
 
         A leg is recorded in ``open_positions`` when its OrderIntent is emitted,
         before the fill is known, so a REJECTED order leaves a phantom that eats
-        the concurrency cap and blocks real legs. Each cycle, drop entries OLDER
-        than the grace window that the broker does not actually hold. Fail-safe:
-        if the broker's positions can't be read, prune NOTHING (so a transient
-        broker error can never drop a real position); the grace window protects
-        a just-recorded position from being pruned before it shows up broker-side.
-        """
+        the concurrency cap. Each cycle, drop entries OLDER than the grace window
+        (which protects a just-recorded position not yet visible broker-side)
+        that the broker does not actually hold. Fail-safe: if the broker's
+        positions can't be read, prune NOTHING — a transient broker error can
+        never drop a real position."""
         if not self.open_positions:
             return
         try:
@@ -507,8 +491,7 @@ class EventDrivenStrategy:
                 exit_reason = "hard_stop"
             held_hours = (now - pos.entry_ts).total_seconds() / 3600.0
             if held_hours >= self.config.event_max_holding_hours:
-                # TIME STOP fires regardless of P&L — and regardless of
-                # whether we even have a current price.
+                # TIME STOP fires regardless of P&L or even a current price.
                 exit_reason = "time_stop"
             if exit_reason is None:
                 continue
@@ -533,9 +516,12 @@ class EventDrivenStrategy:
                 "held_hours": float(held_hours),
                 "book_realized_pnl": float(self._realized_pnl),
             })
+            # Canonical URGENT (CL-ikz2): the legacy "high" string was unknown
+            # to the coordinator's rank map, so exits could never escalate.
             exits.append(OrderIntent(
                 strategy_id=self.id, symbol=symbol, target_position=0,
-                urgency="high", max_slippage_bps=self.config.max_slippage_bps,
+                urgency=Urgency.URGENT.value,
+                max_slippage_bps=self.config.max_slippage_bps,
                 metadata=meta,
             ))
         return exits
@@ -575,29 +561,14 @@ class EventDrivenStrategy:
         return breached
 
     # ------------------------------------------------------------------
-    # Concentration caps (CL-wbmw generalizes CL-5mkf)
-    #
-    # Two layers, both real enforcement on the OANDA paper legs, both
-    # additive to event_risk_pct sizing + the event-book loss cap, both
-    # separate from (and not a substitute for) the correlation kill
-    # switch:
-    #
-    #   * per-instrument cap (per_instrument_max_pct) — applies to EVERY
-    #     event instrument. A general CEILING conviction sizes toward.
-    #   * haven-cluster cap (haven_max_pct) — an ADDITIONAL, tighter group
-    #     limit across HAVEN_INSTRUMENTS (gold + silver), because a
-    #     per-name cap can't see correlated metals as one basket.
-    #
-    # A new leg is trimmed to satisfy BOTH (the smaller headroom binds),
-    # or skipped when EITHER is exhausted.
+    # Concentration caps (CL-wbmw generalizes CL-5mkf) — semantics in
+    # _concentration_capped_size's docstring. Additive to event_risk_pct
+    # sizing + the loss cap; not a substitute for the correlation switch.
     # ------------------------------------------------------------------
 
     def _open_instrument_notional(self, symbol: str) -> float:
-        """Open notional in a SINGLE instrument, from tracked positions
-        (nothing new is persisted). Notional = |quantity| * entry_price,
-        the units the sizing math produces. Positions are keyed by symbol
-        so at most one leg contributes today, but summing is robust to
-        that changing."""
+        """Open notional (|quantity| * entry_price, the sizing units) in a
+        SINGLE instrument, from tracked positions — nothing new persisted."""
         total = 0.0
         for sym, pos in self.open_positions.items():
             if sym == symbol:
@@ -605,10 +576,8 @@ class EventDrivenStrategy:
         return total
 
     def _open_haven_notional(self) -> float:
-        """Combined open notional across HAVEN_INSTRUMENTS (gold/silver),
-        derived from the strategy's tracked positions — nothing new is
-        persisted. Notional per leg = |quantity| * entry_price (the units
-        the sizing math produces), summed over open haven symbols."""
+        """Combined open notional (|quantity| * entry_price) across
+        HAVEN_INSTRUMENTS (gold/silver), from tracked positions."""
         total = 0.0
         for sym, pos in self.open_positions.items():
             if sym in HAVEN_INSTRUMENTS:
@@ -623,21 +592,14 @@ class EventDrivenStrategy:
         equity: float,
     ) -> float:
         """Reduce a NEW event leg's signed ``size`` so it satisfies the
-        concentration caps (CL-wbmw). Two layers:
-
-          1. per-instrument cap (``per_instrument_max_pct``) — ALWAYS,
-             for every symbol: combined open notional in THIS instrument
-             stays within the cap.
-          2. haven-cluster cap (``haven_max_pct``) — additionally, when
-             ``symbol`` is a haven: combined open gold+silver notional
-             stays within the tighter group cap.
-
-        The binding constraint is the SMALLER of the two headrooms. The
-        cap is a ceiling the base sizing grows toward — under-cap legs
-        pass through UNCHANGED (we never shrink a leg that fits). Returns
-        the (possibly reduced) signed size — 0.0 when EITHER cap is
-        already at/over (skip). Logs at WARNING naming which cap bound it
-        and the current exposure. Preserves sign."""
+        concentration caps (CL-wbmw). Two layers: (1) per-instrument cap
+        (``per_instrument_max_pct``) — ALWAYS, for every symbol; (2)
+        haven-cluster cap (``haven_max_pct``) — additionally for havens,
+        on combined gold+silver notional. The SMALLER headroom binds; the
+        cap is a ceiling the base sizing grows toward, so under-cap legs
+        pass through UNCHANGED. Returns the (possibly reduced) signed
+        size — 0.0 when EITHER cap is already at/over (skip). Logs at
+        WARNING naming the binding cap. Preserves sign."""
         if equity <= 0:
             return size
 
@@ -704,12 +666,10 @@ class EventDrivenStrategy:
     ]:
         """Emit entry intents for the tradable affected instruments.
 
-        Returns (intents, entered, skipped) where entered is
-        [(symbol, direction_str, size_str, entry_price, reason)] —
-        reason is the assessment's per-instrument ``affected[].reason``
-        — and skipped is [(instrument_or_symbol, reason)]; both feed
-        the operator alert.
-        """
+        Returns (intents, entered, skipped): entered is [(symbol,
+        direction_str, size_str, entry_price, reason)] with reason from
+        ``affected[].reason``; skipped is [(instrument_or_symbol,
+        reason)]. Both feed the operator alert."""
         intents: list[OrderIntent] = []
         entered: list[tuple[str, str, str, float, str]] = []
         skipped: list[tuple[str, str]] = []
@@ -725,12 +685,10 @@ class EventDrivenStrategy:
         if not tradables:
             return intents, entered, skipped
 
-        # Cross-asset ENTRY GATE (CL-6mzn): a positively-contradictory read
-        # (related assets moved AGAINST the theme) vetoes the machine legs —
-        # fade risk isn't machine-traded. An UNAVAILABLE read (None) only
-        # vetoes under the stricter block_on_missing mode; see the config
-        # comments for why that defaults off. Advisory ideas and the
-        # confirmed alert are unaffected either way.
+        # Cross-asset ENTRY GATE (CL-6mzn): a contradictory read vetoes the
+        # machine legs (fade risk isn't machine-traded); an UNAVAILABLE read
+        # only vetoes under block_on_missing — see the config comments.
+        # Advisory ideas and the confirmed alert are unaffected either way.
         if self.config.cross_asset_gate_enabled:
             ca_confirmed = getattr(cross_asset, "confirmed", None)
             veto = ca_confirmed is False or (
@@ -812,14 +770,9 @@ class EventDrivenStrategy:
             stop_distance = abs(entry_price - stop_price)
             size = equity * self.config.event_risk_pct / max(stop_distance, 1e-9) * direction
 
-            # Concentration caps (CL-wbmw) — real enforcement on the OANDA
-            # paper legs. A new leg that would push THIS instrument's
-            # combined open notional past per_instrument_max_pct (and, for
-            # havens, the tighter haven_max_pct cluster cap) is trimmed to
-            # fit, or skipped (size 0) if EITHER cap is already at/over.
-            # The cap is a ceiling the base event_risk_pct sizing grows
-            # toward — legs already under it pass through untouched.
-            # Additive to the event-book loss cap above.
+            # Concentration caps (CL-wbmw): trim to fit the per-instrument
+            # (and, for havens, cluster) headroom, or skip at 0 — see
+            # _concentration_capped_size. Additive to the loss cap above.
             capped = self._concentration_capped_size(
                 symbol, size, entry_price, equity,
             )
@@ -856,7 +809,8 @@ class EventDrivenStrategy:
             })
             intents.append(OrderIntent(
                 strategy_id=self.id, symbol=symbol, target_position=size,
-                urgency="high", max_slippage_bps=self.config.max_slippage_bps,
+                urgency=Urgency.URGENT.value,
+                max_slippage_bps=self.config.max_slippage_bps,
                 metadata=meta,
             ))
             entered.append((
@@ -864,291 +818,6 @@ class EventDrivenStrategy:
                 str(aff.get("reason") or ""),
             ))
         return intents, entered, skipped
-
-    # ------------------------------------------------------------------
-    # Operator alerts (plain text — short lines, one fact per line)
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _watch_list(assessment: dict[str, Any]) -> list[str]:
-        watch: list[str] = []
-        for aff in assessment.get("affected") or []:
-            if not isinstance(aff, dict):
-                continue
-            kind = str(aff.get("kind") or "")
-            direction = str(aff.get("direction") or "")
-            if kind not in TRADABLE_KINDS or direction == "watch":
-                name = str(aff.get("instrument") or "")
-                if name:
-                    watch.append(name)
-        return watch
-
-    def _ideas_block(
-        self,
-        assessment: dict[str, Any],
-        limit: int = 5,
-        prices: dict[str, Any] | None = None,
-        now: datetime | None = None,
-    ) -> list[str]:
-        """Advisory trade-ideas lines (CL-mgcp) — clearly separated
-        from the machine trades above them: the system never trades
-        equities or options; these are for the operator's own hands.
-        Empty list when the assessment carries no ideas.
-
-        The TOP idea (highest confidence) additionally shows its
-        GROUNDED trade-card numbers (CL-jiqq) — dollar stop/targets/R:R
-        and, for options, the suggested strike + DTE window — whenever a
-        live price for that ticker resolves. Absent a price the card
-        degrades to its percentages; equity idea tickers usually are not
-        in the engine's FX price feed, so this often shows the %-only
-        form, which is honest."""
-        ideas = assessment.get("trade_ideas")
-        if not isinstance(ideas, list) or not ideas:
-            return []
-        usable = [i for i in ideas if isinstance(i, dict) and i.get("ticker")]
-        if not usable:
-            return []
-        top = max(usable, key=lambda i: float(i.get("confidence") or 0.0))
-        lines = ["Operator ideas (not machine-traded):"]
-        for idea in ideas[:limit]:
-            if not isinstance(idea, dict):
-                continue
-            parts = [
-                str(idea.get("ticker") or "?"),
-                str(idea.get("action") or "?"),
-            ]
-            horizon = str(idea.get("time_horizon") or "").strip()
-            if horizon:
-                parts.append(horizon)
-            time_stop = idea.get("time_stop_days")
-            if time_stop is not None:
-                parts.append(f"stop{time_stop}d")
-            line = f"- {' '.join(parts)}"
-            rationale = str(idea.get("rationale") or "").strip()
-            if rationale:
-                line += f" — {rationale[:60]}"
-            lines.append(line)
-            if idea is top:
-                lines.extend(self._top_idea_card_lines(idea, prices, now))
-        return lines if len(lines) > 1 else []
-
-    def _top_idea_card_lines(
-        self,
-        idea: dict[str, Any],
-        prices: dict[str, Any] | None,
-        now: datetime | None,
-    ) -> list[str]:
-        """Indented grounded-card detail for the top confirmed idea
-        (CL-jiqq). Returns ``[]`` when nothing concrete resolves — an
-        LLM percentage with no price and no trigger isn't worth a line."""
-        from src.events.trade_card import build_trade_card  # noqa: PLC0415
-
-        ticker = str(idea.get("ticker") or "")
-        current = self._current_price(
-            ticker, prices or {}, now or datetime.now(UTC),
-        )
-        card = build_trade_card(dict(idea), current)
-        detail: list[str] = []
-        entry = str(idea.get("entry_trigger") or "").strip()
-        if entry:
-            detail.append(f"entry {entry[:40]}")
-        stop_price = card.get("stop_price")
-        if stop_price is not None:
-            detail.append(f"stop ${stop_price:,.2f}")
-        targets = card.get("target_prices") or []
-        if targets:
-            detail.append("tgt " + "/".join(f"${t:,.2f}" for t in targets))
-        rr = card.get("risk_reward")
-        if rr is not None:
-            detail.append(f"R:R {rr}")
-        if card.get("is_option"):
-            strike = card.get("suggested_strike")
-            if strike is not None:
-                detail.append(
-                    f"~{card.get('dte_window') or ''} strike ${strike:,.2f} "
-                    f"(nearest listed)".strip(),
-                )
-            elif card.get("dte_window"):
-                detail.append(f"{card.get('dte_window')} to expiry")
-        inval = str(idea.get("invalidation") or "").strip()
-        if inval:
-            detail.append(f"invalid if {inval[:40]}")
-        return [f"  {' | '.join(detail)}"] if detail else []
-
-    @staticmethod
-    def _event_age(row: dict[str, Any], now: datetime | None = None) -> str:
-        """``2h`` / ``3d`` since the event was first seen, or ``""``."""
-        return format_age(row.get("seen_at"), now=now)
-
-    @staticmethod
-    def _cross_asset_summary(result: Any) -> str | None:
-        """One-line machine-friendly cross-asset summary for the idea
-        ledger's ``notes`` (CL-6mzn) — ``cross-asset: confirms 2/3
-        (BCO_USD +1.8%, USD_CAD -0.2%)`` — or None when unknown/no-data."""
-        if result is None:
-            return None
-        confirmed = getattr(result, "confirmed", None)
-        if confirmed is None:
-            return None
-        details = list(getattr(result, "details", []) or [])
-        voting = [d for d in details if getattr(d, "agrees", None) is not None]
-        if not voting:
-            return None
-        n_agree = sum(1 for d in voting if d.agrees)
-        n_voting = len(voting)
-        verb = "confirms" if confirmed else "NOT confirming (fade risk)"
-        moves = ", ".join(
-            f"{d.instrument} {(d.actual_move_pct or 0.0):+.1f}%" for d in voting
-        )
-        return f"cross-asset: {verb} {n_agree}/{n_voting} ({moves})"
-
-    def _stamp_cross_asset_on_ideas(self, geo_event_id: Any, result: Any) -> None:
-        """Append the cross-asset summary to the ``notes`` of this event's
-        persisted trade ideas (CL-6mzn). Additive and idempotent-ish
-        (skips rows whose notes already carry a ``cross-asset:`` marker);
-        never touches the schema or the machine-trade path. Best-effort —
-        a DB error or missing table is swallowed (annotation only)."""
-        if self.db is None or geo_event_id is None:
-            return
-        summary = self._cross_asset_summary(result)
-        if not summary:
-            return
-        try:
-            with self.db.begin() as conn:
-                conn.execute(
-                    text(
-                        "UPDATE trade_ideas "
-                        "SET notes = CASE "
-                        "  WHEN notes IS NULL OR notes = '' THEN :summary "
-                        "  ELSE notes || ' | ' || :summary END "
-                        "WHERE geo_event_id = :eid "
-                        "  AND (notes IS NULL OR notes NOT LIKE '%cross-asset:%')"
-                    ),
-                    {"summary": summary, "eid": int(geo_event_id)},
-                )
-        except Exception:
-            logger.debug(
-                "cross-asset idea-notes stamp failed for geo_event_id=%s",
-                geo_event_id, exc_info=True,
-            )
-
-    @staticmethod
-    def _cross_asset_line(result: Any) -> str | None:
-        """Plain-text cross-asset corroboration line for the confirmed
-        alert (CL-6mzn), or None when the read is unknown/no-data.
-
-        ``result`` is a :class:`src.events.cross_asset.CrossAssetResult`.
-        The Telegram-HTML variant lives in
-        :func:`src.events.digest.build_cross_asset_line`; this alert body
-        is plain text, so we render ✓/✗ without markup here."""
-        if result is None:
-            return None
-        confirmed = getattr(result, "confirmed", None)
-        if confirmed is None:
-            return None  # unknown / no data — omit
-        details = list(getattr(result, "details", []) or [])
-        voting = [d for d in details if getattr(d, "agrees", None) is not None]
-        if not voting:
-            return None
-        n_agree = sum(1 for d in voting if d.agrees)
-        n_voting = len(voting)
-        parts = [
-            f"{d.instrument} {(d.actual_move_pct or 0.0):+.1f}% "
-            f"{'✓' if d.agrees else '✗'}"
-            for d in voting
-        ]
-        body = " · ".join(parts)
-        if confirmed:
-            return f"Cross-asset: {body} · confirms ({n_agree}/{n_voting})"
-        return (
-            f"Cross-asset: related assets NOT confirming — fade risk "
-            f"({n_agree}/{n_voting}) · {body}"
-        )
-
-    def _alert_confirmed(
-        self,
-        row: dict[str, Any],
-        assessment: dict[str, Any],
-        entered: list[tuple[str, str, str, float, str]],
-        skipped: list[tuple[str, str]],
-        prices: dict[str, Any] | None = None,
-        now: datetime | None = None,
-        cross_asset: Any = None,
-    ) -> None:
-        now = now or datetime.now(UTC)
-        lines = [f"Headline: {str(row.get('headline') or '')[:140]}"]
-        age = self._event_age(row, now)
-        if age:
-            lines.append(f"Age: {age} since first seen")
-        cross_line = self._cross_asset_line(cross_asset)
-        if cross_line:
-            lines.append(cross_line)
-        for symbol, dir_str, size_str, entry_price, reason in entered:
-            lines.append(
-                f"Trade: {symbol} {dir_str} ({size_str} units) @ {entry_price:g}",
-            )
-            if reason:
-                lines.append(f"  Why: {reason[:100]}")
-        for name, reason in skipped:
-            line = f"Skipped: {name} ({reason})"
-            current = self._current_price(name, prices or {}, now)
-            if current is not None:
-                line += f" @ {current:g}"
-            lines.append(line)
-        lines.append(f"Risk: {self.config.event_risk_pct * 100:.2f}% of equity per trade")
-        lines.append(f"Stop: {self.config.event_stop_pct * 100:.2f}% from entry")
-        lines.append(f"Time stop: {self.config.event_max_holding_hours:g}h")
-        lines.append(f"Urgency: {assessment.get('urgency')}/10")
-        with contextlib.suppress(TypeError, ValueError):
-            lines.append(f"Confidence: {float(assessment.get('confidence') or 0.0):.2f}")
-        watch = self._watch_list(assessment)
-        if watch:
-            lines.append("Watch: " + ", ".join(watch))
-        ideas = self._ideas_block(assessment, prices=prices, now=now)
-        if ideas:
-            lines.append("")
-            lines.extend(ideas)
-        try:
-            notify_operator("Event confirmed", "\n".join(lines), priority=1)
-        except Exception:
-            logger.exception("Confirmed-event alert dispatch failed")
-
-    def _alert_expired(self, row: dict[str, Any], urgency: int, confidence: float) -> None:
-        lines = [f"Headline: {str(row.get('headline') or '')[:140]}"]
-        age = self._event_age(row)
-        if age:
-            lines.append(f"Age: {age} since first seen")
-        lines += [
-            f"Urgency: {urgency}/10",
-            f"Confidence: {confidence:.2f}",
-            f"No market confirmation within {self.config.confirm_window_max_minutes}min",
-            "No trade taken",
-        ]
-        # Top advisory idea (highest confidence) still surfaces — an
-        # expired-unconfirmed event can be an operator opportunity even
-        # when the machine passes (CL-mgcp).
-        assessment = EventConfluence.parse_assessment(row.get("assessment")) or {}
-        ideas = [
-            i for i in (assessment.get("trade_ideas") or [])
-            if isinstance(i, dict) and i.get("ticker")
-        ]
-        if ideas:
-            top = max(
-                ideas, key=lambda i: float(i.get("confidence") or 0.0),
-            )
-            line = (
-                f"Top idea: {top.get('ticker')} {top.get('action') or '?'}"
-            )
-            if top.get("time_stop_days") is not None:
-                line += f" (stop {top.get('time_stop_days')}d)"
-            rationale = str(top.get("rationale") or "").strip()
-            if rationale:
-                line += f" — {rationale[:60]}"
-            lines.append(line)
-        try:
-            notify_operator("Event expired unconfirmed", "\n".join(lines), priority=0)
-        except Exception:
-            logger.exception("Expired-event alert dispatch failed")
 
     # ------------------------------------------------------------------
     # Main loop
@@ -1199,7 +868,7 @@ class EventDrivenStrategy:
                     and result.urgency >= self.config.expired_alert_min_urgency
                     and expired_alerts_sent < 1
                 ):
-                    self._alert_expired(row, result.urgency, result.confidence)
+                    self.notifier.alert_expired(row, result.urgency, result.confidence)
                     expired_alerts_sent += 1
                 continue
 
@@ -1214,10 +883,10 @@ class EventDrivenStrategy:
             # Stamp the cross-asset read onto the persisted trade ideas'
             # notes so `idea <id>` surfaces it later (CL-6mzn). Additive,
             # best-effort — never blocks the alert or the trades.
-            self._stamp_cross_asset_on_ideas(row.get("id"), result.cross_asset)
+            self.notifier.stamp_cross_asset_on_ideas(row.get("id"), result.cross_asset)
             # Alert on every CONFIRMED event — even when caps/mapping
             # meant nothing was tradable (operator can act manually).
-            self._alert_confirmed(
+            self.notifier.alert_confirmed(
                 row, assessment, entered, skipped, prices=prices, now=now,
                 cross_asset=result.cross_asset,
             )

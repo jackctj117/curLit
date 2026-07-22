@@ -8,7 +8,8 @@ Covers:
   * config load + validation of the REAL configs/cross_asset_checks.yaml
     (OANDA-shaped instruments, valid directions) plus fail-loud on bad
     configs;
-  * the render helpers (digest HTML + strategy plain-text): line format,
+  * the render helpers (digest HTML + event-notifier plain-text,
+    CL-ikz2): line format,
     ✓/✗ marks, HTML escaping, the low-score fade warning, and
     unknown → omitted.
 
@@ -31,7 +32,7 @@ from src.events.cross_asset import (
     load_cross_asset_config,
 )
 from src.events.digest import build_cross_asset_line
-from src.strategies.event_driven import EventDrivenStrategy
+from src.events.event_notifier import EventNotifier
 
 # --------------------------------------------------------------------- #
 # Fixtures / helpers
@@ -411,35 +412,35 @@ class TestStrategyPlainLine:
             ("BCO_USD", "up", 1.8, True),
             ("USD_CAD", "down", -0.2, True),
         ])
-        line = EventDrivenStrategy._cross_asset_line(res)
+        line = EventNotifier._cross_asset_line(res)
         assert line == "Cross-asset: BCO_USD +1.8% ✓ · USD_CAD -0.2% ✓ · confirms (2/2)"
         assert "<b>" not in line  # plain text, no markup
 
     def test_plain_fade(self) -> None:
         res = _result(False, [("BCO_USD", "up", -1.0, False)])
-        line = EventDrivenStrategy._cross_asset_line(res)
+        line = EventNotifier._cross_asset_line(res)
         assert "NOT confirming — fade risk (0/1)" in line
 
     def test_plain_unknown_omitted(self) -> None:
-        assert EventDrivenStrategy._cross_asset_line(
+        assert EventNotifier._cross_asset_line(
             _result(None, [("BCO_USD", "up", None, None)]),
         ) is None
-        assert EventDrivenStrategy._cross_asset_line(None) is None
+        assert EventNotifier._cross_asset_line(None) is None
 
     def test_notes_summary(self) -> None:
         res = _result(True, [
             ("BCO_USD", "up", 1.8, True),
             ("USD_CAD", "down", -0.2, True),
         ])
-        note = EventDrivenStrategy._cross_asset_summary(res)
+        note = EventNotifier._cross_asset_summary(res)
         assert note == "cross-asset: confirms 2/2 (BCO_USD +1.8%, USD_CAD -0.2%)"
 
     def test_notes_summary_fade(self) -> None:
         res = _result(False, [("BCO_USD", "up", -1.0, False)])
-        note = EventDrivenStrategy._cross_asset_summary(res)
+        note = EventNotifier._cross_asset_summary(res)
         assert "NOT confirming (fade risk) 0/1" in note
 
     def test_notes_summary_unknown(self) -> None:
-        assert EventDrivenStrategy._cross_asset_summary(
+        assert EventNotifier._cross_asset_summary(
             _result(None, [("BCO_USD", "up", None, None)]),
         ) is None

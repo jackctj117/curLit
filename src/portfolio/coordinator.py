@@ -38,7 +38,7 @@ import pandas as pd
 
 from src.data.economic_calendar import BlackoutAction, BlackoutEvaluator
 from src.execution.broker import Broker
-from src.execution.oms import OrderIntent, OrderManager
+from src.execution.oms import OrderIntent, OrderManager, Urgency
 from src.monitoring.logging_setup import LogContext
 from src.monitoring.metrics import blackout_size_down
 from src.portfolio.risk_parity import risk_parity_weights
@@ -83,8 +83,11 @@ _CORR_REGIME_EXPOSURE_CRISIS: float = 0.50
 _CORR_REGIME_EXPOSURE_STRESSED: float = 0.75
 _CORR_REGIME_EXPOSURE_NORMAL: float = 1.00
 
-# Urgency rank for escalation when multiple strategies share a symbol.
-_URGENCY_RANK: dict[str, int] = {"passive": 0, "normal": 1, "urgent": 2}
+# Urgency rank for escalation when multiple strategies share a symbol —
+# derived from the canonical Urgency enum's declaration order (CL-ikz2),
+# so the vocabulary has ONE source of truth at the OMS boundary. Unknown
+# values fall back to rank 0 in the lookups below and never escalate.
+_URGENCY_RANK: dict[str, int] = {u.value: rank for rank, u in enumerate(Urgency)}
 
 
 # =============================================================================
@@ -492,7 +495,7 @@ class PortfolioCoordinator:
         by_symbol: dict[str, dict[str, Any]] = defaultdict(
             lambda: {
                 "target_position": 0.0,
-                "urgency": "passive",
+                "urgency": Urgency.PASSIVE.value,
                 "strategy_contributions": {},
             }
         )

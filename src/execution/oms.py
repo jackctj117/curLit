@@ -14,6 +14,7 @@ callback to emit ORDER_FILLED). Without a journal, OMS is silent — the
 journal is optional so unit tests and ad-hoc usage don't require a DB.
 """
 
+import enum
 import logging
 import threading
 import uuid
@@ -34,11 +35,28 @@ from .trade_journal import EventType, TradeJournal
 logger = logging.getLogger(__name__)
 
 
+class Urgency(enum.StrEnum):
+    """Canonical intent-urgency vocabulary (CL-ikz2; review §6.1.2/§9.1).
+
+    Declared in ESCALATION ORDER (least → most urgent): the portfolio
+    coordinator ranks same-symbol escalation by declaration order, so any
+    string outside this set can never escalate a netted intent. That is
+    exactly how the legacy event-exit ``"high"`` silently lost escalation
+    — emit ``Urgency.<LEVEL>.value``, never ad-hoc strings.
+    """
+
+    PASSIVE = "passive"
+    NORMAL = "normal"
+    URGENT = "urgent"
+
+
 @dataclass
 class OrderIntent:
     strategy_id: str
     symbol: str
     target_position: float
+    # Kept a plain str for wire/journal compatibility; canonical values
+    # are the Urgency enum members above.
     urgency: str = "normal"
     # 2 bps = typical OANDA spread on majors at normal liquidity. Above
     # this, refuse the fill rather than chase a runaway book. Strategies

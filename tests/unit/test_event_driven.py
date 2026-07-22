@@ -20,7 +20,7 @@ import pytest
 import sqlalchemy as sa
 from sqlalchemy import text
 
-from src.execution.oms import OrderIntent
+from src.execution.oms import OrderIntent, Urgency
 from src.strategies.event_driven import (
     EventDrivenConfig,
     EventDrivenStrategy,
@@ -166,13 +166,16 @@ def tick(price: float) -> dict[str, float]:
 
 @pytest.fixture(autouse=True)
 def sent_alerts(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str, int]]:
-    """Capture notify_operator calls; also guarantees no network attempt."""
+    """Capture notify_operator calls; also guarantees no network attempt.
+
+    Alert dispatch lives in the events layer since CL-ikz2 — the patch
+    target is the notifier module, not the strategy."""
     calls: list[tuple[str, str, int]] = []
 
     def _capture(title: str, message: str, priority: int = 0) -> None:
         calls.append((title, message, priority))
 
-    monkeypatch.setattr("src.strategies.event_driven.notify_operator", _capture)
+    monkeypatch.setattr("src.events.event_notifier.notify_operator", _capture)
     return calls
 
 
@@ -328,7 +331,9 @@ class TestSizing:
         # equity * risk / stop_distance = 100000 * 0.005 / (1.0 * 0.01)
         assert intents[0].target_position == pytest.approx(50_000.0)
         assert intents[0].symbol == "USD_CAD"
-        assert intents[0].urgency == "high"
+        # Canonical urgency vocabulary (CL-ikz2) — the coordinator's rank
+        # map knows "urgent"; the legacy "high" never escalated.
+        assert intents[0].urgency == "urgent"
         pos = strat.open_positions["USD_CAD"]
         assert pos.entry_price == pytest.approx(1.0)
         assert pos.stop_price == pytest.approx(0.99)
@@ -950,13 +955,13 @@ class TestConfirmedAlertEnrichment:
         strat = make_strategy(tmp_path, db=make_db(), provider=None)
         opt = {"ticker": "TSM", "action": "buy_puts", "direction": "bearish",
                "time_horizon": "short", "confidence": 0.7}
-        opt_lines = strat._top_idea_card_lines(opt, prices={}, now=None)
+        opt_lines = strat.notifier._top_idea_card_lines(opt, prices={}, now=None)
         assert opt_lines == ["  1-3 weeks to expiry"]  # DTE is price-free
         assert not any("$" in ln for ln in opt_lines)  # no fake dollars
 
         stock = {"ticker": "TSM", "action": "short", "direction": "bearish",
                  "time_horizon": "short", "confidence": 0.7}
-        assert strat._top_idea_card_lines(stock, prices={}, now=None) == []
+        assert strat.notifier._top_idea_card_lines(stock, prices={}, now=None) == []
 
 
 class _CrossAssetProvider:
@@ -1230,3 +1235,52 @@ class TestCrossAssetGate:
             datetime.now(UTC), cross_asset=SimpleNamespace(confirmed=False),
         )
         assert len(intents) == 1  # contradiction ignored when gate off
+
+
+# =============================================================================
+# Urgency vocabulary (CL-ikz2) — event intents speak the coordinator's enum
+# =============================================================================
+
+
+class TestUrgencyVocabulary:
+    def test_event_exit_outranks_normal_intent_in_coordinator(
+        self, tmp_path: Any,
+    ) -> None:
+        """Regression (review §6.1.2 / §9 item 1): event exits emitted
+        urgency="high", a value the coordinator's rank map did not know —
+        rank 0, below "normal" — so an event exit netted against another
+        strategy's intent could NEVER escalate the aggregate. Exits now
+        emit the canonical Urgency.URGENT and must win aggregation."""
+        from src.execution.paper_broker import PaperBroker
+        from src.portfolio.coordinator import PortfolioCoordinator
+
+        # A real event exit intent off the time stop.
+        strat = make_strategy(tmp_path, db=make_db())
+        seed_position(strat, hours_ago=5.0)  # > 4h default time stop
+        exit_intent = run(strat, {"USD_CAD": tick(1.0)})[0]
+        assert exit_intent.target_position == 0
+        assert exit_intent.urgency == Urgency.URGENT.value
+
+        coord = PortfolioCoordinator(
+            strategies=[SimpleNamespace(id="event_driven"),
+                        SimpleNamespace(id="other")],
+            oms=SimpleNamespace(),  # aggregation never touches the OMS
+            broker=PaperBroker(),
+            state=SimpleNamespace(
+                record_reallocation=lambda *a, **k: None,
+                record_portfolio_order=lambda *a, **k: None,
+            ),
+        )
+        normal = OrderIntent(
+            strategy_id="other", symbol=exit_intent.symbol,
+            target_position=100.0, urgency=Urgency.NORMAL.value,
+        )
+        agg = coord._aggregate_by_symbol([normal, exit_intent])
+        assert agg[exit_intent.symbol]["urgency"] == "urgent"
+
+    def test_event_entry_uses_canonical_urgent(self, tmp_path: Any) -> None:
+        db = make_db()
+        insert_event(db)
+        strat = make_strategy(tmp_path, db=db, provider=confirming_provider())
+        intents = run(strat, CONFIRM_PRICES)
+        assert [i.urgency for i in intents] == [Urgency.URGENT.value]
