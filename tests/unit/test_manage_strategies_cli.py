@@ -35,6 +35,10 @@ class _FakeCoordinator:
         self._strategy_targets: dict[str, dict[str, float]] = {}
         self._targets_seeded = False
 
+    def seed_targets_from_books(self) -> None:
+        self.calls.append("seed")
+        self._targets_seeded = True
+
     def _seed_targets_from_books(self) -> None:
         self.calls.append("seed")
 
