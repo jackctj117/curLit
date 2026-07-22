@@ -306,6 +306,7 @@ def reseal_with_new_passphrase(
     import secrets as _secrets  # noqa: PLC0415
 
     from src.security.vault_codec import (  # noqa: PLC0415
+        atomic_write_bytes,
         derive_key,
         require_strong_passphrase,
         seal,
@@ -321,14 +322,14 @@ def reseal_with_new_passphrase(
         bak.write_bytes(p.read_bytes())
         os.chmod(bak, 0o600)
 
+    # Canonical fsync'd atomic writer (CL-9dhg finding 13): this was the
+    # one remaining copy without flush+fsync — power loss after the
+    # rename could truncate vault.enc.
     for path, payload in (
         (vault_path, json.dumps(sealed).encode()),
         (salt_path, new_salt),
     ):
-        tmp = path.with_name(f"{path.name}.tmp-rotate")
-        tmp.write_bytes(payload)
-        os.chmod(tmp, 0o600)
-        os.replace(tmp, path)
+        atomic_write_bytes(path, payload)
 
 
 def rotate_passphrase() -> int:
