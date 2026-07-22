@@ -38,6 +38,7 @@ from fastapi.responses import HTMLResponse
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 
+from src.data.db_env import build_db_url
 from src.research.dashboard_panel import (
     DecisionError,
     apply_decision,
@@ -122,13 +123,7 @@ _engine: Engine | None = None
 def _get_engine() -> Engine:
     global _engine
     if _engine is None:
-        url = os.environ.get(
-            "DATABASE_URL",
-            f"postgresql+psycopg2://{os.environ.get('POSTGRES_USER', 'fx')}:"
-            f"{os.environ.get('POSTGRES_PASSWORD', 'changeme')}@"
-            f"{os.environ.get('POSTGRES_HOST', 'localhost')}:5432/"
-            f"{os.environ.get('POSTGRES_DB', 'fx')}",
-        )
+        url = build_db_url()
         # Small pool — dashboard is read-only and low-frequency. Without
         # the explicit cap a default pool of 5+10 would be wasteful.
         _engine = create_engine(url, pool_size=2, max_overflow=0, pool_pre_ping=True)

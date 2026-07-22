@@ -167,6 +167,7 @@ def main() -> None:
         import yaml
         from sqlalchemy import create_engine
 
+        from src.data.db_env import build_db_url
         from src.runtime.run_engine import (
             CONFIG_PATH,
             build_strategies,
@@ -184,13 +185,7 @@ def main() -> None:
         logger.error("Config did not parse to dict")
         return
 
-    db_url = os.environ.get(
-        "DATABASE_URL",
-        f"postgresql+psycopg2://{os.environ.get('POSTGRES_USER', 'fx')}:"
-        f"{os.environ.get('POSTGRES_PASSWORD', 'changeme')}@"
-        f"{os.environ.get('POSTGRES_HOST', 'localhost')}:5432/"
-        f"{os.environ.get('POSTGRES_DB', 'fx')}",
-    )
+    db_url = build_db_url()
     try:
         engine = create_engine(db_url)
         state_store = StrategyStateStore(engine)

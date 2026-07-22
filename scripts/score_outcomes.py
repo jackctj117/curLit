@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import argparse
 import logging
-import os
 import sys
 import time
 from pathlib import Path
@@ -21,19 +20,9 @@ from sqlalchemy import create_engine
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from src.data.db_env import build_db_url  # noqa: E402
+
 logger = logging.getLogger(__name__)
-
-
-def _build_db_url() -> str:
-    explicit = os.environ.get("DATABASE_URL")
-    if explicit:
-        return explicit
-    user = os.environ.get("POSTGRES_USER", "fx")
-    password = os.environ.get("POSTGRES_PASSWORD", "changeme")
-    host = os.environ.get("POSTGRES_HOST", "localhost")
-    port = os.environ.get("POSTGRES_PORT", "5432")
-    db = os.environ.get("POSTGRES_DB", "fx")
-    return f"postgresql+psycopg2://{user}:{password}@{host}:{port}/{db}"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -54,7 +43,7 @@ def main(argv: list[str] | None = None) -> int:
 
     from src.events.outcome_tracker import score_open_ideas  # noqa: PLC0415
 
-    engine = create_engine(_build_db_url())
+    engine = create_engine(build_db_url())
 
     def _run() -> None:
         counts = score_open_ideas(engine)

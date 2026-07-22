@@ -4,18 +4,20 @@ Runs Friday at 20:30 UTC, after the 3:30 PM ET release.
 """
 
 import logging
-import os
 from datetime import datetime, timedelta
 
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 
+from src.data.db_env import build_db_url
+
 logger = logging.getLogger(__name__)
 
-DB_URL = os.environ.get(
-    "DATABASE_URL",
-    f"postgresql://{os.environ.get('POSTGRES_USER', 'fx')}:{os.environ.get('POSTGRES_PASSWORD', 'changeme')}@{os.environ.get('POSTGRES_HOST', 'localhost')}:5432/{os.environ.get('POSTGRES_DB', 'fx')}",
-)
+# CL-9dhg: shared env->URL builder -- DATABASE_URL (set by compose for the
+# airflow services) wins; otherwise it builds from POSTGRES_* and warns on
+# the well-known default password. `src` resolves through the same
+# /opt/curlit mount + PYTHONPATH every src.* task import here relies on.
+DB_URL = build_db_url()
 
 
 def ingest_cot() -> None:

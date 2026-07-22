@@ -65,7 +65,7 @@ def _patch_signal(
     # _poly_step builds an engine — stub create_engine to a sentinel.
     import sqlalchemy
     monkeypatch.setattr(sqlalchemy, "create_engine", lambda url: object())
-    monkeypatch.setattr(ep, "_db_url", lambda: "sqlite://")
+    monkeypatch.setattr(ep, "build_db_url", lambda: "sqlite://")
 
 
 class TestPolyStep:

@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import argparse
 import logging
-import os
 import sys
 import time
 from collections.abc import Callable
@@ -37,6 +36,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.data.cftc import CFTCIngester
 from src.data.cme_sofr import CMESOFRIngester
+from src.data.db_env import build_db_url
 from src.data.fred import FREDIngester
 from src.data.yfinance_provider import YFinanceIngester
 
@@ -47,19 +47,6 @@ logger = logging.getLogger(__name__)
 # validation (multiple full rate cycles) without ballooning the FRED
 # API budget. Override via --start/--end.
 DEFAULT_START = datetime(2015, 1, 1, tzinfo=UTC)
-
-
-def _build_db_url() -> str:
-    """Resolve Postgres URL from env (matches run_engine convention)."""
-    explicit = os.environ.get("DATABASE_URL")
-    if explicit:
-        return explicit
-    return (
-        f"postgresql+psycopg2://{os.environ.get('POSTGRES_USER', 'fx')}:"
-        f"{os.environ.get('POSTGRES_PASSWORD', 'changeme')}@"
-        f"{os.environ.get('POSTGRES_HOST', 'localhost')}:5432/"
-        f"{os.environ.get('POSTGRES_DB', 'fx')}"
-    )
 
 
 @dataclass
@@ -174,7 +161,7 @@ def main() -> int:
         logger.error("end (%s) must be after start (%s)", end, start)
         return 2
 
-    db_url = _build_db_url()
+    db_url = build_db_url()
     factories = _factories(db_url)
 
     if args.source == "all":

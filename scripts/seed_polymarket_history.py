@@ -20,11 +20,11 @@ from __future__ import annotations
 
 import argparse
 import logging
-import os
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
+from src.data.db_env import build_db_url
 from src.data.polymarket import (
     DEFAULT_CONFIG_PATH,
     PolymarketHistoryIngester,
@@ -34,21 +34,6 @@ from src.data.polymarket import (
 
 def _parse_iso_date(s: str) -> datetime:
     return datetime.fromisoformat(s).replace(tzinfo=UTC)
-
-
-def _build_db_url() -> str:
-    """Mirror src/runtime/run_engine._build_db_engine's resolution rule
-    so this script picks up the same Postgres credentials the engine
-    uses."""
-    explicit = os.environ.get("DATABASE_URL")
-    if explicit:
-        return explicit
-    user = os.environ.get("POSTGRES_USER", "fx")
-    password = os.environ.get("POSTGRES_PASSWORD", "changeme")
-    host = os.environ.get("POSTGRES_HOST", "localhost")
-    port = os.environ.get("POSTGRES_PORT", "5432")
-    db = os.environ.get("POSTGRES_DB", "fx")
-    return f"postgresql+psycopg2://{user}:{password}@{host}:{port}/{db}"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -109,7 +94,7 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
 
-    db_url = _build_db_url()
+    db_url = build_db_url()
     ingester = PolymarketHistoryIngester(db_url=db_url, markets=markets)
     rows = ingester.run(start=args.start, end=args.end)
     print(f"polymarket: wrote {rows} rows for {len(markets)} markets")

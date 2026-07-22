@@ -47,18 +47,9 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from src.data.db_env import build_db_url  # noqa: E402
+
 logger = logging.getLogger("event_pipeline")
-
-
-def _db_url() -> str:
-    return (
-        f"postgresql+psycopg2://"
-        f"{os.environ.get('POSTGRES_USER', 'fx')}:"
-        f"{os.environ.get('POSTGRES_PASSWORD', 'changeme')}@"
-        f"{os.environ.get('POSTGRES_HOST', 'localhost')}:"
-        f"{os.environ.get('POSTGRES_PORT', '5432')}/"
-        f"{os.environ.get('POSTGRES_DB', 'fx')}"
-    )
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -317,7 +308,7 @@ def _poly_step(args: argparse.Namespace) -> Any:
         load_tracked_markets,
     )
 
-    engine = create_engine(_db_url())
+    engine = create_engine(build_db_url())
     signal = PolymarketSignal(engine)
     markets = load_tracked_markets(args.poly_config)
     if not markets:
@@ -337,7 +328,7 @@ def _cycle(args: argparse.Namespace) -> None:
     if args.ingest:
         from src.data.gdelt import GdeltIngester  # noqa: PLC0415
 
-        ingester = GdeltIngester(_db_url(), playbooks_path=args.playbooks)
+        ingester = GdeltIngester(build_db_url(), playbooks_path=args.playbooks)
         end = datetime.now(UTC)
         start = end - timedelta(minutes=args.lookback_minutes)
         rows = ingester.run(start, end)
@@ -354,7 +345,7 @@ def _cycle(args: argparse.Namespace) -> None:
             )
 
             scanner = RelativeVolumeScanner(
-                _db_url(), playbooks_path=args.playbooks,
+                build_db_url(), playbooks_path=args.playbooks,
             )
             scan_rows = scanner.scan()
             logger.info(
@@ -372,7 +363,7 @@ def _cycle(args: argparse.Namespace) -> None:
             EventImpactAgent,
         )
 
-        engine = create_engine(_db_url())
+        engine = create_engine(build_db_url())
         agent = EventImpactAgent(
             engine=engine,
             model=args.model or DEFAULT_MODEL,

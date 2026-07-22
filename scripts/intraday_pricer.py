@@ -29,19 +29,9 @@ from sqlalchemy import create_engine
 # under `python -m scripts.intraday_pricer`.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from src.data.db_env import build_db_url  # noqa: E402
+
 logger = logging.getLogger(__name__)
-
-
-def _build_db_url() -> str:
-    explicit = os.environ.get("DATABASE_URL")
-    if explicit:
-        return explicit
-    user = os.environ.get("POSTGRES_USER", "fx")
-    password = os.environ.get("POSTGRES_PASSWORD", "changeme")
-    host = os.environ.get("POSTGRES_HOST", "localhost")
-    port = os.environ.get("POSTGRES_PORT", "5432")
-    db = os.environ.get("POSTGRES_DB", "fx")
-    return f"postgresql+psycopg2://{user}:{password}@{host}:{port}/{db}"
 
 
 def _instruments(explicit: str | None) -> list[str]:
@@ -94,7 +84,7 @@ def main(argv: list[str] | None = None) -> int:
     from src.data.intraday_pricer import IntradayPricer  # noqa: PLC0415
 
     instruments = _instruments(args.instruments)
-    engine = create_engine(_build_db_url())
+    engine = create_engine(build_db_url())
     pricer = IntradayPricer(
         engine, instruments, api_key, account_id, practice=practice,
         retention_hours=args.retention_hours,

@@ -74,19 +74,12 @@ def backfill_scores() -> None:
     have score=0. This task picks them up so the dashboard sees a
     real triage queue. Cheap (no LLM); just keyword matching.
     """
-    import os
-
     from sqlalchemy import create_engine, text
 
+    from src.data.db_env import build_db_url
     from src.research.relevance_scorer import RelevanceScorer
 
-    db_url = os.environ.get("DATABASE_URL") or (
-        f"postgresql+psycopg2://"
-        f"{os.environ.get('POSTGRES_USER', 'fx')}:"
-        f"{os.environ.get('POSTGRES_PASSWORD', 'changeme')}@"
-        f"{os.environ.get('POSTGRES_HOST', 'localhost')}:5432/"
-        f"{os.environ.get('POSTGRES_DB', 'fx')}"
-    )
+    db_url = build_db_url()
     engine = create_engine(db_url)
     scorer = RelevanceScorer()
 
