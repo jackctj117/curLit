@@ -567,21 +567,32 @@ class KillSwitchManager:
                     "KILL SWITCH: %s triggered — action=%s context=%s",
                     sw.name, sw.action, log_ctx,
                 )
+                effective = True
                 try:
-                    self._execute_action(sw.action)
+                    effective = self._execute_action(sw.action)
                 except Exception:
-                    # The trigger is still recorded — a partially applied
-                    # action must not let the switch re-fire endlessly nor
-                    # vanish from the audit trail.
+                    # A PARTIALLY applied action still spends the trigger —
+                    # endless re-fires of a half-working action are worse
+                    # than one audit-trailed attempt. Only a could-not-even-
+                    # attempt (position fetch failed → effective=False)
+                    # leaves the trigger unspent so it re-fires next tick
+                    # while open risk persists (CL-8cw1).
                     logger.exception(
                         "Kill switch %s action %s failed", sw.name, sw.action,
                     )
-                self._triggered_today.add(sw.name)
+                if effective:
+                    self._triggered_today.add(sw.name)
+                else:
+                    logger.warning(
+                        "Kill switch %s: action ineffective — trigger NOT "
+                        "spent, will re-fire next evaluation", sw.name,
+                    )
                 kill_switch_triggered.labels(
                     switch_name=sw.name, action=sw.action,
                 ).inc()
                 triggered.append({
                     "switch": sw.name, "action": sw.action, "context": context,
+                    "effective": effective,
                 })
             else:
                 logger.debug(
@@ -590,9 +601,16 @@ class KillSwitchManager:
                 )
         return triggered
 
-    def _execute_action(self, action: str) -> None:
+    def _execute_action(self, action: str) -> bool:
+        """Execute a fired switch's action. Returns EFFECTIVE: False means
+        the de-risk could not even be attempted (position fetch failed) —
+        the caller must NOT spend the once-per-day trigger, so the switch
+        re-fires next tick and keeps trying while the condition holds
+        (CL-8cw1). Halting always succeeds and always accompanies the
+        attempt, so open risk can never grow while we retry."""
         if action == "halt_new":
             self.oms.halt_new_trades()
+            return True
         elif action == "reduce_50pct":
             # CL-i4tx: real broker-integrated reduction — one halved-target
             # intent per net open position through the OMS, then halt new
@@ -601,6 +619,12 @@ class KillSwitchManager:
                 target_fraction=0.5, strategy_id="kill_switch_reduce",
             )
             self.oms.halt_new_trades()
+            if submitted is None:
+                logger.critical(
+                    "reduce_50pct could NOT enumerate positions — halted "
+                    "only; trigger NOT spent, switch will re-fire next tick",
+                )
+                return False
             logger.critical(
                 "reduce_50pct executed: %d halving intents submitted via OMS; "
                 "new trades halted. OPERATOR ACTION REQUIRED: verify fills "
@@ -612,6 +636,7 @@ class KillSwitchManager:
                 self.open_position_corr.last_mean_adjusted,
                 self.open_position_corr.last_matrix,
             )
+            return True
         elif action == "flatten_all":
             # CL-i4tx: real flatten — one target-0 intent per net open
             # broker position through the OMS, then halt new trades. Was a
@@ -620,12 +645,19 @@ class KillSwitchManager:
                 target_fraction=0.0, strategy_id="kill_switch_flatten",
             )
             self.oms.halt_new_trades()
+            if submitted is None:
+                logger.critical(
+                    "flatten_all could NOT enumerate positions — halted "
+                    "only; trigger NOT spent, switch will re-fire next tick",
+                )
+                return False
             logger.critical(
                 "flatten_all executed: %d closing intents submitted via OMS; "
                 "new trades halted. OPERATOR ACTION REQUIRED: verify all "
                 "positions closed at the broker.",
                 submitted,
             )
+            return True
         else:
             # Unknown action string is a wiring bug — refuse silently doing
             # nothing about a fired kill switch.
@@ -634,12 +666,15 @@ class KillSwitchManager:
                 "Kill switch action %r is not implemented — halted new "
                 "trades as the fail-closed fallback", action,
             )
+        return True
 
     def _submit_position_intents(
         self, target_fraction: float, strategy_id: str,
-    ) -> int:
+    ) -> int | None:
         """Submit ``target = net_qty * target_fraction`` intents for every
-        net open broker position. Returns the number of intents submitted.
+        net open broker position. Returns the number of intents submitted;
+        ``None`` when the position fetch failed (nothing was even attempted
+        — distinct from 0, which means genuinely flat).
 
         Positions are netted by :func:`canonical_symbol` (CL-qqra) so the
         broker's compact form and OANDA-underscore event legs cannot
@@ -656,7 +691,10 @@ class KillSwitchManager:
                 "%s: broker.get_positions() failed — no intents submitted; "
                 "halting only", strategy_id,
             )
-            return 0
+            # None (not 0) so the caller can distinguish "couldn't
+            # enumerate positions" from "genuinely flat" — an ineffective
+            # flatten must NOT spend the once-per-day trigger (CL-8cw1).
+            return None
         net_qty: dict[str, float] = {}
         route_symbol: dict[str, str] = {}
         for pos in positions:

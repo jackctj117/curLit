@@ -137,6 +137,75 @@ def test_scaled_strategy_still_scaled() -> None:
     assert oms.submitted[-1].target_position == 500.0  # 0.5 weight applies
 
 
+def test_mixed_dialects_net_to_one_intent() -> None:
+    """Review #3 P0: EURUSD + EUR_USD same tick must produce ONE aggregate
+    row (canonical key), not two rows each re-merging remembered shares."""
+    a, b = _Strat("a", self_sized=True), _Strat("b", self_sized=True)
+    coord, oms = _coord([a, b])
+    _run(coord, {
+        "a": [OrderIntent(strategy_id="a", symbol="EURUSD",
+                          target_position=100.0)],
+        "b": [OrderIntent(strategy_id="b", symbol="EUR_USD",
+                          target_position=50.0)],
+    })
+    assert len(oms.submitted) == 1
+    assert oms.submitted[0].target_position == 150.0
+    # Next tick, only b speaks in ITS dialect: still one row, still 150.
+    _run(coord, {"b": [OrderIntent(strategy_id="b", symbol="EUR_USD",
+                                   target_position=50.0)]})
+    assert oms.submitted[-1].target_position == 150.0
+    assert len([i for i in oms.submitted if "EUR" in i.symbol]) == 2
+
+
+def test_memory_stores_post_constraint_values() -> None:
+    """Review #3 P1: remembered targets must be POST-leverage-cut, or later
+    ticks re-expand toward the unconstrained size."""
+    from src.portfolio.coordinator import PortfolioConstraints
+
+    a, b = _Strat("a", self_sized=True), _Strat("b", self_sized=True)
+    broker = PaperBroker(initial_capital=1_000)  # tiny equity → cap bites
+    broker.set_price("EURUSD", 1.0999, 1.1001)
+    oms = _RecOMS()
+    coord = PortfolioCoordinator(
+        strategies=[a, b],  # type: ignore[arg-type]
+        oms=oms,  # type: ignore[arg-type]
+        broker=broker,
+        state=_NullState(),  # type: ignore[arg-type]
+        constraints=PortfolioConstraints(max_gross_leverage=1.0,
+                                         max_net_leverage=1.0),
+    )
+    for s in (a, b):
+        coord.allocations[s.id] = StrategyAllocation(
+            strategy_id=s.id, target_weight=0.5,
+        )
+    _run(coord, {"a": [OrderIntent(strategy_id="a", symbol="EURUSD",
+                                   target_position=10_000.0)]})
+    submitted_1 = oms.submitted[-1].target_position
+    assert submitted_1 < 10_000.0  # leverage cap bit
+    remembered = coord._strategy_targets["a"]["EURUSD"]
+    assert remembered == submitted_1  # post-cut, not the raw ask
+    # b touches the symbol next tick: a's share re-merges at the CUT size.
+    _run(coord, {"b": [OrderIntent(strategy_id="b", symbol="EURUSD",
+                                   target_position=0.0)]})
+    assert oms.submitted[-1].target_position <= submitted_1 + 1e-9
+
+
+def test_remove_strategy_preserves_coholders() -> None:
+    """Review #3 P1: removing strategy A must liquidate only A's share."""
+    a, b = _Strat("a", self_sized=True), _Strat("b", self_sized=True)
+    coord, oms = _coord([a, b])
+    _run(coord, {
+        "a": [OrderIntent(strategy_id="a", symbol="EURUSD",
+                          target_position=100.0)],
+        "b": [OrderIntent(strategy_id="b", symbol="EURUSD",
+                          target_position=50.0)],
+    })
+    coord.remove_strategy("a")
+    # Removal intent targets b's 50, NOT 0.
+    assert oms.submitted[-1].target_position == 50.0
+    assert "a" not in coord._strategy_targets
+
+
 # --------------------------------------------------------------------------- #
 # OMS: halt allows reducing; _pending lifecycle
 # --------------------------------------------------------------------------- #
@@ -198,6 +267,26 @@ def test_emergency_flag_set_from_bypass_halt() -> None:
                                   target_position=0.0), bypass_halt=True)
     assert placed[0].emergency is False
     assert placed[1].emergency is True
+
+
+def test_kill_switch_trigger_not_spent_when_positions_unfetchable() -> None:
+    """Review #3 P1: a flatten that couldn't even enumerate positions must
+    NOT spend the once-per-day trigger — open risk with a spent switch and
+    no auto re-fire was the failure mode."""
+    from src.risk.kill_switches import KillSwitchManager
+
+    class _DeadBroker(PaperBroker):
+        def get_positions(self):  # type: ignore[override]
+            raise RuntimeError("broker api down")
+
+    broker = _DeadBroker(initial_capital=100_000)
+    oms = OrderManager(PaperBroker(initial_capital=100_000))
+    mgr = KillSwitchManager(broker, oms, trailing_state_path=None)
+    assert mgr._submit_position_intents(0.0, "kill_switch_flatten") is None
+    assert mgr._execute_action("flatten_all") is False  # ineffective
+    assert oms._halted is True  # but risk-add is still blocked
+    # halt_new is always effective (spends the trigger).
+    assert mgr._execute_action("halt_new") is True
 
 
 def test_position_seed_positions_param_respected() -> None:

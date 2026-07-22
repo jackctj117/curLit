@@ -416,7 +416,6 @@ def build_kill_switch_manager(broker: Any, oms: OrderManager) -> Any:
             "Kill-switch construction failed — refusing to start an "
             "unprotected engine (fix the risk profile / config and retry)",
         ) from exc
-        return None
 
 
 def build_cold_start_reconciler(

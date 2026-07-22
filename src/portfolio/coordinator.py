@@ -388,6 +388,22 @@ class PortfolioCoordinator:
                 self._apply_portfolio_constraints, aggregated,
             )
 
+            # Cross-tick memory updates AFTER constraints (CL-8cw1 P1):
+            # contributions here are post-leverage-cut. Remembering the
+            # PRE-constraint values made later ticks re-expand toward the
+            # unconstrained size, silently undoing risk cuts. Symbols the
+            # constraints dropped (unpriceable) keep last tick's memory —
+            # the broker didn't change, so neither did the truth.
+            for canon, info in feasible.items():
+                for sid, tgt in info["strategy_contributions"].items():
+                    self._strategy_targets.setdefault(sid, {})[canon] = tgt
+            for sid in list(self._strategy_targets):
+                self._strategy_targets[sid] = {
+                    k: v for k, v in self._strategy_targets[sid].items() if v
+                }
+                if not self._strategy_targets[sid]:
+                    del self._strategy_targets[sid]
+
             ts = datetime.now(UTC)
             # Pre-trade rejections drop the offending intent from `feasible` so
             # the returned dict reflects what actually went to OMS.
@@ -400,17 +416,21 @@ class PortfolioCoordinator:
                 )
 
             for symbol, info in feasible.items():
-                with LogContext(symbol=symbol):
+                # Aggregation keys are canonical; ROUTE with the original
+                # dialect the strategy spoke (CL-8cw1) — brokers and the
+                # pricing path expect it.
+                route_symbol = str(info.get("symbol") or symbol)
+                with LogContext(symbol=route_symbol):
                     target = float(info["target_position"])
                     # Blackout SIZE_DOWN_50PCT — halve the intent BEFORE
                     # passing to the validator. PAUSE/EXIT_FLAT cases are
                     # rejected by the validator separately (CL-c8th); we
                     # only mutate here for the size-down case.
-                    target = self._apply_blackout_size_down(symbol, target)
+                    target = self._apply_blackout_size_down(route_symbol, target)
 
                     final = OrderIntent(
                         strategy_id="portfolio",
-                        symbol=symbol,
+                        symbol=route_symbol,
                         target_position=target,
                         urgency=info["urgency"],
                     )
@@ -579,8 +599,14 @@ class PortfolioCoordinator:
         Conflicts (opposite signs on the same symbol) are recorded in
         self._conflicts_log but allowed to net.
         """
+        # Keyed by CANONICAL symbol (CL-8cw1 P0): the live portfolio mixes
+        # dialects (event legs EUR_USD, rate-diff EURUSD) — raw-symbol keys
+        # produced TWO aggregate rows for one economic pair, each re-merging
+        # remembered shares → double OMS delta. "symbol" carries the
+        # first-seen original dialect for ROUTING/pricing.
         by_symbol: dict[str, dict[str, Any]] = defaultdict(
             lambda: {
+                "symbol": None,
                 "target_position": 0.0,
                 "urgency": Urgency.PASSIVE.value,
                 "strategy_contributions": {},
@@ -588,12 +614,10 @@ class PortfolioCoordinator:
         )
 
         for intent in intents:
-            # Update cross-tick memory FIRST — this tick's word replaces the
-            # remembered target for (strategy, symbol) (CL-8lv6).
-            self._strategy_targets.setdefault(intent.strategy_id, {})[
-                canonical_symbol(intent.symbol)
-            ] = intent.target_position
-            agg = by_symbol[intent.symbol]
+            canon = canonical_symbol(intent.symbol)
+            agg = by_symbol[canon]
+            if agg["symbol"] is None:
+                agg["symbol"] = intent.symbol
             agg["target_position"] += intent.target_position
             agg["strategy_contributions"][intent.strategy_id] = intent.target_position
             current_rank = _URGENCY_RANK.get(agg["urgency"], 0)
@@ -604,9 +628,10 @@ class PortfolioCoordinator:
         # Cross-tick merge (CL-8lv6 P0): the OMS deltas against the ABSOLUTE
         # broker position, so a touched symbol's aggregate must include every
         # OTHER strategy's remembered share — otherwise one strategy's
-        # exit-to-0 closes everyone's position on that symbol.
-        for symbol, agg in by_symbol.items():
-            canon = canonical_symbol(symbol)
+        # exit-to-0 closes everyone's position on that symbol. Memory holds
+        # LAST-TICK (post-constraint) values; this tick's speakers were
+        # counted above from their fresh intents (CL-8cw1).
+        for canon, agg in by_symbol.items():
             for sid, remembered in self._strategy_targets.items():
                 if sid in agg["strategy_contributions"]:
                     continue  # spoke this tick — already counted
@@ -616,16 +641,8 @@ class PortfolioCoordinator:
                     agg["strategy_contributions"][sid] = held
                     logger.debug(
                         "Aggregation on %s includes %s's remembered "
-                        "target %.4f", symbol, sid, held,
+                        "target %.4f", canon, sid, held,
                     )
-
-        # Prune flat entries so memory only carries live shares.
-        for sid in list(self._strategy_targets):
-            self._strategy_targets[sid] = {
-                k: v for k, v in self._strategy_targets[sid].items() if v
-            }
-            if not self._strategy_targets[sid]:
-                del self._strategy_targets[sid]
 
         for symbol, agg in by_symbol.items():
             contribs = agg["strategy_contributions"]
@@ -676,7 +693,8 @@ class PortfolioCoordinator:
         # entry OR fabricated exit — reaches the OMS this cycle.
         unpriceable = [
             symbol for symbol, agg in aggregated.items()
-            if agg.get("target_position") and self._get_price(symbol) is None
+            if agg.get("target_position")
+            and self._get_price(str(agg.get("symbol") or symbol)) is None
         ]
         for symbol in unpriceable:
             logger.error(
@@ -697,7 +715,8 @@ class PortfolioCoordinator:
 
         # 1) Gross leverage cap.
         gross_notional = sum(
-            abs(a["target_position"]) * (self._get_price(sym) or 0.0)
+            abs(a["target_position"])
+            * (self._get_price(str(a.get("symbol") or sym)) or 0.0)
             for sym, a in aggregated.items()
         )
         gross_leverage = gross_notional / equity
@@ -714,7 +733,7 @@ class PortfolioCoordinator:
         # 2) Per-pair cap.
         max_pair_notional = equity * self.constraints.max_notional_per_pair_pct
         for symbol, agg in aggregated.items():
-            price = self._get_price(symbol) or 0.0
+            price = self._get_price(str(agg.get("symbol") or symbol)) or 0.0
             notional = abs(agg["target_position"]) * price
             if notional > max_pair_notional:
                 scale = max_pair_notional / notional
@@ -768,7 +787,9 @@ class PortfolioCoordinator:
                 )
                 continue
             base, quote = pair
-            notional = agg["target_position"] * (self._get_price(symbol) or 0.0)
+            notional = agg["target_position"] * (
+                self._get_price(str(agg.get("symbol") or symbol)) or 0.0
+            )
             exposures[base] += notional
             exposures[quote] -= notional
         return dict(exposures)
@@ -781,14 +802,21 @@ class PortfolioCoordinator:
         when they should reject. Callers must treat None as "cannot validate
         → drop/zero the target" (see _apply_portfolio_constraints pre-pass).
         """
-        try:
-            bid, ask = self.broker.get_price(symbol)
-            mid = (bid + ask) / 2
-            assert mid > 0, f"non-positive mid for {symbol}: bid={bid} ask={ask}"
-            return mid
-        except Exception:
-            logger.exception("Could not fetch price for %s — treating as UNPRICEABLE", symbol)
-            return None
+        for candidate in dict.fromkeys((symbol, canonical_symbol(symbol))):
+            try:
+                bid, ask = self.broker.get_price(candidate)
+                mid = (bid + ask) / 2
+                assert mid > 0, (
+                    f"non-positive mid for {candidate}: bid={bid} ask={ask}"
+                )
+                return mid
+            except Exception:  # noqa: PERF203 — try next dialect (CL-8cw1)
+                continue
+        logger.error(
+            "Could not fetch price for %s (either dialect) — treating as "
+            "UNPRICEABLE", symbol,
+        )
+        return None
 
     # ------------------------------------------------------------------
     # Rebalance — risk parity + correlation regime
@@ -1049,12 +1077,26 @@ class PortfolioCoordinator:
             return
 
         positions = self.state.get_positions_by_strategy(strategy_id)
-        for pos in positions:
+        # Liquidate THIS strategy's share only (CL-8cw1 P1): a raw target=0
+        # per symbol would flatten co-holders too — the OMS deltas against
+        # the absolute broker position. Submit the sum of the OTHER
+        # strategies' remembered shares instead, and clear this strategy's
+        # memory so aggregation stops counting it.
+        removed_targets = self._strategy_targets.pop(strategy_id, {})
+        symbols = {pos.symbol for pos in positions} | {
+            sym for sym in removed_targets
+        }
+        for symbol in symbols:
+            canon = canonical_symbol(symbol)
+            others_total = sum(
+                remembered.get(canon, 0.0)
+                for sid, remembered in self._strategy_targets.items()
+            )
             self.oms.submit_intent(
                 OrderIntent(
                     strategy_id=f"removal-{strategy_id}",
-                    symbol=pos.symbol,
-                    target_position=0.0,
+                    symbol=symbol,
+                    target_position=others_total,
                     urgency="normal",
                 )
             )
