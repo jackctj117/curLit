@@ -40,6 +40,10 @@ themes:
       - "strait of malacca"
       - "tanker attacked"
       - "tanker seized"
+      # CL-p4t8: Iran oil-supply cluster. Lives here (not oil_supply_shock,
+      # whose GDELT query sits at 190/200 chars) — same crude instruments.
+      - "kharg island"
+      - "iran oil exports"
     instruments:
       - instrument: BCO_USD
         kind: oanda
@@ -704,6 +708,11 @@ themes:
       - "nuclear threat"
       - "troops cross border"
       - "airspace closed"
+      # CL-p4t8: Iran/Israel escalation cluster (Polymarket-discovered gap).
+      # 'irgc' is single-word high-precision; 'iran war' catches the broad
+      # escalation phrasing. Query budget: 193/200 chars after these.
+      - "irgc"
+      - "iran war"
     instruments:
       - instrument: XAU_USD
         kind: oanda
