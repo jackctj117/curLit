@@ -5,6 +5,8 @@ fleet with this checklist. Companion docs: `CURRENT_OPERATIONS.md` (what runs
 and why), `BOOT.md` (engine-centric details), `.env.example` (every knob)._
 
 ## 0. Prerequisites
+- **bd (beads)** issue tracker on PATH — CLAUDE.md mandates it for ALL task
+  tracking (`bd prime` for workflow). Install per its README, then `bd ready`.
 - macOS/Linux, **Python ≥ 3.11** (Homebrew `python@3.14` works; run
   `python3 -c "import pyexpat"` first — a broken brew bottle here crashes XML
   ingest, see CL-169t), Docker, git.
@@ -19,8 +21,9 @@ and why), `BOOT.md` (engine-centric details), `.env.example` (every knob)._
 ## 1. Clone + install
 ```bash
 git clone <repo> && cd curLit
-make install                 # creates .venv + deps
-.venv/bin/pytest tests/unit -q   # must be green BEFORE any config
+python3 -m venv .venv                    # Makefile does NOT create the venv
+.venv/bin/pip install -e ".[dev]"        # core + test deps
+.venv/bin/pytest tests/unit -q           # must be green BEFORE any config
 ```
 
 ## 2. Environment
@@ -48,7 +51,14 @@ leave unset and the monitor idles (GDELT still feeds events).
 
 ## 3. Database + schema
 ```bash
-docker compose up -d postgres        # or point POSTGRES_* at an existing PG
+# NOTE: the compose `postgres` service does NOT publish 5432 to the host,
+# and the native daemons need host access. Fresh device: run a standalone
+# TimescaleDB container (this mirrors the original box's soak container):
+docker run -d --name curlit-postgres-soak -p 127.0.0.1:5432:5432 \
+  -e POSTGRES_USER=fx -e POSTGRES_PASSWORD=<your POSTGRES_PASSWORD> \
+  -e POSTGRES_DB=fx -v curlit_pgdata:/var/lib/postgresql/data \
+  timescale/timescaledb:latest-pg15
+# (or point POSTGRES_*/DATABASE_URL at any existing TimescaleDB)
 .venv/bin/python -m migrations.run   # 15 migrations, idempotent
 ```
 
