@@ -139,15 +139,10 @@ def build_broker(mode: str) -> Any:
 
 
 def _build_db_engine() -> Any:
-    db_url = os.environ.get(
-        "DATABASE_URL",
-        f"postgresql+psycopg2://{os.environ.get('POSTGRES_USER', 'fx')}:"
-        f"{os.environ.get('POSTGRES_PASSWORD', 'changeme')}@"
-        f"{os.environ.get('POSTGRES_HOST', 'localhost')}:"
-        f"{os.environ.get('POSTGRES_PORT', '5432')}/"
-        f"{os.environ.get('POSTGRES_DB', 'fx')}",
-    )
-    return create_engine(db_url)
+    # Shared helper (CL-8lv6): warns once per process when the well-known
+    # default Postgres password is in effect instead of silently connecting.
+    from src.data.db_env import build_db_url
+    return create_engine(build_db_url())
 
 
 def build_trade_journal() -> TradeJournal | None:
@@ -533,10 +528,28 @@ async def run_engine(broker_mode: str = "paper") -> None:
     # CL-9eli post-mortem hook: snapshot critical source files now and
     # warn if they change under us. Catches the "engine running stale
     # code because nobody restarted after a fix" failure mode.
+    drift_task: asyncio.Task[Any] | None = None
     try:
         from src.runtime.source_drift import SourceDriftWatcher
         watcher = SourceDriftWatcher()
-        loop.create_task(watcher.run_forever())
+        # Retain + observe (CL-8lv6): a bare create_task can be GC'd and
+        # its exceptions vanish — the watcher would die silently and the
+        # stale-code canary it exists to provide would be gone.
+        drift_task = loop.create_task(
+            watcher.run_forever(), name="source_drift_watcher",
+        )
+
+        def _drift_done(t: asyncio.Task[Any]) -> None:
+            if t.cancelled():
+                return
+            exc = t.exception()
+            if exc is not None:
+                logger.error(
+                    "SourceDriftWatcher DIED — stale-code canary is gone "
+                    "until restart", exc_info=exc,
+                )
+
+        drift_task.add_done_callback(_drift_done)
     except Exception:
         logger.exception("SourceDriftWatcher failed to start (non-fatal)")
 

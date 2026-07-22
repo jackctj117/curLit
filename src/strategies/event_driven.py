@@ -79,6 +79,12 @@ _FEATURE_SET_VERSION = "v1"
 
 
 class EventDrivenStrategy:
+    #: The strategy sizes its own legs by risk (50bps at the stop) — the
+    #: coordinator passes its intents through UNSCALED (CL-8lv6): applying
+    #: the allocation weight on top double-applied sizing (broker held 1/n
+    #: of the book -> persistent boot-time size_mismatch).
+    self_sized = True
+
     def __init__(
         self,
         config: EventDrivenConfig | None = None,

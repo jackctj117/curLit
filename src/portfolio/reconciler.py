@@ -101,16 +101,20 @@ class ReconciliationReport:
 class ReconciliationPolicy:
     """How to act on each non-matched reconciliation outcome.
 
-    Defaults are conservative: flatten orphaned broker positions (no strategy
-    claims them, so they're either leftover from a prior session or manual
-    interventions — flat is safest), clear orphaned internal records (broker
-    is authoritative, so internal claim is stale), and TRUST the broker on
-    size mismatches by default (in practice broker authority wins).
+    HONESTY NOTE (CL-8lv6 review): only ``on_orphaned_broker="flatten"``
+    takes a real action (a bypass-halt flatten through the OMS). Despite
+    their names, ``on_orphaned_internal="clear"`` and
+    ``on_size_mismatch="trust_broker"`` are ALERT-ONLY in this build —
+    they log/record and never rewrite strategy books or the state store
+    (internal cleanup is the store's job; a future
+    ``state.clear_strategy_position()`` would make "clear" literal). The
+    names are kept for config compatibility; a construction-time warning
+    says this out loud so nobody assumes otherwise.
     """
 
     on_orphaned_broker: str = "flatten"   # "flatten" | "hold" | "alert_only"
-    on_orphaned_internal: str = "clear"   # "clear" | "hold"
-    on_size_mismatch: str = "trust_broker"  # "trust_broker" | "alert_only"
+    on_orphaned_internal: str = "clear"   # "clear" | "hold" — BOTH alert-only
+    on_size_mismatch: str = "trust_broker"  # "trust_broker" | "alert_only" — BOTH alert-only
 
     def __post_init__(self) -> None:
         assert self.on_orphaned_broker in {"flatten", "hold", "alert_only"}, (
@@ -122,6 +126,15 @@ class ReconciliationPolicy:
         assert self.on_size_mismatch in {"trust_broker", "alert_only"}, (
             f"on_size_mismatch invalid: {self.on_size_mismatch}"
         )
+        if self.on_orphaned_internal == "clear" or (
+            self.on_size_mismatch == "trust_broker"
+        ):
+            logger.warning(
+                "ReconciliationPolicy: on_orphaned_internal=%r / "
+                "on_size_mismatch=%r are ALERT-ONLY in this build — no "
+                "books or state are rewritten (CL-8lv6)",
+                self.on_orphaned_internal, self.on_size_mismatch,
+            )
 
 
 @runtime_checkable
@@ -386,6 +399,13 @@ class PositionReconciler:
             urgency="normal",
         )
         try:
+            # bypass_halt (CL-8lv6): flattening an orphaned broker position
+            # is risk-REDUCING cleanup — it must work even when the OMS was
+            # halted by a kill switch (which is precisely when orphans are
+            # most likely to exist).
+            self.oms.submit_intent(intent, bypass_halt=True)
+        except TypeError:
+            # OMS doubles without the kwarg (tests / legacy fakes).
             self.oms.submit_intent(intent)
         except Exception:
             logger.exception("Failed to submit flatten intent for %s", symbol)

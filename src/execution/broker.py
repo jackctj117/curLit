@@ -47,6 +47,12 @@ class Order:
     #: simulated bound check) instead of merely journaling it. None disables
     #: enforcement (ad-hoc/direct Order construction stays unconstrained).
     max_slippage_bps: float | None = None
+    #: True for risk-REDUCING emergency orders (kill-switch flatten/reduce —
+    #: OMS sets it from bypass_halt, CL-8lv6). Brokers fail OPEN on ancillary
+    #: failures for emergency orders (e.g. place unbound when the pricing
+    #: fetch for priceBound dies: getting flat beats slippage protection) and
+    #: fail CLOSED for everything else.
+    emergency: bool = False
 
 
 @dataclass

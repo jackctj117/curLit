@@ -95,7 +95,10 @@ class OrderManager:
         self.rejection_handler = rejection_handler
         self.on_strategy_halt = on_strategy_halt
         self.journal = journal
-        self._lock = threading.Lock()
+        # RLock: halt_new_trades now takes the lock (CL-8lv6 TOCTOU) and
+        # may be reached from callbacks fired while submit_intent holds
+        # it — re-entrancy beats a deadlock footgun.
+        self._lock = threading.RLock()
         self._halted = False
         self._pending: dict[str, list[Order]] = {}
 
@@ -121,10 +124,6 @@ class OrderManager:
         None, fetch live (correct default for standalone callers).
         """
         with self._lock:
-            if self._halted and not bypass_halt:
-                logger.warning("OMS halted — rejecting intent %s", intent.intent_id)
-                return intent.intent_id
-
             # Position matching MUST use the canonical key (CL-qqra): broker
             # positions come back compact ("USDCAD") while event intents are
             # OANDA-underscore ("USD_CAD"). A raw .get() always missed →
@@ -140,6 +139,32 @@ class OrderManager:
             }
             current_qty = current_positions.get(canonical_symbol(intent.symbol), 0.0)
             delta = intent.target_position - current_qty
+
+            # "Halt new trades" means exactly that (CL-8lv6): risk-REDUCING
+            # intents still pass — a halted OMS must never trap a strategy's
+            # exit while its book already closed (broker keeps the risk, book
+            # says flat). Reducing = smaller absolute size, same side (or
+            # flat); flips and adds are blocked.
+            if self._halted and not bypass_halt:
+                reducing = (
+                    abs(intent.target_position) < abs(current_qty)
+                    and (intent.target_position == 0.0
+                         or intent.target_position * current_qty > 0)
+                )
+                if not reducing:
+                    logger.warning(
+                        "OMS halted — rejecting non-reducing intent %s "
+                        "(%s target=%.4f current=%.4f)",
+                        intent.intent_id, intent.symbol,
+                        intent.target_position, current_qty,
+                    )
+                    return intent.intent_id
+                logger.warning(
+                    "OMS halted — allowing risk-REDUCING intent %s "
+                    "(%s target=%.4f current=%.4f)",
+                    intent.intent_id, intent.symbol,
+                    intent.target_position, current_qty,
+                )
 
             intent_payload: dict[str, Any] = {
                 "target_position": intent.target_position,
@@ -163,7 +188,8 @@ class OrderManager:
                 return intent.intent_id
 
             side = "buy" if delta > 0 else "sell"
-            self._submit_with_retry(intent, side, abs(delta))
+            self._submit_with_retry(intent, side, abs(delta),
+                                    emergency=bypass_halt)
             return intent.intent_id
 
     async def submit_intent_async(
@@ -192,6 +218,8 @@ class OrderManager:
         intent: OrderIntent,
         side: str,
         original_qty: float,
+        *,
+        emergency: bool = False,
     ) -> None:
         """Place the order, applying RejectionHandler policy on broker failures."""
         attempt = 1
@@ -207,6 +235,11 @@ class OrderManager:
                 # FOK priceBound; PaperBroker simulates the same check. The
                 # intent's limit was previously journaled but never enforced.
                 max_slippage_bps=intent.max_slippage_bps,
+                # Kill-switch de-risk orders (bypass_halt) may place UNBOUND
+                # when the slippage reference is unavailable — getting flat
+                # beats slippage protection. Normal orders fail closed
+                # (CL-8lv6).
+                emergency=emergency,
             )
             try:
                 placed = self.broker.place_order(order)
@@ -219,7 +252,14 @@ class OrderManager:
                     raise BrokerRejectedOrderError(
                         placed.reject_reason or "broker rejected order",
                     )
-                self._pending[intent.intent_id] = [placed]
+                # _pending means "submitted, not yet terminal" (CL-8lv6):
+                # a synchronously-FILLED order must NOT linger — it poisoned
+                # has_pending() forever and graceful_shutdown always burned
+                # its full drain timeout.
+                if placed.status == OrderStatus.FILLED:
+                    self._pending.pop(intent.intent_id, None)
+                else:
+                    self._pending[intent.intent_id] = [placed]
                 logger.info(
                     "Placed %s %s %.4f (attempt=%d, fraction=%.2f)",
                     intent.symbol, side, qty, attempt, size_fraction,
@@ -291,8 +331,12 @@ class OrderManager:
     # src/portfolio/reconciler.PositionReconciler.check_alignment().
 
     def halt_new_trades(self) -> None:
-        self._halted = True
-        logger.warning("OMS: new trades halted")
+        # Under the same lock that guards submit_intent's halt check —
+        # a health-tick halt racing a strategy place must serialize
+        # (CL-8lv6 TOCTOU).
+        with self._lock:
+            self._halted = True
+            logger.warning("OMS: new trades halted")
 
     def has_pending(self) -> bool:
         return len(self._pending) > 0

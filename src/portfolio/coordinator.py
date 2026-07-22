@@ -37,7 +37,7 @@ import numpy as np
 import pandas as pd
 
 from src.data.economic_calendar import BlackoutAction, BlackoutEvaluator
-from src.execution.broker import Broker, currency_pair
+from src.execution.broker import Broker, canonical_symbol, currency_pair
 from src.execution.oms import OrderIntent, OrderManager, Urgency
 from src.monitoring.logging_setup import LogContext
 from src.monitoring.metrics import blackout_size_down
@@ -285,6 +285,16 @@ class PortfolioCoordinator:
         self._last_rebalance: datetime | None = None
         self._intent_lock = asyncio.Lock()
         self._conflicts_log: list[dict[str, Any]] = []
+        # Cross-tick per-strategy target memory (CL-8lv6 P0): OMS computes
+        # delta against the ABSOLUTE broker position, but strategies only
+        # express their own slice — and book-based strategies don't re-emit
+        # every tick. Without remembering each strategy's last target, one
+        # strategy's exit-to-0 (or lone rebalance) on a shared symbol would
+        # flatten EVERYONE's position. {strategy_id: {canonical_symbol:
+        # last scaled target}}; zeros pruned after aggregation; seeded from
+        # strategy open_positions books on the first tick after a restart.
+        self._strategy_targets: dict[str, dict[str, float]] = {}
+        self._targets_seeded = False
         # Strong references to fire-and-forget rebalance tasks (CL-xdnh):
         # bare create_task results were previously dropped, so the tasks
         # could be garbage-collected mid-flight and any exception vanished
@@ -364,6 +374,9 @@ class PortfolioCoordinator:
         are logged via the validator and do NOT appear in the returned dict.
         """
         async with self._intent_lock:
+            if not self._targets_seeded:
+                self._seed_targets_from_books()
+                self._targets_seeded = True
             scaled = self._scale_intents(raw_intents)
             aggregated = self._aggregate_by_symbol(scaled)
             # Blocking broker I/O (get_account + get_price per symbol) runs
@@ -484,11 +497,45 @@ class PortfolioCoordinator:
     # Intent processing — internal stages
     # ------------------------------------------------------------------
 
+    def _seed_targets_from_books(self) -> None:
+        """Rebuild cross-tick target memory from strategy books after a
+        restart (CL-8lv6). Book-based strategies (event_driven) hold
+        positions without re-emitting intents; until they emit again, their
+        share would be invisible to aggregation and any other strategy's
+        trade on the same symbol would stomp it. Self-sized books store
+        broker-scale quantities, so the seed is exact for them; scaled
+        strategies re-emit every tick anyway."""
+        for sid, strategy in self.strategies.items():
+            book = getattr(strategy, "open_positions", None)
+            if not isinstance(book, dict):
+                continue
+            for sym, pos in book.items():
+                qty = (
+                    pos.get("quantity") if isinstance(pos, dict)
+                    else getattr(pos, "quantity", None)
+                )
+                if qty:
+                    self._strategy_targets.setdefault(sid, {})[
+                        canonical_symbol(sym)
+                    ] = float(qty)
+        if self._strategy_targets:
+            logger.info(
+                "Seeded cross-tick targets from books: %s",
+                {sid: dict(t) for sid, t in self._strategy_targets.items()},
+            )
+
     def _scale_intents(
         self,
         raw_intents: dict[str, list[OrderIntent]],
     ) -> list[OrderIntent]:
-        """Scale each strategy's intents by its allocation; drop paper + unknown."""
+        """Scale each strategy's intents by its allocation; drop paper + unknown.
+
+        Strategies that declare ``self_sized = True`` (event_driven — sizes
+        by risk internally, 50bps at the stop) pass through UNSCALED
+        (CL-8lv6): applying the allocation weight on top double-applied
+        sizing — the broker held 1/n of what the strategy's book recorded,
+        which is exactly the persistent boot-time size_mismatch.
+        """
         out: list[OrderIntent] = []
         for sid, intents in raw_intents.items():
             if sid not in self.allocations:
@@ -507,7 +554,10 @@ class PortfolioCoordinator:
                     )
                 continue
 
-            scale = alloc.effective_scale
+            if getattr(self.strategies.get(sid), "self_sized", False):
+                scale = 1.0
+            else:
+                scale = alloc.effective_scale
             for intent in intents:
                 out.append(
                     OrderIntent(
@@ -538,6 +588,11 @@ class PortfolioCoordinator:
         )
 
         for intent in intents:
+            # Update cross-tick memory FIRST — this tick's word replaces the
+            # remembered target for (strategy, symbol) (CL-8lv6).
+            self._strategy_targets.setdefault(intent.strategy_id, {})[
+                canonical_symbol(intent.symbol)
+            ] = intent.target_position
             agg = by_symbol[intent.symbol]
             agg["target_position"] += intent.target_position
             agg["strategy_contributions"][intent.strategy_id] = intent.target_position
@@ -545,6 +600,32 @@ class PortfolioCoordinator:
             new_rank = _URGENCY_RANK.get(intent.urgency, 0)
             if new_rank > current_rank:
                 agg["urgency"] = intent.urgency
+
+        # Cross-tick merge (CL-8lv6 P0): the OMS deltas against the ABSOLUTE
+        # broker position, so a touched symbol's aggregate must include every
+        # OTHER strategy's remembered share — otherwise one strategy's
+        # exit-to-0 closes everyone's position on that symbol.
+        for symbol, agg in by_symbol.items():
+            canon = canonical_symbol(symbol)
+            for sid, remembered in self._strategy_targets.items():
+                if sid in agg["strategy_contributions"]:
+                    continue  # spoke this tick — already counted
+                held = remembered.get(canon)
+                if held:
+                    agg["target_position"] += held
+                    agg["strategy_contributions"][sid] = held
+                    logger.debug(
+                        "Aggregation on %s includes %s's remembered "
+                        "target %.4f", symbol, sid, held,
+                    )
+
+        # Prune flat entries so memory only carries live shares.
+        for sid in list(self._strategy_targets):
+            self._strategy_targets[sid] = {
+                k: v for k, v in self._strategy_targets[sid].items() if v
+            }
+            if not self._strategy_targets[sid]:
+                del self._strategy_targets[sid]
 
         for symbol, agg in by_symbol.items():
             contribs = agg["strategy_contributions"]
