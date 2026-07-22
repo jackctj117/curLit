@@ -34,6 +34,20 @@ Everything is PAPER. No real money moves anywhere.
   (CL-8s1e), so an engine restart no longer flattens open event legs. The
   phantom-position pruner (CL-v9g4) drops stale entries the broker doesn't
   hold (120 s grace).
+- **Kill switches (CL-i4tx)**: 8 armed switches, fed a REAL context each
+  60 s health tick by `src/risk/risk_context.RiskContextBuilder` (daily
+  PnL vs persisted UTC day-start equity, drawdown vs persisted peak, VIX
+  level/1d change, CVIX z-score, price-stream age inside the trading
+  window, broker-vs-books mismatch from the 300 s alignment check).
+  `flatten_all` / `reduce_50pct` now really submit target-0 / halved
+  intents through the OMS (bypassing a prior halt) before halting new
+  trades. Daily-loss/drawdown thresholds come from the ACTIVE risk
+  profile (aggressive: -10% daily, -40% DD). Fired switches re-arm at
+  UTC-day rollover; 3 consecutive evaluation failures of one switch fail
+  CLOSED (halt new). Engine boot logs one ARMED/UNARMED line per switch
+  — trust that log. State: `data/risk_context_state.json` (day-start +
+  peak equity; a corrupt file refuses boot — repair or remove it
+  deliberately).
 - **Other engine strategies**: rate_diff is DATA-FED (n≈252 daily rows) but
   SIGNAL-GATED — it refuses to trade while rolling R² < 0.25 (currently far
   below; refits weekly). carry_vol has its OIS/CVIX inputs and rebalances

@@ -6,9 +6,16 @@ restarts with an injectable clock, post-expiry resume + peak reset)
 and the open-position correlation switch (correlated shorts fire,
 hedged long/short doesn't, single position / missing data never fire),
 plus yaml -> KillSwitchConfig -> manager plumb-through.
+
+CL-i4tx adds coverage for the de-facaded subsystem: profile-driven
+daily-loss/drawdown thresholds, real flatten_all / reduce_50pct via OMS
+intents (canonical-symbol netted, bypassing a prior halt), fail-closed
+after three consecutive evaluation failures of the same switch,
+reset_daily re-arming, and boot-time ARMED/UNARMED logging.
 """
 
 import json
+import logging
 import os
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
@@ -42,13 +49,15 @@ class TestPositionSizer:
 class _FakeOMS:
     def __init__(self) -> None:
         self.halts: list[str] = []
-        self.strategy_halts: list[str] = []
+        # (symbol, target_position, bypass_halt) per submitted intent.
+        self.intents: list[tuple[str, float, bool]] = []
 
     def halt_new_trades(self) -> None:
         self.halts.append("all")
 
-    def halt_strategy(self, sid: str) -> None:
-        self.strategy_halts.append(sid)
+    def submit_intent(self, intent, *, bypass_halt: bool = False) -> str:  # noqa: ANN001
+        self.intents.append((intent.symbol, intent.target_position, bypass_halt))
+        return intent.intent_id
 
 
 class _FakeBroker:
@@ -89,12 +98,9 @@ def _baseline_ctx() -> dict[str, object]:
         "daily_pnl_pct": 0.01,
         "vix_level": 22,
         "vix_change_1d": 0.1,
-        "max_price_age_sec": 5,
+        "price_stream_age_sec": 5,
         "cvix_zscore": 0.5,
         "position_mismatch": False,
-        "correlation_regime": "normal",
-        "max_pair_corr": 0.3,
-        "strategy_drawdowns": {"s1": -0.05},
     }
 
 
@@ -106,44 +112,233 @@ def _ctx(equity: float | None = None) -> dict[str, object]:
 
 
 class TestKillSwitchManager:
-    def test_drawdown_limit_triggers(self) -> None:
-        mgr = KillSwitchManager(_FakeBroker(), _FakeOMS(), {}, trailing_state_path=None)
+    def test_drawdown_limit_triggers_and_flattens(self) -> None:
+        oms = _FakeOMS()
+        broker = _FakeBroker([
+            Position("EURUSD", 5_000.0, 1.10),
+            Position("USDCAD", -8_000.0, 1.41),
+        ])
+        mgr = KillSwitchManager(broker, oms, {}, trailing_state_path=None)
         ctx = _baseline_ctx()
         ctx["portfolio_dd"] = -0.25
         triggered = mgr.check(ctx)
         names = {t["switch"] for t in triggered}
         assert "drawdown_limit" in names
+        # CL-i4tx: flatten_all is real — one target-0 intent per position,
+        # bypassing the halt gate, then new trades halted.
+        assert sorted(oms.intents) == [
+            ("EURUSD", 0.0, True), ("USDCAD", 0.0, True),
+        ]
+        assert oms.halts == ["all"]
 
-    def test_correlation_crisis_triggers_reduce(self) -> None:
+    def test_daily_loss_limit_uses_profile_threshold(self) -> None:
+        # Aggressive-style profile: -10% daily budget. A -5% day (would fire
+        # the old hardcoded -3%) must NOT fire; -12% must.
+        cfg = {"daily_loss_limit_pct": -0.10}
+        mgr = KillSwitchManager(_FakeBroker(), _FakeOMS(), cfg,
+                                trailing_state_path=None)
+        ctx = _baseline_ctx()
+        ctx["daily_pnl_pct"] = -0.05
+        assert mgr.check(ctx) == []
+        ctx["daily_pnl_pct"] = -0.12
+        names = {t["switch"] for t in mgr.check(ctx)}
+        assert "daily_loss_limit" in names
+
+    def test_drawdown_limit_uses_profile_threshold(self) -> None:
+        cfg = {"drawdown_limit_pct": -0.40}
+        mgr = KillSwitchManager(_FakeBroker(), _FakeOMS(), cfg,
+                                trailing_state_path=None)
+        ctx = _baseline_ctx()
+        ctx["portfolio_dd"] = -0.25  # would fire the old hardcoded -20%
+        assert mgr.check(ctx) == []
+        ctx["portfolio_dd"] = -0.45
+        names = {t["switch"] for t in mgr.check(ctx)}
+        assert "drawdown_limit" in names
+
+    def test_vix_spike_requires_level_and_change(self) -> None:
+        oms = _FakeOMS()
+        broker = _FakeBroker([Position("EURUSD", 4_000.0, 1.10)])
+        mgr = KillSwitchManager(broker, oms, {}, trailing_state_path=None)
+        ctx = _baseline_ctx()
+        ctx["vix_level"] = 40  # level alone insufficient
+        assert mgr.check(ctx) == []
+        ctx["vix_change_1d"] = 0.6
+        triggered = mgr.check(ctx)
+        assert {t["switch"] for t in triggered} == {"vix_spike"}
+        assert triggered[0]["action"] == "reduce_50pct"
+        # CL-i4tx: reduce_50pct is real — halved target via OMS, then halt.
+        assert oms.intents == [("EURUSD", 2_000.0, True)]
+        assert oms.halts == ["all"]
+
+    def test_fx_vol_spike_triggers(self) -> None:
+        mgr = KillSwitchManager(_FakeBroker(), _FakeOMS(), {},
+                                trailing_state_path=None)
+        ctx = _baseline_ctx()
+        ctx["cvix_zscore"] = 3.5
+        names = {t["switch"] for t in mgr.check(ctx)}
+        assert "fx_vol_spike" in names
+
+    def test_stale_prices_triggers(self) -> None:
         oms = _FakeOMS()
         mgr = KillSwitchManager(_FakeBroker(), oms, {}, trailing_state_path=None)
         ctx = _baseline_ctx()
-        ctx["correlation_regime"] = "crisis"
-        triggered = mgr.check(ctx)
-        names = {t["switch"] for t in triggered}
-        assert "portfolio_correlation_crisis" in names
+        ctx["price_stream_age_sec"] = 700
+        names = {t["switch"] for t in mgr.check(ctx)}
+        assert "stale_prices" in names
+        assert oms.halts == ["all"]
 
-    def test_correlation_spike_triggers(self) -> None:
-        mgr = KillSwitchManager(_FakeBroker(), _FakeOMS(), {}, trailing_state_path=None)
+    def test_reconciliation_failure_triggers(self) -> None:
+        mgr = KillSwitchManager(_FakeBroker(), _FakeOMS(), {},
+                                trailing_state_path=None)
         ctx = _baseline_ctx()
-        ctx["max_pair_corr"] = 0.92
-        triggered = mgr.check(ctx)
-        names = {t["switch"] for t in triggered}
-        assert "strategy_correlation_spike" in names
-
-    def test_single_strategy_dd_calls_halt_strategy(self) -> None:
-        oms = _FakeOMS()
-        mgr = KillSwitchManager(_FakeBroker(), oms, {}, trailing_state_path=None)
-        ctx = _baseline_ctx()
-        ctx["strategy_drawdowns"] = {"s1": -0.05, "s2": -0.30}
-        triggered = mgr.check(ctx)
-        assert {"single_strategy_drawdown"} <= {t["switch"] for t in triggered}
-        assert oms.strategy_halts == ["s2"]
+        ctx["position_mismatch"] = True
+        names = {t["switch"] for t in mgr.check(ctx)}
+        assert "reconciliation_failure" in names
 
     def test_normal_context_triggers_nothing(self) -> None:
         mgr = KillSwitchManager(_FakeBroker(), _FakeOMS(), {}, trailing_state_path=None)
         triggered = mgr.check(_baseline_ctx())
         assert triggered == []
+
+    def test_missing_keys_trigger_nothing(self) -> None:
+        # Fail-soft: an omitted input is "no opinion", never a trigger.
+        mgr = KillSwitchManager(_FakeBroker(), _FakeOMS(), {}, trailing_state_path=None)
+        assert mgr.check({"equity": 100_000.0}) == []
+
+    def test_deleted_switches_are_gone(self) -> None:
+        # CL-i4tx honesty: switches without a real input feed were deleted.
+        mgr = KillSwitchManager(_FakeBroker(), _FakeOMS(), {}, trailing_state_path=None)
+        names = {sw.name for sw in mgr.switches}
+        assert names == {
+            "daily_loss_limit", "drawdown_limit", "vix_spike", "fx_vol_spike",
+            "reconciliation_failure", "stale_prices", "equity_trailing_stop",
+            "open_position_correlation",
+        }
+
+
+class TestFlattenAndReduce:
+    def test_flatten_nets_by_canonical_symbol(self) -> None:
+        # Duplicate dialects of the same instrument must yield ONE intent —
+        # two close orders for one position would double-close.
+        oms = _FakeOMS()
+        broker = _FakeBroker([
+            Position("USD_CAD", -3_000.0, 1.41),
+            Position("USDCAD", -1_000.0, 1.41),
+        ])
+        mgr = KillSwitchManager(broker, oms, {}, trailing_state_path=None)
+        ctx = _baseline_ctx()
+        ctx["portfolio_dd"] = -0.25
+        mgr.check(ctx)
+        assert oms.intents == [("USD_CAD", 0.0, True)]
+
+    def test_flatten_skips_dust_positions(self) -> None:
+        oms = _FakeOMS()
+        broker = _FakeBroker([Position("EURUSD", 1e-9, 1.10)])
+        mgr = KillSwitchManager(broker, oms, {}, trailing_state_path=None)
+        ctx = _baseline_ctx()
+        ctx["portfolio_dd"] = -0.25
+        mgr.check(ctx)
+        assert oms.intents == []
+        assert oms.halts == ["all"]  # still halts even with nothing to close
+
+    def test_flatten_survives_broker_failure(self) -> None:
+        class _BrokenBroker:
+            def get_positions(self):  # noqa: ANN202
+                raise ConnectionError("api down")
+
+        oms = _FakeOMS()
+        mgr = KillSwitchManager(_BrokenBroker(), oms, {},
+                                trailing_state_path=None)
+        ctx = _baseline_ctx()
+        ctx["portfolio_dd"] = -0.25
+        triggered = mgr.check(ctx)
+        # Trigger still recorded and new trades still halted.
+        assert {t["switch"] for t in triggered} == {"drawdown_limit"}
+        assert oms.halts == ["all"]
+
+
+class TestFailClosedOnEvalErrors:
+    @staticmethod
+    def _break_switch(mgr: KillSwitchManager, name: str) -> None:
+        for sw in mgr.switches:
+            if sw.name == name:
+                def _boom(ctx: dict[str, object]) -> bool:
+                    raise RuntimeError("data path broken")
+                sw.condition = _boom
+                return
+        raise AssertionError(f"no switch named {name}")
+
+    def test_three_consecutive_failures_halt(self) -> None:
+        oms = _FakeOMS()
+        mgr = KillSwitchManager(_FakeBroker(), oms, {}, trailing_state_path=None)
+        self._break_switch(mgr, "daily_loss_limit")
+        mgr.check(_baseline_ctx())
+        mgr.check(_baseline_ctx())
+        assert oms.halts == []  # two failures: logged, not yet fail-closed
+        mgr.check(_baseline_ctx())
+        assert oms.halts == ["all"]  # third consecutive failure fails CLOSED
+        mgr.check(_baseline_ctx())
+        assert oms.halts == ["all"]  # no re-halt spam on the 4th
+
+    def test_success_resets_failure_streak(self) -> None:
+        oms = _FakeOMS()
+        mgr = KillSwitchManager(_FakeBroker(), oms, {}, trailing_state_path=None)
+        original = next(
+            sw for sw in mgr.switches if sw.name == "daily_loss_limit"
+        ).condition
+        self._break_switch(mgr, "daily_loss_limit")
+        mgr.check(_baseline_ctx())
+        mgr.check(_baseline_ctx())
+        # Recovers: streak resets, so two MORE failures don't halt.
+        for sw in mgr.switches:
+            if sw.name == "daily_loss_limit":
+                sw.condition = original
+        mgr.check(_baseline_ctx())
+        self._break_switch(mgr, "daily_loss_limit")
+        mgr.check(_baseline_ctx())
+        mgr.check(_baseline_ctx())
+        assert oms.halts == []
+
+
+class TestResetDaily:
+    def test_fired_switch_rearms_after_reset(self) -> None:
+        mgr = KillSwitchManager(_FakeBroker(), _FakeOMS(), {},
+                                trailing_state_path=None)
+        ctx = _baseline_ctx()
+        ctx["daily_pnl_pct"] = -0.05
+        assert {t["switch"] for t in mgr.check(ctx)} == {"daily_loss_limit"}
+        assert mgr.check(ctx) == []  # deduped for the rest of the day
+        mgr.reset_daily()
+        assert {t["switch"] for t in mgr.check(ctx)} == {"daily_loss_limit"}
+
+
+class TestLogArming:
+    def test_armed_and_unarmed_lines(
+        self, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        mgr = KillSwitchManager(_FakeBroker(), _FakeOMS(), {},
+                                trailing_state_path=None)
+        with caplog.at_level(logging.INFO, logger="src.risk.kill_switches"):
+            mgr.log_arming({
+                "equity", "daily_pnl_pct", "portfolio_dd", "vix_level",
+                "vix_change_1d", "cvix_zscore", "price_stream_age_sec",
+                "position_mismatch",
+            })
+        text = caplog.text
+        assert "daily_loss_limit: ARMED" in text
+        assert "equity_trailing_stop: ARMED" in text
+        # No data_provider wired -> the corr switch honestly reports UNARMED.
+        assert "open_position_correlation: UNARMED" in text
+
+    def test_missing_inputs_log_unarmed(
+        self, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        mgr = KillSwitchManager(_FakeBroker(), _FakeOMS(), {},
+                                trailing_state_path=None)
+        with caplog.at_level(logging.INFO, logger="src.risk.kill_switches"):
+            mgr.log_arming({"equity"})
+        assert "daily_loss_limit: UNARMED" in caplog.text
+        assert "stale_prices: UNARMED" in caplog.text
 
 
 # --------------------------------------------------------------------- #

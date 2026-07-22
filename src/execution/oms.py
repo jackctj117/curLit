@@ -1,4 +1,4 @@
-"""Order Management System — intent to orders, retry, reconciliation.
+"""Order Management System — intent to orders, retry, rejection policy.
 
 Rejection handling: when broker.place_order raises, an optional RejectionHandler
 classifies the failure and decides retry/halve/abort/halt-strategy per
@@ -80,9 +80,17 @@ class OrderManager:
         self._halted = False
         self._pending: dict[str, list[Order]] = {}
 
-    def submit_intent(self, intent: OrderIntent) -> str:
+    def submit_intent(self, intent: OrderIntent, *, bypass_halt: bool = False) -> str:
+        """Convert one intent into a broker order (delta vs current position).
+
+        bypass_halt (CL-i4tx): reserved for the risk layer's emergency
+        exposure-REDUCING intents (kill-switch flatten_all / reduce_50pct).
+        "Halt new trades" must never block de-risking — e.g. the trailing
+        stop halts at -20%, then drawdown_limit needs to flatten at -40%.
+        Strategy paths must never set it.
+        """
         with self._lock:
-            if self._halted:
+            if self._halted and not bypass_halt:
                 logger.warning("OMS halted — rejecting intent %s", intent.intent_id)
                 return intent.intent_id
 
@@ -216,15 +224,12 @@ class OrderManager:
                 size_fraction = outcome.next_size_fraction
                 attempt += 1
 
-    def reconcile(self) -> dict[str, dict[str, Any]]:
-        broker_pos = {p.symbol: p.quantity for p in self.broker.get_positions()}
-        mismatches: dict[str, dict[str, Any]] = {}
-        for sym in broker_pos:
-            if abs(broker_pos[sym]) > 1e-6:
-                mismatches.setdefault(sym, {})
-        if mismatches:
-            logger.critical("POSITION MISMATCH: %s", mismatches)
-        return mismatches
+    # NOTE (CL-i4tx): the old OrderManager.reconcile() was deleted. It
+    # flagged EVERY non-zero broker position as "POSITION MISMATCH" at
+    # CRITICAL every 300s without comparing any internal book — a false
+    # positive machine that trained operators to ignore real desync. The
+    # live engine's periodic alignment check now delegates to
+    # src/portfolio/reconciler.PositionReconciler.check_alignment().
 
     def halt_new_trades(self) -> None:
         self._halted = True

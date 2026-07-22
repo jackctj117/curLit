@@ -170,25 +170,7 @@ class PositionReconciler:
         """
         report = ReconciliationReport()
 
-        broker_positions = self._fetch_broker_positions()
-        internal_positions = self._fetch_internal_positions_per_symbol()
-
-        all_symbols = set(broker_positions.keys()) | set(internal_positions.keys())
-
-        for symbol in sorted(all_symbols):
-            broker_qty = broker_positions.get(symbol, Position(
-                symbol=symbol, quantity=0.0, avg_price=0.0,
-            )).quantity
-            internal_records = internal_positions.get(symbol, [])
-            internal_qty = sum(r["quantity"] for r in internal_records)
-            contributors = [r["strategy_id"] for r in internal_records]
-
-            entry = self._classify(
-                symbol=symbol,
-                broker_qty=broker_qty,
-                internal_qty=internal_qty,
-                contributors=contributors,
-            )
+        for entry in self._build_entries():
             report.entries.append(entry)
             self._apply_policy(entry, report)
 
@@ -214,9 +196,65 @@ class PositionReconciler:
 
         return report
 
+    def check_alignment(self) -> ReconciliationReport | None:
+        """Classification-only alignment pass (CL-i4tx) — NO policy actions.
+
+        Same broker-vs-internal comparison as :meth:`reconcile`, but it
+        never flattens/clears anything and writes no journal event, so it
+        is safe to run periodically mid-session. The live engine's
+        reconciliation task uses it to feed the ``reconciliation_failure``
+        kill switch (replacing the deleted ``OrderManager.reconcile``
+        stub, which CRITICALed on every open position).
+
+        Returns None when the broker positions cannot be fetched —
+        "broker unreachable" is UNKNOWN alignment, not a position
+        mismatch (stale_prices covers a dead broker connection).
+        """
+        try:
+            broker_list = self.broker.get_positions()
+        except Exception:
+            logger.warning(
+                "Alignment check: broker.get_positions() failed — alignment "
+                "unknown this cycle", exc_info=True,
+            )
+            return None
+        broker_positions = {p.symbol: p for p in broker_list}
+
+        report = ReconciliationReport()
+        report.entries.extend(self._build_entries(broker_positions))
+        return report
+
     # ------------------------------------------------------------------
     # Classification + policy
     # ------------------------------------------------------------------
+
+    def _build_entries(
+        self,
+        broker_positions: dict[str, Position] | None = None,
+    ) -> list[ReconciliationEntry]:
+        """Classify every symbol either side knows about (no actions)."""
+        if broker_positions is None:
+            broker_positions = self._fetch_broker_positions()
+        internal_positions = self._fetch_internal_positions_per_symbol()
+
+        all_symbols = set(broker_positions.keys()) | set(internal_positions.keys())
+
+        entries: list[ReconciliationEntry] = []
+        for symbol in sorted(all_symbols):
+            broker_qty = broker_positions.get(symbol, Position(
+                symbol=symbol, quantity=0.0, avg_price=0.0,
+            )).quantity
+            internal_records = internal_positions.get(symbol, [])
+            internal_qty = sum(r["quantity"] for r in internal_records)
+            contributors = [r["strategy_id"] for r in internal_records]
+
+            entries.append(self._classify(
+                symbol=symbol,
+                broker_qty=broker_qty,
+                internal_qty=internal_qty,
+                contributors=contributors,
+            ))
+        return entries
 
     @staticmethod
     def _classify(

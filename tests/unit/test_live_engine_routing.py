@@ -174,3 +174,149 @@ class TestRebalanceTask:
         engine.running = False
         asyncio.run(engine._rebalance_task())
         # Nothing to assert beyond not hanging.
+
+
+# =============================================================================
+# CL-i4tx — health tick kill-switch wiring + periodic alignment streak
+# =============================================================================
+
+
+from datetime import UTC, datetime, timedelta  # noqa: E402
+
+from src.portfolio.reconciler import (  # noqa: E402
+    ReconciliationEntry,
+    ReconciliationReport,
+    ReconciliationStatus,
+)
+from src.risk.risk_context import RiskContextBuilder  # noqa: E402
+
+_T0 = datetime(2026, 7, 14, 12, 0, tzinfo=UTC)
+
+
+class _FakeClock:
+    def __init__(self, now: datetime = _T0) -> None:
+        self.now = now
+
+    def __call__(self) -> datetime:
+        return self.now
+
+
+class _HealthBroker:
+    def __init__(self, equity: float) -> None:
+        self.equity = equity
+
+    def get_account(self) -> Any:
+        class _Account:
+            pass
+
+        account = _Account()
+        account.equity = self.equity
+        return account
+
+
+class _RecordingKSM:
+    def __init__(self) -> None:
+        self.contexts: list[dict[str, Any]] = []
+        self.resets = 0
+        self.armed_with: set[str] | None = None
+        self.data_provider = None
+
+    def check(self, context: dict[str, Any]) -> list[dict[str, Any]]:
+        self.contexts.append(context)
+        return []
+
+    def reset_daily(self) -> None:
+        self.resets += 1
+
+    def log_arming(self, provided: Any) -> None:
+        self.armed_with = set(provided)
+
+
+def _entry(symbol: str, status: ReconciliationStatus) -> ReconciliationEntry:
+    return ReconciliationEntry(
+        symbol=symbol, broker_quantity=1.0, internal_quantity=0.0,
+        contributing_strategies=[], status=status,
+    )
+
+
+class TestHealthTickKillSwitchWiring:
+    def _engine(self, clock: _FakeClock) -> tuple[LiveEngine, _RecordingKSM]:
+        ksm = _RecordingKSM()
+        builder = RiskContextBuilder(state_path=None, clock=clock)
+        engine = LiveEngine(
+            strategies=[], oms=_RecordingOMS(), broker=_HealthBroker(100_000.0),
+            kill_switch_manager=ksm, risk_context_builder=builder,
+        )
+        return engine, ksm
+
+    def test_context_is_richer_than_equity_only(self) -> None:
+        engine, ksm = self._engine(_FakeClock())
+        engine._health_tick()
+        ctx = ksm.contexts[-1]
+        # The facade passed only {"equity"}; the real builder feeds the
+        # PnL/DD switches too.
+        assert ctx["equity"] == 100_000.0
+        assert "daily_pnl_pct" in ctx
+        assert "portfolio_dd" in ctx
+
+    def test_reset_daily_called_on_utc_rollover(self) -> None:
+        clock = _FakeClock()
+        engine, ksm = self._engine(clock)
+        engine._health_tick()
+        assert ksm.resets == 0
+        clock.now = _T0 + timedelta(days=1)
+        engine._health_tick()
+        assert ksm.resets == 1
+        engine._health_tick()
+        assert ksm.resets == 1  # once per rollover, not per tick
+
+    def test_no_kill_switch_manager_is_noop(self) -> None:
+        engine = LiveEngine(
+            strategies=[], oms=_RecordingOMS(), broker=_HealthBroker(1.0),
+        )
+        assert engine.risk_context_builder is None
+        engine._health_tick()  # must not raise
+
+
+class TestAlignmentStreak:
+    def _engine(self) -> LiveEngine:
+        return LiveEngine(
+            strategies=[], oms=_RecordingOMS(), broker=None,  # type: ignore[arg-type]
+        )
+
+    @staticmethod
+    def _mismatch_report() -> ReconciliationReport:
+        return ReconciliationReport(entries=[
+            _entry("EURUSD", ReconciliationStatus.ORPHANED_BROKER),
+        ])
+
+    @staticmethod
+    def _clean_report() -> ReconciliationReport:
+        return ReconciliationReport(entries=[
+            _entry("EURUSD", ReconciliationStatus.MATCHED),
+        ])
+
+    def test_single_mismatch_does_not_flag(self) -> None:
+        engine = self._engine()
+        engine._record_alignment_report(self._mismatch_report())
+        # Transient (fill latency) mismatches must not halt the engine.
+        assert engine._current_position_mismatch() is False
+
+    def test_persistent_mismatch_flags_after_two_checks(self) -> None:
+        engine = self._engine()
+        engine._record_alignment_report(self._mismatch_report())
+        engine._record_alignment_report(self._mismatch_report())
+        assert engine._current_position_mismatch() is True
+
+    def test_clean_report_resets_streak(self) -> None:
+        engine = self._engine()
+        engine._record_alignment_report(self._mismatch_report())
+        engine._record_alignment_report(self._clean_report())
+        engine._record_alignment_report(self._mismatch_report())
+        assert engine._current_position_mismatch() is False
+
+    def test_none_report_leaves_state_unknown(self) -> None:
+        engine = self._engine()
+        engine._record_alignment_report(None)
+        # Broker unreachable -> alignment UNKNOWN, not a mismatch.
+        assert engine._current_position_mismatch() is None

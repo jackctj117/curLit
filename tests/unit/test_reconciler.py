@@ -416,3 +416,73 @@ class TestMultiPositionBook:
         )
         report = recon.reconcile()
         assert report.entries == []
+
+
+# =============================================================================
+# check_alignment — classification-only periodic pass (CL-i4tx)
+# =============================================================================
+
+
+class TestCheckAlignment:
+    """check_alignment feeds the reconciliation_failure kill switch: same
+    classification as reconcile(), but NO policy actions (nothing flattened
+    mid-session) and None — not a mismatch — when the broker is unreachable."""
+
+    def test_aligned_book_reports_clean(self) -> None:
+        broker = _make_broker_with([
+            Position(symbol="EURUSD", quantity=1000.0, avg_price=1.10),
+        ])
+        state = _FakeStateStore({"s1": {"symbol": "EURUSD", "size": 1000.0}})
+        recon = PositionReconciler(
+            broker, _RecordingOMS(), state,  # type: ignore[arg-type]
+            strategies=[_StrategyDouble("s1")],
+        )
+        report = recon.check_alignment()
+        assert report is not None
+        assert not report.has_mismatches
+
+    def test_mismatch_detected_without_actions(self) -> None:
+        # Orphaned broker position: reconcile() would flatten it; the
+        # periodic alignment check must ONLY report it.
+        broker = _make_broker_with([
+            Position(symbol="GBPUSD", quantity=700.0, avg_price=1.25),
+        ])
+        state = _FakeStateStore({"s1": None})
+        oms = _RecordingOMS()
+        recon = PositionReconciler(
+            broker, oms, state,  # type: ignore[arg-type]
+            strategies=[_StrategyDouble("s1")],
+            policy=ReconciliationPolicy(on_orphaned_broker="flatten"),
+        )
+        report = recon.check_alignment()
+        assert report is not None
+        assert report.has_mismatches
+        assert report.actions_taken == []
+        assert oms.submitted == []  # nothing flattened
+
+    def test_broker_failure_returns_none_not_mismatch(self) -> None:
+        class _DeadBroker:
+            def get_positions(self):  # noqa: ANN202
+                raise ConnectionError("stream down")
+
+        state = _FakeStateStore({"s1": {"symbol": "EURUSD", "size": 1000.0}})
+        recon = PositionReconciler(
+            _DeadBroker(), _RecordingOMS(), state,  # type: ignore[arg-type]
+            strategies=[_StrategyDouble("s1")],
+        )
+        assert recon.check_alignment() is None
+
+    def test_multi_leg_book_matches_across_dialects(self) -> None:
+        # Event book keys OANDA-underscore; broker keys compact — the
+        # alignment pass must use the same canonicalization as cold start.
+        broker = _make_broker_with([
+            Position(symbol="USDJPY", quantity=-500.0, avg_price=150.0),
+        ])
+        state = _FakeStateStore({"ev": None})
+        recon = PositionReconciler(
+            broker, _RecordingOMS(), state,  # type: ignore[arg-type]
+            strategies=[_BookStrategyDouble("ev", {"USD_JPY": _BookPos(-500.0)})],
+        )
+        report = recon.check_alignment()
+        assert report is not None
+        assert not report.has_mismatches

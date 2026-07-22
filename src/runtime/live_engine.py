@@ -10,6 +10,7 @@ from typing import Any
 from src.execution.oms import OrderIntent
 from src.monitoring.logging_setup import LogContext
 from src.monitoring.metrics import HeartbeatTracker, start_metrics_server
+from src.risk.risk_context import RiskContextBuilder
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +19,16 @@ logger = logging.getLogger(__name__)
 # _REBALANCE_MIN_INTERVAL_DAYS gating prevents over-frequent risk-parity refits;
 # this loop just gives the coordinator a daily opportunity to decide.
 _REBALANCE_TASK_INTERVAL_SEC: int = 86_400
+
+# Broker-vs-internal alignment check interval (CL-i4tx). Same 300s cadence
+# the old OrderManager.reconcile() stub ran at, now doing a real comparison.
+_ALIGNMENT_CHECK_INTERVAL_SEC: int = 300
+
+# A mismatch must persist across this many consecutive alignment checks
+# (i.e. >= ~5 minutes) before the reconciliation_failure kill switch sees
+# position_mismatch=True — fill latency between an OMS submit and the
+# strategy book update must not halt the engine.
+_ALIGNMENT_MISMATCH_STREAK_TO_FLAG: int = 2
 
 
 class LiveEngine:
@@ -29,6 +40,7 @@ class LiveEngine:
         coordinator: Any | None = None,
         cold_start_reconciler: Any | None = None,
         kill_switch_manager: Any | None = None,
+        risk_context_builder: RiskContextBuilder | None = None,
     ) -> None:
         self.strategies = strategies
         self.oms = oms
@@ -42,6 +54,30 @@ class LiveEngine:
         self._last_prices: dict[str, dict[str, Any]] = {}
         self._last_signal_times: dict[str, datetime] = {}
         self._last_reconciliation_report: Any | None = None
+        # CL-i4tx periodic alignment state: None = unknown (no reconciler /
+        # no report yet); True only after a mismatch persists across
+        # _ALIGNMENT_MISMATCH_STREAK_TO_FLAG consecutive checks.
+        self._position_mismatch: bool | None = None
+        self._alignment_mismatch_streak = 0
+        # CL-i4tx: RiskContextBuilder assembles the REAL kill-switch context
+        # each health tick (daily PnL, portfolio DD, VIX/CVIX, price age,
+        # position mismatch) — before this only {"equity"} was passed and
+        # most switches could never fire. Injectable for tests; constructed
+        # here by default so it can share the engine's live _last_prices
+        # reference and trading-window predicate. Construction failure (e.g.
+        # corrupt state file) raises — fail loud, same posture as the
+        # trailing stop's state load.
+        self.risk_context_builder: RiskContextBuilder | None = risk_context_builder
+        if self.risk_context_builder is None and kill_switch_manager is not None:
+            self.risk_context_builder = RiskContextBuilder(
+                data_provider=getattr(kill_switch_manager, "data_provider", None),
+                last_prices=self._last_prices,
+                position_mismatch=(
+                    self._current_position_mismatch
+                    if cold_start_reconciler is not None else None
+                ),
+                in_trading_window=self._in_trading_window,
+            )
         # Tracked async tasks — populated in run(), used by graceful_shutdown()
         # to cancel each so the run() gather can return and the process exit.
         self._tasks: list[asyncio.Task[Any]] = []
@@ -81,6 +117,15 @@ class LiveEngine:
                 logger.exception(
                     "Cold-start reconciliation failed — continuing with engine startup"
                 )
+
+        # CL-i4tx boot-time honesty: one ARMED/UNARMED line per kill switch
+        # so operators know which brakes are actually connected.
+        if self.kill_switch_manager is not None:
+            provided = (
+                self.risk_context_builder.provided_keys()
+                if self.risk_context_builder is not None else {"equity"}
+            )
+            self.kill_switch_manager.log_arming(provided)
 
         # Track tasks as asyncio.Task so graceful_shutdown() can cancel them.
         # Without this, any task that doesn't poll self.running between
@@ -201,26 +246,87 @@ class LiveEngine:
                 logger.exception("Rebalance task error")
 
     async def _reconciliation_task(self) -> None:
+        """Periodic broker-vs-internal alignment check (CL-i4tx).
+
+        Replaces the deleted ``OrderManager.reconcile()`` stub (which
+        CRITICALed on EVERY open position every 300s without comparing any
+        internal book). Delegates to the real reconciler's classification-
+        only ``check_alignment()`` and feeds the result to the
+        ``reconciliation_failure`` kill switch via the context builder.
+        """
+        if self.cold_start_reconciler is None:
+            logger.info(
+                "No reconciler wired — periodic alignment checks disabled "
+                "(reconciliation_failure kill switch has no feed)",
+            )
+            return
         while self.running:
-            await asyncio.sleep(300)
+            await asyncio.sleep(_ALIGNMENT_CHECK_INTERVAL_SEC)
             try:
-                self.oms.reconcile()
+                report = self.cold_start_reconciler.check_alignment()
             except Exception:
-                logger.exception("Reconciliation error")
+                logger.exception("Alignment check error")
+                continue
+            self._record_alignment_report(report)
+
+    def _record_alignment_report(self, report: Any | None) -> None:
+        """Fold one alignment report into the mismatch streak/flag.
+
+        None (broker unreachable) leaves the current state untouched —
+        alignment is UNKNOWN, not mismatched.
+        """
+        if report is None:
+            return
+        if report.has_mismatches:
+            self._alignment_mismatch_streak += 1
+            mismatched = [
+                e.to_dict() for e in report.entries
+                if e.status.value != "matched"
+            ]
+            logger.warning(
+                "Alignment check: %d/%d entries mismatched (streak=%d): %s",
+                len(mismatched), len(report.entries),
+                self._alignment_mismatch_streak, mismatched,
+            )
+        else:
+            self._alignment_mismatch_streak = 0
+        self._position_mismatch = (
+            self._alignment_mismatch_streak >= _ALIGNMENT_MISMATCH_STREAK_TO_FLAG
+        )
+
+    def _current_position_mismatch(self) -> bool | None:
+        """Supplier for RiskContextBuilder — see _record_alignment_report."""
+        return self._position_mismatch
 
     async def _health_check_task(self) -> None:
         while self.running:
             await asyncio.sleep(60)
             try:
-                account = self.broker.get_account()
-                logger.debug("Health: equity=%.2f", account.equity)
-                # CL-ep0c: kill-switch context. Only equity comes from
-                # here — the CL-ep0c switches pull positions/prices
-                # themselves via broker + data_provider.
-                if self.kill_switch_manager is not None:
-                    self.kill_switch_manager.check({"equity": account.equity})
+                self._health_tick()
             except Exception:
                 logger.exception("Health check error")
+
+    def _health_tick(self) -> None:
+        """One health-check evaluation (sync; extracted for testability).
+
+        CL-i4tx: the kill-switch context is now assembled by the
+        RiskContextBuilder (daily PnL, portfolio DD, VIX/CVIX, price-stream
+        age, position mismatch) instead of the old equity-only dict, and
+        ``reset_daily`` re-arms the once-per-day trigger dedup at UTC-day
+        rollover so a fired switch can fire again tomorrow after
+        ``/api/system/resume``.
+        """
+        account = self.broker.get_account()
+        logger.debug("Health: equity=%.2f", account.equity)
+        if self.kill_switch_manager is None:
+            return
+        if self.risk_context_builder is not None:
+            context = self.risk_context_builder.build(float(account.equity))
+            if self.risk_context_builder.consume_day_rollover():
+                self.kill_switch_manager.reset_daily()
+        else:
+            context = {"equity": account.equity}
+        self.kill_switch_manager.check(context)
 
     @staticmethod
     def _in_trading_window(ts: datetime) -> bool:

@@ -12,18 +12,48 @@ CL-ep0c adds two self-contained switches:
   direction-adjusted pairwise return correlation says the book is one
   crowded bet (two shorts in correlated pairs ARE the same bet; a
   long+short in correlated pairs hedge).
+
+CL-i4tx de-facades the rest of the subsystem (code review 2026-07-21
+§2.2/§6.1.3):
+
+* Context-fed switches now receive REAL inputs each health tick from
+  ``src.risk.risk_context.RiskContextBuilder`` (daily PnL, portfolio
+  drawdown, VIX/CVIX, price-stream age, position mismatch).
+* ``daily_loss_limit`` / ``drawdown_limit`` thresholds come from the
+  active risk profile's kill_switches block — no more hardcoded
+  -0.03/-0.20 lambdas that ignored ``CURLIT_RISK_PROFILE``.
+* ``flatten_all`` really flattens: a target-0 OrderIntent per open
+  broker position through the OMS (canonical-symbol netted), then new
+  trades halt. ``reduce_50pct`` really halves each position the same
+  way, then halts new trades and pages the operator.
+* Three switches whose inputs genuinely do not exist in the engine were
+  DELETED rather than left fake: ``portfolio_correlation_crisis`` and
+  ``strategy_correlation_spike`` (per-strategy returns history is never
+  populated in production — the coordinator's corr-regime path always
+  reports "unknown"), and ``single_strategy_drawdown`` (no per-strategy
+  equity series exists anywhere in the live engine).
+* Evaluation errors fail CLOSED: each failure is logged with traceback;
+  three consecutive failures of the SAME switch halt new trades — a
+  broken safety net must not quietly keep trading.
+* ``log_arming(provided_keys)`` prints one ARMED/UNARMED line per
+  switch at engine boot so operators see the truth, not the docs.
+* ``reset_daily()`` is now actually invoked (health tick, on UTC-day
+  rollover detected by the context builder) so a fired switch can
+  re-arm the next day after ``/api/system/resume``.
 """
 
 import json
 import logging
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from itertools import combinations
 from pathlib import Path
 from typing import Any
 
+from src.execution.broker import canonical_symbol
+from src.execution.oms import OrderIntent
 from src.monitoring.metrics import kill_switch_triggered
 
 logger = logging.getLogger(__name__)
@@ -44,6 +74,32 @@ _MIN_CORR_OBSERVATIONS: int = 20
 _DEFAULT_TRAILING_STATE_PATH: Path = Path("data/equity_trailing_stop_state.json")
 _TRAILING_STATE_VERSION: int = 1
 
+# CL-i4tx profile-driven thresholds — defaults mirror the conservative
+# profile (configs/risk_profile.yaml kill_switches block); the live
+# aggressive profile overrides them via the config dict at construction.
+_DEFAULT_DAILY_LOSS_LIMIT_PCT: float = -0.03
+_DEFAULT_DRAWDOWN_LIMIT_PCT: float = -0.20
+
+# CL-i4tx fixed thresholds (documented magic numbers, Arch §5.5 — not
+# profile knobs because their calibration is historical, not appetite):
+# VIX >35 is top-5% historically; +50% over the prior close is a ~3σ
+# event (March 2020, August 2024). CVIX z>3 is ~0.3% probability.
+_VIX_SPIKE_LEVEL: float = 35.0
+_VIX_SPIKE_CHANGE_1D: float = 0.5
+_CVIX_ZSCORE_LIMIT: float = 3.0
+# 600s (10 min) without ANY tick inside the trading window: the engine
+# is blind to market reality; the broker stream is likely dead.
+_PRICE_STREAM_STALE_SEC: float = 600.0
+
+# Below this net quantity a broker position is dust — flatten/reduce
+# intents are not worth a market order.
+_MIN_ACTIONABLE_QTY: float = 1e-6
+
+# CL-i4tx fail-closed policy: after this many CONSECUTIVE evaluation
+# failures of the same switch, halt new trades. A brake that cannot be
+# evaluated must not be treated as a brake that is fine.
+_EVAL_FAILURES_BEFORE_HALT: int = 3
+
 
 def _utc_now() -> datetime:
     return datetime.now(UTC)
@@ -55,6 +111,9 @@ class KillSwitch:
     condition: Callable[[dict[str, Any]], bool]
     action: str
     armed: bool = True
+    #: Context keys this switch needs to ever fire (CL-i4tx). Empty means
+    #: self-feeding (pulls its own inputs). Consumed by ``log_arming``.
+    required_keys: tuple[str, ...] = ()
 
 
 @dataclass
@@ -198,11 +257,11 @@ class EquityTrailingStop:
 class OpenPositionCorrelationEvaluator:
     """CL-ep0c self-contained open-position correlation check.
 
-    Unlike ``portfolio_correlation_crisis`` / ``strategy_correlation_spike``
-    (which rely on externally supplied context keys that nothing populates
-    today), this evaluator pulls its own inputs: ``broker.get_positions()``
+    This evaluator pulls its own inputs: ``broker.get_positions()``
     for the held symbols and ``DataProvider.get_aligned_series`` for
-    ``lookback_days`` of daily closes.
+    ``lookback_days`` of daily closes. (The context-fed strategy-level
+    correlation switches it once sat beside were deleted in CL-i4tx —
+    their per-strategy returns feed never existed in production.)
 
     Metric: mean direction-adjusted pairwise return correlation,
     ``mean(corr(a, b) * dir(a) * dir(b))`` over held pairs, where
@@ -313,7 +372,19 @@ class KillSwitchManager:
         self.broker = broker
         self.oms = oms
         self.config = config or {}
+        # Exposed for the live engine's RiskContextBuilder wiring (CL-i4tx).
+        self.data_provider = data_provider
         self._triggered_today: set[str] = set()
+        # CL-i4tx fail-closed accounting: consecutive evaluation failures
+        # per switch. Reset to 0 on any successful evaluation.
+        self._consecutive_failures: dict[str, int] = {}
+        # CL-i4tx profile-driven thresholds (no hardcoded lambdas).
+        self.daily_loss_limit_pct = float(
+            self.config.get("daily_loss_limit_pct", _DEFAULT_DAILY_LOSS_LIMIT_PCT),
+        )
+        self.drawdown_limit_pct = float(
+            self.config.get("drawdown_limit_pct", _DEFAULT_DRAWDOWN_LIMIT_PCT),
+        )
         clk = clock or _utc_now
         self.trailing_stop = EquityTrailingStop(
             trailing_stop_pct=float(
@@ -325,7 +396,12 @@ class KillSwitchManager:
                     _DEFAULT_TRAILING_STOP_COOLDOWN_DAYS,
                 ),
             ),
-            state_path=trailing_state_path,
+            # Path|str|None accepted at this boundary; EquityTrailingStop
+            # stores Path|None (pre-existing mypy error fixed in CL-i4tx).
+            state_path=(
+                Path(trailing_state_path)
+                if trailing_state_path is not None else None
+            ),
             clock=clk,
         )
         self.open_position_corr = OpenPositionCorrelationEvaluator(
@@ -361,66 +437,76 @@ class KillSwitchManager:
         return None
 
     def _build_switches(self) -> list[KillSwitch]:
+        # CL-i4tx: three switches were DELETED here rather than left fake —
+        # portfolio_correlation_crisis / strategy_correlation_spike (their
+        # feed, per-strategy returns history, is never populated in
+        # production, so the coordinator's corr regime is always "unknown")
+        # and single_strategy_drawdown (no per-strategy equity series exists
+        # in the live engine). open_position_correlation covers the crowded-
+        # book risk with inputs it pulls itself.
         return [
-            # -3% daily loss: at this threshold, the strategy is likely in a regime
-            # where its assumptions are broken (not just noise). Halt new trades to
-            # preserve capital until human review. (Arch §5.5)
+            # Daily loss beyond the profile limit: the strategy is likely in
+            # a regime where its assumptions are broken (not just noise).
+            # Halt new trades to preserve capital until human review.
+            # (Arch §5.5; threshold from risk_profile.yaml — CL-i4tx)
             KillSwitch(name="daily_loss_limit",
-                       condition=lambda ctx: ctx.get("daily_pnl_pct", 0) < -0.03,
-                       action="halt_new"),
-            # -20% drawdown: beyond this level, recovery requires 25%+ to get back
-            # to even, which may exceed strategy Sharpe over relevant horizon.
-            # Flatten all open positions. (Arch §5.5)
-            KillSwitch(name="drawdown_limit",
-                       condition=lambda ctx: ctx.get("portfolio_dd", 0) < -0.20,
-                       action="flatten_all"),
-            # VIX >35 AND +50% intraday: historically signals panic selling or
-            # extreme risk-off (March 2020, August 2024). VIX above 35 is top
-            # 5% historically; +50% intraday is ~3σ event. Reduce 50%. (Arch §5.5)
-            KillSwitch(name="vix_spike",
-                       condition=lambda ctx: ctx.get("vix_level", 0) > 35 and ctx.get("vix_change_1d", 0) > 0.5,
-                       action="reduce_50pct"),
-            # CVIX Z-score >3: extreme FX vol relative to its own distribution.
-            # 3σ event — about 0.3% probability. Halt new trades. (Arch §5.5)
-            KillSwitch(name="fx_vol_spike",
-                       condition=lambda ctx: ctx.get("cvix_zscore", 0) > 3.0,
-                       action="halt_new"),
-            # Position reconciliation mismatch: internal state disagrees with broker.
-            # Trading with stale state risks duplicates or missed exits. Halt.
-            KillSwitch(name="reconciliation_failure",
-                       condition=lambda ctx: ctx.get("position_mismatch", False),
-                       action="halt_new"),
-            # 600s (10 minutes) stale prices: beyond this, the engine is blind to
-            # market reality. Broker connection likely lost. Halt new trades.
-            # (Arch §5.5)
-            KillSwitch(name="stale_prices",
-                       condition=lambda ctx: ctx.get("max_price_age_sec", 0) > 600,
-                       action="halt_new"),
-            # CL-7j9 portfolio-level switches.
-            #
-            # Correlation regime "crisis" comes from the correlation monitor —
-            # signals that historically uncorrelated strategies are now moving
-            # together (e.g. a crowded macro factor blew up). Halve gross
-            # exposure rather than halting outright; partial reduction lets us
-            # ride out short crises without forced liquidation slippage.
-            KillSwitch(name="portfolio_correlation_crisis",
-                       condition=lambda ctx: ctx.get("correlation_regime", "") == "crisis",
-                       action="reduce_50pct"),
-            # 0.9 pairwise corr across strategies means we effectively own one
-            # bet, not a portfolio. Reduce 50% — same logic as the regime
-            # version but driven directly off the live correlation matrix.
-            KillSwitch(name="strategy_correlation_spike",
-                       condition=lambda ctx: ctx.get("max_pair_corr", 0) > 0.9,
-                       action="reduce_50pct"),
-            # Single strategy at -25% DD: the portfolio still trades, but this
-            # particular strategy goes to halt. Action argument carries the
-            # offending strategy_id for the OMS to halt selectively.
-            KillSwitch(name="single_strategy_drawdown",
-                       condition=lambda ctx: any(
-                           dd <= -0.25
-                           for dd in (ctx.get("strategy_drawdowns") or {}).values()
+                       condition=lambda ctx: (
+                           ctx.get("daily_pnl_pct", 0.0)
+                           < self.daily_loss_limit_pct
                        ),
-                       action="halt_strategy"),
+                       action="halt_new",
+                       required_keys=("daily_pnl_pct",)),
+            # Drawdown beyond the profile limit: recovery from -20% needs
+            # +25% just to get back to even, which may exceed strategy Sharpe
+            # over the relevant horizon. Flatten all open positions.
+            # (Arch §5.5; threshold from risk_profile.yaml — CL-i4tx)
+            KillSwitch(name="drawdown_limit",
+                       condition=lambda ctx: (
+                           ctx.get("portfolio_dd", 0.0) < self.drawdown_limit_pct
+                       ),
+                       action="flatten_all",
+                       required_keys=("portfolio_dd",)),
+            # VIX >35 AND +50% vs prior close: historically signals panic
+            # selling or extreme risk-off (March 2020, August 2024). Daily
+            # closes via the context builder — fires up to a day late, which
+            # is honest about the data we actually have. Reduce 50%.
+            # (Arch §5.5)
+            KillSwitch(name="vix_spike",
+                       condition=lambda ctx: (
+                           ctx.get("vix_level", 0.0) > _VIX_SPIKE_LEVEL
+                           and ctx.get("vix_change_1d", 0.0) > _VIX_SPIKE_CHANGE_1D
+                       ),
+                       action="reduce_50pct",
+                       required_keys=("vix_level", "vix_change_1d")),
+            # CVIX Z-score >3: extreme FX vol relative to its own
+            # distribution. 3σ event — about 0.3% probability. Halt new
+            # trades. (Arch §5.5)
+            KillSwitch(name="fx_vol_spike",
+                       condition=lambda ctx: (
+                           ctx.get("cvix_zscore", 0.0) > _CVIX_ZSCORE_LIMIT
+                       ),
+                       action="halt_new",
+                       required_keys=("cvix_zscore",)),
+            # Position reconciliation mismatch: internal state disagrees with
+            # broker (fed by the engine's periodic PositionReconciler
+            # alignment check — CL-i4tx). Trading with stale state risks
+            # duplicates or missed exits. Halt.
+            KillSwitch(name="reconciliation_failure",
+                       condition=lambda ctx: bool(
+                           ctx.get("position_mismatch", False),
+                       ),
+                       action="halt_new",
+                       required_keys=("position_mismatch",)),
+            # No tick from the price stream for 10 minutes inside the
+            # trading window: the engine is blind to market reality; the
+            # broker connection is likely lost. Halt new trades. (Arch §5.5)
+            KillSwitch(name="stale_prices",
+                       condition=lambda ctx: (
+                           ctx.get("price_stream_age_sec", 0.0)
+                           > _PRICE_STREAM_STALE_SEC
+                       ),
+                       action="halt_new",
+                       required_keys=("price_stream_age_sec",)),
             # CL-ep0c equity-curve trailing stop. Peak equity persists in
             # data/equity_trailing_stop_state.json; a breach halts new
             # trades for trailing_stop_cooldown_days ACROSS restarts.
@@ -444,77 +530,200 @@ class KillSwitchManager:
     def check(self, context: dict[str, Any]) -> list[dict[str, Any]]:
         triggered = []
         log_keys = (
-            "daily_pnl_pct", "portfolio_dd", "vix_level",
-            "correlation_regime", "max_pair_corr", "strategy_drawdowns",
-            "equity",  # CL-ep0c
+            "equity", "daily_pnl_pct", "portfolio_dd", "vix_level",
+            "vix_change_1d", "cvix_zscore", "position_mismatch",
+            "price_stream_age_sec",
         )
         for sw in self.switches:
             if not sw.armed or sw.name in self._triggered_today:
                 continue
             try:
-                if sw.condition(context):
-                    log_ctx = {k: v for k, v in context.items() if k in log_keys}
-                    logger.critical(
-                        "KILL SWITCH: %s triggered — action=%s context=%s",
-                        sw.name, sw.action, log_ctx,
-                    )
-                    self._execute_action(sw.action, context)
-                    self._triggered_today.add(sw.name)
-                    kill_switch_triggered.labels(
-                        switch_name=sw.name, action=sw.action,
-                    ).inc()
-                    triggered.append({
-                        "switch": sw.name, "action": sw.action, "context": context,
-                    })
-                else:
-                    logger.debug("Kill switch %s: OK (value=%s)", sw.name,
-                                  {k: v for k, v in context.items() if k in log_keys})
+                fired = sw.condition(context)
             except Exception:
-                logger.exception("Kill switch %s check failed", sw.name)
+                # CL-i4tx fail-closed policy: an unevaluable brake is not a
+                # brake. Log every failure; after
+                # _EVAL_FAILURES_BEFORE_HALT consecutive failures of the
+                # SAME switch, halt new trades and page the operator.
+                failures = self._consecutive_failures.get(sw.name, 0) + 1
+                self._consecutive_failures[sw.name] = failures
+                logger.exception(
+                    "Kill switch %s evaluation failed (consecutive=%d)",
+                    sw.name, failures,
+                )
+                if failures == _EVAL_FAILURES_BEFORE_HALT:
+                    logger.critical(
+                        "Kill switch %s failed %d consecutive evaluations — "
+                        "failing CLOSED: halting new trades. OPERATOR ACTION "
+                        "REQUIRED: fix the data path, then resume via "
+                        "/api/system/resume.",
+                        sw.name, failures,
+                    )
+                    self.oms.halt_new_trades()
+                continue
+            self._consecutive_failures[sw.name] = 0
+            if fired:
+                log_ctx = {k: v for k, v in context.items() if k in log_keys}
+                logger.critical(
+                    "KILL SWITCH: %s triggered — action=%s context=%s",
+                    sw.name, sw.action, log_ctx,
+                )
+                try:
+                    self._execute_action(sw.action)
+                except Exception:
+                    # The trigger is still recorded — a partially applied
+                    # action must not let the switch re-fire endlessly nor
+                    # vanish from the audit trail.
+                    logger.exception(
+                        "Kill switch %s action %s failed", sw.name, sw.action,
+                    )
+                self._triggered_today.add(sw.name)
+                kill_switch_triggered.labels(
+                    switch_name=sw.name, action=sw.action,
+                ).inc()
+                triggered.append({
+                    "switch": sw.name, "action": sw.action, "context": context,
+                })
+            else:
+                logger.debug(
+                    "Kill switch %s: OK (value=%s)", sw.name,
+                    {k: v for k, v in context.items() if k in log_keys},
+                )
         return triggered
 
-    def _execute_action(self, action: str, context: dict[str, Any]) -> None:
+    def _execute_action(self, action: str) -> None:
         if action == "halt_new":
             self.oms.halt_new_trades()
-        elif action == "halt_strategy":
-            # CL-7j9: surgical halt of just the offending strategies. The OMS
-            # is expected to expose halt_strategy(sid) — falls back to a
-            # logged warning when the broker integration isn't there yet.
-            offending = [
-                sid for sid, dd in (context.get("strategy_drawdowns") or {}).items()
-                if dd <= -0.25
-            ]
-            for sid in offending:
-                halt_fn = getattr(self.oms, "halt_strategy", None)
-                if callable(halt_fn):
-                    halt_fn(sid)
-                else:
-                    logger.warning(
-                        "halt_strategy not implemented on OMS — would halt %s",
-                        sid,
-                    )
         elif action == "reduce_50pct":
-            # CL-ep0c minimal-safe implementation: a true 50% gross
-            # reduction needs broker order integration, and placing
-            # orders from the risk layer is deliberately out of scope —
-            # a bugged auto-reducer is its own risk event. Until then:
-            # stop NEW risk and page the operator with the evidence.
-            # TODO(CL-ep0c follow-up): broker-integrated reduction —
-            # snapshot positions, submit idempotent partial closes via
-            # the OMS, verify fills. Do NOT place orders here.
+            # CL-i4tx: real broker-integrated reduction — one halved-target
+            # intent per net open position through the OMS, then halt new
+            # trades and page the operator with the evidence.
+            submitted = self._submit_position_intents(
+                target_fraction=0.5, strategy_id="kill_switch_reduce",
+            )
             self.oms.halt_new_trades()
             logger.critical(
-                "reduce_50pct requested — broker-integrated reduction not "
-                "implemented; halted new trades instead. OPERATOR ACTION "
-                "REQUIRED: manually reduce gross exposure ~50%%. "
-                "Open-position correlation evidence: directions=%s "
-                "mean_adjusted=%s matrix=\n%s",
+                "reduce_50pct executed: %d halving intents submitted via OMS; "
+                "new trades halted. OPERATOR ACTION REQUIRED: verify fills "
+                "and residual exposure. Open-position correlation evidence "
+                "(if corr-triggered): directions=%s mean_adjusted=%s "
+                "matrix=\n%s",
+                submitted,
                 self.open_position_corr.last_directions,
                 self.open_position_corr.last_mean_adjusted,
                 self.open_position_corr.last_matrix,
             )
         elif action == "flatten_all":
-            logger.warning("Action '%s' requires broker integration — stub", action)
+            # CL-i4tx: real flatten — one target-0 intent per net open
+            # broker position through the OMS, then halt new trades. Was a
+            # log-stub before ("requires broker integration").
+            submitted = self._submit_position_intents(
+                target_fraction=0.0, strategy_id="kill_switch_flatten",
+            )
+            self.oms.halt_new_trades()
+            logger.critical(
+                "flatten_all executed: %d closing intents submitted via OMS; "
+                "new trades halted. OPERATOR ACTION REQUIRED: verify all "
+                "positions closed at the broker.",
+                submitted,
+            )
+        else:
+            # Unknown action string is a wiring bug — refuse silently doing
+            # nothing about a fired kill switch.
+            self.oms.halt_new_trades()
+            logger.critical(
+                "Kill switch action %r is not implemented — halted new "
+                "trades as the fail-closed fallback", action,
+            )
+
+    def _submit_position_intents(
+        self, target_fraction: float, strategy_id: str,
+    ) -> int:
+        """Submit ``target = net_qty * target_fraction`` intents for every
+        net open broker position. Returns the number of intents submitted.
+
+        Positions are netted by :func:`canonical_symbol` (CL-qqra) so the
+        broker's compact form and OANDA-underscore event legs cannot
+        produce duplicate orders for the same instrument; routing keeps
+        the broker's own symbol string. Intents bypass the OMS halt gate
+        (``bypass_halt=True``) because a prior halt_new (e.g. the trailing
+        stop) must never block emergency de-risking — these intents only
+        ever REDUCE exposure.
+        """
+        try:
+            positions = self.broker.get_positions() or []
+        except Exception:
+            logger.exception(
+                "%s: broker.get_positions() failed — no intents submitted; "
+                "halting only", strategy_id,
+            )
+            return 0
+        net_qty: dict[str, float] = {}
+        route_symbol: dict[str, str] = {}
+        for pos in positions:
+            symbol = getattr(pos, "symbol", None)
+            qty = getattr(pos, "quantity", None)
+            if not symbol or qty is None:
+                continue
+            key = canonical_symbol(symbol)
+            net_qty[key] = net_qty.get(key, 0.0) + float(qty)
+            route_symbol.setdefault(key, str(symbol))
+        submitted = 0
+        for key in sorted(net_qty):
+            qty = net_qty[key]
+            if abs(qty) < _MIN_ACTIONABLE_QTY:
+                continue
+            intent = OrderIntent(
+                strategy_id=strategy_id,
+                symbol=route_symbol[key],
+                target_position=qty * target_fraction,
+                urgency="urgent",
+            )
+            try:
+                self.oms.submit_intent(intent, bypass_halt=True)
+                submitted += 1
+                logger.warning(
+                    "%s: intent %s target %.4f (was %.4f)",
+                    strategy_id, route_symbol[key], qty * target_fraction, qty,
+                )
+            except Exception:
+                logger.exception(
+                    "%s: submit_intent failed for %s", strategy_id,
+                    route_symbol[key],
+                )
+        return submitted
+
+    def log_arming(self, provided_keys: Iterable[str]) -> None:
+        """Boot-time honesty (CL-i4tx): one line per switch, ARMED vs UNARMED.
+
+        ``provided_keys`` is what the caller's context builder can actually
+        supply (``RiskContextBuilder.provided_keys()``). A switch whose
+        required keys are not all provided WILL NEVER FIRE — that is logged
+        CRITICAL so nobody trusts a brake that is not connected.
+        """
+        provided = set(provided_keys)
+        for sw in self.switches:
+            missing = [k for k in sw.required_keys if k not in provided]
+            if sw.name == "open_position_correlation" and self.data_provider is None:
+                missing.append("data_provider")
+            if missing:
+                logger.critical(
+                    "kill switch %s: UNARMED — missing inputs %s; this "
+                    "switch will NEVER fire", sw.name, missing,
+                )
+            else:
+                logger.info(
+                    "kill switch %s: ARMED (action=%s, inputs=%s)",
+                    sw.name, sw.action,
+                    ", ".join(sw.required_keys) or "self-feeding",
+                )
 
     def reset_daily(self) -> None:
+        """Re-arm the once-per-day trigger dedup. Called by the live engine
+        health tick at UTC-day rollover (CL-i4tx) — before that, nothing
+        called this and a fired switch stayed deduped until restart."""
+        if self._triggered_today:
+            logger.info(
+                "Kill switches re-armed for the new UTC day (had fired: %s)",
+                sorted(self._triggered_today),
+            )
         self._triggered_today.clear()

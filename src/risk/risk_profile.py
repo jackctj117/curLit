@@ -49,10 +49,15 @@ class SizingConfig:
 
 @dataclass(frozen=True)
 class KillSwitchConfig:
+    # daily_loss_limit / drawdown_limit thresholds — wired into the
+    # KillSwitchManager conditions since CL-i4tx (previously the switches
+    # hardcoded -0.03/-0.20 and ignored the profile).
     daily_loss_limit_pct: float = -0.03
     drawdown_limit_pct: float = -0.20
-    single_strategy_dd_pct: float = -0.25
-    strategy_correlation_spike: float = 0.90
+    # NOTE (CL-i4tx): single_strategy_dd_pct and strategy_correlation_spike
+    # were removed — the switches they configured were deleted because their
+    # inputs (per-strategy equity/returns series) are never populated in
+    # production. Only knobs with a real consumer stay.
     # Polymarket absolute loss caps in USD (CL-983f) — consumed by
     # src/risk/polymarket_loss_caps.py. Sized against the $100 initial
     # mainnet cap: one market can burn at most $25, one UTC day $50.

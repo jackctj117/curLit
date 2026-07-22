@@ -45,14 +45,13 @@ profiles:
       polymarket_min_edge: 0.03
 
     kill_switches:
-      # Daily loss before halt_new. (Arch §5.5)
+      # Daily loss before halt_new. (Arch §5.5; enforced since CL-i4tx —
+      # the switch now reads this instead of a hardcoded -0.03.)
       daily_loss_limit_pct: -0.03
-      # Drawdown before flatten_all.
+      # Drawdown before flatten_all (real broker flatten since CL-i4tx).
       drawdown_limit_pct: -0.20
-      # Single-strategy DD before halt_strategy.
-      single_strategy_dd_pct: -0.25
-      # Max pairwise strategy correlation before reduce_50pct.
-      strategy_correlation_spike: 0.90
+      # (CL-i4tx removed single_strategy_dd_pct / strategy_correlation_spike:
+      # the switches they configured had no real input feed and were deleted.)
       # Polymarket absolute loss caps in USD (CL-983f). Realized +
       # mark-to-market; new orders in a market are refused once it has
       # lost $25, all new Polymarket orders once the UTC day has lost
@@ -118,10 +117,6 @@ profiles:
       # -40% drawdown before flatten. The system is allowed to lose
       # a lot before the brake hits.
       drawdown_limit_pct: -0.40
-      # Single strategy DD: -40% before halt_strategy.
-      single_strategy_dd_pct: -0.40
-      # Looser correlation threshold — we're willing to crowd more.
-      strategy_correlation_spike: 0.95
       # Polymarket loss caps doubled vs conservative (CL-983f) — still
       # absolute USD brakes, still small next to the FX book.
       polymarket_per_market_loss_cap_usd: 50
