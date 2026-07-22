@@ -5,6 +5,11 @@ Consumer half of the current-events pipeline. Every poll it:
   1. Emits exit intents for open event positions that hit the hard stop
      or the hard TIME STOP (``event_max_holding_hours``, fires
      regardless of P&L — event edges decay in hours, not days).
+     Triggered legs park in the book's ``pending_exits`` and the exit
+     intent RE-emits every tick until the broker confirms flat
+     (CL-8cw1, exit half of CL-hqyj) — realized P&L books only on
+     confirmation, so a rejected exit self-heals instead of leaving the
+     broker holding unstopped risk against a flat book.
   2. Polls ``geo_events`` for ASSESSED rows and runs them through
      :class:`src.events.confluence.EventConfluence` (Gate A quality +
      Gate B market confirmation).
@@ -183,15 +188,28 @@ class EventDrivenStrategy:
 
     @property
     def open_positions(self) -> dict[str, EventPosition]:
-        """The live per-symbol leg book, owned by :class:`EventBook`.
+        """The live per-symbol leg book, owned by :class:`EventBook` —
+        OPEN legs plus PENDING-EXIT legs, merged per access (CL-8cw1).
 
         Kept as a plain-dict attribute contract: the portfolio
         reconciler reads ``strategy.open_positions`` directly (CL-8s1e)
-        and tests assign it wholesale — both predate the extraction."""
-        return self.book.open_positions
+        and tests assign it wholesale — both predate the extraction.
+
+        Pending-exit legs are INCLUDED deliberately: a triggered exit
+        whose order the broker has not yet confirmed flat is still a
+        REAL broker holding. Hiding it would make the reconciler
+        classify the leg ``orphaned_broker`` and flatten it a second
+        time. Entry logic reads this same merged view, so pending legs
+        also keep their concurrency slot occupied (no re-entry until the
+        exit confirms). The getter returns a FRESH merged dict — mutate
+        ``self.book.open_positions`` / ``self.book.pending_exits``, not
+        the returned value."""
+        return self.book.held_positions()
 
     @open_positions.setter
     def open_positions(self, value: dict[str, EventPosition]) -> None:
+        # Wholesale assignment replaces the OPEN book only; pending
+        # exits keep their own lifecycle (confirm_exits).
         self.book.open_positions = value
 
     @staticmethod
@@ -201,10 +219,11 @@ class EventDrivenStrategy:
         normalizer repo-wide."""
         return EventBook._norm_symbol(sym)
 
-    def _reconcile_positions(self, broker: Any, now: datetime) -> None:
+    def _reconcile_positions(self, broker: Any, now: datetime) -> list[Any] | None:
         """Prune phantom open_positions (CL-v9g4) — see
-        :meth:`EventBook.reconcile` for the full rationale."""
-        self.book.reconcile(broker, now)
+        :meth:`EventBook.reconcile` for the full rationale. Returns the
+        broker position snapshot (or None) for confirm_exits reuse."""
+        return self.book.reconcile(broker, now)
 
     def _concentration_capped_size(
         self,
@@ -287,7 +306,9 @@ class EventDrivenStrategy:
         return rows
 
     # ------------------------------------------------------------------
-    # Exits: hard stop + hard TIME STOP (bookkeeping in EventBook)
+    # Exits: hard stop + hard TIME STOP (bookkeeping in EventBook).
+    # Two-phase since CL-8cw1: check_exits returns trigger emissions AND
+    # pending re-emissions; finalization happens in confirm_exits.
     # ------------------------------------------------------------------
 
     def _current_price(self, symbol: str, prices: dict[str, Any], now: datetime) -> float | None:
@@ -433,6 +454,16 @@ class EventDrivenStrategy:
                 )
                 skipped.append((instrument, "unknown_instrument"))
                 continue
+            if symbol in self.book.pending_exits:
+                # CL-8cw1: exit triggered but not broker-confirmed — the
+                # slot is still occupied by REAL broker risk, and a fresh
+                # entry would race the in-flight/retrying close order.
+                logger.info(
+                    "Event entry %s skipped — exit pending broker "
+                    "confirmation (event id=%s)", symbol, event_id,
+                )
+                skipped.append((symbol, "pending_exit"))
+                continue
             if len(self.open_positions) >= self.config.max_concurrent_event_positions:
                 logger.warning(
                     "max_concurrent_event_positions=%d reached — skipping %s "
@@ -535,7 +566,14 @@ class EventDrivenStrategy:
         now = datetime.now(UTC)
         # Prune phantom positions from earlier rejected orders BEFORE the cap
         # check, so a rejected leg can't keep blocking real entries (CL-v9g4).
-        self.book.reconcile(broker, now)
+        # reconcile() hands back the broker snapshot it already fetched, and
+        # confirm_exits reuses it (CL-8cw1) — ONE broker positions call per
+        # tick. Confirmation runs BEFORE check_exits so a just-confirmed exit
+        # is not re-emitted on the same tick; broker-unreadable (None) means
+        # confirm nothing and keep retrying — never finalize blind.
+        broker_positions = self.book.reconcile(broker, now)
+        if broker_positions is not None:
+            self.book.confirm_exits(broker_positions)
         intents = self._check_exits(prices, now)
 
         rows = self._fetch_assessed()

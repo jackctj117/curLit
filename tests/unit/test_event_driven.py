@@ -367,7 +367,9 @@ def seed_position(
     direction: int = 1,
     stop_price: float = 0.9801,
 ) -> None:
-    strat.open_positions[symbol] = EventPosition(
+    # Direct book assignment: strategy.open_positions is a merged VIEW
+    # (open + pending exits) since CL-8cw1 — mutations target the book.
+    strat.book.open_positions[symbol] = EventPosition(
         symbol=symbol, event_id=1,
         entry_ts=datetime.now(UTC) - timedelta(hours=hours_ago),
         entry_price=entry_price, quantity=quantity, direction=direction,
@@ -376,15 +378,30 @@ def seed_position(
 
 
 class TestExits:
-    def test_time_stop_emits_exit_after_max_holding(self, tmp_path: Any) -> None:
+    def test_time_stop_finalizes_on_broker_flat_confirmation(
+        self, tmp_path: Any,
+    ) -> None:
+        """Two-phase (CL-8cw1): the trigger tick emits the exit intent and
+        PARKS the leg in pending_exits (nothing finalized); the next tick's
+        broker-flat snapshot books the realized P&L exactly as before."""
         db = make_db()  # empty table — exits must not need events
         strat = make_strategy(tmp_path, db=db)
         seed_position(strat, hours_ago=5.0)  # > 4h default
-        intents = run(strat, {"USD_CAD": tick(1.0)})
+        broker = _BrokerWithPositions({"USDCAD"})  # broker holds the leg
+        intents = run(strat, {"USD_CAD": tick(1.0)}, broker)
         assert len(intents) == 1
         assert intents[0].target_position == 0
+        # Triggered, not finalized: pending, still reconciler-visible.
+        assert strat.book.pending_exits["USD_CAD"].reason == "time_stop"
+        assert strat.book.open_positions == {}
+        assert "USD_CAD" in strat.open_positions  # merged view
+        assert strat.book.realized_pnl == 0.0
+        # Broker now flat → confirm finalizes and persists:
+        # (1.0 - 0.99) * 50000 = 500 from the TRIGGER price.
+        broker._held = set()
+        assert run(strat, {"USD_CAD": tick(1.0)}, broker) == []
         assert strat.open_positions == {}
-        # Realized P&L booked: (1.0 - 0.99) * 50000 = 500, persisted.
+        assert strat.book.pending_exits == {}
         state = json.loads((tmp_path / "event_book_state.json").read_text())
         assert state["realized_pnl"] == pytest.approx(500.0)
         assert state["closed_trades"] == 1
@@ -395,20 +412,29 @@ class TestExits:
         intents = run(strat, {})  # no tick, no provider
         assert len(intents) == 1
         assert intents[0].target_position == 0
+        # No price at trigger → pnl records as 0 when the exit confirms.
+        assert strat.book.pending_exits["USD_CAD"].trigger_price is None
 
     def test_no_exit_before_time_stop(self, tmp_path: Any) -> None:
         strat = make_strategy(tmp_path, db=make_db())
         seed_position(strat, hours_ago=1.0)
         assert run(strat, {"USD_CAD": tick(1.0)}) == []
         assert "USD_CAD" in strat.open_positions
+        assert strat.book.pending_exits == {}
 
     def test_hard_stop_exit(self, tmp_path: Any) -> None:
         strat = make_strategy(tmp_path, db=make_db())
         seed_position(strat, hours_ago=1.0, entry_price=1.0, stop_price=0.99)
-        intents = run(strat, {"USD_CAD": tick(0.985)})
+        broker = _BrokerWithPositions({"USDCAD"})
+        intents = run(strat, {"USD_CAD": tick(0.985)}, broker)
         assert len(intents) == 1
         assert intents[0].target_position == 0
+        assert strat.book.pending_exits["USD_CAD"].reason == "hard_stop"
+        broker._held = set()  # exit filled
+        run(strat, {"USD_CAD": tick(0.985)}, broker)
         assert strat.open_positions == {}
+        # Loss booked from the trigger price: (0.985 - 1.0) * 50000.
+        assert strat.book.realized_pnl == pytest.approx(-750.0)
 
 
 # =============================================================================
@@ -473,7 +499,7 @@ def _seed(strat: EventDrivenStrategy, symbol: str, units: float,
     stop is a far-away 0.5 so the full-path tests' exit check (against the
     FakeProvider's p0=0.99 fallback price) doesn't close the seed before
     the new entry is sized."""
-    strat.open_positions[symbol] = EventPosition(
+    strat.book.open_positions[symbol] = EventPosition(
         symbol=symbol, event_id=1, entry_ts=datetime.now(UTC),
         entry_price=price, quantity=units, direction=1 if units >= 0 else -1,
         stop_price=stop_price if stop_price is not None else 0.5,
@@ -836,6 +862,30 @@ class TestStatePersistence:
         assert run(strat, {}) == []
         assert (tmp_path / "event_book_state.json.corrupt").exists()
 
+    def test_legacy_state_file_without_pending_key_loads_empty(
+        self, tmp_path: Any,
+    ) -> None:
+        # The LIVE data/event_book_state.json predates pending_exits
+        # (CL-8cw1) — the missing key must default to no pending exits,
+        # with every legacy field loaded untouched.
+        state_path = tmp_path / "event_book_state.json"
+        state_path.write_text(json.dumps({
+            "version": 1, "realized_pnl": -250.0, "closed_trades": 2,
+            "open_positions": {
+                "USD_CAD": {
+                    "event_id": 7,
+                    "entry_ts": datetime.now(UTC).isoformat(),
+                    "entry_price": 1.0, "quantity": 1000.0,
+                    "direction": 1, "stop_price": 0.99, "headline": "legacy",
+                },
+            },
+        }))
+        strat = make_strategy(tmp_path, db=make_db())
+        assert strat.book.pending_exits == {}
+        assert strat.book.realized_pnl == pytest.approx(-250.0)
+        assert strat.book.closed_trades == 2
+        assert "USD_CAD" in strat.book.open_positions
+
 
 # =============================================================================
 # Alert enrichment (CL-mgcp): price, reason, age, advisory ideas
@@ -1169,6 +1219,116 @@ class TestPhantomReconciliation:
 
 
 # =============================================================================
+# Pending-exit lifecycle (CL-8cw1, exit half of CL-hqyj)
+# =============================================================================
+
+
+class TestPendingExitLifecycle:
+    """Exits finalize on broker CONFIRMATION, not intent emission — a
+    rejected exit self-heals by re-emitting every tick while the book
+    keeps showing the leg to the reconciler."""
+
+    def _trigger(self, tmp_path: Any, broker: Any) -> EventDrivenStrategy:
+        """Seed a leg past the time stop and run one tick: the exit
+        intent emits and the leg parks in pending_exits."""
+        strat = make_strategy(tmp_path, db=make_db())
+        seed_position(strat, hours_ago=5.0)  # > 4h default time stop
+        intents = run(strat, {"USD_CAD": tick(1.0)}, broker)
+        assert [i.target_position for i in intents] == [0]
+        assert "USD_CAD" in strat.book.pending_exits
+        return strat
+
+    def test_rejected_exit_reemits_and_stays_reconciler_visible(
+        self, tmp_path: Any, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        # Broker STILL holds the leg next tick (exit rejected): the same
+        # target-0 intent re-emits, the book is NOT flat, and the leg
+        # stays in the reconciler's strategy.open_positions view — so it
+        # can never be classified orphaned_broker and double-flattened.
+        broker = _BrokerWithPositions({"USDCAD"})
+        strat = self._trigger(tmp_path, broker)
+        with caplog.at_level(logging.WARNING, logger="src.strategies.event_book"):
+            intents = run(strat, {"USD_CAD": tick(1.0)}, broker)
+        assert [i.target_position for i in intents] == [0]
+        assert intents[0].urgency == Urgency.URGENT.value
+        book_view = strat.open_positions
+        assert isinstance(book_view, dict)          # reconciler contract
+        assert "USD_CAD" in book_view               # reconciler-visible
+        assert strat.book.realized_pnl == 0.0       # nothing booked yet
+        assert strat.book.closed_trades == 0
+        assert any(
+            "exit for USD_CAD not confirmed, re-emitting" in r.getMessage()
+            for r in caplog.records
+        )
+
+    def test_first_emission_logs_no_reemit_warning(
+        self, tmp_path: Any, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        broker = _BrokerWithPositions({"USDCAD"})
+        with caplog.at_level(logging.WARNING, logger="src.strategies.event_book"):
+            self._trigger(tmp_path, broker)
+        assert not any("re-emitting" in r.getMessage() for r in caplog.records)
+
+    def test_confirm_finalizes_exactly_once(self, tmp_path: Any) -> None:
+        broker = _BrokerWithPositions({"USDCAD"})
+        strat = self._trigger(tmp_path, broker)
+        # Broker flat → finalize from the TRIGGER price (tick 1.0):
+        # (1.0 - 0.99) * 50000 = 500 — even though the confirm tick's
+        # price is wildly different.
+        broker._held = set()
+        assert run(strat, {"USD_CAD": tick(5.0)}, broker) == []
+        assert strat.book.realized_pnl == pytest.approx(500.0)
+        assert strat.book.closed_trades == 1
+        assert strat.open_positions == {}
+        # Idempotent: a second flat snapshot finalizes nothing more.
+        assert strat.book.confirm_exits(broker.get_positions()) == []
+        assert strat.book.realized_pnl == pytest.approx(500.0)
+        assert strat.book.closed_trades == 1
+
+    def test_broker_still_holding_never_confirms(self, tmp_path: Any) -> None:
+        broker = _BrokerWithPositions({"USDCAD"})
+        strat = self._trigger(tmp_path, broker)
+        assert strat.book.confirm_exits(broker.get_positions()) == []
+        assert "USD_CAD" in strat.book.pending_exits
+        assert strat.book.realized_pnl == 0.0
+
+    def test_no_reentry_while_pending(self, tmp_path: Any) -> None:
+        # A newly-CONFIRMED event on the pending symbol must NOT re-enter:
+        # the slot is still occupied by real broker risk.
+        db = make_db()
+        eid = insert_event(db)  # long USD_CAD, confirming setup
+        strat = make_strategy(tmp_path, db=db, provider=confirming_provider())
+        seed_position(strat, hours_ago=5.0)  # time-stops this tick
+        broker = _BrokerWithPositions({"USDCAD"})
+        intents = run(strat, CONFIRM_PRICES, broker)
+        # Only the exit intent — no entry intent for the pending symbol.
+        assert [i.target_position for i in intents] == [0]
+        assert "USD_CAD" in strat.book.pending_exits
+        # Confirmed (and alerted) but NOT traded — row stays CONFIRMED.
+        assert get_status(db, eid) == "CONFIRMED"
+
+    def test_pending_exit_survives_restart(self, tmp_path: Any) -> None:
+        broker = _BrokerWithPositions({"USDCAD"})
+        strat = self._trigger(tmp_path, broker)
+        del strat
+        # "Restart": a fresh instance reloads the pending exit with its
+        # trigger capture intact, keeps showing it to the reconciler, and
+        # still finalizes once the broker confirms flat.
+        strat2 = make_strategy(tmp_path, db=make_db())
+        entry = strat2.book.pending_exits["USD_CAD"]
+        assert entry.reason == "time_stop"
+        assert entry.trigger_price == pytest.approx(1.0)
+        assert entry.triggered_ts.tzinfo is not None
+        assert entry.position.entry_price == pytest.approx(0.99)
+        assert "USD_CAD" in strat2.open_positions
+        broker._held = set()
+        run(strat2, {}, broker)
+        assert strat2.book.pending_exits == {}
+        assert strat2.book.realized_pnl == pytest.approx(500.0)
+        assert strat2.book.closed_trades == 1
+
+
+# =============================================================================
 # Cross-asset entry gate (CL-6mzn, gating half)
 # =============================================================================
 
@@ -1275,8 +1435,11 @@ class TestUrgencyVocabulary:
             strategy_id="other", symbol=exit_intent.symbol,
             target_position=100.0, urgency=Urgency.NORMAL.value,
         )
+        # Aggregation keys by CANONICAL symbol since the CL-8cw1 P0 fix
+        # (USD_CAD → USDCAD) — one aggregate row per economic pair.
         agg = coord._aggregate_by_symbol([normal, exit_intent])
-        assert agg[exit_intent.symbol]["urgency"] == "urgent"
+        canon = EventDrivenStrategy._norm_symbol(exit_intent.symbol)
+        assert agg[canon]["urgency"] == "urgent"
 
     def test_event_entry_uses_canonical_urgent(self, tmp_path: Any) -> None:
         db = make_db()
