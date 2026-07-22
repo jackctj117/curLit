@@ -73,13 +73,65 @@ class OandaBroker(Broker):
         }
         resp = self._post_following_307(f"/v3/accounts/{self.account_id}/orders", body)
         data = resp.json()
-        txn = data.get("orderFillTransaction") or data.get("orderCreateTransaction", {})
+        # Rejects are HTTP 201 with orderRejectTransaction / orderCancel
+        # Transaction bodies (CL-h4as) — before this check they parsed as an
+        # empty txn → PENDING, and the OMS journaled ORDER_PLACED for an
+        # order OANDA had refused (ghost fills). A FOK market order that
+        # didn't fill is equally terminal.
+        reject = data.get("orderRejectTransaction")
+        cancel = data.get("orderCancelTransaction")
+        if reject is not None:
+            order.status = OrderStatus.REJECTED
+            order.order_id = str(reject.get("id", ""))
+            reason = reject.get("rejectReason") or reject.get("reason") or "?"
+            logger.warning(
+                "OANDA REJECTED order %s %s x%s: %s",
+                order.symbol, order.side, order.quantity, reason,
+            )
+            return order
+        if "orderFillTransaction" in data:
+            txn = data["orderFillTransaction"]
+            order.order_id = str(txn.get("id", ""))
+            order.status = OrderStatus.FILLED
+            return order
+        if cancel is not None:
+            # Created but immediately cancelled (FOK couldn't fill).
+            order.status = OrderStatus.REJECTED
+            order.order_id = str(cancel.get("id", ""))
+            logger.warning(
+                "OANDA order %s %s x%s cancelled by venue: %s",
+                order.symbol, order.side, order.quantity,
+                cancel.get("reason", "?"),
+            )
+            return order
+        txn = data.get("orderCreateTransaction", {})
         order.order_id = str(txn.get("id", ""))
-        order.status = OrderStatus.FILLED if "orderFillTransaction" in data else OrderStatus.PENDING
+        order.status = OrderStatus.PENDING if order.order_id else OrderStatus.REJECTED
+        if not order.order_id:
+            logger.warning(
+                "OANDA response had no fill/reject/create txn for %s %s x%s: %s",
+                order.symbol, order.side, order.quantity, str(data)[:200],
+            )
         return order
 
     def cancel_order(self, order_id: str) -> bool:
-        return True
+        """Real cancel via the v20 API (CL-h4as — was an unconditional
+        ``return True`` that never touched the venue, leaving working orders
+        live while the OMS believed them cancelled)."""
+        try:
+            resp = self.write_client.put(
+                f"/v3/accounts/{self.account_id}/orders/{order_id}/cancel",
+            )
+            if resp.status_code == 200:
+                return True
+            logger.warning(
+                "OANDA cancel %s failed: HTTP %s %s",
+                order_id, resp.status_code, resp.text[:150],
+            )
+            return False
+        except Exception as exc:
+            logger.warning("OANDA cancel %s errored: %s", order_id, str(exc)[:150])
+            return False
 
     def get_order(self, order_id: str) -> Order:
         raise NotImplementedError

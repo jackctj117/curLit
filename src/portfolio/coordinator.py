@@ -543,6 +543,21 @@ class PortfolioCoordinator:
         if not aggregated:
             return aggregated
 
+        # FAIL CLOSED on missing prices (CL-e8ze). The old behavior fell back
+        # to mid=1.0, which understates notional by orders of magnitude for
+        # XAU_USD/indices/high-quote pairs — leverage and per-pair caps could
+        # PASS when they should reject. A symbol we cannot price is a symbol
+        # whose risk we cannot validate: drop its target to 0 (loud) rather
+        # than validate fiction.
+        for symbol, agg in aggregated.items():
+            if agg.get("target_position") and self._get_price(symbol) is None:
+                logger.error(
+                    "price unavailable for %s — DROPPING its target of %.2f "
+                    "(fail closed: cannot validate leverage/caps without a "
+                    "price)", symbol, agg["target_position"],
+                )
+                self._rescale_symbol(agg, 0.0)
+
         account = self.broker.get_account()
         equity = account.equity
         assert equity > 0, (
@@ -551,7 +566,7 @@ class PortfolioCoordinator:
 
         # 1) Gross leverage cap.
         gross_notional = sum(
-            abs(a["target_position"]) * self._get_price(sym)
+            abs(a["target_position"]) * (self._get_price(sym) or 0.0)
             for sym, a in aggregated.items()
         )
         gross_leverage = gross_notional / equity
@@ -568,7 +583,7 @@ class PortfolioCoordinator:
         # 2) Per-pair cap.
         max_pair_notional = equity * self.constraints.max_notional_per_pair_pct
         for symbol, agg in aggregated.items():
-            price = self._get_price(symbol)
+            price = self._get_price(symbol) or 0.0
             notional = abs(agg["target_position"]) * price
             if notional > max_pair_notional:
                 scale = max_pair_notional / notional
@@ -617,16 +632,18 @@ class PortfolioCoordinator:
                 f"symbol {symbol!r} too short to extract currency pair (need 6 chars)"
             )
             base, quote = symbol[:3], symbol[3:6]
-            notional = agg["target_position"] * self._get_price(symbol)
+            notional = agg["target_position"] * (self._get_price(symbol) or 0.0)
             exposures[base] += notional
             exposures[quote] -= notional
         return dict(exposures)
 
-    def _get_price(self, symbol: str) -> float:
-        """Mid-price from broker. Falls back to 1.0 with WARN if broker fails.
+    def _get_price(self, symbol: str) -> float | None:
+        """Mid-price from broker, or None when unavailable (CL-e8ze).
 
-        Fallback behavior is a safety net; in practice price stream availability
-        is enforced by the live engine's price_stream_task before signals fire.
+        No 1.0 fallback: a fabricated price understates notional by orders of
+        magnitude for gold/indices and lets leverage/concentration checks pass
+        when they should reject. Callers must treat None as "cannot validate
+        → drop/zero the target" (see _apply_portfolio_constraints pre-pass).
         """
         try:
             bid, ask = self.broker.get_price(symbol)
@@ -634,8 +651,8 @@ class PortfolioCoordinator:
             assert mid > 0, f"non-positive mid for {symbol}: bid={bid} ask={ask}"
             return mid
         except Exception:
-            logger.exception("Could not fetch price for %s; using 1.0 fallback", symbol)
-            return 1.0
+            logger.exception("Could not fetch price for %s — treating as UNPRICEABLE", symbol)
+            return None
 
     # ------------------------------------------------------------------
     # Rebalance — risk parity + correlation regime
