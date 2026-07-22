@@ -419,7 +419,8 @@ class PositionReconciler:
                 qty_val = getattr(bpos, "quantity", None)
                 if qty_val is None:
                     continue
-                norm = str(raw_symbol).replace("_", "").upper()
+                from src.execution.broker import canonical_symbol  # noqa: PLC0415
+                norm = canonical_symbol(raw_symbol)
                 per_symbol.setdefault(norm, []).append({
                     "strategy_id": sid,
                     "quantity": float(qty_val),

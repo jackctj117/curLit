@@ -21,7 +21,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from .broker import Broker, Order, OrderStatus, OrderType
+from .broker import Broker, Order, OrderStatus, OrderType, canonical_symbol
 from .trade_journal import EventType, TradeJournal
 
 logger = logging.getLogger(__name__)
@@ -79,8 +79,17 @@ class OrderManager:
                 logger.warning("OMS halted — rejecting intent %s", intent.intent_id)
                 return intent.intent_id
 
-            current_positions = {p.symbol: p.quantity for p in self.broker.get_positions()}
-            current_qty = current_positions.get(intent.symbol, 0.0)
+            # Position matching MUST use the canonical key (CL-qqra): broker
+            # positions come back compact ("USDCAD") while event intents are
+            # OANDA-underscore ("USD_CAD"). A raw .get() always missed →
+            # exit deltas of 0 (positions never closed at the broker) and
+            # entries that stacked on an existing position. Routing below
+            # still uses intent.symbol (broker _to_oanda is idempotent).
+            current_positions = {
+                canonical_symbol(p.symbol): p.quantity
+                for p in self.broker.get_positions()
+            }
+            current_qty = current_positions.get(canonical_symbol(intent.symbol), 0.0)
             delta = intent.target_position - current_qty
 
             intent_payload: dict[str, Any] = {

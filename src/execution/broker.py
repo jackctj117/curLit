@@ -49,6 +49,27 @@ class Fill:
     commission: float = 0.0
 
 
+def canonical_symbol(symbol: str) -> str:
+    """Canonical instrument key for POSITION MATCHING (CL-qqra).
+
+    The repo speaks two symbol dialects: OANDA-underscore (``EUR_USD``,
+    ``USD_NOK`` — event legs, instrument maps) and compact (``EURUSD`` —
+    broker positions after ``_from_oanda``, rate-diff strategies). Comparing
+    them raw silently fails: the OMS looked up ``current_positions.get(
+    "USD_CAD")`` against broker keys like ``"USDCAD"``, always got 0, and so
+    computed exit deltas of 0 — EVENT POSITIONS NEVER CLOSED AT THE BROKER
+    (observed live: the reconciler's restart flatten, not the strategy's time
+    stop, is what closed the first two event legs). Entries likewise saw
+    "flat" and could stack.
+
+    This is the matching key ONLY — strip separators, upper-case. Order
+    ROUTING keeps the original symbol (OandaBroker._to_oanda is idempotent
+    for both dialects). The full canonical-instrument-type refactor is the
+    structural epic; every position lookup must go through this until then.
+    """
+    return str(symbol).replace("_", "").replace("/", "").replace("-", "").upper()
+
+
 @dataclass
 class Position:
     symbol: str

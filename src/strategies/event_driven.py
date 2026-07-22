@@ -452,9 +452,10 @@ class EventDrivenStrategy:
 
     @staticmethod
     def _norm_symbol(sym: str) -> str:
-        """Compare-form for matching an open_positions key (USD_NOK) against a
-        broker Position.symbol (USDNOK): strip separators, upper-case."""
-        return str(sym).replace("_", "").upper()
+        """Compare-form for position matching — delegates to the shared
+        canonical_symbol (CL-qqra) so there is ONE normalizer repo-wide."""
+        from src.execution.broker import canonical_symbol  # noqa: PLC0415
+        return canonical_symbol(sym)
 
     def _reconcile_positions(self, broker: Any, now: datetime) -> None:
         """Prune phantom open_positions (CL-v9g4).
