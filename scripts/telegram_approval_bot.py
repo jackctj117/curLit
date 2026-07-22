@@ -26,10 +26,16 @@ import os
 import signal
 import sys
 import threading
+from pathlib import Path
 from types import FrameType
 
-from src.research.loop import DEFAULT_STATE_PATH
-from src.research.telegram_approvals import (
+# Same bootstrap as the sibling daemon scripts: make `src` importable when
+# launched file-style (`python scripts/telegram_approval_bot.py`, which is
+# how daemons.sh starts it) — module-style `-m` runs are unaffected.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from src.research.loop import DEFAULT_STATE_PATH  # noqa: E402
+from src.research.telegram_approvals import (  # noqa: E402
     DEFAULT_OFFSET_PATH,
     DEFAULT_POLL_TIMEOUT_SEC,
     TelegramApprovalBot,

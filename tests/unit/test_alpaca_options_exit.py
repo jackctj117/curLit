@@ -175,6 +175,18 @@ def test_thesis_invalidated_beats_profit(engine):
     assert _row(engine, "dead")["exit_reason"] == "thesis_invalidated"
 
 
+def test_event_expired_is_not_thesis_invalidation(engine):
+    """geo_event EXPIRED is the ~2h intraday FX gate lapsing — routine for
+    virtually every event — NOT an options-thesis verdict. A healthy
+    position on an EXPIRED event must be HELD (its deadline is the idea's
+    own time stop)."""
+    _seed(engine, "gate", event_status="EXPIRED")  # 2d held, 30 DTE, +5%
+    client = _FakeClient([_pos(avg="2.0", cur="2.1")])
+    counts = manage_option_exits(engine, client, now=NOW)
+    assert counts["held"] == 1 and counts["exit_submitted"] == 0
+    assert client.orders == []
+
+
 def test_expiry_protect_fires_without_quotes(engine):
     # 2 DTE and NO price data: the date-based rule still closes it.
     _seed(engine, "near", occ=OCC_NEAR)

@@ -8,8 +8,10 @@ rule closes the FULL position with a market sell-to-close and records the
 exact reason on the same row.
 
 Priority order (first hit wins):
-  1. thesis_invalidated — the originating geo_event went EXPIRED/DISMISSED
-     or the trade idea was cancelled: the desk no longer believes the story.
+  1. thesis_invalidated — the originating geo_event was DISMISSED or the
+     trade idea cancelled: the desk ACTIVELY no longer believes the story.
+     (geo_event EXPIRED does NOT trigger this — that's the ~2h intraday
+     FX-confluence window lapsing, not an options-thesis verdict.)
   2. time_stop        — held ≥ the idea's ``time_stop_days`` (config default
      when the idea carries none), or the pipeline already auto-expired the
      idea. Event options are theses with deadlines; the deadline is the exit.
@@ -148,11 +150,15 @@ def evaluate_exit(
     expiry = occ_expiry(row.get("occ_symbol") or pos.get("symbol"))
     dte = (expiry - now.date()).days if expiry else None
 
-    # 1. Thesis invalidated — the desk no longer believes the story.
+    # 1. Thesis invalidated — the desk ACTIVELY no longer believes the
+    #    story: event DISMISSED or idea cancelled. Deliberately NOT
+    #    geo_event EXPIRED — expiry is the ~2h intraday FX-confluence
+    #    window lapsing (median EXPIRED lifetime is 2h03m), a gate
+    #    lifecycle, not a verdict on a multi-week options thesis; the
+    #    options deadline is the idea's own time stop (rule 2).
     event_status = str(row.get("event_status") or "").upper()
-    if event_status in ("EXPIRED", "DISMISSED"):
-        return (ExitReason.THESIS_INVALIDATED,
-                f"geo_event {event_status.lower()}")
+    if event_status == "DISMISSED":
+        return (ExitReason.THESIS_INVALIDATED, "geo_event dismissed")
     if str(row.get("idea_status") or "") == "cancelled":
         return (ExitReason.THESIS_INVALIDATED, "idea cancelled")
 

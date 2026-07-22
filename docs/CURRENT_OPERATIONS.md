@@ -81,8 +81,9 @@ Everything is PAPER. No real money moves anywhere.
 - **Exit manager (CL-3rho)**: every cycle, BEFORE entries, each open option
   position is matched back to its idea row and run through prioritized
   rules — first hit sells-to-close the full position:
-  1. `thesis_invalidated` (originating geo_event EXPIRED/DISMISSED, idea
-     cancelled), 2. `time_stop` (idea's `time_stop_days`, default 10d,
+  1. `thesis_invalidated` (originating geo_event DISMISSED or idea
+     cancelled — NOT event EXPIRED, which is just the ~2h intraday FX
+     gate lapsing), 2. `time_stop` (idea's `time_stop_days`, default 10d,
      `ALPACA_OPT_DEFAULT_TIME_STOP_DAYS`), 3. `stop_loss` (premium −40%,
      `ALPACA_OPT_STOP_LOSS_PCT`), 4. `profit_target` (premium +80%,
      `ALPACA_OPT_PROFIT_TARGET_PCT`), 5. `expiry_protect` (≤4 DTE,
