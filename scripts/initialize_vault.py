@@ -180,11 +180,12 @@ def interactive_init() -> None:
     vault_data = encrypt(b"{}", vault_key)
     recovery_data = encrypt(vault_key, recovery_key)
 
-    vault_path.write_text(json.dumps(vault_data))
-    salt_path.write_bytes(salt)
-    recovery_path.write_text(json.dumps(recovery_data))
-    for p in [vault_path, salt_path, recovery_path]:
-        os.chmod(p, 0o600)
+    # Atomic + 0600 BEFORE the rename (same _atomic_write the reseal path
+    # uses) — the old write_text-then-chmod left a umask-readable window
+    # and a torn-write window between file creation and chmod.
+    _atomic_write(vault_path, json.dumps(vault_data).encode())
+    _atomic_write(salt_path, salt)
+    _atomic_write(recovery_path, json.dumps(recovery_data).encode())
 
     checksum = hashlib.sha256(entropy).hexdigest()[:8]
     print("\n" + "=" * 56)

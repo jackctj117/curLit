@@ -66,6 +66,14 @@ class OandaBroker(Broker):
         # follow freely; writes go through _send_following_307 so only
         # method-preserving redirects (307/308) are retried and anything
         # else fails closed.
+        #
+        # Thread-safety (CL-8cw1): these clients are hit concurrently from
+        # asyncio.to_thread workers (OMS submit, coordinator, health tick).
+        # That is safe: httpx documents Client as shareable between threads
+        # (httpx.Client docstring, "It can be shared between threads";
+        # the connection pool is internally locked). self.headers is built
+        # once here and never mutated afterwards — per-request state goes
+        # through local params=/json= arguments only.
         self.client = httpx.Client(
             base_url=base, headers=self.headers, timeout=10.0,
             follow_redirects=True,

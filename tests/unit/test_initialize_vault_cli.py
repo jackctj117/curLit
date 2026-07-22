@@ -180,6 +180,37 @@ def test_non_json_plaintext_rejected_before_touching_disk(
     assert not list(tmp_path.iterdir())
 
 
+def test_interactive_init_writes_atomically_with_0600(
+    tmp_path, monkeypatch, capsys
+):
+    """Interactive one-time init (CL-8cw1): vault/salt/recovery must land
+    via the same atomic tmp+os.replace path as reseal — mode 0600, no tmp
+    litter. The old write_text-then-chmod left a umask-readable window."""
+    vault = tmp_path / "vault.enc"
+    salt = tmp_path / "vault.salt"
+    recovery = tmp_path / "recovery.enc"
+    monkeypatch.setenv("VAULT_PATH", str(vault))
+    monkeypatch.setenv("VAULT_SALT", str(salt))
+    monkeypatch.setenv("RECOVERY_PATH", str(recovery))
+    monkeypatch.setattr("builtins.input", lambda *_a: "")
+    monkeypatch.setattr(os, "system", lambda *_a: 0)  # skip screen clear
+
+    rc = main([])
+
+    assert rc == 0
+    for p in (vault, salt, recovery):
+        assert p.exists() and _mode(p) == 0o600
+    assert len(salt.read_bytes()) == 16
+    assert not list(tmp_path.glob("*.tmp*"))  # staging files replaced away
+    # The printed master passphrase must actually open the sealed vault.
+    out = capsys.readouterr().out
+    passphrase = (
+        out.split("MASTER PASSPHRASE:")[1].strip().splitlines()[0].strip()
+    )
+    key = derive_key(passphrase, salt.read_bytes())
+    assert unseal(json.loads(vault.read_text()), key) == b"{}"
+
+
 def test_passphrase_strips_exactly_one_trailing_newline(tmp_path, monkeypatch):
     """`printf '%s\\n' "$PASS" | ...` appends one newline — it must not become
     part of the passphrase, but an embedded newline must survive."""

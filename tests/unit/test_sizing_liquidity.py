@@ -59,14 +59,23 @@ class TestAdjustForLiquidity:
         )
         assert out == 10_000.0
 
-    def test_profile_exception_falls_back_to_full(self) -> None:
+    def test_profile_exception_fails_closed(
+        self, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A raising profile means liquidity can't be verified — the entry
+        is refused (0.0), never sized at full (the old fail-open)."""
         class _BoomProfile:
             def size_multiplier(self, *_a: object, **_k: object) -> float:
                 raise RuntimeError("boom")
-        out = PositionSizer.adjust_for_liquidity(
-            base_size=10_000.0, symbol="EURUSD",
-            ts=_ts(0, 12), observed_spread_bps=1.0, profile=_BoomProfile(),
-        )
-        # Conservative fail-open — observability handles the alert,
-        # we don't block the strategy on a metric path.
-        assert out == 10_000.0
+        with caplog.at_level("WARNING", logger="src.risk.sizing"):
+            out = PositionSizer.adjust_for_liquidity(
+                base_size=10_000.0, symbol="EURUSD",
+                ts=_ts(0, 12), observed_spread_bps=1.0, profile=_BoomProfile(),
+            )
+        assert out == 0.0
+        warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+        assert len(warnings) == 1
+        msg = warnings[0].getMessage()
+        assert "EURUSD" in msg          # which symbol was refused
+        assert "RuntimeError" in msg    # exception summary
+        assert "boom" in msg

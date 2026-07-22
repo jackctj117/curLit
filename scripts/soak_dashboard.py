@@ -21,6 +21,7 @@ tab (sessionStorage) and sends it as a header — never in the URL.
 from __future__ import annotations
 
 import glob
+import hashlib
 import hmac
 import json
 import os
@@ -77,7 +78,10 @@ def require_api_key(x_api_key: str | None = Header(default=None)) -> None:
       for embedded/TestClient use).
     * X-API-Key HEADER only — query-string secrets leak into access
       logs, proxies, and Referer headers, so ?secret= is gone.
-    * Constant-time comparison (hmac.compare_digest).
+    * Constant-time comparison over SHA-256 digests of BOTH sides
+      (hash-then-compare-digest, same as src/web/api.py's verify_secret):
+      equal-length inputs to compare_digest mean a length mismatch can
+      neither raise nor leak length via timing.
     """
     expected = os.environ.get("WEB_API_SECRET", "")
     if _secret_is_forbidden(expected):
@@ -88,7 +92,10 @@ def require_api_key(x_api_key: str | None = Header(default=None)) -> None:
                    "configured (see .env.example).",
         )
     supplied = x_api_key or ""
-    if not hmac.compare_digest(supplied.encode(), expected.encode()):
+    if not hmac.compare_digest(
+        hashlib.sha256(supplied.encode()).digest(),
+        hashlib.sha256(expected.encode()).digest(),
+    ):
         raise HTTPException(status_code=403)
 
 

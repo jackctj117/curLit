@@ -94,12 +94,16 @@ class PositionSizer:
             multiplier = profile.size_multiplier(
                 symbol, ts, observed_spread_bps,
             )
-        except Exception:
+        except Exception as exc:
+            # Fail CLOSED: if we can't evaluate the liquidity window we
+            # can't verify it's safe to enter — return 0 (no entry), same
+            # missing-data posture as the rest of the money path.
             logger.warning(
-                "liquidity_window: profile.size_multiplier raised; "
-                "using full size", exc_info=True,
+                "liquidity_window: profile.size_multiplier raised for %s "
+                "(%s: %s) — cannot verify liquidity, refusing entry",
+                symbol, type(exc).__name__, exc, exc_info=True,
             )
-            return base_size
+            return 0.0
         return float(base_size * multiplier)
 
     @staticmethod

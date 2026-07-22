@@ -176,6 +176,29 @@ def test_engine_api_get_skips_call_without_real_secret(
     assert soak_dashboard._engine_api_get("/api/account") is None
 
 
+# --- constant-time compare regression guard --------------------------------
+
+
+def test_auth_compare_is_hash_then_compare_digest() -> None:
+    """require_api_key must sha256 BOTH sides before compare_digest
+    (CL-8cw1), mirroring src/web/api.py's verify_secret — a bare
+    compare_digest on raw strings short-circuits on unequal lengths."""
+    import inspect
+
+    src = inspect.getsource(soak_dashboard.require_api_key)
+    assert "hashlib.sha256" in src
+    assert "compare_digest" in src
+
+
+def test_wrong_length_key_still_rejected(client: TestClient) -> None:
+    """Sanity: hashing both sides must not change accept/reject behavior
+    for keys of a different length than the secret."""
+    resp = client.get(
+        "/api/soak", headers={"X-API-Key": SECRET + "-longer-than-expected"},
+    )
+    assert resp.status_code == 403
+
+
 # --- browser JS regression guards ------------------------------------------
 
 
