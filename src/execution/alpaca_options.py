@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 
 PAPER_BASE = "https://paper-api.alpaca.markets"
 LIVE_BASE = "https://api.alpaca.markets"
+DATA_BASE = "https://data.alpaca.markets"
 
 #: Injectable transport: (method, url, headers, params, json_body) -> parsed JSON.
 RequestFn = Callable[
@@ -157,6 +158,26 @@ class AlpacaOptionsClient:
         }
         result: dict[str, Any] = self._req("POST", "/v2/orders", json_body=body)
         return result
+
+    def get_option_ask(self, occ_symbol: str) -> float | None:
+        """Latest ask (per-share premium) for an option contract, or None.
+
+        Used to enforce the premium cap before buying. Uses the indicative
+        options feed (available without a paid market-data add-on). Fail-soft.
+        """
+        try:
+            data = self._request_fn(
+                "GET", f"{DATA_BASE}/v1beta1/options/quotes/latest",
+                self._headers, {"symbols": occ_symbol, "feed": "indicative"},
+                None,
+            )
+            quote = (data.get("quotes") or {}).get(occ_symbol) or {}
+            ask = quote.get("ap")
+            return float(ask) if ask else None
+        except Exception:
+            logger.warning("alpaca: option quote failed for %s", occ_symbol,
+                           exc_info=True)
+            return None
 
     def list_option_positions(self) -> list[dict[str, Any]]:
         positions = self._req("GET", "/v2/positions")
