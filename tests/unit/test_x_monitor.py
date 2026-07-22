@@ -1345,7 +1345,11 @@ class TestRepoWatchlistWindows:
     def test_news_accounts_are_windowless(self) -> None:
         accts = load_watchlist(REPO_WATCHLIST)
         non_traders = [a for a in accts if a.category != "small_traders"]
-        assert len(non_traders) == 31
+        # 31 original + 7 analysts/think-tanks added 2026-07-21 (Brad_Setser,
+        # PhillipsPOBrien, oryxspioenkop, CSIS, RUSI_org, CFR_org,
+        # AtlanticCouncil). The invariant under test: news/flow/OSINT accounts
+        # must NEVER carry an active_hours window (breaking news is 24h).
+        assert len(non_traders) == 38
         assert all(a.active_hours is None for a in non_traders)
 
     def test_seeded_trader_windows_match_operator_table(self) -> None:
