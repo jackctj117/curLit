@@ -30,7 +30,7 @@ DAEMONS=(
   "options_activity|options_activity.py --loop|$PY scripts/options_activity.py --loop 86400"
   "score_outcomes|score_outcomes.py --loop|$PY scripts/score_outcomes.py --loop 86400"
   "telegram_bot|telegram_approval_bot.py|$PY scripts/telegram_approval_bot.py"
-  "long_digest|daily_long_digest.py --loop|$PY scripts/daily_long_digest.py --loop 300"
+  "morning_digest|morning_digest.py --loop|$PY scripts/morning_digest.py --loop 300"
   # reddit_monitor: uncomment once Reddit API approval lands (CL-okww)
   # "reddit_monitor|reddit_monitor.py --loop|$PY scripts/reddit_monitor.py --loop 300"
 )
