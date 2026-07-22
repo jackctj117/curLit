@@ -56,6 +56,7 @@ DEFAULT_CROSS_ASSET = _REPO_ROOT / "configs" / "cross_asset_checks.yaml"
 DEFAULT_RETAIL = _REPO_ROOT / "configs" / "retail_proxies.yaml"
 DEFAULT_OUT = _REPO_ROOT / "knowledge" / "obsidian" / "vault"
 DEFAULT_SEED = _REPO_ROOT / "knowledge" / "obsidian" / "seed"
+DEFAULT_TEMPLATES = _REPO_ROOT / "knowledge" / "obsidian" / "templates"
 DEFAULT_MANIFEST = _REPO_ROOT / "knowledge" / "obsidian" / ".manifest.json"
 
 BANNER = (
@@ -93,6 +94,18 @@ URGENCY_SQL = (
 )
 
 _WIKILINK_RE = re.compile(r"\[\[([^\]|#]+?)(?:#[^\]|]+)?(?:\|[^\]]+)?\]\]")
+
+# Obsidian graph-view colour groups, keyed by tag so the graph opens grouped
+# out of the box. `colorGroups` is Obsidian's real schema: a list of
+# {"query": "...", "color": {"a": 1, "rgb": <int>}}. rgb is a packed 0xRRGGBB
+# int. Three visually distinct hues: amber themes, teal instruments, violet
+# concepts. This file overwrites whatever Obsidian last wrote — accepted per
+# the operator (the vault is a regeneratable mirror, not a hand-edited vault).
+GRAPH_COLOR_GROUPS: list[dict[str, object]] = [
+    {"query": "tag:#theme", "color": {"a": 1, "rgb": 0xE8A838}},       # amber
+    {"query": "tag:#instrument", "color": {"a": 1, "rgb": 0x28A9A2}},  # teal
+    {"query": "tag:#concept", "color": {"a": 1, "rgb": 0x9B59B6}},     # violet
+]
 
 
 # ------------------------------------------------------------------------- #
@@ -359,6 +372,9 @@ def render_theme_note(
 ) -> str:
     domain = DOMAIN_TAGS.get(theme.key)
     tags = ["theme"] + ([domain] if domain else [])
+    # Enriched, 100%-derivable frontmatter so the vault is Dataview-queryable.
+    # `coverage_flags` reuses the exact flag logic Coverage.md renders, so the
+    # static snapshot and the queryable frontmatter can never disagree.
     fm = _frontmatter(
         {
             "type": "theme",
@@ -366,6 +382,9 @@ def render_theme_note(
             "source": f"configs/event_playbooks.yaml#{theme.key}",
             "instrument_count": len(theme.instruments),
             "tradable_count": theme.tradable_count,
+            "watch_term_count": len(theme.watch_terms),
+            "overlaps": overlaps,
+            "coverage_flags": compute_flags(theme),
         }
     )
     lines = [fm, "", BANNER, "", f"# {theme.name}", "", theme.description, ""]
@@ -422,12 +441,18 @@ def render_instrument_note(
 ) -> str:
     tradable = kind in TRADABLE_KINDS
     tags = ["instrument", kind] + (["tradable"] if tradable else [])
+    # `themes` + `theme_count` are derived from the watchers list: which themes
+    # watch this instrument. This makes Dataview powerful ("all instruments in
+    # theme X", "most-watched / crowded names") without any hand-editing.
+    watching_themes = [theme_key for theme_key, _ in watchers]
     fm = _frontmatter(
         {
             "type": "instrument",
             "kind": kind,
             "tradable": tradable,
             "tags": tags,
+            "themes": watching_themes,
+            "theme_count": len(watching_themes),
         }
     )
     lines = [fm, "", BANNER, "", f"# {symbol}", ""]
@@ -528,6 +553,71 @@ def render_coverage_note(
     return "\n".join(lines)
 
 
+def render_dashboard_note() -> str:
+    """The Dataview MOC — the *queryable* version of Coverage.md.
+
+    Fenced ```dataview blocks run over the enriched frontmatter that the theme
+    and instrument notes now carry. Without the Dataview community plugin these
+    render as plain code blocks (graceful degradation); the static equivalent
+    always lives in [[Coverage]].
+    """
+    lines = [
+        _frontmatter({"type": "dashboard", "tags": ["dashboard", "dataview"]}),
+        "",
+        BANNER,
+        "",
+        "# Dashboard",
+        "",
+        "The **queryable** mirror of [[Coverage]]. These blocks activate with "
+        "the **Dataview** community plugin; a static snapshot lives in "
+        "[[Coverage]] and the vault entry point is [[README]]. Without Dataview "
+        "each block renders as an inert code block — that is fine.",
+        "",
+        "## Coverage gaps (any flag, weakest first)",
+        "",
+        "Themes carrying any `coverage_flags` — the under-prepared ones. "
+        "`WATCH-ONLY` = no machine-tradable leg · `THIN` = < 8 instruments · "
+        "`SINGLE-KIND` = all one kind.",
+        "",
+        "```dataview",
+        "TABLE tradable_count, coverage_flags",
+        'FROM "Themes"',
+        "WHERE coverage_flags",
+        "SORT tradable_count ASC",
+        "```",
+        "",
+        "## All themes by tradable coverage",
+        "",
+        "```dataview",
+        "TABLE instrument_count, tradable_count, coverage_flags",
+        'FROM "Themes"',
+        "SORT tradable_count ASC",
+        "```",
+        "",
+        "## Most-watched instruments (crowded names)",
+        "",
+        "Instruments watched by the most themes — the crowded corroborators.",
+        "",
+        "```dataview",
+        "TABLE theme_count, kind",
+        'FROM "Instruments"',
+        "SORT theme_count DESC",
+        "LIMIT 20",
+        "```",
+        "",
+        "## Watch-only instruments (no tradable leg)",
+        "",
+        "```dataview",
+        "TABLE kind, themes",
+        'FROM "Instruments"',
+        "WHERE tradable = false",
+        "SORT theme_count DESC",
+        "```",
+        "",
+    ]
+    return "\n".join(lines)
+
+
 def render_vault_readme() -> str:
     lines = [
         "# curLit knowledge-graph vault (CL-uuy0)",
@@ -552,10 +642,48 @@ def render_vault_readme() -> str:
         "1. In Obsidian: **Open folder as vault** and point it at this directory, "
         "or copy this folder into an existing vault.",
         "2. Open `Coverage.md` first — it surfaces under-wired / watch-only "
-        "themes.",
-        "3. Use the graph view and the **backlinks** pane on any "
+        "themes. Then open [[Dashboard]] for the live, sortable Dataview view.",
+        "3. Use the graph view (colour-grouped out of the box: themes amber, "
+        "instruments teal, concepts violet) and the **backlinks** pane on any "
         "`Instruments/<SYMBOL>` note to see every theme that watches it "
         "(multi-hop).",
+        "",
+        "## Two-vault model (read this before you start writing)",
+        "",
+        "- **This vault is generated and read-only.** It is regenerated wholesale "
+        "by `make knowledge-vault` and is **gitignored** — anything you type into "
+        "these notes is **overwritten on the next regen**. Treat it as a mirror "
+        "for coverage analysis and ontology exploration, not a notebook.",
+        "- **For your own writing, make a SEPARATE personal vault OUTSIDE this "
+        "repo.** Copy the `Concepts/` and `Templates/` folders into it so your "
+        "hand-authored notes share this vault's conventions (`type`, `tags`, "
+        "`source`, `region`, `tickers`, ...). Your personal vault is yours to "
+        "edit freely; it is never touched by the exporter.",
+        "- **The YAML stays the source of truth.** Structural facts (themes, "
+        "instruments, directions, overlaps, coverage flags) live in "
+        "`configs/event_playbooks.yaml` + `configs/cross_asset_checks.yaml`. "
+        "Change those and regenerate; never reconcile the other way.",
+        "",
+        "## Recommended community plugins",
+        "",
+        "- **Dataview** (essential) — lights up [[Dashboard]]: the enriched "
+        "frontmatter (`coverage_flags`, `overlaps`, `theme_count`, `themes`) is "
+        "there precisely so its queries work. Without it, Dashboard's blocks "
+        "render inert but harmless.",
+        "- **Templater** (for your personal vault) — powers the `Templates/` "
+        "files so a new Theme/Company/Ticker/Event note starts with the right "
+        "frontmatter. Inert without the plugin.",
+        "- **Graph Analysis** (optional) — centrality / co-citation metrics over "
+        "the theme↔instrument graph.",
+        "",
+        "## Using the templates",
+        "",
+        "The `Templates/` folder holds five Templater templates (`Theme`, "
+        "`Company`, `Ticker`, `Event`, `Dashboard`) whose frontmatter matches "
+        "this vault's conventions. In your personal vault, point Templater at "
+        "that folder, then **Insert template** into a new note; Templater fills "
+        "the title and today's date. They are parked here for copying — the "
+        "generated vault does not itself apply them.",
         "",
         "## Regenerate",
         "",
@@ -671,6 +799,58 @@ def write_manifest(
 
 
 # ------------------------------------------------------------------------- #
+# Obsidian config + templates.
+# ------------------------------------------------------------------------- #
+
+
+def build_graph_json() -> dict[str, object]:
+    """The `.obsidian/graph.json` payload — colour-grouped by node tag.
+
+    Uses Obsidian's real graph.json schema (sane defaults + `colorGroups`) so
+    the graph opens grouped the first time. Overwrites whatever Obsidian wrote.
+    """
+    return {
+        "collapse-filter": True,
+        "search": "",
+        "showTags": False,
+        "showAttachments": False,
+        "hideUnresolved": False,
+        "showOrphans": True,
+        "collapse-color-groups": False,
+        "colorGroups": GRAPH_COLOR_GROUPS,
+        "collapse-display": True,
+        "showArrow": False,
+        "textFadeMultiplier": 0,
+        "nodeSizeMultiplier": 1,
+        "lineSizeMultiplier": 1,
+        "collapse-forces": True,
+        "centerStrength": 0.518713248970312,
+        "repelStrength": 10,
+        "linkStrength": 1,
+        "linkDistance": 250,
+        "scale": 1,
+        "close": True,
+    }
+
+
+def copy_templates(templates_dir: Path, guard: _CollisionGuard, out_dir: Path) -> int:
+    """Copy the committed Templater templates into the vault's Templates/ folder.
+
+    Templates live durably in the repo (`knowledge/obsidian/templates/`) AND are
+    mirrored into the vault for convenience. They are inert Markdown here (no
+    Templater plugin), so they are copied verbatim, not validated as wikilinks.
+    Returns the number of templates copied.
+    """
+    if not templates_dir.exists():
+        return 0
+    count = 0
+    for path in sorted(templates_dir.glob("*.md")):
+        guard.write(out_dir / "Templates" / path.name, path.read_text(encoding="utf-8"))
+        count += 1
+    return count
+
+
+# ------------------------------------------------------------------------- #
 # Orchestration.
 # ------------------------------------------------------------------------- #
 
@@ -682,6 +862,7 @@ def export_vault(
     cross_asset_path: Path | None = DEFAULT_CROSS_ASSET,
     retail_path: Path | None = DEFAULT_RETAIL,
     manifest_path: Path | None = DEFAULT_MANIFEST,
+    templates_dir: Path | None = DEFAULT_TEMPLATES,
     generated_at: str | None = None,
 ) -> ExportResult:
     """Generate the full Obsidian vault. Pure: reads YAML, writes Markdown."""
@@ -727,13 +908,28 @@ def export_vault(
         guard.write(out_dir / "Concepts" / f"{name}.md", body)
         link_count += len(extract_wikilinks(body))
 
-    # Coverage.md
+    # Coverage.md  (static snapshot)
     coverage = render_coverage_note(themes, overlaps)
     guard.write(out_dir / "Coverage.md", coverage)
     link_count += len(extract_wikilinks(coverage))
 
+    # Dashboard.md  (Dataview MOC — the queryable mirror of Coverage.md)
+    dashboard = render_dashboard_note()
+    guard.write(out_dir / "Dashboard.md", dashboard)
+    link_count += len(extract_wikilinks(dashboard))
+
     # README.md
     guard.write(out_dir / "README.md", render_vault_readme())
+
+    # Templates/  (Templater templates mirrored from the committed repo copy)
+    if templates_dir is not None:
+        copy_templates(templates_dir, guard, out_dir)
+
+    # .obsidian/graph.json  (colour-grouped graph, JSON not Markdown — not a node)
+    guard.write(
+        out_dir / ".obsidian" / "graph.json",
+        json.dumps(build_graph_json(), indent=2) + "\n",
+    )
 
     node_count = len(themes) + len(all_symbols) + len(concepts)
     result = ExportResult(
@@ -776,6 +972,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT, help="output vault dir")
     parser.add_argument("--seed", type=Path, default=DEFAULT_SEED, help="seed concepts dir")
     parser.add_argument(
+        "--templates", type=Path, default=DEFAULT_TEMPLATES, help="Templater templates dir"
+    )
+    parser.add_argument(
         "--playbooks", type=Path, default=DEFAULT_PLAYBOOKS, help="event playbooks YAML"
     )
     parser.add_argument(
@@ -801,6 +1000,7 @@ def main(argv: list[str] | None = None) -> int:
         cross_asset_path=args.cross_asset,
         retail_path=args.retail,
         manifest_path=args.manifest,
+        templates_dir=args.templates,
     )
     logger.info(
         "wrote %d files (%d nodes, %d links) to %s",

@@ -122,6 +122,9 @@ def _export(
         cross_asset_path=cross,
         retail_path=None,
         manifest_path=tmp_path / ".manifest.json",
+        # Isolate from the repo's committed templates — the templates-copy path
+        # has its own dedicated test with a tmp templates dir.
+        templates_dir=None,
         generated_at="2026-01-01T00:00:00+00:00",
     )
     return out, result
@@ -434,9 +437,168 @@ def test_conflicting_instrument_kind_fails_loud(tmp_path):
 
 def test_no_duplicate_output_filenames(tmp_path, mini_playbook):
     # A clean run must not collide; assert the guard recorded exactly the
-    # expected file count (2 themes + 8 instruments + coverage + readme).
+    # expected file count: 2 themes + 8 instruments + Coverage + Dashboard +
+    # README + graph.json (no seed => 0 concepts; no templates dir => 0
+    # templates in this fixture).
     out, result = _export(tmp_path, mini_playbook)
-    assert result.files_written == 2 + 8 + 1 + 1
-    # and every written path is unique on disk
+    assert result.files_written == 2 + 8 + 1 + 1 + 1 + 1
+    # and every written .md path is unique on disk
     written = list(out.rglob("*.md"))
     assert len(written) == len({p.resolve() for p in written})
+
+
+# ------------------------------------------------------------------------- #
+# Enriched frontmatter (Dataview-queryable, 100% derivable).
+# ------------------------------------------------------------------------- #
+
+
+def _frontmatter_block(text: str) -> str:
+    """Return the YAML frontmatter (the first `---`-delimited block) of a note."""
+    assert text.startswith("---\n")
+    end = text.index("\n---", 4)
+    return text[4:end]
+
+
+def test_theme_frontmatter_has_overlaps_and_coverage_flags(tmp_path, mini_playbook):
+    out, _ = _export(tmp_path, mini_playbook)
+    beta_fm = _frontmatter_block((out / "Themes" / "beta.md").read_text())
+    # beta is all equity_watch => WATCH-ONLY + SINGLE-KIND + THIN (4 < 8), and
+    # overlaps alpha (shares FRO/STNG/XOM = 3).
+    assert "coverage_flags: [WATCH-ONLY, THIN, SINGLE-KIND]" in beta_fm
+    assert "overlaps: [alpha]" in beta_fm
+    assert "watch_term_count: 1" in beta_fm  # beta has one watch term
+    alpha_fm = _frontmatter_block((out / "Themes" / "alpha.md").read_text())
+    # alpha has a tradable leg + 7 instruments + mixed kinds => no WATCH-ONLY /
+    # SINGLE-KIND, but THIN (7 < 8). Overlaps beta.
+    assert "coverage_flags: [THIN]" in alpha_fm
+    assert "WATCH-ONLY" not in alpha_fm
+    assert "overlaps: [beta]" in alpha_fm
+    assert "watch_term_count: 2" in alpha_fm
+
+
+def test_theme_frontmatter_flags_match_coverage(tmp_path, mini_playbook):
+    """The flag logic in the frontmatter must equal what Coverage.md renders."""
+    out, _ = _export(tmp_path, mini_playbook)
+    cov = (out / "Coverage.md").read_text()
+    for key in ("alpha", "beta"):
+        fm = _frontmatter_block((out / "Themes" / f"{key}.md").read_text())
+        flags_line = next(
+            ln for ln in fm.splitlines() if ln.startswith("coverage_flags:")
+        )
+        # parse "coverage_flags: [A, B]" -> {"A", "B"}
+        inside = flags_line.split("[", 1)[1].rsplit("]", 1)[0]
+        fm_flags = {f.strip() for f in inside.split(",") if f.strip()}
+        cov_line = next(ln for ln in cov.splitlines() if f"[[{key}]]" in ln)
+        cov_flags = {f for f in ("WATCH-ONLY", "THIN", "SINGLE-KIND") if f"`{f}`" in cov_line}
+        assert fm_flags == cov_flags, (key, fm_flags, cov_flags)
+
+
+def test_theme_frontmatter_keeps_existing_keys(tmp_path, mini_playbook):
+    out, _ = _export(tmp_path, mini_playbook)
+    fm = _frontmatter_block((out / "Themes" / "alpha.md").read_text())
+    for key in ("type: theme", "source:", "instrument_count:", "tradable_count:"):
+        assert key in fm
+
+
+def test_instrument_frontmatter_has_themes_and_count(tmp_path, mini_playbook):
+    out, _ = _export(tmp_path, mini_playbook)
+    # FRO is watched by both alpha and beta => theme_count 2, themes sorted.
+    fro_fm = _frontmatter_block((out / "Instruments" / "FRO.md").read_text())
+    assert "themes: [alpha, beta]" in fro_fm
+    assert "theme_count: 2" in fro_fm
+    # OXY only in beta => theme_count 1.
+    oxy_fm = _frontmatter_block((out / "Instruments" / "OXY.md").read_text())
+    assert "themes: [beta]" in oxy_fm
+    assert "theme_count: 1" in oxy_fm
+    # existing keys preserved
+    assert "type: instrument" in fro_fm
+    assert "kind: equity_watch" in fro_fm
+    assert "tradable: false" in fro_fm
+
+
+# ------------------------------------------------------------------------- #
+# Dashboard (Dataview MOC).
+# ------------------------------------------------------------------------- #
+
+
+def test_dashboard_written_with_dataview_blocks(tmp_path, mini_playbook):
+    out, _ = _export(tmp_path, mini_playbook)
+    dash = out / "Dashboard.md"
+    assert dash.exists()
+    text = dash.read_text()
+    assert "```dataview" in text
+    # the four required query surfaces
+    assert 'FROM "Themes"' in text
+    assert "WHERE coverage_flags" in text
+    assert "SORT theme_count DESC" in text
+    assert "WHERE tradable = false" in text
+    # degrade-gracefully note + cross-links to the static snapshot
+    assert "[[Coverage]]" in text
+    assert "[[README]]" in text
+    assert "Dataview" in text
+
+
+# ------------------------------------------------------------------------- #
+# .obsidian/graph.json — colour-grouped graph.
+# ------------------------------------------------------------------------- #
+
+
+def test_graph_json_written_with_three_color_groups(tmp_path, mini_playbook):
+    out, _ = _export(tmp_path, mini_playbook)
+    graph_path = out / ".obsidian" / "graph.json"
+    assert graph_path.exists()
+    graph = json.loads(graph_path.read_text())  # valid JSON
+    groups = graph["colorGroups"]
+    assert isinstance(groups, list) and len(groups) == 3
+    queries = {g["query"] for g in groups}
+    assert queries == {"tag:#theme", "tag:#instrument", "tag:#concept"}
+    rgbs = set()
+    for g in groups:
+        assert g["color"]["a"] == 1
+        rgb = g["color"]["rgb"]
+        assert isinstance(rgb, int)
+        rgbs.add(rgb)
+    assert len(rgbs) == 3  # three visually distinct colours
+
+
+# ------------------------------------------------------------------------- #
+# Templates copied into the vault.
+# ------------------------------------------------------------------------- #
+
+
+def test_templates_copied_into_vault(tmp_path, mini_playbook):
+    templates = tmp_path / "templates"
+    templates.mkdir()
+    (templates / "Theme.md").write_text(
+        "---\ntype: theme\ntags: [theme]\n---\n# <% tp.file.title %>\n",
+        encoding="utf-8",
+    )
+    (templates / "Event.md").write_text(
+        "---\ntype: event\n---\n# <% tp.file.title %>\n", encoding="utf-8"
+    )
+    out = tmp_path / "vault"
+    ekg.export_vault(
+        out_dir=out,
+        seed_dir=tmp_path / "no_seed",
+        playbooks_path=mini_playbook,
+        cross_asset_path=None,
+        retail_path=None,
+        manifest_path=tmp_path / ".manifest.json",
+        templates_dir=templates,
+        generated_at="2026-01-01T00:00:00+00:00",
+    )
+    assert (out / "Templates" / "Theme.md").exists()
+    assert (out / "Templates" / "Event.md").exists()
+    # copied verbatim (Templater syntax preserved, inert here)
+    assert "<% tp.file.title %>" in (out / "Templates" / "Theme.md").read_text()
+
+
+def test_committed_templates_match_vault_conventions():
+    """The repo's parked templates carry `type` frontmatter matching the vault."""
+    tpl_dir = ekg.DEFAULT_TEMPLATES
+    names = {p.name for p in tpl_dir.glob("*.md")}
+    assert {"Theme.md", "Company.md", "Ticker.md", "Event.md", "Dashboard.md"} <= names
+    for path in tpl_dir.glob("*.md"):
+        text = path.read_text(encoding="utf-8")
+        assert text.startswith("---\n")  # has YAML frontmatter
+        assert "type:" in text  # aligns to the vault's `type` convention
