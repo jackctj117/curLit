@@ -68,6 +68,9 @@ def _config_from_env():  # noqa: ANN202
         # the paper track record actually accumulates a sample.
         require_niche=_b("ALPACA_OPT_REQUIRE_NICHE", default=True),
         require_red_team=_b("ALPACA_OPT_REQUIRE_RED_TEAM", default=True),
+        # Technical-alignment gate (CL-3xoj): skip ideas whose computed price
+        # structure scores below this against the thesis. -1.01 disables.
+        min_alignment=_f("ALPACA_OPT_MIN_ALIGNMENT", -0.4),
     )
 
 

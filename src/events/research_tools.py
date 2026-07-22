@@ -133,9 +133,17 @@ class ResearchTools:
         max_excerpt_chars: int = 4000,
         max_summary_chars: int = 600,
         max_doc_process_chars: int = 600_000,
+        technicals_fn: Callable[[str], Any] | None = None,
     ) -> None:
         self._sec_http_get = sec_http_get or _default_sec_http_get
         self._profile_fn = profile_fn or yfinance_profile
+        # Computed price-structure context (CL-3xoj) — injectable; the live
+        # default fetches daily bars via yfinance. None-able for tests.
+        if technicals_fn is not None:
+            self._technicals_fn = technicals_fn
+        else:
+            from src.events.technical_context import compute_for_ticker  # noqa: PLC0415
+            self._technicals_fn = compute_for_ticker
         self.sec_user_agent = sec_user_agent or os.environ.get(
             "SEC_EDGAR_USER_AGENT", _DEFAULT_SEC_USER_AGENT,
         )
@@ -214,6 +222,15 @@ class ResearchTools:
                     "Latest SEC filing excerpt (ground your next hops in THIS — "
                     f"real named customers/suppliers/risks):\n{excerpt}",
                 )
+        # Computed technical context (CL-3xoj) — real levels/trend so entry
+        # triggers and invalidations reference actual price structure.
+        try:
+            ctx = self._technicals_fn(ticker)
+        except Exception:
+            ctx = None
+        if ctx is not None:
+            from src.events.technical_context import format_context_block  # noqa: PLC0415
+            parts.append(format_context_block(ctx))
         if len(parts) == 1:  # header only → no real data gathered
             return None
         return "\n".join(parts)

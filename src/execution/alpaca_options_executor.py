@@ -47,6 +47,12 @@ class OptionsExecConfig:
     require_niche: bool = True
     require_red_team: bool = True
     selection: ContractSelectionConfig = ContractSelectionConfig()
+    # Technical-alignment gate (CL-3xoj): skip an idea whose computed price
+    # structure is strongly AGAINST the thesis (alignment_score in [-1,1];
+    # e.g. buying calls into a confirmed downtrend at the lows = -1.0).
+    # Fail-open: no history/context -> no gate (consistent with the repo's
+    # missing-data posture). -1.01 disables the gate entirely.
+    min_alignment: float = -0.4
 
 
 def _default_price_fn(engine: Any) -> PriceFn:
@@ -111,6 +117,7 @@ def execute_pending_options(
     price_fn: PriceFn | None = None,
     cfg: OptionsExecConfig | None = None,
     now: datetime | None = None,
+    technicals_fn: Any = None,
 ) -> dict[str, int]:
     """Execute eligible options ideas within the daily cap. Returns a count by
     outcome. Never raises — a per-idea failure is recorded/logged and the loop
@@ -118,8 +125,12 @@ def execute_pending_options(
     cfg = cfg or OptionsExecConfig()
     now = now or datetime.now(UTC)
     fetch = price_fn or _default_price_fn(engine)
+    if technicals_fn is None:
+        from src.events.technical_context import compute_for_ticker  # noqa: PLC0415
+        technicals_fn = compute_for_ticker
     counts = {"submitted": 0, "skipped_premium": 0, "no_contract": 0,
-              "no_quote": 0, "no_price": 0, "error": 0, "market_closed": 0}
+              "no_quote": 0, "no_price": 0, "error": 0, "market_closed": 0,
+              "misaligned": 0}
 
     # Options MARKET orders are 422-rejected outside regular hours — don't even
     # try; just wait for the next open (CL-ldd2).
@@ -143,6 +154,26 @@ def execute_pending_options(
             if not price:
                 counts["no_price"] += 1
                 continue  # transient — retry next cycle (not recorded)
+            # Technical-alignment gate (CL-3xoj): don't buy calls into a
+            # confirmed downtrend (or puts into an uptrend). Transient (not
+            # recorded) — structure changes; the idea retries next cycle.
+            # Fail-open when no context is computable.
+            try:
+                ctx = technicals_fn(ticker)
+            except Exception:
+                ctx = None
+            if ctx is not None:
+                from src.events.technical_context import alignment_score  # noqa: PLC0415
+                direction = "bullish" if right == "call" else "bearish"
+                score = alignment_score(ctx, direction)
+                if score < cfg.min_alignment:
+                    counts["misaligned"] += 1
+                    logger.info(
+                        "alpaca options: skipped %s %s — technical alignment "
+                        "%.2f < %.2f (trend=%s, %s)", ticker, idea.get("action"),
+                        score, cfg.min_alignment, ctx.trend, ctx.breakout_state,
+                    )
+                    continue
             contract = resolve_contract(client, idea, price, now.date(),
                                         cfg.selection)
             if not contract:

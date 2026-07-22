@@ -21,6 +21,11 @@ from src.execution.alpaca_options_executor import (
 )
 
 NOW = datetime(2026, 7, 21, 12, 0, tzinfo=UTC)
+
+def _no_tech(_t: str):  # unit tests: no live yfinance — fail-open path
+    return None
+
+
 _CONTRACT = {"symbol": "RTX260821C00105000", "strike_price": "105",
              "expiration_date": "2026-08-18"}
 
@@ -105,7 +110,7 @@ def test_filter_requires_niche_red_team_and_confidence(engine):
 def test_submits_eligible_idea(engine):
     _seed(engine, "ok")
     client = _FakeClient(ask=2.0)  # premium = 2*100 = $200 < $500
-    counts = execute_pending_options(engine, client, _price, now=NOW)
+    counts = execute_pending_options(engine, client, _price, now=NOW, technicals_fn=_no_tech)
     assert counts["submitted"] == 1
     assert client.orders == [("RTX260821C00105000", 1, "buy")]
     with engine.connect() as c:
@@ -117,7 +122,7 @@ def test_submits_eligible_idea(engine):
 def test_skips_when_premium_over_cap(engine):
     _seed(engine, "pricey")
     client = _FakeClient(ask=7.0)  # 7*100 = $700 > $500 cap
-    counts = execute_pending_options(engine, client, _price, now=NOW)
+    counts = execute_pending_options(engine, client, _price, now=NOW, technicals_fn=_no_tech)
     assert counts["skipped_premium"] == 1 and counts["submitted"] == 0
     assert client.orders == []
     with engine.connect() as c:
@@ -130,7 +135,7 @@ def test_daily_cap_enforced(engine):
         _seed(engine, f"i{i}")
     client = _FakeClient(ask=1.0)
     counts = execute_pending_options(
-        engine, client, _price, cfg=OptionsExecConfig(max_per_day=2), now=NOW)
+        engine, client, _price, cfg=OptionsExecConfig(max_per_day=2), now=NOW, technicals_fn=_no_tech)
     assert counts["submitted"] == 2
     assert len(client.orders) == 2
 
@@ -138,16 +143,16 @@ def test_daily_cap_enforced(engine):
 def test_dedup_not_reexecuted(engine):
     _seed(engine, "once")
     client = _FakeClient(ask=1.0)
-    execute_pending_options(engine, client, _price, now=NOW)
+    execute_pending_options(engine, client, _price, now=NOW, technicals_fn=_no_tech)
     # second run: the idea is already recorded → not fetched again.
-    counts = execute_pending_options(engine, client, _price, now=NOW)
+    counts = execute_pending_options(engine, client, _price, now=NOW, technicals_fn=_no_tech)
     assert counts["submitted"] == 0
     assert len(client.orders) == 1  # only the first run bought
 
 
 def test_transient_no_contract_not_recorded_and_retries(engine):
     _seed(engine, "nc")
-    counts = execute_pending_options(engine, _FakeClient(contract=None), _price, now=NOW)
+    counts = execute_pending_options(engine, _FakeClient(contract=None), _price, now=NOW, technicals_fn=_no_tech)
     assert counts["no_contract"] == 1 and counts["submitted"] == 0
     # NOT recorded → still fetchable next cycle.
     assert {i["idea_id"] for i in fetch_executable_ideas(engine, OptionsExecConfig())} == {"nc"}
@@ -155,19 +160,64 @@ def test_transient_no_contract_not_recorded_and_retries(engine):
 
 def test_no_quote_is_transient(engine):
     _seed(engine, "nq")
-    counts = execute_pending_options(engine, _FakeClient(ask=None), _price, now=NOW)
+    counts = execute_pending_options(engine, _FakeClient(ask=None), _price, now=NOW, technicals_fn=_no_tech)
     assert counts["no_quote"] == 1
 
 
 def test_no_price_skips(engine):
     _seed(engine, "np")
-    counts = execute_pending_options(engine, _FakeClient(), lambda t: None, now=NOW)
+    counts = execute_pending_options(engine, _FakeClient(), lambda t: None, now=NOW, technicals_fn=_no_tech)
     assert counts["no_price"] == 1 and counts["submitted"] == 0
 
 
 def test_market_closed_skips_all(engine):
     _seed(engine, "closed")
     client = _FakeClient(ask=1.0, market_open=False)
-    counts = execute_pending_options(engine, client, _price, now=NOW)
+    counts = execute_pending_options(engine, client, _price, now=NOW, technicals_fn=_no_tech)
     assert counts["market_closed"] == 1 and counts["submitted"] == 0
     assert client.orders == []  # nothing attempted
+
+
+# --------------------------------------------------------------------------- #
+# technical-alignment gate (CL-3xoj)
+# --------------------------------------------------------------------------- #
+
+from src.events.technical_context import TechnicalContext  # noqa: E402
+
+
+def _ctx(trend: str, breakout: str) -> TechnicalContext:
+    return TechnicalContext(
+        ticker="RTX", last_close=100.0, sma20=95.0, sma50=90.0, trend=trend,
+        pct_from_20d_high=-0.05, pct_from_20d_low=0.05, support=90.0,
+        resistance=105.0, breakout_state=breakout, volume_ratio=1.0,
+    )
+
+
+def test_misaligned_calls_skipped(engine):
+    # buy_calls into a confirmed downtrend at the lows -> alignment -1.0.
+    _seed(engine, "mis")
+    client = _FakeClient(ask=1.0)
+    counts = execute_pending_options(
+        engine, client, _price, now=NOW,
+        technicals_fn=lambda t: _ctx("downtrend", "at_lows"))
+    assert counts["misaligned"] == 1 and counts["submitted"] == 0
+    assert client.orders == []
+    # transient: still fetchable next cycle
+    assert {i["idea_id"] for i in fetch_executable_ideas(engine, OptionsExecConfig())} == {"mis"}
+
+
+def test_aligned_calls_submitted(engine):
+    _seed(engine, "al")
+    client = _FakeClient(ask=1.0)
+    counts = execute_pending_options(
+        engine, client, _price, now=NOW,
+        technicals_fn=lambda t: _ctx("uptrend", "at_highs"))
+    assert counts["submitted"] == 1
+
+
+def test_no_context_fails_open(engine):
+    _seed(engine, "noctx")
+    client = _FakeClient(ask=1.0)
+    counts = execute_pending_options(
+        engine, client, _price, now=NOW, technicals_fn=lambda t: None)
+    assert counts["submitted"] == 1  # gate can't judge -> allow
