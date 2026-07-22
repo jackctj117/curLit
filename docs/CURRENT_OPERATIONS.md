@@ -78,6 +78,24 @@ Everything is PAPER. No real money moves anywhere.
 - **Sizing philosophy**: 1 contract, breadth over size — edge measurement is
   size-independent; more distinct positions = more information, bigger
   positions = only more variance.
+- **Exit manager (CL-3rho)**: every cycle, BEFORE entries, each open option
+  position is matched back to its idea row and run through prioritized
+  rules — first hit sells-to-close the full position:
+  1. `thesis_invalidated` (originating geo_event EXPIRED/DISMISSED, idea
+     cancelled), 2. `time_stop` (idea's `time_stop_days`, default 10d,
+     `ALPACA_OPT_DEFAULT_TIME_STOP_DAYS`), 3. `stop_loss` (premium −40%,
+     `ALPACA_OPT_STOP_LOSS_PCT`), 4. `profit_target` (premium +80%,
+     `ALPACA_OPT_PROFIT_TARGET_PCT`), 5. `expiry_protect` (≤4 DTE,
+     `ALPACA_OPT_EXPIRY_PROTECT_DAYS` — date-based, fires even with missing
+     quotes), 6. `stale` safety net (time_stop + 2d).
+  Master switch `ALPACA_OPT_EXIT_ENABLED` (default on). Exit side recorded
+  on the SAME `alpaca_option_orders` row (mig 016: exit_status/reason/
+  order_id/premium/pnl_pct/exited_at); the trade idea mirrors to
+  `closed`. Unmatched Alpaca positions are flagged and NEVER auto-managed;
+  vanished positions are finalized honestly (`expired_worthless` −100% /
+  `closed_external`); sells reuse crash-safe `curlit-exit-<idea_id>`
+  dedup. Positions therefore no longer accumulate to expiry — the book is
+  self-clearing.
 
 ### 1c. Explicitly NOT auto-traded
 - **Equities and options remain advisory-first**: every idea still flows to
