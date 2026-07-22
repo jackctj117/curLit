@@ -99,7 +99,13 @@ class OrderManager:
         self._halted = False
         self._pending: dict[str, list[Order]] = {}
 
-    def submit_intent(self, intent: OrderIntent, *, bypass_halt: bool = False) -> str:
+    def submit_intent(
+        self,
+        intent: OrderIntent,
+        *,
+        bypass_halt: bool = False,
+        positions: list[Any] | None = None,
+    ) -> str:
         """Convert one intent into a broker order (delta vs current position).
 
         bypass_halt (CL-i4tx): reserved for the risk layer's emergency
@@ -107,6 +113,12 @@ class OrderManager:
         "Halt new trades" must never block de-risking — e.g. the trailing
         stop halts at -20%, then drawdown_limit needs to flatten at -40%.
         Strategy paths must never set it.
+
+        positions (CL-a0sv): optional pre-fetched broker snapshot. The
+        coordinator submits a post-aggregation batch (max ONE intent per
+        symbol), so one snapshot is delta-accurate for the whole batch —
+        reusing it drops N per-intent get_positions round-trips. When
+        None, fetch live (correct default for standalone callers).
         """
         with self._lock:
             if self._halted and not bypass_halt:
@@ -119,9 +131,12 @@ class OrderManager:
             # exit deltas of 0 (positions never closed at the broker) and
             # entries that stacked on an existing position. Routing below
             # still uses intent.symbol (broker _to_oanda is idempotent).
+            snapshot = (
+                positions if positions is not None
+                else self.broker.get_positions()
+            )
             current_positions = {
-                canonical_symbol(p.symbol): p.quantity
-                for p in self.broker.get_positions()
+                canonical_symbol(p.symbol): p.quantity for p in snapshot
             }
             current_qty = current_positions.get(canonical_symbol(intent.symbol), 0.0)
             delta = intent.target_position - current_qty
@@ -152,7 +167,11 @@ class OrderManager:
             return intent.intent_id
 
     async def submit_intent_async(
-        self, intent: OrderIntent, *, bypass_halt: bool = False,
+        self,
+        intent: OrderIntent,
+        *,
+        bypass_halt: bool = False,
+        positions: list[Any] | None = None,
     ) -> str:
         """Async wrapper around submit_intent for event-loop callers (CL-xdnh).
 
@@ -164,7 +183,8 @@ class OrderManager:
         kill switches, reconciler).
         """
         return await asyncio.to_thread(
-            self.submit_intent, intent, bypass_halt=bypass_halt,
+            self.submit_intent, intent,
+            bypass_halt=bypass_halt, positions=positions,
         )
 
     def _submit_with_retry(

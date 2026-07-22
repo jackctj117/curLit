@@ -37,7 +37,7 @@ import numpy as np
 import pandas as pd
 
 from src.data.economic_calendar import BlackoutAction, BlackoutEvaluator
-from src.execution.broker import Broker
+from src.execution.broker import Broker, currency_pair
 from src.execution.oms import OrderIntent, OrderManager, Urgency
 from src.monitoring.logging_setup import LogContext
 from src.monitoring.metrics import blackout_size_down
@@ -424,8 +424,17 @@ class PortfolioCoordinator:
                     # off-loop via to_thread (CL-xdnh). Called through
                     # to_thread rather than OrderManager.submit_intent_async
                     # so OMS doubles that only implement submit_intent keep
-                    # working.
-                    await asyncio.to_thread(self.oms.submit_intent, final)
+                    # working. When the validator already fetched a positions
+                    # snapshot, reuse it (CL-a0sv) — post-aggregation there is
+                    # one intent per symbol, so the snapshot stays
+                    # delta-accurate across the batch.
+                    if current_positions is not None:
+                        await asyncio.to_thread(
+                            self.oms.submit_intent, final,
+                            positions=current_positions,
+                        )
+                    else:
+                        await asyncio.to_thread(self.oms.submit_intent, final)
                     # DB write — also blocking I/O.
                     await asyncio.to_thread(
                         self.state.record_portfolio_order,
@@ -446,12 +455,14 @@ class PortfolioCoordinator:
         FULL_SIZE / PAUSE_NEW_ENTRIES / EXIT_FLAT are not handled here:
         FULL_SIZE is a no-op, the other two are rejected by the validator.
 
-        Currency derived from symbol[:3] (e.g. EURUSD → EUR) — same
+        Currency derived via currency_pair() (CL-rybp) — canonicalized, so
+        OANDA-form 'EUR_USD' and compact 'EURUSD' both yield 'EUR'; same
         convention as PreTradeValidator._currency_from_symbol.
         """
         if self.blackout_evaluator is None:
             return target_position
-        currency = symbol[:3].upper() if symbol and len(symbol) >= 3 else None
+        pair = currency_pair(symbol)
+        currency = pair[0] if pair else None
         decision = self.blackout_evaluator.evaluate(
             now=datetime.now(UTC), currency=currency,
         )
@@ -667,10 +678,15 @@ class PortfolioCoordinator:
         """Sum notional exposure per currency. EUR/USD long → +EUR, -USD."""
         exposures: dict[str, float] = defaultdict(float)
         for symbol, agg in aggregated.items():
-            assert len(symbol) >= 6, (
-                f"symbol {symbol!r} too short to extract currency pair (need 6 chars)"
-            )
-            base, quote = symbol[:3], symbol[3:6]
+            pair = currency_pair(symbol)
+            if pair is None:
+                # Not an FX pair (index CFD, malformed) — skipping is honest;
+                # slicing raw fabricated legs like '_US' / 'X50' (CL-rybp).
+                logger.debug(
+                    "currency exposure: %r is not an FX pair — skipped", symbol,
+                )
+                continue
+            base, quote = pair
             notional = agg["target_position"] * (self._get_price(symbol) or 0.0)
             exposures[base] += notional
             exposures[quote] -= notional

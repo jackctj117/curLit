@@ -385,39 +385,42 @@ def build_coordinator(
     return coordinator
 
 
-def build_kill_switch_manager(broker: Any, oms: OrderManager) -> Any | None:
+def build_kill_switch_manager(broker: Any, oms: OrderManager) -> Any:
     """CL-ep0c: construct the KillSwitchManager for the live engine.
 
     Config comes from the active risk profile's kill_switches block; the
     DataProvider feeds the open_position_correlation switch (None-safe —
-    if the DB is unreachable that switch simply never fires). Returns
-    None on failure so the engine still starts, mirroring the other
-    builders here.
+    if the DB is unreachable that switch simply never fires).
+
+    FAIL CLOSED (CL-r8gv): a construction failure RAISES instead of
+    returning None — an engine that silently boots without its automated
+    brakes is exactly the "operators trust Arch §5.5 and are unprotected"
+    failure the review flagged. A corrupt risk profile must stop the boot.
     """
+    from dataclasses import asdict  # noqa: PLC0415
+
+    from src.risk.kill_switches import KillSwitchManager  # noqa: PLC0415
+    from src.risk.risk_profile import load_active_profile  # noqa: PLC0415
+
+    data_provider: DataProvider | None = None
     try:
-        from dataclasses import asdict  # noqa: PLC0415
-
-        from src.risk.kill_switches import KillSwitchManager  # noqa: PLC0415
-        from src.risk.risk_profile import load_active_profile  # noqa: PLC0415
-
-        data_provider: DataProvider | None = None
-        try:
-            data_provider = DataProvider(_build_db_engine())
-        except Exception:
-            logger.exception(
-                "DataProvider unavailable for kill switches — "
-                "open_position_correlation switch disabled",
-            )
+        data_provider = DataProvider(_build_db_engine())
+    except Exception:
+        logger.exception(
+            "DataProvider unavailable for kill switches — "
+            "open_position_correlation switch disabled",
+        )
+    try:
         return KillSwitchManager(
             broker, oms,
             config=asdict(load_active_profile().kill_switches),
             data_provider=data_provider,
         )
-    except Exception:
-        logger.exception(
-            "Failed to construct KillSwitchManager; engine runs without "
-            "automated kill switches",
-        )
+    except Exception as exc:
+        raise RuntimeError(
+            "Kill-switch construction failed — refusing to start an "
+            "unprotected engine (fix the risk profile / config and retry)",
+        ) from exc
         return None
 
 
@@ -492,15 +495,20 @@ async def run_engine(broker_mode: str = "paper") -> None:
         kill_switch_manager=kill_switch_manager,
     )
 
-    # Wire web API to live state
+    # Wire web API to live state. A failure here means the control plane
+    # (halt/resume/close endpoints) is DEAD while the engine trades — say
+    # so loudly instead of silently continuing (CL-b0ws).
     try:
         from src.web.api import set_runtime
         set_runtime(broker, oms, strategies)
         logger.info("Web API runtime wired")
     except Exception:
-        pass
+        logger.exception(
+            "Web API runtime wiring FAILED — /api control endpoints will "
+            "not reflect or control this engine",
+        )
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     shutdown_started = False
 
     async def _shutdown() -> None:

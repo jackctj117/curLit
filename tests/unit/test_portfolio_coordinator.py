@@ -43,7 +43,7 @@ class _RecordingOMS:
     def __init__(self) -> None:
         self.submitted: list[OrderIntent] = []
 
-    def submit_intent(self, intent: OrderIntent) -> str:
+    def submit_intent(self, intent: OrderIntent, **kwargs: object) -> str:
         self.submitted.append(intent)
         return intent.intent_id
 
@@ -896,7 +896,7 @@ class _ThreadRecordingOMS(_RecordingOMS):
         super().__init__()
         self.call_threads: list[int] = []
 
-    def submit_intent(self, intent: OrderIntent) -> str:
+    def submit_intent(self, intent: OrderIntent, **kwargs: object) -> str:
         import threading
 
         self.call_threads.append(threading.get_ident())

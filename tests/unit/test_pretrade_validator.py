@@ -34,7 +34,7 @@ class _RecordingOMS:
     def __init__(self) -> None:
         self.submitted: list[OrderIntent] = []
 
-    def submit_intent(self, intent: OrderIntent) -> str:
+    def submit_intent(self, intent: OrderIntent, **kwargs: object) -> str:
         self.submitted.append(intent)
         return intent.intent_id
 

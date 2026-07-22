@@ -257,9 +257,10 @@ class LiveEngine:
         ``reconciliation_failure`` kill switch via the context builder.
         """
         if self.cold_start_reconciler is None:
-            logger.info(
-                "No reconciler wired — periodic alignment checks disabled "
-                "(reconciliation_failure kill switch has no feed)",
+            logger.warning(
+                "No reconciler wired — periodic alignment checks disabled; "
+                "the reconciliation_failure kill switch has NO FEED and "
+                "will never fire (CL-r8gv)",
             )
             return
         while self.running:

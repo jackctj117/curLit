@@ -45,7 +45,7 @@ from enum import Enum
 from typing import Any, Protocol, runtime_checkable
 
 from src.data.economic_calendar import BlackoutAction, BlackoutEvaluator
-from src.execution.broker import Broker, Position
+from src.execution.broker import Broker, Position, currency_pair
 from src.execution.oms import OrderIntent
 from src.monitoring.metrics import pretrade_rejections
 from src.portfolio.coordinator import PortfolioConstraints
@@ -271,10 +271,12 @@ class PreTradeValidator:
 
     @staticmethod
     def _currency_from_symbol(symbol: str) -> str | None:
-        """FX pair like 'EUR_USD' or 'EURUSD' → base currency 'EUR'."""
-        if not symbol or len(symbol) < 3:
-            return None
-        return symbol[:3].upper()
+        """FX pair like 'EUR_USD' or 'EURUSD' → base currency 'EUR'.
+
+        Canonicalized via currency_pair() (CL-rybp); non-pairs (indices,
+        malformed) return None instead of a fabricated 3-char slice."""
+        pair = currency_pair(symbol)
+        return pair[0] if pair else None
 
     def _check_instrument_tradable(self, intent: OrderIntent) -> RejectionEvent | None:
         if self.tradability is None:
@@ -393,16 +395,18 @@ class PreTradeValidator:
         # Aggregate post-trade per-currency exposure.
         exposures: dict[str, float] = defaultdict(float)
         for sym, pos in position_map.items():
-            if len(sym) < 6:
+            pair = currency_pair(sym)  # CL-rybp: dialect-safe, skips non-FX
+            if pair is None:
                 continue
-            base, quote = sym[:3], sym[3:6]
+            base, quote = pair
             sym_price = self._get_price(sym)
             notional = pos.quantity * sym_price
             exposures[base] += notional
             exposures[quote] -= notional
         # Overlay this trade.
-        if len(intent.symbol) >= 6:
-            base, quote = intent.symbol[:3], intent.symbol[3:6]
+        intent_pair = currency_pair(intent.symbol)
+        if intent_pair is not None:
+            base, quote = intent_pair
             old_notional = (
                 position_map[intent.symbol].quantity * self._get_price(intent.symbol)
                 if intent.symbol in position_map

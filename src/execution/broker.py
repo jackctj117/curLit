@@ -92,6 +92,21 @@ def canonical_symbol(symbol: str) -> str:
     return str(symbol).replace("_", "").replace("/", "").replace("-", "").upper()
 
 
+def currency_pair(symbol: str) -> tuple[str, str] | None:
+    """(base, quote) for an FX pair in ANY symbol dialect, or None.
+
+    Raw slicing mis-parses OANDA-form symbols (``'EUR_USD'[3:6] == '_US'``)
+    and fabricates currency legs for indices (``SPX500_USD`` → ``'X50'``) —
+    CL-rybp. Canonicalize first; only a 6-letter result is a currency pair
+    (metals count: ``XAU``/``XAG`` are ISO currency codes). Non-pairs return
+    None so callers skip them instead of mis-attributing risk.
+    """
+    s = canonical_symbol(symbol)
+    if len(s) == 6 and s.isalpha():
+        return s[:3], s[3:6]
+    return None
+
+
 @dataclass
 class Position:
     symbol: str
