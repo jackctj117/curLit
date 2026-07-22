@@ -38,6 +38,24 @@ logger = logging.getLogger(__name__)
 PriceFn = Callable[[str], float | None]
 
 
+def _is_duplicate_client_order_id(exc: BaseException) -> bool:
+    """True when Alpaca rejected the order because our client_order_id was
+    already used — i.e. a PRIOR (crashed) cycle already bought this idea.
+    Alpaca enforces uniqueness and returns a 422 naming client_order_id."""
+    text = str(exc).lower()
+    body = ""
+    resp = getattr(exc, "response", None)
+    if resp is not None:
+        try:
+            body = str(getattr(resp, "text", "")).lower()
+        except Exception:
+            body = ""
+    hay = text + " " + body
+    return "client_order_id" in hay and (
+        "unique" in hay or "duplicate" in hay or "already" in hay
+    )
+
+
 @dataclass(frozen=True)
 class OptionsExecConfig:
     min_confidence: float = 0.55
@@ -199,7 +217,31 @@ def execute_pending_options(
                 logger.info("alpaca options: skipped %s (%s) premium $%.0f > cap",
                             ticker, occ, premium)
                 continue
-            order = client.submit_option_order(occ, cfg.qty, "buy")
+            # client_order_id = idea_id (review P1): the order-then-record
+            # sequence could double-buy if we crashed after the fill but
+            # before the DB row — the next cycle re-fetched the idea and
+            # bought again. Alpaca's client_order_id uniqueness makes the
+            # resubmit fail, which we recover below as already-executed.
+            try:
+                order = client.submit_option_order(
+                    occ, cfg.qty, "buy",
+                    client_order_id=f"curlit-{idea['idea_id']}",
+                )
+            except Exception as sub_exc:
+                if _is_duplicate_client_order_id(sub_exc):
+                    _record(engine, {**base, "alpaca_order_id": "recovered",
+                                     "status": "submitted",
+                                     "detail": "recovered: prior cycle already "
+                                               "bought (duplicate "
+                                               "client_order_id)"})
+                    counts["recovered"] = counts.get("recovered", 0) + 1
+                    logger.warning(
+                        "alpaca options: idea %s was ALREADY bought by a "
+                        "prior crashed cycle — recorded, not re-bought",
+                        idea["idea_id"],
+                    )
+                    continue
+                raise
             _record(engine, {**base,
                              "alpaca_order_id": str(order.get("id") or ""),
                              "status": "submitted", "detail": None})

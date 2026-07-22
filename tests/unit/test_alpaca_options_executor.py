@@ -47,7 +47,8 @@ class _FakeClient:
     def get_option_ask(self, occ: str) -> float | None:
         return self._ask
 
-    def submit_option_order(self, occ: str, qty: int, side: str = "buy") -> dict[str, Any]:
+    def submit_option_order(self, occ: str, qty: int, side: str = "buy",
+                            client_order_id: str | None = None) -> dict[str, Any]:
         self.orders.append((occ, qty, side))
         return {"id": f"ord-{len(self.orders)}", "status": "accepted"}
 
@@ -221,3 +222,48 @@ def test_no_context_fails_open(engine):
     counts = execute_pending_options(
         engine, client, _price, now=NOW, technicals_fn=lambda t: None)
     assert counts["submitted"] == 1  # gate can't judge -> allow
+
+
+# --------------------------------------------------------------------------- #
+# double-buy protection via client_order_id (review P1)
+# --------------------------------------------------------------------------- #
+
+
+def test_submit_passes_idea_id_as_client_order_id(engine):
+    _seed(engine, "cid1")
+
+    class _CidClient(_FakeClient):
+        def __init__(self):
+            super().__init__(ask=1.0)
+            self.cids = []
+
+        def submit_option_order(self, occ, qty, side="buy", client_order_id=None):
+            self.cids.append(client_order_id)
+            return super().submit_option_order(occ, qty, side)
+
+    client = _CidClient()
+    execute_pending_options(engine, client, _price, now=NOW, technicals_fn=_no_tech)
+    assert client.cids == ["curlit-cid1"]
+
+
+def test_duplicate_client_order_id_recovers_not_rebuys(engine):
+    """Crash-after-fill-before-record: the resubmit hits Alpaca's uniqueness
+    check; we must record the idea as already-executed, never buy again."""
+    _seed(engine, "dup1")
+
+    class _DupClient(_FakeClient):
+        def submit_option_order(self, occ, qty, side="buy", client_order_id=None):
+            raise RuntimeError(
+                "422 client_order_id must be unique: order already exists")
+
+    client = _DupClient(ask=1.0)
+    counts = execute_pending_options(engine, client, _price, now=NOW,
+                                     technicals_fn=_no_tech)
+    assert counts.get("recovered") == 1
+    assert counts["submitted"] == 0 and counts["error"] == 0
+    with engine.connect() as c:
+        row = c.execute(text("SELECT status, detail FROM alpaca_option_orders "
+                             "WHERE idea_id='dup1'")).one()
+    assert row[0] == "submitted" and "recovered" in row[1]
+    # dedup restored: not fetchable next cycle
+    assert fetch_executable_ideas(engine, OptionsExecConfig()) == []

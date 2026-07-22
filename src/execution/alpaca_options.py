@@ -162,11 +162,21 @@ class AlpacaOptionsClient:
 
     def submit_option_order(
         self, occ_symbol: str, qty: int, side: str = "buy",
+        client_order_id: str | None = None,
     ) -> dict[str, Any]:
+        """Submit a market option order.
+
+        ``client_order_id`` (review P1, double-buy): the executor passes the
+        idea_id here so a crash between fill and DB record cannot re-buy —
+        Alpaca enforces client_order_id uniqueness and rejects the duplicate,
+        which the executor recovers as already-executed.
+        """
         body = {
             "symbol": occ_symbol, "qty": str(int(qty)), "side": side,
             "type": "market", "time_in_force": "day",
         }
+        if client_order_id:
+            body["client_order_id"] = client_order_id
         result: dict[str, Any] = self._req("POST", "/v2/orders", json_body=body)
         return result
 
