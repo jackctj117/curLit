@@ -163,7 +163,7 @@ activity** (P/C volume skew, volume vs self-built baseline, ATM IV).
 
 ---
 
-## 3. The eleven daemons
+## 3. The twelve daemons
 
 | Daemon | Command | Cadence | Log |
 |---|---|---|---|
@@ -177,6 +177,7 @@ activity** (P/C volume skew, volume vs self-built baseline, ATM IV).
 | Outcome scorer | `scripts/score_outcomes.py --loop 86400` | daily | `logs/score_outcomes.log` |
 | Telegram bot | `scripts/telegram_approval_bot.py` | long-poll | `logs/` |
 | Truth-post event study | `scripts/truth_monitor.py --loop 300` | 5 min — RESEARCH ONLY (CL-s9as): ingest public trumpstruth.org archive → Haiku classification (topic/tone/entities/buy-language) → measure SPY/QQQ/sector-ETF reaction at 1–120min windows (mig 017). NO orders, NO alerts, NO family-holdings logic — the deliverable is `scripts/truth_report.py` (topic×window returns, reversal rate, decay). "No durable edge" is a valid result | `logs/truth_monitor.log` |
+| Fleet watchdog | `scripts/health_watch.py --loop 300` | 5 min — Telegram page on daemon up→down transitions (once per onset + recovery notice; born from the 34-min silent x_monitor gap) and on X-ingest staleness (newest x-sourced event > `X_INGEST_STALE_HOURS`, default 3h). Nothing watches the watchdog by design — simplest process in the fleet (CL-fmqp) | `logs/health_watch.log` |
 | Morning digest | `scripts/morning_digest.py --loop 300` | once per trading morning at 09:15 ET (`MORNING_DIGEST_TIME_ET`) — TWO Telegram messages: (1) FULL positions, long and short with economic reading + closed-last-24h realized P&L + balances; (2) LONG ideas — the pipeline's pending bullish shopping list by confidence, independent of execution (CL-ydp8) | `logs/morning_digest.log` |
 
 **Fleet control: `./scripts/daemons.sh start|stop|status`** (idempotent —

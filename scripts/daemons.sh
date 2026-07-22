@@ -32,6 +32,7 @@ DAEMONS=(
   "telegram_bot|telegram_approval_bot.py|$PY scripts/telegram_approval_bot.py"
   "morning_digest|morning_digest.py --loop|$PY scripts/morning_digest.py --loop 300"
   "truth_monitor|truth_monitor.py --loop|$PY scripts/truth_monitor.py --loop 300"
+  "health_watch|health_watch.py --loop|$PY scripts/health_watch.py --loop 300"
   # reddit_monitor: uncomment once Reddit API approval lands (CL-okww)
   # "reddit_monitor|reddit_monitor.py --loop|$PY scripts/reddit_monitor.py --loop 300"
 )
