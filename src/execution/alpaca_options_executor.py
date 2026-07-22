@@ -119,7 +119,14 @@ def execute_pending_options(
     now = now or datetime.now(UTC)
     fetch = price_fn or _default_price_fn(engine)
     counts = {"submitted": 0, "skipped_premium": 0, "no_contract": 0,
-              "no_quote": 0, "no_price": 0, "error": 0}
+              "no_quote": 0, "no_price": 0, "error": 0, "market_closed": 0}
+
+    # Options MARKET orders are 422-rejected outside regular hours — don't even
+    # try; just wait for the next open (CL-ldd2).
+    if not client.is_market_open():
+        logger.info("alpaca options: market closed — no orders this cycle")
+        counts["market_closed"] = 1
+        return counts
 
     budget = max(0, cfg.max_per_day - _submitted_today(engine, now))
     if budget <= 0:

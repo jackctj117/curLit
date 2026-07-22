@@ -26,10 +26,15 @@ _CONTRACT = {"symbol": "RTX260821C00105000", "strike_price": "105",
 
 
 class _FakeClient:
-    def __init__(self, contract: Any = _CONTRACT, ask: float | None = 2.0) -> None:
+    def __init__(self, contract: Any = _CONTRACT, ask: float | None = 2.0,
+                 market_open: bool = True) -> None:
         self._contract = contract
         self._ask = ask
+        self._market_open = market_open
         self.orders: list[Any] = []
+
+    def is_market_open(self) -> bool:
+        return self._market_open
 
     def find_contracts(self, *a: Any, **k: Any) -> list[dict[str, Any]]:
         return [self._contract] if self._contract else []
@@ -158,3 +163,11 @@ def test_no_price_skips(engine):
     _seed(engine, "np")
     counts = execute_pending_options(engine, _FakeClient(), lambda t: None, now=NOW)
     assert counts["no_price"] == 1 and counts["submitted"] == 0
+
+
+def test_market_closed_skips_all(engine):
+    _seed(engine, "closed")
+    client = _FakeClient(ask=1.0, market_open=False)
+    counts = execute_pending_options(engine, client, _price, now=NOW)
+    assert counts["market_closed"] == 1 and counts["submitted"] == 0
+    assert client.orders == []  # nothing attempted

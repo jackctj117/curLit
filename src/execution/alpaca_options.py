@@ -131,6 +131,17 @@ class AlpacaOptionsClient:
         result: dict[str, Any] = self._req("GET", "/v2/account")
         return result
 
+    def is_market_open(self) -> bool:
+        """True iff the market is open now. Options MARKET orders are rejected
+        (422) outside regular hours, so the executor gates on this. Fail-safe:
+        an unreadable clock returns False (don't submit into an unknown state)."""
+        try:
+            clock = self._req("GET", "/v2/clock")
+            return bool(clock.get("is_open"))
+        except Exception:
+            logger.warning("alpaca: market clock unavailable", exc_info=True)
+            return False
+
     def find_contracts(
         self, underlying: str, right: str, exp_gte: date, exp_lte: date,
         strike_gte: float, strike_lte: float, limit: int = 100,
