@@ -23,6 +23,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import text
 
@@ -65,12 +66,37 @@ class OptionsExecConfig:
     require_niche: bool = True
     require_red_team: bool = True
     selection: ContractSelectionConfig = ContractSelectionConfig()
+    #: No entries in the first N minutes of the regular session — option
+    #: spreads are widest right after the 9:30 ET open (day-one lesson:
+    #: market-buying cheap OTM contracts in the opening minute paid the
+    #: worst spreads of the day and instantly registered −40%+ "losses").
+    #: Ideas just wait — the 5-min loop naturally re-evaluates them once
+    #: the window passes. 0 disables.
+    entry_delay_min: int = 15
+    #: Urgency override: during the delay window, ideas at/above this
+    #: confidence may enter immediately (extremely strong signal on a
+    #: breaking event beats spread costs). 1.01 disables the override.
+    entry_delay_override_conf: float = 0.80
     # Technical-alignment gate (CL-3xoj): skip an idea whose computed price
     # structure is strongly AGAINST the thesis (alignment_score in [-1,1];
     # e.g. buying calls into a confirmed downtrend at the lows = -1.0).
     # Fail-open: no history/context -> no gate (consistent with the repo's
     # missing-data posture). -1.01 disables the gate entirely.
     min_alignment: float = -0.4
+
+
+_NY = ZoneInfo("America/New_York")
+
+
+def _entry_delay_active(now: datetime, delay_min: int) -> bool:
+    """True while inside the first ``delay_min`` minutes of the regular
+    session (measured from 9:30 ET). Negative minutes (pre-open — only
+    reachable if the market-open gate was faked) also count as delayed."""
+    if delay_min <= 0:
+        return False
+    ny = now.astimezone(_NY)
+    session_open = ny.replace(hour=9, minute=30, second=0, microsecond=0)
+    return (ny - session_open).total_seconds() < delay_min * 60
 
 
 def _default_price_fn(engine: Any) -> PriceFn:
@@ -148,7 +174,7 @@ def execute_pending_options(
         technicals_fn = compute_for_ticker
     counts = {"submitted": 0, "skipped_premium": 0, "no_contract": 0,
               "no_quote": 0, "no_price": 0, "error": 0, "market_closed": 0,
-              "misaligned": 0}
+              "misaligned": 0, "entry_delayed": 0}
 
     # Options MARKET orders are 422-rejected outside regular hours — don't even
     # try; just wait for the next open (CL-ldd2).
@@ -162,10 +188,21 @@ def execute_pending_options(
         logger.info("alpaca options: daily cap reached — no new orders")
         return counts
 
+    delay_active = _entry_delay_active(now, cfg.entry_delay_min)
+
     for idea in fetch_executable_ideas(engine, cfg):
         if counts["submitted"] >= budget:
             break
         ticker = str(idea.get("ticker") or "")
+        # Open-spread protection: no entries in the first N minutes of the
+        # session unless the signal is extremely strong. Transient (not
+        # recorded) — the idea re-evaluates on the next 5-min cycle, so a
+        # 9:30 signal simply enters at ~9:45 instead.
+        if delay_active and (
+            float(idea.get("confidence") or 0.0) < cfg.entry_delay_override_conf
+        ):
+            counts["entry_delayed"] += 1
+            continue
         right = "call" if str(idea.get("action")) == "buy_calls" else "put"
         try:
             price = fetch(ticker)

@@ -73,6 +73,11 @@ Everything is PAPER. No real money moves anywhere.
     scores below `ALPACA_OPT_MIN_ALIGNMENT` (−0.4) against the thesis
     skips the idea (no calls into a confirmed downtrend at the lows);
     fail-open when no history is computable;
+  - **open-spread entry delay**: no entries in the first 15 minutes of
+    the session (`ALPACA_OPT_ENTRY_DELAY_MIN`) — opening option spreads
+    registered instant −40%+ marks on day one; ideas simply re-evaluate
+    on the next 5-min cycle (~9:45 entry). Override: confidence ≥ 0.80
+    (`ALPACA_OPT_ENTRY_DELAY_OVERRIDE_CONF`) enters immediately;
   - dedup via `alpaca_option_orders` (migration 014) keyed by idea_id;
     terminal decisions recorded, transient misses retried.
 - **Sizing philosophy**: 1 contract, breadth over size — edge measurement is
@@ -85,10 +90,13 @@ Everything is PAPER. No real money moves anywhere.
      cancelled — NOT event EXPIRED, which is just the ~2h intraday FX
      gate lapsing), 2. `time_stop` (idea's `time_stop_days`, default 10d,
      `ALPACA_OPT_DEFAULT_TIME_STOP_DAYS`), 3. `stop_loss` (premium −40%,
-     `ALPACA_OPT_STOP_LOSS_PCT`), 4. `profit_target` (premium +80%,
-     `ALPACA_OPT_PROFIT_TARGET_PCT`), 5. `expiry_protect` (≤4 DTE,
-     `ALPACA_OPT_EXPIRY_PROTECT_DAYS` — date-based, fires even with missing
-     quotes), 6. `stale` safety net (time_stop + 2d).
+     `ALPACA_OPT_STOP_LOSS_PCT`; **disabled on the entry day** — opening
+     spreads masquerade as losses — except the −60% extreme-move valve,
+     `ALPACA_OPT_ENTRY_DAY_EXTREME_STOP`), 4. `profit_target` (premium
+     +80%, `ALPACA_OPT_PROFIT_TARGET_PCT`), 5. `expiry_protect` (≤4 DTE
+     and not up ≥25%, `ALPACA_OPT_EXPIRY_PROTECT_DAYS` /
+     `ALPACA_OPT_EXPIRY_MIN_PROFIT`; ≤1 DTE closes regardless — date-based,
+     fires even with missing quotes), 6. `stale` safety net (time_stop + 2d).
   Master switch `ALPACA_OPT_EXIT_ENABLED` (default on). Exit side recorded
   on the SAME `alpaca_option_orders` row (mig 016: exit_status/reason/
   order_id/premium/pnl_pct/exited_at); the trade idea mirrors to

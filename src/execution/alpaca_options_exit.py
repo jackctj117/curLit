@@ -16,11 +16,18 @@ Priority order (first hit wins):
      when the idea carries none), or the pipeline already auto-expired the
      idea. Event options are theses with deadlines; the deadline is the exit.
   3. stop_loss        — premium down ≥ ``stop_loss_pct`` from entry.
+     DISABLED on the entry day (NY calendar date): opening spreads on
+     cheap OTM contracts register as instant −40% "losses" without any
+     real move. The ``entry_day_extreme_stop_pct`` safety valve (−60%)
+     stays active even then.
   4. profit_target    — premium up ≥ ``profit_target_pct`` from entry.
-  5. expiry_protect   — ≤ ``expiry_protect_days`` to expiration: a
-     short-dated event option is never ridden into expiry without a
-     decision, and closing IS the decision. Date-based (parsed from the OCC
-     symbol), so it fires even when quotes are missing.
+  5. expiry_protect   — ≤ ``expiry_protect_days`` to expiration and not
+     meaningfully profitable (< ``expiry_protect_min_profit``); a
+     near-expiry winner is left to run. Backstop: at ≤ ``final_day_dte``
+     the position closes REGARDLESS of P&L — an event option is never
+     ridden into expiry without a decision, and closing IS the decision.
+     Date-based (parsed from the OCC symbol), so it fires even when
+     quotes are missing.
   6. stale            — safety net at time_stop + grace; only reachable if
      rule 2 could not evaluate on earlier cycles (e.g. unparseable entry
      timestamp that later heals).
@@ -48,6 +55,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from enum import StrEnum
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import text
 
@@ -58,6 +66,8 @@ logger = logging.getLogger(__name__)
 
 # OCC option symbol: ROOT (1-6 chars) + YYMMDD + C/P + strike*1000 (8 digits).
 _OCC_RE = re.compile(r"^[A-Z.]{1,6}(\d{2})(\d{2})(\d{2})[CP]\d{8}$")
+
+_NY = ZoneInfo("America/New_York")
 
 
 class ExitReason(StrEnum):
@@ -75,11 +85,24 @@ class ExitReason(StrEnum):
 @dataclass(frozen=True)
 class OptionsExitConfig:
     #: Close when premium is down this fraction from entry (0.40 = −40%).
+    #: DISABLED on the entry day (NY calendar date) — opening spreads on
+    #: cheap OTM contracts register as instant −40% "losses" without any
+    #: real move; from day 2 the mark is meaningful.
     stop_loss_pct: float = 0.40
+    #: Entry-day safety valve: an extreme adverse move still closes even
+    #: during the grace period (0.60 = −60%).
+    entry_day_extreme_stop_pct: float = 0.60
     #: Close when premium is up this fraction from entry (0.80 = +80%).
     profit_target_pct: float = 0.80
-    #: Close when ≤ this many days to expiration, regardless of P&L.
+    #: Close when ≤ this many days to expiration UNLESS meaningfully
+    #: profitable (see expiry_protect_min_profit).
     expiry_protect_days: int = 4
+    #: A near-expiry position at/above this premium gain is left to run —
+    #: it exits via profit target, time stop, or the final-day backstop.
+    expiry_protect_min_profit: float = 0.25
+    #: Absolute backstop: at ≤ this many DTE, close REGARDLESS of P&L.
+    #: An event option is never ridden into expiration without a decision.
+    final_day_dte: int = 1
     #: Time stop when the idea itself carries no time_stop_days.
     default_time_stop_days: int = 10
     #: Safety-net margin past the time stop (rule 6).
@@ -149,6 +172,12 @@ def evaluate_exit(
     time_stop = int(row.get("time_stop_days") or cfg.default_time_stop_days)
     expiry = occ_expiry(row.get("occ_symbol") or pos.get("symbol"))
     dte = (expiry - now.date()).days if expiry else None
+    # Grace period runs on the NY calendar date — "entry day" means the
+    # trading session the position was opened in, not a UTC window.
+    is_entry_day = (
+        entered is not None
+        and entered.astimezone(_NY).date() == now.astimezone(_NY).date()
+    )
 
     # 1. Thesis invalidated — the desk ACTIVELY no longer believes the
     #    story: event DISMISSED or idea cancelled. Deliberately NOT
@@ -170,20 +199,38 @@ def evaluate_exit(
     if str(row.get("idea_status") or "") == "expired":
         return (ExitReason.TIME_STOP, "idea auto-expired by pipeline")
 
-    # 3. Stop loss on premium.
-    if pnl is not None and pnl <= -cfg.stop_loss_pct:
-        return (ExitReason.STOP_LOSS,
-                f"premium {pnl:+.0%} <= -{cfg.stop_loss_pct:.0%}")
+    # 3. Stop loss on premium — DISABLED on entry day (grace period:
+    #    opening spreads masquerade as losses), except the extreme-move
+    #    safety valve.
+    if pnl is not None:
+        if is_entry_day:
+            if pnl <= -cfg.entry_day_extreme_stop_pct:
+                return (ExitReason.STOP_LOSS,
+                        f"extreme adverse move {pnl:+.0%} on entry day "
+                        f"(<= -{cfg.entry_day_extreme_stop_pct:.0%} valve)")
+        elif pnl <= -cfg.stop_loss_pct:
+            return (ExitReason.STOP_LOSS,
+                    f"premium {pnl:+.0%} <= -{cfg.stop_loss_pct:.0%}")
 
     # 4. Profit target on premium.
     if pnl is not None and pnl >= cfg.profit_target_pct:
         return (ExitReason.PROFIT_TARGET,
                 f"premium {pnl:+.0%} >= +{cfg.profit_target_pct:.0%}")
 
-    # 5. Expiration protection — date-based, immune to missing quotes.
-    if dte is not None and dte <= cfg.expiry_protect_days:
-        return (ExitReason.EXPIRY_PROTECT,
-                f"{dte}d to expiry <= {cfg.expiry_protect_days}d")
+    # 5. Expiration protection. Final-day backstop closes REGARDLESS of
+    #    P&L (never ride into expiration without a decision); inside the
+    #    protect window, a meaningful winner is left to run. Date-based,
+    #    so missing quotes (pnl None) still close — bad data can't hold.
+    if dte is not None:
+        if dte <= cfg.final_day_dte:
+            return (ExitReason.EXPIRY_PROTECT,
+                    f"{dte}d to expiry — final-day close")
+        if dte <= cfg.expiry_protect_days and (
+            pnl is None or pnl < cfg.expiry_protect_min_profit
+        ):
+            return (ExitReason.EXPIRY_PROTECT,
+                    f"{dte}d to expiry <= {cfg.expiry_protect_days}d, "
+                    f"not meaningfully profitable")
 
     # 6. Stale safety net (normally unreachable past rule 2).
     if days_held is not None and days_held >= time_stop + cfg.stale_grace_days:

@@ -20,7 +20,10 @@ from src.execution.alpaca_options_executor import (
     fetch_executable_ideas,
 )
 
-NOW = datetime(2026, 7, 21, 12, 0, tzinfo=UTC)
+# Midday ET — outside the open-spread entry-delay window, so the delay
+# gate is inert everywhere except the tests that exercise it.
+NOW = datetime(2026, 7, 21, 16, 0, tzinfo=UTC)  # 12:00 ET
+NOW_AT_OPEN = datetime(2026, 7, 21, 13, 35, tzinfo=UTC)  # 9:35 ET
 
 def _no_tech(_t: str):  # unit tests: no live yfinance — fail-open path
     return None
@@ -177,6 +180,44 @@ def test_market_closed_skips_all(engine):
     counts = execute_pending_options(engine, client, _price, now=NOW, technicals_fn=_no_tech)
     assert counts["market_closed"] == 1 and counts["submitted"] == 0
     assert client.orders == []  # nothing attempted
+
+
+# --------------------------------------------------------------------------- #
+# open-spread entry delay (CL-3rho)
+# --------------------------------------------------------------------------- #
+
+
+def test_entry_delayed_in_first_15_minutes(engine):
+    # 9:35 ET: spreads still wide — ordinary-confidence ideas wait.
+    _seed(engine, "early")
+    client = _FakeClient(ask=1.0)
+    counts = execute_pending_options(engine, client, _price, now=NOW_AT_OPEN,
+                                     technicals_fn=_no_tech)
+    assert counts["entry_delayed"] == 1 and counts["submitted"] == 0
+    assert client.orders == []
+    # transient: still fetchable on the next 5-min cycle
+    assert {i["idea_id"] for i in
+            fetch_executable_ideas(engine, OptionsExecConfig())} == {"early"}
+
+
+def test_entry_delay_override_for_high_confidence(engine):
+    # conf 0.85 >= 0.80 override: extremely strong signal enters at 9:35.
+    _seed(engine, "hot", conf=0.85)
+    client = _FakeClient(ask=1.0)
+    counts = execute_pending_options(engine, client, _price, now=NOW_AT_OPEN,
+                                     technicals_fn=_no_tech)
+    assert counts["submitted"] == 1 and counts["entry_delayed"] == 0
+
+
+def test_entry_allowed_after_delay_window(engine):
+    # 9:50 ET (> 9:45) — normal entry resumes.
+    _seed(engine, "later")
+    client = _FakeClient(ask=1.0)
+    counts = execute_pending_options(
+        engine, client, _price,
+        now=datetime(2026, 7, 21, 13, 50, tzinfo=UTC),  # 9:50 ET
+        technicals_fn=_no_tech)
+    assert counts["submitted"] == 1 and counts["entry_delayed"] == 0
 
 
 # --------------------------------------------------------------------------- #

@@ -208,6 +208,66 @@ def test_healthy_position_held(engine):
     assert _row(engine, "hold")["exit_status"] is None
 
 
+ENTRY_TODAY = "2026-07-22T13:31:00+00:00"  # 9:31 ET, same NY date as NOW
+
+
+def test_entry_day_grace_holds_through_stop_level(engine):
+    # -50% on the entry day is (mostly) opening spread — grace holds it.
+    _seed(engine, "grace", submitted_at=ENTRY_TODAY)
+    client = _FakeClient([_pos(avg="2.0", cur="1.0")])  # -50%
+    counts = manage_option_exits(engine, client, now=NOW)
+    assert counts["held"] == 1 and counts["exit_submitted"] == 0
+    assert client.orders == []
+
+
+def test_entry_day_extreme_valve_still_fires(engine):
+    # -65% breaches the -60% safety valve even on entry day.
+    _seed(engine, "valve", submitted_at=ENTRY_TODAY)
+    client = _FakeClient([_pos(avg="2.0", cur="0.7")])  # -65%
+    counts = manage_option_exits(engine, client, now=NOW)
+    assert counts["exit_submitted"] == 1
+    row = _row(engine, "valve")
+    assert row["exit_reason"] == "stop_loss"
+    assert "entry day" in _detail_of_last_eval(engine, "valve")
+
+
+def _detail_of_last_eval(engine, idea_id):
+    # detail lives only in the log; assert via evaluate_exit directly.
+    from src.execution.alpaca_options_exit import OptionsExitConfig, evaluate_exit
+    row = _row(engine, idea_id)
+    row["idea_status"], row["event_status"] = "pending", "TRADED"
+    reason, detail = evaluate_exit(row, _pos(avg="2.0", cur="0.7"),
+                                   OptionsExitConfig(), NOW)
+    return detail
+
+
+def test_day_two_normal_stop_applies(engine):
+    # Same -50% one day later: normal stop fires.
+    _seed(engine, "d2", submitted_at="2026-07-21T13:31:00+00:00")
+    client = _FakeClient([_pos(avg="2.0", cur="1.0")])
+    counts = manage_option_exits(engine, client, now=NOW)
+    assert counts["exit_submitted"] == 1
+    assert _row(engine, "d2")["exit_reason"] == "stop_loss"
+
+
+def test_near_expiry_winner_left_to_run(engine):
+    # 2 DTE but +30% >= 25% min profit: expiry protect stands aside.
+    _seed(engine, "winner", occ=OCC_NEAR)
+    client = _FakeClient([_pos(occ=OCC_NEAR, avg="2.0", cur="2.6")])  # +30%
+    counts = manage_option_exits(engine, client, now=NOW)
+    assert counts["held"] == 1 and counts["exit_submitted"] == 0
+
+
+def test_final_day_closes_regardless_of_profit(engine):
+    # 1 DTE: the backstop closes even a +30% winner — never ride expiry.
+    occ_final = "RTX260723C00105000"  # expires tomorrow
+    _seed(engine, "final", occ=occ_final)
+    client = _FakeClient([_pos(occ=occ_final, avg="2.0", cur="2.6")])
+    counts = manage_option_exits(engine, client, now=NOW)
+    assert counts["exit_submitted"] == 1
+    assert _row(engine, "final")["exit_reason"] == "expiry_protect"
+
+
 def test_evaluate_priority_time_stop_over_stop_loss():
     row = {"occ_symbol": OCC, "submitted_at": "2026-07-01",
            "time_stop_days": 10, "idea_status": "pending",

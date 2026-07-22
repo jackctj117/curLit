@@ -74,6 +74,11 @@ def _config_from_env():  # noqa: ANN202
         # Technical-alignment gate (CL-3xoj): skip ideas whose computed price
         # structure scores below this against the thesis. -1.01 disables.
         min_alignment=_f("ALPACA_OPT_MIN_ALIGNMENT", -0.4),
+        # Open-spread protection: no entries in the first N minutes of the
+        # session (0 disables); conf >= override enters immediately.
+        entry_delay_min=_i("ALPACA_OPT_ENTRY_DELAY_MIN", 15),
+        entry_delay_override_conf=_f("ALPACA_OPT_ENTRY_DELAY_OVERRIDE_CONF",
+                                     0.80),
     )
 
 
@@ -82,8 +87,11 @@ def _exit_config_from_env():  # noqa: ANN202
 
     return OptionsExitConfig(
         stop_loss_pct=_f("ALPACA_OPT_STOP_LOSS_PCT", 0.40),
+        entry_day_extreme_stop_pct=_f("ALPACA_OPT_ENTRY_DAY_EXTREME_STOP",
+                                      0.60),
         profit_target_pct=_f("ALPACA_OPT_PROFIT_TARGET_PCT", 0.80),
         expiry_protect_days=_i("ALPACA_OPT_EXPIRY_PROTECT_DAYS", 4),
+        expiry_protect_min_profit=_f("ALPACA_OPT_EXPIRY_MIN_PROFIT", 0.25),
         default_time_stop_days=_i("ALPACA_OPT_DEFAULT_TIME_STOP_DAYS", 10),
     )
 
