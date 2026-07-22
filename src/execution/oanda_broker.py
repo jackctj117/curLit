@@ -2,6 +2,7 @@
 
 import logging
 from collections.abc import AsyncIterator
+from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
 from typing import Any
 
 import httpx
@@ -9,6 +10,29 @@ import httpx
 from .broker import Account, Broker, Order, OrderStatus, Position
 
 logger = logging.getLogger(__name__)
+
+
+def _price_bound_str(
+    side: str, reference_price: str, max_slippage_bps: float,
+) -> str:
+    """Direction-aware FOK price bound as an OANDA PriceValue string (CL-qyav).
+
+    buy  → bound ABOVE the reference ask:  ref * (1 + bps/1e4)
+    sell → bound BELOW the reference bid:  ref * (1 - bps/1e4)
+
+    Precision is taken from the venue's own quote string (``reference_price``
+    as returned by /pricing) so we never exceed the instrument's allowed
+    precision (MARKET_ORDER_PRICE_BOUND_PRECISION_EXCEEDED). Rounding is
+    toward the reference (floor for buys, ceiling for sells) so quantization
+    can only TIGHTEN the tolerance, never widen it.
+    """
+    ref = Decimal(reference_price)
+    frac = Decimal(str(max_slippage_bps)) / Decimal(10_000)
+    raw = ref * (1 + frac) if side == "buy" else ref * (1 - frac)
+    exponent = ref.as_tuple().exponent
+    quantum = Decimal(1).scaleb(int(exponent)) if int(exponent) < 0 else Decimal(1)
+    rounding = ROUND_FLOOR if side == "buy" else ROUND_CEILING
+    return str(raw.quantize(quantum, rounding=rounding))
 
 
 class OandaBroker(Broker):
@@ -46,7 +70,7 @@ class OandaBroker(Broker):
     _MAX_307_HOPS = 3
 
     def _send_following_307(
-        self, method: str, url: str, json_body: dict | None = None,
+        self, method: str, url: str, json_body: dict[str, Any] | None = None,
     ) -> httpx.Response:
         """Write request that follows only method-preserving redirects
         (307/308). Any other 3xx raises instead of letting httpx downgrade
@@ -64,7 +88,7 @@ class OandaBroker(Broker):
         msg = f"OANDA {method} {url}: exceeded {self._MAX_307_HOPS} redirect hops"
         raise httpx.TooManyRedirects(msg)
 
-    def _post_following_307(self, url: str, json_body: dict) -> httpx.Response:
+    def _post_following_307(self, url: str, json_body: dict[str, Any]) -> httpx.Response:
         return self._send_following_307("POST", url, json_body)
 
     def place_order(self, order: Order) -> Order:
@@ -76,6 +100,14 @@ class OandaBroker(Broker):
                 "timeInForce": "FOK",
             }
         }
+        # Slippage enforcement (CL-qyav): the intent's max_slippage_bps was
+        # journaled but never enforced. priceBound makes the venue reject a
+        # FOK market order that could only fill beyond tolerance (parsed
+        # below as orderRejectTransaction/orderCancelTransaction → REJECTED,
+        # which the OMS raises through the RejectionHandler path).
+        price_bound = self._compute_price_bound(order)
+        if price_bound is not None:
+            body["order"]["priceBound"] = price_bound
         resp = self._post_following_307(f"/v3/accounts/{self.account_id}/orders", body)
         data = resp.json()
         # Rejects are HTTP 201 with orderRejectTransaction / orderCancel
@@ -121,6 +153,42 @@ class OandaBroker(Broker):
                 order.symbol, order.side, order.quantity, str(data)[:200],
             )
         return order
+
+    def _compute_price_bound(self, order: Order) -> str | None:
+        """Reference-price → FOK priceBound for an outgoing market order.
+
+        Reference is the venue's live quote on the fill side (buy → ask,
+        sell → bid), fetched as the raw string so the bound inherits the
+        instrument's quote precision. Returns None (no bound) when the order
+        carries no slippage cap, or when the pricing fetch fails — fail-open
+        by design: this path also carries kill-switch de-risking orders, and
+        refusing to flatten because /pricing hiccuped is worse than one
+        unbounded FOK order. The failure is logged loudly.
+        """
+        bps = order.max_slippage_bps
+        if bps is None or bps <= 0:
+            return None
+        try:
+            resp = self.client.get(
+                f"/v3/accounts/{self.account_id}/pricing",
+                params={"instruments": self._to_oanda(order.symbol)},
+            )
+            resp.raise_for_status()
+            p = resp.json()["prices"][0]
+            ref_str = (
+                str(p["asks"][0]["price"]) if order.side == "buy"
+                else str(p["bids"][0]["price"])
+            )
+        except Exception:
+            logger.warning(
+                "Could not fetch reference price for %s — placing %s x%s "
+                "WITHOUT a slippage priceBound (max %.2f bps unenforced "
+                "this order)",
+                order.symbol, order.side, order.quantity, bps,
+                exc_info=True,
+            )
+            return None
+        return _price_bound_str(order.side, ref_str, bps)
 
     def cancel_order(self, order_id: str) -> bool:
         """Real cancel via the v20 API (CL-h4as — was an unconditional

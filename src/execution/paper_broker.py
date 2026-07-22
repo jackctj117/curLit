@@ -24,22 +24,79 @@ class PaperBroker(Broker):
     def place_order(self, order: Order) -> Order:
         bid, ask = self._prices.get(order.symbol, (1.1000, 1.1002))
         fill_price = ask if order.side == "buy" else bid
+
+        # Slippage enforcement (CL-qyav) — simulated equivalent of OANDA's
+        # FOK priceBound: reference is the current mid; a fill beyond
+        # mid*(1±bps/1e4) is REJECTED (buy bound above, sell bound below).
+        # The OMS raises REJECTED through BrokerRejectedOrderError, same as
+        # a venue reject.
+        if order.max_slippage_bps is not None and order.max_slippage_bps > 0:
+            mid = (bid + ask) / 2.0
+            frac = order.max_slippage_bps / 10_000.0
+            bound = mid * (1 + frac) if order.side == "buy" else mid * (1 - frac)
+            beyond = (
+                fill_price > bound if order.side == "buy" else fill_price < bound
+            )
+            if beyond:
+                order.status = OrderStatus.REJECTED
+                order.reject_reason = (
+                    f"SLIPPAGE_EXCEEDED: {order.side} fill {fill_price:.6f} "
+                    f"beyond bound {bound:.6f} (mid {mid:.6f}, "
+                    f"max {order.max_slippage_bps} bps)"
+                )
+                logger.warning(
+                    "PaperBroker REJECTED %s %s x%s: %s",
+                    order.symbol, order.side, order.quantity,
+                    order.reject_reason,
+                )
+                return order
+
         cost = abs(order.quantity) * fill_price * 0.0001  # 1 bp round-trip
 
         current = self._positions.get(order.symbol)
         old_qty = current.quantity if current else 0.0
-        new_qty = old_qty + (order.quantity if order.side == "buy" else -order.quantity)
-        avg_price = (
-            fill_price if new_qty == 0 or old_qty == 0
-            else (old_qty * (current.avg_price if current else 0) + order.quantity * fill_price) / new_qty
-        )
+        old_avg = current.avg_price if current else 0.0
+        realized = current.realized_pnl if current else 0.0
+        delta = order.quantity if order.side == "buy" else -order.quantity
+        new_qty = old_qty + delta
 
+        # Average-entry accounting (CL-qyav P2 fix): the old formula blended
+        # the fill into the basis on EVERY order, so a reduce corrupted
+        # avg_price instead of realizing P&L, and a flip inherited a
+        # nonsensical basis. Rules:
+        #   open / add same-direction → volume-weighted average basis
+        #   reduce / full close      → basis UNCHANGED, P&L realized on the
+        #                              closed quantity
+        #   flip through zero        → realize P&L on the whole old position,
+        #                              basis resets to the fill price for the
+        #                              residual quantity
+        direction = 1.0 if old_qty > 0 else -1.0
+        if old_qty == 0.0:
+            avg_price = fill_price
+        elif (old_qty > 0) == (delta > 0):
+            # Adding to an existing position (delta == 0 degenerates to
+            # one of the branches below with a no-op result).
+            avg_price = (
+                abs(old_qty) * old_avg + abs(delta) * fill_price
+            ) / abs(new_qty)
+        elif abs(delta) <= abs(old_qty):
+            # Partial reduce or full close: realize on the closed quantity.
+            realized += abs(delta) * (fill_price - old_avg) * direction
+            avg_price = old_avg
+        else:
+            # Flip through zero: close the whole old position, residual
+            # opens at the fill price.
+            realized += abs(old_qty) * (fill_price - old_avg) * direction
+            avg_price = fill_price
+
+        realized_delta = realized - (current.realized_pnl if current else 0.0)
         self._positions[order.symbol] = Position(
             symbol=order.symbol,
             quantity=new_qty,
             avg_price=avg_price,
+            realized_pnl=realized,
         )
-        self._equity -= cost
+        self._equity += realized_delta - cost
         order.status = OrderStatus.FILLED
         self._trade_log.append({
             "ts": datetime.now(UTC),

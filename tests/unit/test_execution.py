@@ -56,3 +56,63 @@ class TestOrderManager:
             bypass_halt=True,
         )
         assert abs(broker.get_positions()[0].quantity) < 0.01
+
+
+class TestOrderManagerAsync:
+    def test_submit_intent_async_offloads_broker_io(self) -> None:
+        """CL-xdnh: the async wrapper must run the blocking submit path
+        (broker get_positions + place_order) in a worker thread, never on
+        the event-loop thread."""
+        import asyncio
+        import threading
+
+        broker = PaperBroker()
+        broker.set_price("EURUSD", 1.1000, 1.1002)
+        call_threads: list[int] = []
+        original = broker.place_order
+
+        def spy(order):  # noqa: ANN001, ANN202
+            call_threads.append(threading.get_ident())
+            return original(order)
+
+        broker.place_order = spy  # type: ignore[method-assign]
+        oms = OrderManager(broker)
+        intent = OrderIntent(strategy_id="t", symbol="EURUSD", target_position=500)
+
+        async def run() -> tuple[int, str]:
+            loop_thread = threading.get_ident()
+            intent_id = await oms.submit_intent_async(intent)
+            return loop_thread, intent_id
+
+        loop_thread, intent_id = asyncio.run(run())
+        assert intent_id == intent.intent_id
+        assert len(broker.get_positions()) == 1
+        assert call_threads and all(t != loop_thread for t in call_threads)
+
+    def test_submit_intent_async_respects_halt_and_bypass(self) -> None:
+        import asyncio
+
+        broker = PaperBroker()
+        broker.set_price("EURUSD", 1.1000, 1.1002)
+        oms = OrderManager(broker)
+
+        async def run() -> None:
+            await oms.submit_intent_async(
+                OrderIntent(strategy_id="t", symbol="EURUSD", target_position=500),
+            )
+            oms.halt_new_trades()
+            # Halted: plain async submit is rejected...
+            await oms.submit_intent_async(
+                OrderIntent(strategy_id="t", symbol="EURUSD", target_position=900),
+            )
+            # ...but bypass_halt (risk-layer de-risking) still flows.
+            await oms.submit_intent_async(
+                OrderIntent(
+                    strategy_id="kill_switch_flatten", symbol="EURUSD",
+                    target_position=0,
+                ),
+                bypass_halt=True,
+            )
+
+        asyncio.run(run())
+        assert abs(broker.get_positions()[0].quantity) < 0.01

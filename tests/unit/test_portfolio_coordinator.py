@@ -858,3 +858,174 @@ class TestUnpriceableSymbolWithheld:
             },
         }
         assert coord._apply_portfolio_constraints(agg) == {}
+
+
+# =============================================================================
+# Async hygiene (CL-xdnh): blocking broker/OMS/state I/O runs off the event
+# loop, and fire-and-forget rebalance tasks are retained + observed.
+# =============================================================================
+
+
+class _ThreadRecordingBroker:
+    """Wraps PaperBroker, recording the thread ident of every I/O call."""
+
+    def __init__(self, inner: PaperBroker) -> None:
+        self._inner = inner
+        self.call_threads: list[int] = []
+
+    def _record(self) -> None:
+        import threading
+
+        self.call_threads.append(threading.get_ident())
+
+    def get_account(self):  # noqa: ANN201
+        self._record()
+        return self._inner.get_account()
+
+    def get_price(self, symbol: str):  # noqa: ANN201
+        self._record()
+        return self._inner.get_price(symbol)
+
+    def get_positions(self):  # noqa: ANN201
+        self._record()
+        return self._inner.get_positions()
+
+
+class _ThreadRecordingOMS(_RecordingOMS):
+    def __init__(self) -> None:
+        super().__init__()
+        self.call_threads: list[int] = []
+
+    def submit_intent(self, intent: OrderIntent) -> str:
+        import threading
+
+        self.call_threads.append(threading.get_ident())
+        return super().submit_intent(intent)
+
+
+class _ThreadRecordingValidator:
+    def __init__(self) -> None:
+        self.call_threads: list[int] = []
+
+    def validate(self, intent: OrderIntent, current_positions=None):  # noqa: ANN001, ANN201
+        import threading
+
+        self.call_threads.append(threading.get_ident())
+        return None
+
+
+class _ThreadRecordingState(_FakeState):
+    def __init__(self) -> None:
+        super().__init__()
+        self.call_threads: list[int] = []
+
+    def record_portfolio_order(self, ts, symbol, target_position, strategy_contributions):  # noqa: ANN001
+        import threading
+
+        self.call_threads.append(threading.get_ident())
+        super().record_portfolio_order(
+            ts, symbol, target_position, strategy_contributions,
+        )
+
+
+class TestBrokerIoOffEventLoop:
+    def test_process_intents_never_calls_broker_on_loop_thread(self) -> None:
+        """Every broker / OMS / validator / state-write call inside the async
+        process_intents path must run in a worker thread — with the httpx
+        OANDA broker these are synchronous HTTP round-trips that used to
+        freeze the event loop (and with it the price stream, health ticks,
+        and kill switches)."""
+        import threading
+
+        inner = PaperBroker(initial_capital=100_000.0)
+        inner.set_price("EURUSD", 1.0999, 1.1001)
+        broker = _ThreadRecordingBroker(inner)
+        oms = _ThreadRecordingOMS()
+        validator = _ThreadRecordingValidator()
+        state = _ThreadRecordingState()
+        coord = PortfolioCoordinator(
+            strategies=[_FakeStrategy("s1")],
+            oms=oms,  # type: ignore[arg-type]
+            broker=broker,  # type: ignore[arg-type]
+            state=state,  # type: ignore[arg-type]
+            pre_trade_validator=validator,
+        )
+        coord.initialize_allocations({"s1": 1.0})
+        raw = {"s1": [OrderIntent(
+            strategy_id="s1", symbol="EURUSD", target_position=1000.0,
+        )]}
+
+        loop_thread: list[int] = []
+
+        async def run() -> None:
+            loop_thread.append(threading.get_ident())
+            await coord.process_intents(raw)
+
+        asyncio.run(run())
+
+        assert oms.submitted, "intent must actually reach the OMS"
+        for name, threads in (
+            ("broker", broker.call_threads),
+            ("oms", oms.call_threads),
+            ("validator", validator.call_threads),
+            ("state", state.call_threads),
+        ):
+            assert threads, f"{name} was never called"
+            assert all(t != loop_thread[0] for t in threads), (
+                f"{name} I/O ran on the event-loop thread"
+            )
+
+
+class TestBackgroundRebalanceTasks:
+    def test_remove_strategy_retains_task_and_logs_failure(
+        self, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        import logging
+
+        coord, _oms, _broker, _state = _make_coord()
+        coord.initialize_allocations({"s1": 0.5, "s2": 0.5})
+
+        async def boom(force: bool = False) -> None:
+            raise RuntimeError("rebalance exploded")
+
+        coord.rebalance_allocations = boom  # type: ignore[method-assign]
+
+        async def run() -> None:
+            coord.remove_strategy("s2")
+            assert len(coord._background_tasks) == 1  # reference retained
+            task = next(iter(coord._background_tasks))
+            with pytest.raises(RuntimeError, match="rebalance exploded"):
+                await task
+            await asyncio.sleep(0)  # let the done-callback run
+            assert coord._background_tasks == set()
+
+        with caplog.at_level(logging.ERROR, logger="src.portfolio.coordinator"):
+            asyncio.run(run())
+
+        failures = [
+            r for r in caplog.records
+            if "Background task" in r.getMessage() and r.exc_info
+        ]
+        assert failures, "failed rebalance task must be logged with traceback"
+
+    def test_promote_spawns_observed_task_that_completes(self) -> None:
+        coord, _oms, _broker, state = _make_coord()
+        coord.initialize_allocations({"s1": 1.0})  # s2 → paper mode
+
+        async def run() -> None:
+            coord.promote_strategy_to_live("s2", initial_weight=0.10)
+            assert len(coord._background_tasks) == 1
+            task = next(iter(coord._background_tasks))
+            await task  # completes without raising
+            await asyncio.sleep(0)
+            assert coord._background_tasks == set()
+
+        asyncio.run(run())
+        # Forced rebalance really ran: reallocation recorded via state.
+        assert state.reallocations
+
+    def test_no_running_loop_defers_without_task(self) -> None:
+        coord, _oms, _broker, _state = _make_coord()
+        coord.initialize_allocations({"s1": 0.5, "s2": 0.5})
+        coord.remove_strategy("s2")  # sync context — must not raise
+        assert coord._background_tasks == set()

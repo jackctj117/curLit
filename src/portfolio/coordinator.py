@@ -285,6 +285,12 @@ class PortfolioCoordinator:
         self._last_rebalance: datetime | None = None
         self._intent_lock = asyncio.Lock()
         self._conflicts_log: list[dict[str, Any]] = []
+        # Strong references to fire-and-forget rebalance tasks (CL-xdnh):
+        # bare create_task results were previously dropped, so the tasks
+        # could be garbage-collected mid-flight and any exception vanished
+        # ("Task exception was never retrieved" at best). Each task is
+        # retained here and observed via _on_background_task_done.
+        self._background_tasks: set[asyncio.Task[Any]] = set()
 
         logger.info(
             "PortfolioCoordinator initialized with %d strategies: %s "
@@ -360,7 +366,14 @@ class PortfolioCoordinator:
         async with self._intent_lock:
             scaled = self._scale_intents(raw_intents)
             aggregated = self._aggregate_by_symbol(scaled)
-            feasible = self._apply_portfolio_constraints(aggregated)
+            # Blocking broker I/O (get_account + get_price per symbol) runs
+            # off-loop (CL-xdnh): with the httpx-based OANDA broker these are
+            # synchronous HTTP round-trips that froze the event loop — and
+            # with it the price stream, health ticks, and kill switches —
+            # for the duration of each call.
+            feasible = await asyncio.to_thread(
+                self._apply_portfolio_constraints, aggregated,
+            )
 
             ts = datetime.now(UTC)
             # Pre-trade rejections drop the offending intent from `feasible` so
@@ -369,7 +382,9 @@ class PortfolioCoordinator:
             current_positions: list[Any] | None = None
             if self.pre_trade_validator is not None:
                 # Single broker query reused across all per-symbol checks.
-                current_positions = self.broker.get_positions()
+                current_positions = await asyncio.to_thread(
+                    self.broker.get_positions,
+                )
 
             for symbol, info in feasible.items():
                 with LogContext(symbol=symbol):
@@ -388,7 +403,10 @@ class PortfolioCoordinator:
                     )
 
                     if self.pre_trade_validator is not None:
-                        rejection = self.pre_trade_validator.validate(
+                        # validate() hits the broker for prices/account —
+                        # blocking HTTP, keep it off the loop (CL-xdnh).
+                        rejection = await asyncio.to_thread(
+                            self.pre_trade_validator.validate,
                             final, current_positions=current_positions,
                         )
                         if rejection is not None:
@@ -401,8 +419,16 @@ class PortfolioCoordinator:
                         info["target_position"],
                         info["strategy_contributions"],
                     )
-                    self.oms.submit_intent(final)
-                    self.state.record_portfolio_order(
+                    # submit_intent does broker get_positions + place_order
+                    # (sync HTTP, plus RejectionHandler retry sleeps) —
+                    # off-loop via to_thread (CL-xdnh). Called through
+                    # to_thread rather than OrderManager.submit_intent_async
+                    # so OMS doubles that only implement submit_intent keep
+                    # working.
+                    await asyncio.to_thread(self.oms.submit_intent, final)
+                    # DB write — also blocking I/O.
+                    await asyncio.to_thread(
+                        self.state.record_portfolio_order,
                         ts,
                         symbol,
                         info["target_position"],
@@ -694,7 +720,10 @@ class PortfolioCoordinator:
             logger.warning("No live strategies; skipping rebalance")
             return
 
-        returns_df = self.state.load_strategy_returns_history(
+        # DB read (potentially 2y × n strategies of returns) — off-loop so
+        # the rebalance tick never stalls the engine (CL-xdnh).
+        returns_df = await asyncio.to_thread(
+            self.state.load_strategy_returns_history,
             live_ids, _RISK_PARITY_LOOKBACK_DAYS,
         )
 
@@ -732,7 +761,9 @@ class PortfolioCoordinator:
             )
 
         self._last_rebalance = now
-        self.state.record_reallocation(now, dict(new_weights), corr_regime)
+        await asyncio.to_thread(
+            self.state.record_reallocation, now, dict(new_weights), corr_regime,
+        )
 
     @staticmethod
     def _compute_risk_parity(returns: pd.DataFrame) -> dict[str, float]:
@@ -846,6 +877,44 @@ class PortfolioCoordinator:
         }
 
     # ------------------------------------------------------------------
+    # Background tasks (CL-xdnh)
+    # ------------------------------------------------------------------
+
+    def _spawn_forced_rebalance(self, reason: str) -> asyncio.Task[Any] | None:
+        """Schedule rebalance_allocations(force=True) on the running loop.
+
+        Returns the retained task, or None when no loop is running (caller
+        logs the deferral). The task reference is held in
+        self._background_tasks and its outcome is ALWAYS observed — the old
+        bare asyncio.create_task() dropped the reference, so a failing
+        rebalance died silently (and the task object itself could be GC'd
+        mid-flight).
+        """
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return None
+        task: asyncio.Task[Any] = asyncio.create_task(
+            self.rebalance_allocations(force=True),
+            name=f"forced-rebalance-{reason}",
+        )
+        self._background_tasks.add(task)
+        task.add_done_callback(self._on_background_task_done)
+        return task
+
+    def _on_background_task_done(self, task: asyncio.Task[Any]) -> None:
+        """Observe a finished background task; log (never raise) on failure."""
+        self._background_tasks.discard(task)
+        if task.cancelled():
+            logger.warning("Background task %s cancelled", task.get_name())
+            return
+        exc = task.exception()
+        if exc is not None:
+            logger.error(
+                "Background task %s failed", task.get_name(), exc_info=exc,
+            )
+
+    # ------------------------------------------------------------------
     # Strategy lifecycle
     # ------------------------------------------------------------------
 
@@ -901,13 +970,11 @@ class PortfolioCoordinator:
             len(positions),
         )
 
-        # Forced rebalance to redistribute freed weight. Schedule on the running
-        # loop if available; otherwise leave the weight in place until the next
-        # scheduled rebalance.
-        try:
-            asyncio.get_running_loop()
-            asyncio.create_task(self.rebalance_allocations(force=True))
-        except RuntimeError:
+        # Forced rebalance to redistribute freed weight. Scheduled on the
+        # running loop if available (retained + observed via
+        # _spawn_forced_rebalance); otherwise the weight stays in place until
+        # the next scheduled rebalance.
+        if self._spawn_forced_rebalance(f"remove-{strategy_id}") is None:
             logger.debug(
                 "No running event loop; rebalance after %s removal deferred",
                 strategy_id,
@@ -959,10 +1026,7 @@ class PortfolioCoordinator:
             strategy_id, initial_weight * 100, len(live_ids),
         )
 
-        try:
-            asyncio.get_running_loop()
-            asyncio.create_task(self.rebalance_allocations(force=True))
-        except RuntimeError:
+        if self._spawn_forced_rebalance(f"promote-{strategy_id}") is None:
             logger.debug(
                 "No running event loop; rebalance after promotion deferred",
             )

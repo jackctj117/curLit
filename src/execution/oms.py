@@ -14,6 +14,7 @@ callback to emit ORDER_FILLED). Without a journal, OMS is silent — the
 journal is optional so unit tests and ad-hoc usage don't require a DB.
 """
 
+import asyncio
 import enum
 import logging
 import threading
@@ -150,6 +151,22 @@ class OrderManager:
             self._submit_with_retry(intent, side, abs(delta))
             return intent.intent_id
 
+    async def submit_intent_async(
+        self, intent: OrderIntent, *, bypass_halt: bool = False,
+    ) -> str:
+        """Async wrapper around submit_intent for event-loop callers (CL-xdnh).
+
+        submit_intent does synchronous broker HTTP (get_positions +
+        place_order, with retry sleeps) — calling it directly from a
+        coroutine blocks the event loop for the full round-trip. This
+        offloads the whole submission (including the OMS lock) to a worker
+        thread; submit_intent stays as-is for sync callers (web API, risk
+        kill switches, reconciler).
+        """
+        return await asyncio.to_thread(
+            self.submit_intent, intent, bypass_halt=bypass_halt,
+        )
+
     def _submit_with_retry(
         self,
         intent: OrderIntent,
@@ -166,6 +183,10 @@ class OrderManager:
                 side=side,
                 quantity=qty,
                 order_type=OrderType.MARKET,
+                # Enforced at the venue (CL-qyav): OANDA turns this into a
+                # FOK priceBound; PaperBroker simulates the same check. The
+                # intent's limit was previously journaled but never enforced.
+                max_slippage_bps=intent.max_slippage_bps,
             )
             try:
                 placed = self.broker.place_order(order)
