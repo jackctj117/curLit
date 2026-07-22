@@ -104,7 +104,10 @@ class LiveEngine:
         logger.info("Live engine starting")
 
         # Cold-start reconciliation runs BEFORE any signal generation so the
-        # engine starts with a clean broker-vs-internal alignment.
+        # engine starts with a clean broker-vs-internal alignment. It does
+        # sync broker HTTP on the loop thread, which is fine ONLY here:
+        # no engine tasks exist yet (they are created below), so there is
+        # nothing to starve (CL-8lv6 sync-I/O audit).
         if self.cold_start_reconciler is not None:
             try:
                 self._last_reconciliation_report = self.cold_start_reconciler.reconcile()
@@ -152,7 +155,16 @@ class LiveEngine:
         import uvicorn
 
         from src.web.api import app, set_runtime
-        set_runtime(self.broker, self.oms, self.strategies)
+        # CL-8lv6: pass the kill-switch manager so this re-call can't
+        # clobber the /api/system/resume re-arm wiring; TypeError fallback
+        # covers a set_runtime that predates the parameter.
+        try:
+            set_runtime(
+                self.broker, self.oms, self.strategies,
+                kill_switch_manager=self.kill_switch_manager,
+            )
+        except TypeError:
+            set_runtime(self.broker, self.oms, self.strategies)
         # CL-oluv: host/port env-overridable. Defaults preserve native
         # behavior (loopback-only on 8200). Containers set
         # CURLIT_API_HOST=0.0.0.0 so the published port is reachable.
@@ -189,8 +201,27 @@ class LiveEngine:
                         interval = getattr(strategy, "signal_interval_seconds", 60)
                         if (now - last).total_seconds() < interval:
                             continue
-                        intents = await strategy.generate_intents(
-                            self._last_prices, self.broker,
+                        # Strategy generate_intents implementations are
+                        # async-signature but their bodies do synchronous
+                        # DB/broker I/O and never await, so awaiting them
+                        # directly blocks the event loop for the whole tick
+                        # (CL-8lv6; extends the CL-xdnh offload to the
+                        # strategy tick). Run each on a worker thread via a
+                        # private event loop. Strategies are invoked
+                        # sequentially here and are never called
+                        # concurrently with themselves, so strategy state
+                        # needs no locking. NOTE: offloaded code must not
+                        # touch the engine's running loop; thread-local
+                        # LogContext (strategy_id) does not propagate into
+                        # the worker thread — same tradeoff as CL-xdnh.
+                        # The prices snapshot is taken on the loop thread so
+                        # the strategy sees a stable dict even while the
+                        # price-stream task keeps mutating _last_prices.
+                        intents = await asyncio.to_thread(
+                            asyncio.run,
+                            strategy.generate_intents(
+                                dict(self._last_prices), self.broker,
+                            ),
                         )
                         if intents:
                             intents_by_strategy[strategy.id] = list(intents)
@@ -358,7 +389,10 @@ class LiveEngine:
             return  # already shut down
         logger.info("Graceful shutdown")
         self.running = False
-        self.oms.halt_new_trades()
+        # halt_new_trades takes the OMS lock, which an offloaded
+        # submit_intent may hold across broker HTTP + retry sleeps —
+        # keep the wait off the event loop (CL-8lv6, extends CL-xdnh).
+        await asyncio.to_thread(self.oms.halt_new_trades)
         # Wait briefly for OMS to drain in-flight orders.
         start = time.time()
         while self.oms.has_pending() and (time.time() - start) < timeout:

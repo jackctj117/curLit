@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import threading
 from typing import Any
 
 from src.execution.oms import OrderIntent
@@ -161,6 +163,86 @@ class TestDispatchIntents:
         asyncio.run(engine._dispatch_intents({}))
         # Coordinator receives empty dict (it handles gracefully).
         assert coord.calls == [{}]
+
+
+# =============================================================================
+# _signal_generation_task — strategy I/O off the event loop (CL-8lv6)
+# =============================================================================
+
+
+class _ThreadRecordingStrategy:
+    """Strategy double whose generate_intents records its executing thread
+    (same idiom as test_portfolio_coordinator.TestBrokerIoOffEventLoop)."""
+
+    def __init__(self) -> None:
+        self.id = "s1"
+        self.symbols = ["EURUSD"]
+        self.signal_interval_seconds = 0
+        self.call_threads: list[int] = []
+        self.saw_live_prices_dict: list[bool] = []
+        self._engine: LiveEngine | None = None  # set by the test
+
+    async def generate_intents(
+        self, prices: dict[str, Any], broker: Any,
+    ) -> list[OrderIntent]:
+        self.call_threads.append(threading.get_ident())
+        # The engine must hand strategies a loop-thread snapshot, not the
+        # live _last_prices dict the price-stream task keeps mutating.
+        assert self._engine is not None
+        self.saw_live_prices_dict.append(prices is self._engine._last_prices)
+        return [OrderIntent(
+            strategy_id=self.id, symbol="EURUSD", target_position=100.0,
+        )]
+
+
+def _always_in_window(ts: Any) -> bool:
+    return True
+
+
+class TestStrategyIoOffEventLoop:
+    def test_generate_intents_never_runs_on_loop_thread(self) -> None:
+        """Strategy generate_intents bodies do synchronous DB/broker I/O
+        (they are async-signature but never await) — the engine must run
+        each on a worker thread so the tick can't freeze the price stream,
+        health ticks, and kill switches (CL-8lv6, extends CL-xdnh)."""
+        strategy = _ThreadRecordingStrategy()
+        coord = _RecordingCoordinator()
+        engine = LiveEngine(
+            strategies=[strategy], oms=_RecordingOMS(), broker=None,  # type: ignore[arg-type]
+            coordinator=coord,
+        )
+        strategy._engine = engine
+        engine.running = True
+        # Deterministic regardless of when the test runs (weekend gate).
+        engine._in_trading_window = _always_in_window  # type: ignore[method-assign]
+
+        loop_thread: list[int] = []
+
+        async def run() -> None:
+            loop_thread.append(threading.get_ident())
+            task = asyncio.create_task(engine._signal_generation_task())
+            try:
+                for _ in range(500):  # up to ~5s — normally a few ms
+                    if coord.calls:
+                        break
+                    await asyncio.sleep(0.01)
+            finally:
+                engine.running = False
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+
+        asyncio.run(run())
+
+        assert strategy.call_threads, "generate_intents was never called"
+        assert all(t != loop_thread[0] for t in strategy.call_threads), (
+            "strategy generate_intents ran on the event-loop thread"
+        )
+        # The intents must still flow through to the coordinator.
+        assert coord.calls and "s1" in coord.calls[0]
+        assert coord.calls[0]["s1"][0].symbol == "EURUSD"
+        # And the strategy saw a snapshot, not the live shared dict.
+        assert strategy.saw_live_prices_dict == [False]
 
 
 # =============================================================================

@@ -378,17 +378,15 @@ def render_pending(state: LoopState) -> str:
 
 def _ideas_engine() -> Any:
     """Engine for the trade_ideas ledger, from the same POSTGRES_* env
-    the event pipeline uses. Module-level so tests monkeypatch it."""
+    the event pipeline uses — via the shared ``build_db_url`` helper
+    (CL-8lv6: DATABASE_URL override preserved; warns once per process on
+    the well-known default password). Module-level so tests monkeypatch
+    it."""
     from sqlalchemy import create_engine  # noqa: PLC0415
 
-    return create_engine(
-        f"postgresql+psycopg2://"
-        f"{os.environ.get('POSTGRES_USER', 'fx')}:"
-        f"{os.environ.get('POSTGRES_PASSWORD', 'changeme')}@"
-        f"{os.environ.get('POSTGRES_HOST', 'localhost')}:"
-        f"{os.environ.get('POSTGRES_PORT', '5432')}/"
-        f"{os.environ.get('POSTGRES_DB', 'fx')}",
-    )
+    from src.data.db_env import build_db_url  # noqa: PLC0415
+
+    return create_engine(build_db_url())
 
 
 #: Short id length shown for trade ideas in the `ideas` listing — the

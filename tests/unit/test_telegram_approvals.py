@@ -1107,3 +1107,52 @@ class TestIdeaDetailCommand:
 
     def test_help_mentions_idea_detail(self) -> None:
         assert "idea <id>" in handle_text(_make_state(), "help").reply
+
+
+# --------------------------------------------------------------------- #
+# _ideas_engine DB URL — shared build_db_url adoption (CL-8lv6)
+# --------------------------------------------------------------------- #
+
+
+class TestIdeasEngineDbUrl:
+    """_ideas_engine must delegate URL construction to the shared
+    src.data.db_env.build_db_url helper (default-password warning lives
+    there); DATABASE_URL now overrides, and the historical POSTGRES_*
+    URL shape is preserved."""
+
+    def test_uses_shared_build_db_url(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from src.data import db_env
+        from src.research.telegram_approvals import _ideas_engine
+
+        def fake_url() -> str:
+            return "sqlite://"
+
+        # _ideas_engine imports the helper at call time from db_env, so
+        # patching the db_env attribute proves delegation.
+        monkeypatch.setattr(db_env, "build_db_url", fake_url)
+        assert str(_ideas_engine().url) == "sqlite://"
+
+    def test_database_url_override_wins(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from src.research.telegram_approvals import _ideas_engine
+
+        monkeypatch.setenv("DATABASE_URL", "sqlite://")
+        assert str(_ideas_engine().url) == "sqlite://"
+
+    def test_default_url_shape_unchanged(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from src.research.telegram_approvals import _ideas_engine
+
+        for var in (
+            "DATABASE_URL", "POSTGRES_USER", "POSTGRES_PASSWORD",
+            "POSTGRES_HOST", "POSTGRES_PORT", "POSTGRES_DB",
+        ):
+            monkeypatch.delenv(var, raising=False)
+        engine = _ideas_engine()
+        assert engine.url.render_as_string(hide_password=False) == (
+            "postgresql+psycopg2://fx:changeme@localhost:5432/fx"
+        )

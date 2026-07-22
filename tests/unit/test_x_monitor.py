@@ -1585,3 +1585,58 @@ class TestPipelineWiring:
         # still handed to ingest (theme gate decides relevance there).
         assert len(spy.calls) == 1
         assert [p.id for p in spy.calls[0]["posts"]] == ["101"]
+
+
+# --------------------------------------------------------------------- #
+# Ingest engine DB URL — shared build_db_url adoption (CL-8lv6)
+# --------------------------------------------------------------------- #
+
+
+class TestIngestEngineDbUrl:
+    """_build_ingest_engine must delegate URL construction to the shared
+    src.data.db_env.build_db_url helper (default-password warning lives
+    there) while preserving the DATABASE_URL override and the historical
+    POSTGRES_* URL shape."""
+
+    def test_uses_shared_build_db_url(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from src.data import db_env
+        from src.data.x_monitor import monitor as monitor_mod
+
+        # Import-level adoption: the monitor binds the shared helper.
+        assert monitor_mod.build_db_url is db_env.build_db_url
+
+        def fake_url() -> str:
+            return "sqlite://"
+
+        monkeypatch.setattr(monitor_mod, "build_db_url", fake_url)
+        engine = monitor_mod._build_ingest_engine()
+        assert engine is not None
+        assert str(engine.url) == "sqlite://"
+
+    def test_database_url_override_wins(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from src.data.x_monitor import monitor as monitor_mod
+
+        monkeypatch.setenv("DATABASE_URL", "sqlite://")
+        engine = monitor_mod._build_ingest_engine()
+        assert engine is not None
+        assert str(engine.url) == "sqlite://"
+
+    def test_default_url_shape_unchanged(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from src.data.x_monitor import monitor as monitor_mod
+
+        for var in (
+            "DATABASE_URL", "POSTGRES_USER", "POSTGRES_PASSWORD",
+            "POSTGRES_HOST", "POSTGRES_PORT", "POSTGRES_DB",
+        ):
+            monkeypatch.delenv(var, raising=False)
+        engine = monitor_mod._build_ingest_engine()
+        assert engine is not None
+        assert engine.url.render_as_string(hide_password=False) == (
+            "postgresql+psycopg2://fx:changeme@localhost:5432/fx"
+        )

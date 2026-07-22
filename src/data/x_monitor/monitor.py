@@ -20,6 +20,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from src.data.db_env import build_db_url
 from src.data.x_monitor.messages import (
     NOTIFY_TITLE,
     build_batch_message,
@@ -75,10 +76,11 @@ def _flag_env(name: str, *, default: bool) -> bool:
 
 def _build_ingest_engine() -> Any | None:
     """Build a SQLAlchemy engine from POSTGRES_* env for X→pipeline
-    ingestion (CL-esyo), mirroring scripts/event_pipeline._db_url and
-    src.runtime.run_engine._build_db_engine. Returns None (with one
-    warning) when SQLAlchemy or the DB URL can't be built — the monitor
-    then runs with ingestion disabled but still polls (and can forward).
+    ingestion (CL-esyo) via the shared ``build_db_url`` helper (CL-8lv6:
+    DATABASE_URL override preserved; warns once per process on the
+    well-known default password). Returns None (with one warning) when
+    SQLAlchemy or the DB URL can't be built — the monitor then runs with
+    ingestion disabled but still polls (and can forward).
     """
     try:
         from sqlalchemy import create_engine  # noqa: PLC0415
@@ -88,16 +90,8 @@ def _build_ingest_engine() -> Any | None:
             "monitor continues (forwarding only)",
         )
         return None
-    db_url = os.environ.get(
-        "DATABASE_URL",
-        f"postgresql+psycopg2://{os.environ.get('POSTGRES_USER', 'fx')}:"
-        f"{os.environ.get('POSTGRES_PASSWORD', 'changeme')}@"
-        f"{os.environ.get('POSTGRES_HOST', 'localhost')}:"
-        f"{os.environ.get('POSTGRES_PORT', '5432')}/"
-        f"{os.environ.get('POSTGRES_DB', 'fx')}",
-    )
     try:
-        return create_engine(db_url)
+        return create_engine(build_db_url())
     except Exception as exc:
         logger.warning(
             "could not build ingest DB engine (%s) — X→pipeline "
