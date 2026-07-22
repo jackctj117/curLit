@@ -17,6 +17,10 @@ class _RecordingOMS:
         self.submitted.append(intent)
         return intent.intent_id
 
+    async def submit_intent_async(self, intent: OrderIntent) -> str:
+        # Mirrors OrderManager's event-loop-safe wrapper (CL-xdnh).
+        return self.submit_intent(intent)
+
     def halt_new_trades(self) -> None:
         pass
 

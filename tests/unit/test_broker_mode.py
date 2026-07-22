@@ -6,14 +6,17 @@ The engine entrypoint now picks between three brokers via --broker:
   oanda-live     — OandaBroker against api-fxtrade.oanda.com (requires
                    --confirm-live)
 
-Tests verify build_broker honors each mode and falls back gracefully
-when OANDA creds are missing.
+Tests verify build_broker honors each mode and FAILS FAST when OANDA
+creds are missing (CL-qyav P1 — the old silent PaperBroker fallback made
+the whole system lie about its broker; the downgrade now requires the
+explicit ALLOW_PAPER_FALLBACK=1 opt-in).
 """
 
 from __future__ import annotations
 
 import pytest
 
+from src.execution.broker import BrokerCredentialsError
 from src.execution.paper_broker import PaperBroker
 from src.runtime.run_engine import BROKER_MODES, build_broker
 
@@ -27,21 +30,31 @@ class TestBuildBroker:
         with pytest.raises(ValueError, match="unknown broker mode"):
             build_broker("ghost")
 
-    def test_oanda_practice_without_creds_falls_back(
+    def test_oanda_practice_without_creds_fails_fast(
         self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.delenv("OANDA_API_KEY", raising=False)
         monkeypatch.delenv("OANDA_ACCOUNT_ID", raising=False)
-        broker = build_broker("oanda-practice")
-        # Falls back to PaperBroker when creds missing — log warns
-        assert isinstance(broker, PaperBroker)
+        monkeypatch.delenv("ALLOW_PAPER_FALLBACK", raising=False)
+        with pytest.raises(BrokerCredentialsError):
+            build_broker("oanda-practice")
 
-    def test_oanda_live_without_creds_falls_back(
+    def test_oanda_live_without_creds_fails_fast(
         self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.delenv("OANDA_API_KEY", raising=False)
         monkeypatch.delenv("OANDA_ACCOUNT_ID", raising=False)
-        broker = build_broker("oanda-live")
+        monkeypatch.delenv("ALLOW_PAPER_FALLBACK", raising=False)
+        with pytest.raises(BrokerCredentialsError):
+            build_broker("oanda-live")
+
+    def test_explicit_fallback_optin_downgrades_to_paper(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.delenv("OANDA_API_KEY", raising=False)
+        monkeypatch.delenv("OANDA_ACCOUNT_ID", raising=False)
+        monkeypatch.setenv("ALLOW_PAPER_FALLBACK", "1")
+        broker = build_broker("oanda-practice")
         assert isinstance(broker, PaperBroker)
 
     def test_oanda_practice_with_creds_returns_oanda_broker(

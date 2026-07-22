@@ -227,7 +227,9 @@ class LiveEngine:
         for sid, intents in intents_by_strategy.items():
             with LogContext(strategy_id=sid):
                 for intent in intents:
-                    self.oms.submit_intent(intent)
+                    # submit_intent does sync broker HTTP + retry sleeps —
+                    # keep it off the event loop (CL-xdnh).
+                    await self.oms.submit_intent_async(intent)
 
     async def _rebalance_task(self) -> None:
         """Daily rebalance trigger.
@@ -263,7 +265,10 @@ class LiveEngine:
         while self.running:
             await asyncio.sleep(_ALIGNMENT_CHECK_INTERVAL_SEC)
             try:
-                report = self.cold_start_reconciler.check_alignment()
+                # check_alignment does sync broker HTTP (CL-xdnh).
+                report = await asyncio.to_thread(
+                    self.cold_start_reconciler.check_alignment,
+                )
             except Exception:
                 logger.exception("Alignment check error")
                 continue
@@ -302,7 +307,10 @@ class LiveEngine:
         while self.running:
             await asyncio.sleep(60)
             try:
-                self._health_tick()
+                # _health_tick does sync broker HTTP and kill-switch
+                # evaluation (which can submit OMS intents) — keep the
+                # event loop free (CL-xdnh).
+                await asyncio.to_thread(self._health_tick)
             except Exception:
                 logger.exception("Health check error")
 

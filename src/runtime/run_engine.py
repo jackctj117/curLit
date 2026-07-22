@@ -18,9 +18,8 @@ from src.data.economic_calendar import (
     load_calendar_from_yaml,
 )
 from src.data.provider import DataProvider
-from src.execution.oanda_broker import OandaBroker
+from src.execution.broker import build_fx_broker, effective_broker_mode
 from src.execution.oms import OrderManager
-from src.execution.paper_broker import PaperBroker
 from src.execution.rejection import RejectionHandler
 from src.execution.trade_journal import TradeJournal
 from src.models.feature_versioning import FeatureSnapshotStore
@@ -79,21 +78,13 @@ BROKER_MODES = (
 
 
 def build_broker(mode: str) -> Any:
-    if mode == "paper":
-        return PaperBroker(initial_capital=100_000)
-    if mode in ("oanda-practice", "oanda-live"):
-        oanda_key = os.environ.get("OANDA_API_KEY", "")
-        oanda_id = os.environ.get("OANDA_ACCOUNT_ID", "")
-        if not oanda_key or not oanda_id:
-            logger.error(
-                "OANDA_API_KEY/OANDA_ACCOUNT_ID not set — falling back to "
-                "in-process PaperBroker. Set both in .env to use OANDA.",
-            )
-            return PaperBroker(initial_capital=100_000)
-        return OandaBroker(
-            oanda_key, oanda_id,
-            practice=(mode == "oanda-practice"),
-        )
+    if mode in ("paper", "oanda-practice", "oanda-live"):
+        # Fail-fast credentials policy lives in build_fx_broker (CL-qyav
+        # P1): requesting an OANDA mode without credentials RAISES
+        # BrokerCredentialsError instead of silently handing back a
+        # PaperBroker while the whole system reports "oanda". Explicit
+        # ALLOW_PAPER_FALLBACK=1 restores the old downgrade (CRITICAL log).
+        return build_fx_broker(mode)
     if mode == "polymarket-paper":
         # Paper-only — no wallet, no chain, no signer. CL-poly-2.
         from src.execution.polymarket_paper_broker import PolymarketPaperBroker
@@ -470,6 +461,16 @@ async def run_engine(broker_mode: str = "paper") -> None:
 
     config = load_config(CONFIG_PATH)
     broker = build_broker(broker_mode)
+    # Report the mode we are ACTUALLY in (CL-qyav P1): if the explicit
+    # ALLOW_PAPER_FALLBACK opt-in downgraded an OANDA request to paper,
+    # every subsequent log/status line must say so.
+    effective_mode = effective_broker_mode(broker_mode, broker)
+    if effective_mode != broker_mode:
+        logger.critical(
+            "Requested broker mode %r but running %r — ALLOW_PAPER_FALLBACK "
+            "downgrade is active; NOT connected to OANDA",
+            broker_mode, effective_mode,
+        )
     journal = build_trade_journal()
     snapshot_store = build_feature_snapshot_store()
     blackout_evaluator = build_blackout_evaluator(config)
@@ -531,7 +532,7 @@ async def run_engine(broker_mode: str = "paper") -> None:
     except Exception:
         logger.exception("SourceDriftWatcher failed to start (non-fatal)")
 
-    logger.info("Starting curLit live engine (broker=%s)", broker_mode)
+    logger.info("Starting curLit live engine (broker=%s)", effective_mode)
     await engine.run()
 
 
