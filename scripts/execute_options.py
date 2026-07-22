@@ -38,26 +38,29 @@ def _build_db_url() -> str:
     return f"postgresql+psycopg2://{user}:{password}@{host}:{port}/{db}"
 
 
+def _f(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, default))
+    except ValueError:
+        return default
+
+
+def _i(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, default))
+    except ValueError:
+        return default
+
+
+def _b(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
 def _config_from_env():  # noqa: ANN202
     from src.execution.alpaca_options_executor import OptionsExecConfig  # noqa: PLC0415
-
-    def _f(name: str, default: float) -> float:
-        try:
-            return float(os.environ.get(name, default))
-        except ValueError:
-            return default
-
-    def _i(name: str, default: int) -> int:
-        try:
-            return int(os.environ.get(name, default))
-        except ValueError:
-            return default
-
-    def _b(name: str, default: bool) -> bool:
-        raw = os.environ.get(name)
-        if raw is None:
-            return default
-        return raw.strip().lower() in ("1", "true", "yes", "on")
 
     return OptionsExecConfig(
         min_confidence=_f("ALPACA_OPT_MIN_CONFIDENCE", 0.55),
@@ -71,6 +74,17 @@ def _config_from_env():  # noqa: ANN202
         # Technical-alignment gate (CL-3xoj): skip ideas whose computed price
         # structure scores below this against the thesis. -1.01 disables.
         min_alignment=_f("ALPACA_OPT_MIN_ALIGNMENT", -0.4),
+    )
+
+
+def _exit_config_from_env():  # noqa: ANN202
+    from src.execution.alpaca_options_exit import OptionsExitConfig  # noqa: PLC0415
+
+    return OptionsExitConfig(
+        stop_loss_pct=_f("ALPACA_OPT_STOP_LOSS_PCT", 0.40),
+        profit_target_pct=_f("ALPACA_OPT_PROFIT_TARGET_PCT", 0.80),
+        expiry_protect_days=_i("ALPACA_OPT_EXPIRY_PROTECT_DAYS", 4),
+        default_time_stop_days=_i("ALPACA_OPT_DEFAULT_TIME_STOP_DAYS", 10),
     )
 
 
@@ -104,6 +118,9 @@ def main(argv: list[str] | None = None) -> int:
     from src.execution.alpaca_options_executor import (  # noqa: PLC0415
         execute_pending_options,
     )
+    from src.execution.alpaca_options_exit import (  # noqa: PLC0415
+        manage_option_exits,
+    )
 
     paper = os.environ.get("ALPACA_PAPER", "true").strip().lower() in (
         "1", "true", "yes", "on",
@@ -111,9 +128,16 @@ def main(argv: list[str] | None = None) -> int:
     engine = create_engine(_build_db_url())
     client = AlpacaOptionsClient(key, secret, paper=paper)
     cfg = _config_from_env()
-    logger.info("alpaca options executor: paper=%s policy=%s", paper, cfg)
+    exit_enabled = _b("ALPACA_OPT_EXIT_ENABLED", default=True)
+    exit_cfg = _exit_config_from_env()
+    logger.info("alpaca options executor: paper=%s policy=%s exit=%s %s",
+                paper, cfg, exit_enabled, exit_cfg)
 
     def _run() -> None:
+        # Exits BEFORE entries (CL-3rho): manage what we hold, then buy.
+        if exit_enabled:
+            exits = manage_option_exits(engine, client, cfg=exit_cfg)
+            print(f"alpaca option exits: {exits}")
         counts = execute_pending_options(engine, client, cfg=cfg)
         print(f"alpaca options: {counts}")
 
