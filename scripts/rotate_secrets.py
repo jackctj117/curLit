@@ -22,11 +22,13 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import getpass
 import json
 import logging
 import os
 import socket
+import subprocess
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -211,23 +213,42 @@ def rotate(targets: list[str]) -> int:
     current = _read_vault_via_agent()
     merged = {**current, **new_values}
 
-    # Hand off to the same encryption path as init_vault, in case the
-    # operator wants to re-seal with a new master passphrase. This
-    # script doesn't change the master passphrase — that's a separate
-    # operation (rotate_master.sh, not in scope of CL-yba0 quarterly).
-    tmp_plain = Path("/tmp/.vault.plain.json")
-    tmp_plain.write_text(json.dumps(merged, indent=2))
-    tmp_plain.chmod(0o600)
+    # Re-seal WITHOUT touching disk (CL-nwzm). The old flow wrote every
+    # credential to a PREDICTABLE /tmp/.vault.plain.json and told the
+    # operator to re-seal "later" — a crash or forgotten cleanup left the
+    # full vault plaintext on disk (the highest practical key-recovery bug
+    # in-repo). The plaintext now travels through an inherited-fd pipe: it
+    # exists only in this process, the pipe buffer, and the child — never
+    # on the filesystem.
+    print("\nRe-sealing vault (plaintext via in-memory pipe — nothing on disk)…")
+    passphrase = getpass.getpass("Master passphrase for re-seal: ")
+    read_fd, write_fd = os.pipe()
+    os.set_inheritable(read_fd, True)
+    payload = json.dumps(merged).encode()
+    try:
+        proc = subprocess.Popen(  # noqa: S603 — our own interpreter+module
+            [
+                sys.executable, "-m", "scripts.initialize_vault",
+                "--plaintext", f"/dev/fd/{read_fd}",
+                "--encrypted", str(_VAULT_PATH),
+                "--passphrase-stdin",
+            ],
+            stdin=subprocess.PIPE,
+            pass_fds=(read_fd,),
+        )
+        os.write(write_fd, payload)
+        os.close(write_fd)
+        proc.communicate(input=passphrase.encode(), timeout=120)
+    finally:
+        with contextlib.suppress(OSError):
+            os.close(read_fd)
+    if proc.returncode != 0:
+        print("Re-seal FAILED — vault unchanged; nothing was written to disk.",
+              file=sys.stderr)
+        return 1
 
-    print("\nNew vault values written to plaintext temp file. Re-seal with:")
-    print(
-        f"  sudo -u fx-vault python -m scripts.initialize_vault "
-        f"--plaintext {tmp_plain} --encrypted {_VAULT_PATH} "
-        f"--passphrase-stdin",
-    )
-    print("\nThen reload the vault agent:")
+    print("Vault re-sealed. Then:")
     print("  sudo systemctl reload fx-vault-agent")
-    print("\nThen restart the engine to pick up the new credentials:")
     print("  sudo systemctl restart fx-live-engine")
 
     _write_audit("rotate", f"keys={sorted(new_values.keys())}")

@@ -2,7 +2,6 @@
 
 import asyncio
 import getpass
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -11,21 +10,14 @@ from typing import Any
 SOCKET_PATH = "/run/fx-vault-agent.sock"
 
 
-def derive_key(passphrase: str, salt: bytes) -> bytes:
-    return hashlib.pbkdf2_hmac("sha256", passphrase.encode(), salt, 600_000, 32)
+from src.security.vault_codec import derive_key, unseal  # noqa: E402
 
 
 def decrypt_vault(path: Path, key: bytes) -> dict[str, Any]:
+    """Open a vault file of ANY historical schema/backend via the shared
+    codec (CL-ujm6) — v1 "ct" and v2 "ciphertext", split or appended tag."""
     data = json.loads(path.read_text())
-    nonce = bytes.fromhex(data["nonce"])
-    ct = bytes.fromhex(data["ciphertext"])
-    try:
-        from wolfcrypt.ciphers import MODE_GCM, Aes
-        aes = Aes(key, MODE_GCM, nonce)
-        return json.loads(aes.decrypt(ct, bytes.fromhex(data.get("tag", ""))))  # type: ignore[no-any-return]
-    except ImportError:
-        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-        return json.loads(AESGCM(key).decrypt(nonce, ct, None))  # type: ignore[no-any-return]
+    return json.loads(unseal(data, key))  # type: ignore[no-any-return]
 
 
 async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, creds: dict[str, Any]) -> None:

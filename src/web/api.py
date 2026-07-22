@@ -1,9 +1,10 @@
 """FastAPI backend — REST API wired to live engine state."""
 
+import hmac
 import os
 from typing import Any
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel
 
 app = FastAPI(title="curLit Web API", version="0.1.0")
@@ -26,9 +27,38 @@ class TradeRequest(BaseModel):
     urgency: str = "normal"
 
 
-def verify_secret(secret: str = "") -> None:
-    expected = os.environ.get("WEB_API_SECRET", "curlit-dev")
-    if secret != expected:
+#: Known-default secrets that must NEVER authenticate (CL-k55b). "curlit-dev"
+#: was the hardcoded fallback; "change-me..." ships in .env.example.
+_FORBIDDEN_SECRETS = frozenset({
+    "", "curlit-dev", "change-me-to-a-random-string",
+})
+
+
+def verify_secret(
+    secret: str = "",
+    x_api_key: str | None = Header(default=None),
+) -> None:
+    """Auth for every /api/* route (CL-k55b hardening).
+
+    * FAIL CLOSED on a missing/default secret: if WEB_API_SECRET is unset or
+      one of the known defaults, /api/* returns 503 for EVERYONE — these
+      endpoints place trades and halt the engine; a guessable default on a
+      0.0.0.0 bind was a takeover path. /health stays open.
+    * Constant-time comparison (hmac.compare_digest).
+    * Prefer the X-API-Key HEADER (query strings leak into access logs,
+      proxies, and Referer); the legacy ?secret= query param still works for
+      the operator's saved URLs but the header wins when both are sent.
+    """
+    expected = os.environ.get("WEB_API_SECRET", "")
+    if expected in _FORBIDDEN_SECRETS:
+        raise HTTPException(
+            status_code=503,
+            detail="WEB_API_SECRET is unset or a known default — the API "
+                   "refuses to serve control endpoints until a real secret "
+                   "is configured (see .env.example).",
+        )
+    supplied = x_api_key if x_api_key is not None else secret
+    if not hmac.compare_digest(supplied.encode(), expected.encode()):
         raise HTTPException(status_code=403)
 
 

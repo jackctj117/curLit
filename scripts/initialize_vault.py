@@ -34,21 +34,11 @@ def generate_recovery_seed() -> tuple[bytes, list[str]]:
     return entropy, words
 
 
-def derive_key(passphrase: str, salt: bytes, iterations: int = 600000) -> bytes:
-    return hashlib.pbkdf2_hmac("sha256", passphrase.encode(), salt, iterations, 32)
-
-
-def encrypt(data: bytes, key: bytes) -> dict:
-    nonce = secrets.token_bytes(12)
-    try:
-        from wolfcrypt.ciphers import MODE_GCM, Aes
-        aes = Aes(key, MODE_GCM, nonce)
-        ct, tag = aes.encrypt(data)
-        return {"v": 1, "nonce": nonce.hex(), "ct": ct.hex(), "tag": tag.hex()}
-    except ImportError:
-        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-        ct = AESGCM(key).encrypt(nonce, data, None)
-        return {"v": 1, "nonce": nonce.hex(), "ct": ct.hex(), "tag": ""}
+# Format + key derivation live in ONE module (CL-ujm6) — this script used to
+# write {"ct": ...} while vault_agent read data["ciphertext"], so vaults it
+# created could never be opened. Both sides now share vault_codec.
+from src.security.vault_codec import derive_key  # noqa: E402
+from src.security.vault_codec import seal as encrypt
 
 
 def main() -> None:
