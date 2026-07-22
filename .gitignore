@@ -69,3 +69,9 @@ airflow/plugins/
 
 # OS
 Thumbs.db
+
+# Obsidian knowledge-graph vault (CL-uuy0) — regeneratable build artifacts.
+# The exporter + hand-authored seed concepts are committed; the generated
+# vault and the staleness manifest are not (rebuild with `make knowledge-vault`).
+knowledge/obsidian/vault/
+knowledge/obsidian/.manifest.json

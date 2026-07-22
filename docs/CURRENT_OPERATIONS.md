@@ -212,6 +212,8 @@ loud WARN banner, never a silent dormant strategy.
 `scripts/data_health.py` prints the coverage report and exits non-zero on
 starvation (cron/CI-able).
 
+**Research tools.** Obsidian knowledge-graph vault (CL-uuy0): `make knowledge-vault` regenerates an offline Obsidian vault of theme↔instrument↔region coverage from the playbook YAML; research-only, NOT part of the live fleet; Coverage.md surfaces under-wired/watch-only themes.
+
 ---
 
 ## 5. LLM stack & cost posture
