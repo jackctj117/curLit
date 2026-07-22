@@ -495,7 +495,11 @@ async def run_engine(broker_mode: str = "paper") -> None:
     # so loudly instead of silently continuing (CL-b0ws).
     try:
         from src.web.api import set_runtime
-        set_runtime(broker, oms, strategies)
+        # kill_switch_manager: lets /api/system/resume re-arm the
+        # once-per-day trigger dedup (CL-8lv6). set_runtime preserves it
+        # if a later call omits the param.
+        set_runtime(broker, oms, strategies,
+                    kill_switch_manager=kill_switch_manager)
         logger.info("Web API runtime wired")
     except Exception:
         logger.exception(
