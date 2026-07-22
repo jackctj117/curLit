@@ -117,7 +117,15 @@ strategies:
       # Hard stop distance from entry (fraction of entry price).
       event_stop_pct: 0.01
       # Max simultaneous event positions across ALL events.
-      max_concurrent_event_positions: 2
+      # Raised 2 -> 3 (2026-07-21): with quality gates working (15 CONFIRMED in
+      # the first hours), the 2-slot cap became the binding constraint — the
+      # log showed genuinely NEW diversifying legs (USD_JPY, USD_CHF) skipped
+      # across 5+ confirmed events while both slots were held. At 50bps risk
+      # per leg, 3 concurrent = 1.5% max simultaneous risk-at-stop, inside the
+      # 2% event_book_max_loss_pct freeze and 1.5x notional vs the 2.0x
+      # leverage limit. (4 would equal the book freeze in one simultaneous
+      # wipeout — too tight to the edge.)
+      max_concurrent_event_positions: 3
       # Hard TIME STOP: exit after this many hours REGARDLESS of P&L.
       event_max_holding_hours: 4
       # Per-instrument concentration cap (CL-wbmw): combined open notional
