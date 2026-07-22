@@ -54,7 +54,10 @@ DEFAULT_REQUIREMENTS: tuple[SeriesRequirement, ...] = (
     SeriesRequirement("US2Y_MINUS_DE2Y", "macro", "rate_diff (signal)", 250, 5),
     SeriesRequirement("EURUSD", "price", "rate_diff (price)", 250, 5),
     SeriesRequirement("CVIX", "macro", "rate_diff/carry_vol (regime)", 120, 5),
-    SeriesRequirement("US_3M_OIS", "macro", "rate_diff/carry_vol (carry)", 60, 7),
+    # CL-gr8o: was "US_3M_OIS" — a latent id mismatch; the strategies read
+    # USD_3M_OIS (carry_vol_filter._RATE_SERIES_MAP, live_portfolio.yaml),
+    # and src/data/foreign_rates.py now populates that id.
+    SeriesRequirement("USD_3M_OIS", "macro", "rate_diff/carry_vol (carry)", 60, 7),
     SeriesRequirement("EUR_3M_ESTR_OIS", "macro", "rate_diff/carry_vol (carry)", 60, 7),
     SeriesRequirement("DGS2", "macro", "rate context", 250, 5),
     SeriesRequirement("USDJPY", "price", "carry_vol", 250, 5),
