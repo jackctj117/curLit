@@ -124,8 +124,45 @@ def decide_x_staleness_alert(
     return (None, stale)
 
 
+def decide_halt_alert(
+    currently_halted: bool | None,
+    was_halted: bool,
+    reason: str | None = None,
+    now: datetime | None = None,
+) -> tuple[str | None, bool]:
+    """(message | None, is_halted_now).
+
+    Pages ONCE on the not-halted → halted transition (enriched with the
+    triggering kill-switch reason when known); a recovery notice on
+    halted → not-halted; silent while it stays halted. Today's incident —
+    the engine halted itself and nobody knew until the operator asked —
+    is exactly what this closes.
+
+    ``currently_halted is None`` means the engine's state is UNKNOWN this
+    cycle (API unreachable / OMS not wired). That is deliberately NOT
+    treated as "not halted": it holds the last known state and never
+    pages — a dead engine is already caught by the daemon-death check, and
+    an unreachable API must not fabricate a false "recovered".
+    """
+    now = now or datetime.now(UTC)
+    if currently_halted is None:
+        return (None, was_halted)
+    if currently_halted and not was_halted:
+        detail = f" — {reason}" if reason else ""
+        return (
+            f"🛑 ENGINE HALTED: OMS new-trades halt is ACTIVE{detail}. "
+            f"No new trades will place until the cause clears and you "
+            f"call /api/system/resume (or restart).",
+            True,
+        )
+    if not currently_halted and was_halted:
+        return ("🟢 Engine halt CLEARED — new trades flowing again.", False)
+    return (None, currently_halted)
+
+
 def summarize_state(state: dict[str, Any]) -> str:
     """One-line state summary for the cycle log."""
     down = sorted((state.get("down") or {}).keys())
     stale = bool(state.get("x_stale"))
-    return (f"down={down or 'none'} x_stale={stale}")
+    halted = bool(state.get("engine_halted"))
+    return f"down={down or 'none'} x_stale={stale} engine_halted={halted}"

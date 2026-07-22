@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 
 from src.monitoring.fleet_watch import (
     decide_fleet_alerts,
+    decide_halt_alert,
     decide_x_staleness_alert,
     parse_status,
 )
@@ -74,3 +75,43 @@ def test_x_staleness_onset_recovery_and_dedup():
 def test_x_staleness_empty_feed_is_stale():
     msg, stale = decide_x_staleness_alert(None, False, NOW)
     assert stale and msg is not None and "never" in msg
+
+
+# --------------------------------------------------------------------------- #
+# engine halt alerting (CL-fmqp extension)
+# --------------------------------------------------------------------------- #
+
+
+def test_halt_onset_pages_with_reason():
+    msg, halted = decide_halt_alert(
+        True, False, "kill switch reconciliation_failure (action=halt_new)", NOW,
+    )
+    assert halted and msg is not None
+    assert "ENGINE HALTED" in msg and "reconciliation_failure" in msg
+
+
+def test_halt_onset_pages_without_reason():
+    msg, halted = decide_halt_alert(True, False, None, NOW)
+    assert halted and msg is not None and "ENGINE HALTED" in msg
+
+
+def test_halt_stays_silent_while_halted():
+    msg, halted = decide_halt_alert(True, True, "x", NOW)
+    assert halted and msg is None  # no re-page
+
+
+def test_halt_recovery_notice():
+    msg, halted = decide_halt_alert(False, True, None, NOW)
+    assert not halted and msg is not None and "CLEARED" in msg
+
+
+def test_halt_healthy_stays_silent():
+    msg, halted = decide_halt_alert(False, False, None, NOW)
+    assert not halted and msg is None
+
+
+def test_halt_unknown_holds_state_never_pages():
+    # API unreachable / OMS unwired → None. Never fabricate a page or a
+    # false "recovered"; hold the prior state.
+    assert decide_halt_alert(None, True, None, NOW) == (None, True)
+    assert decide_halt_alert(None, False, None, NOW) == (None, False)
