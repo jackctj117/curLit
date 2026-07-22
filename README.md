@@ -9,7 +9,7 @@ loop runs unattended across 9 daemons: OANDA practice machine-trades FX legs of
 confirmed geopolitical events; Alpaca paper auto-buys the top options ideas
 daily; every surfaced idea's forward return is scored into a track record that
 a weekly reflective review will tune the system from. 140+ tracked issues
-closed. **Operational ground truth: [`docs/CURRENT_OPERATIONS.md`](docs/CURRENT_OPERATIONS.md).**
+closed. **Operational ground truth: [`docs/CURRENT_OPERATIONS.md`](docs/CURRENT_OPERATIONS.md) · fresh-device setup: [`docs/BOOTSTRAP.md`](docs/BOOTSTRAP.md) · fleet: `./scripts/daemons.sh start`.**
 
 ## Features
 

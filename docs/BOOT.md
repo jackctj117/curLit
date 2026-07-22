@@ -1,5 +1,9 @@
 # BOOT — single-command startup/shutdown for curLit (CL-2ho · CL-kgie)
 
+> **Fleet launcher now exists**: `./scripts/daemons.sh start|stop|status`
+> covers all 9 native daemons. Fresh device: [`BOOTSTRAP.md`](BOOTSTRAP.md).
+> This doc's per-process commands remain valid for individual restarts.
+
 For agents and operators that just need to bring the system up or down.
 No prose; copy-paste only. For human operations & alert response, see
 `docs/OPERATOR.md`. For long-form architecture, see `docs/ARCHITECTURE.md`.

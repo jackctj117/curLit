@@ -136,7 +136,9 @@ activity** (P/C volume skew, volume vs self-built baseline, ATM IV).
 | Outcome scorer | `scripts/score_outcomes.py --loop 86400` | daily | `logs/score_outcomes.log` |
 | Telegram bot | `scripts/telegram_approval_bot.py` | long-poll | `logs/` |
 
-All launch as `nohup … & disown` from the repo root. Every entrypoint runs
+**Fleet control: `./scripts/daemons.sh start|stop|status`** (idempotent —
+start skips running daemons; logs to `logs/<name>.log`). Fresh-device
+bring-up from zero: [`BOOTSTRAP.md`](BOOTSTRAP.md). Every entrypoint runs
 the interpreter-health canary (pyexpat, CL-169t) and the engine additionally
 runs the DATA-HEALTH preflight (CL-q4n1) at boot — a starved series is a
 loud WARN banner, never a silent dormant strategy.
