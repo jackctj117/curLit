@@ -13,6 +13,7 @@ OrderIntent.max_slippage_bps was journaled but never enforced. Now:
 
 from __future__ import annotations
 
+import logging
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -130,25 +131,88 @@ class TestOandaPriceBoundPayload:
         b.place_order(order)
         assert "priceBound" not in bodies[0]["order"]
 
-    def test_pricing_failure_places_without_bound(
-        self, monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        # Fail-open by design: this path also carries kill-switch de-risking
-        # orders; a /pricing hiccup must not block a flatten.
-        b = _broker()
+    # -- pricing-fetch failure posture (CL-8lv6): fail CLOSED for normal
+    # -- capped orders, fail OPEN (unbound + CRITICAL log) for emergency
+    # -- risk-reducing orders.
 
+    @staticmethod
+    def _broken_pricing(b: OandaBroker) -> None:
         def boom(url: str, params: dict | None = None) -> SimpleNamespace:
             raise OSError("pricing endpoint down")
 
         b.client = SimpleNamespace(get=boom)
+
+    def test_pricing_failure_rejects_normal_capped_order(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # Old behavior placed UNBOUND for every order on a /pricing hiccup.
+        b = _broker()
+        self._broken_pricing(b)
         bodies = _capture_post(b, monkeypatch)
         order = Order(
             symbol="EUR_USD", side="buy", quantity=1000,
             order_type=OrderType.MARKET, max_slippage_bps=2.0,
         )
         out = b.place_order(order)
+        assert out.status == OrderStatus.REJECTED
+        assert out.reject_reason == "SLIPPAGE_REF_UNAVAILABLE"
+        assert bodies == []  # never reached the venue
+
+    def test_pricing_failure_emergency_places_unbound_with_critical_log(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        # Kill-switch flatten/reduce: getting flat beats slippage protection.
+        b = _broker()
+        self._broken_pricing(b)
+        bodies = _capture_post(b, monkeypatch)
+        order = Order(
+            symbol="EUR_USD", side="sell", quantity=1000,
+            order_type=OrderType.MARKET, max_slippage_bps=2.0,
+            emergency=True,
+        )
+        with caplog.at_level(
+            logging.CRITICAL, logger="src.execution.oanda_broker",
+        ):
+            out = b.place_order(order)
         assert out.status == OrderStatus.FILLED
         assert "priceBound" not in bodies[0]["order"]
+        crit = [r for r in caplog.records if r.levelno == logging.CRITICAL]
+        assert crit
+        assert "emergency order placed without slippage bound" in crit[0].getMessage()
+
+    def test_pricing_failure_uncapped_order_unaffected(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # max_slippage_bps=None never consults /pricing — no reject.
+        b = _broker()
+        self._broken_pricing(b)
+        bodies = _capture_post(b, monkeypatch)
+        order = Order(
+            symbol="EUR_USD", side="buy", quantity=1000,
+            order_type=OrderType.MARKET,
+        )
+        out = b.place_order(order)
+        assert out.status == OrderStatus.FILLED
+        assert "priceBound" not in bodies[0]["order"]
+
+    def test_pricing_success_emergency_still_bounded(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # Emergency relaxes the FAILURE posture only — a healthy /pricing
+        # still yields a bound.
+        b = _broker()
+        b.client = _pricing_client("1.10000", "1.10020")
+        bodies = _capture_post(b, monkeypatch)
+        order = Order(
+            symbol="EUR_USD", side="buy", quantity=1000,
+            order_type=OrderType.MARKET, max_slippage_bps=2.0,
+            emergency=True,
+        )
+        out = b.place_order(order)
+        assert out.status == OrderStatus.FILLED
+        assert Decimal(bodies[0]["order"]["priceBound"]) > Decimal("1.10020")
 
 
 # ---------------------------------------------------------------------------

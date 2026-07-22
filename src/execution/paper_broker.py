@@ -1,5 +1,6 @@
 """Paper broker — simulated execution with cost model, full P&L tracking."""
 
+import asyncio
 import logging
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
@@ -9,10 +10,19 @@ from .broker import Account, Broker, Order, OrderStatus, Position
 
 logger = logging.getLogger(__name__)
 
+#: Half-spread applied around the set_price mid by stream_prices, in basis
+#: points (CL-8lv6): a deterministic ±0.5 bp synthetic book.
+STREAM_HALF_SPREAD_BPS = 0.5
+
 
 class PaperBroker(Broker):
-    def __init__(self, initial_capital: float = 100_000.0) -> None:
+    def __init__(
+        self,
+        initial_capital: float = 100_000.0,
+        stream_interval_sec: float = 1.0,
+    ) -> None:
         self._capital = initial_capital
+        self._stream_interval_sec = stream_interval_sec
         self._equity = initial_capital
         self._peak_equity = initial_capital
         self._positions: dict[str, Position] = {}
@@ -144,11 +154,34 @@ class PaperBroker(Broker):
     async def stream_prices(
         self, symbols: list[str],
     ) -> AsyncIterator[dict[str, Any]]:
-        import asyncio
+        """Synthetic ticks for PRICED symbols only — fail closed (CL-8lv6 P0).
+
+        The old implementation fabricated bid=1.1000/ask=1.1002 for EVERY
+        requested symbol, ignoring set_price: the live engine's paper mode
+        fills _last_prices from this stream, so all instruments were marked
+        ~1.10 and paper-soak sizing/stops/PnL were meaningless. Same policy
+        as get_price now: a symbol without a set_price value is ABSENT from
+        the stream — never fabricated. Priced symbols tick around the
+        CURRENT set_price mid with a deterministic ±STREAM_HALF_SPREAD_BPS
+        synthetic spread, so set_price updates are reflected on the next
+        pass. Tick shape matches OandaBroker.stream_prices:
+        {symbol, bid, ask, ts}.
+        """
         while True:
             for sym in symbols:
-                yield {"symbol": sym, "bid": 1.1000, "ask": 1.1002, "ts": datetime.now(UTC).isoformat()}
-            await asyncio.sleep(1.0)
+                quote = self._prices.get(sym)
+                if quote is None:
+                    continue  # fail closed: no set_price → no tick
+                bid, ask = quote
+                mid = (bid + ask) / 2.0
+                half = mid * (STREAM_HALF_SPREAD_BPS / 10_000.0)
+                yield {
+                    "symbol": sym,
+                    "bid": mid - half,
+                    "ask": mid + half,
+                    "ts": datetime.now(UTC).isoformat(),
+                }
+            await asyncio.sleep(self._stream_interval_sec)
 
     # -- Test helpers --------------------------------------------------
 

@@ -12,6 +12,18 @@ from .broker import Account, Broker, Order, OrderStatus, Position
 logger = logging.getLogger(__name__)
 
 
+class SlippageRefUnavailableError(RuntimeError):
+    """The /pricing fetch backing a slippage priceBound failed (CL-8lv6).
+
+    Raised by _compute_price_bound for a NON-emergency order that carries
+    max_slippage_bps: rather than silently placing the order UNBOUND (the old
+    fail-open), place_order catches this and REJECTS the order with
+    reject_reason="SLIPPAGE_REF_UNAVAILABLE" so it flows through the normal
+    RejectionHandler path. Emergency (risk-reducing kill-switch) orders do
+    NOT raise this — they place unbound with a CRITICAL log.
+    """
+
+
 def _price_bound_str(
     side: str, reference_price: str, max_slippage_bps: float,
 ) -> str:
@@ -105,7 +117,19 @@ class OandaBroker(Broker):
         # FOK market order that could only fill beyond tolerance (parsed
         # below as orderRejectTransaction/orderCancelTransaction → REJECTED,
         # which the OMS raises through the RejectionHandler path).
-        price_bound = self._compute_price_bound(order)
+        try:
+            price_bound = self._compute_price_bound(order)
+        except SlippageRefUnavailableError as exc:
+            # Fail CLOSED (CL-8lv6): a capped, non-emergency order must not
+            # go out unbound just because /pricing hiccuped. Same terminal
+            # REJECTED shape as a venue reject.
+            order.status = OrderStatus.REJECTED
+            order.reject_reason = "SLIPPAGE_REF_UNAVAILABLE"
+            logger.warning(
+                "OANDA REJECTED order %s %s x%s pre-flight: %s",
+                order.symbol, order.side, order.quantity, exc,
+            )
+            return order
         if price_bound is not None:
             body["order"]["priceBound"] = price_bound
         resp = self._post_following_307(f"/v3/accounts/{self.account_id}/orders", body)
@@ -160,10 +184,16 @@ class OandaBroker(Broker):
         Reference is the venue's live quote on the fill side (buy → ask,
         sell → bid), fetched as the raw string so the bound inherits the
         instrument's quote precision. Returns None (no bound) when the order
-        carries no slippage cap, or when the pricing fetch fails — fail-open
-        by design: this path also carries kill-switch de-risking orders, and
-        refusing to flatten because /pricing hiccuped is worse than one
-        unbounded FOK order. The failure is logged loudly.
+        carries no slippage cap.
+
+        Fetch-failure posture (CL-8lv6 — was fail-open for everything):
+
+        - normal capped order → raise SlippageRefUnavailableError; the order
+          is REJECTED with reject_reason="SLIPPAGE_REF_UNAVAILABLE" instead
+          of going out UNBOUND.
+        - ``order.emergency`` (risk-reducing kill-switch flatten/reduce) →
+          place unbound with a CRITICAL log: getting flat beats slippage
+          protection.
         """
         bps = order.max_slippage_bps
         if bps is None or bps <= 0:
@@ -179,15 +209,22 @@ class OandaBroker(Broker):
                 str(p["asks"][0]["price"]) if order.side == "buy"
                 else str(p["bids"][0]["price"])
             )
-        except Exception:
-            logger.warning(
-                "Could not fetch reference price for %s — placing %s x%s "
-                "WITHOUT a slippage priceBound (max %.2f bps unenforced "
-                "this order)",
-                order.symbol, order.side, order.quantity, bps,
-                exc_info=True,
+        except Exception as exc:
+            if order.emergency:
+                logger.critical(
+                    "emergency order placed without slippage bound: "
+                    "reference-price fetch failed for %s — %s x%s goes out "
+                    "UNBOUND (max %.2f bps unenforced this order; "
+                    "risk-reducing order takes precedence)",
+                    order.symbol, order.side, order.quantity, bps,
+                    exc_info=True,
+                )
+                return None
+            msg = (
+                f"reference price unavailable for {order.symbol} "
+                f"({order.side} x{order.quantity}, max {bps} bps)"
             )
-            return None
+            raise SlippageRefUnavailableError(msg) from exc
         return _price_bound_str(order.side, ref_str, bps)
 
     def cancel_order(self, order_id: str) -> bool:
