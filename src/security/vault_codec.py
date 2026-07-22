@@ -25,11 +25,97 @@ iterations, 32 bytes) so the two sides can never drift again.
 from __future__ import annotations
 
 import hashlib
+import math
 import secrets
 from typing import Any
 
+# 600k PBKDF2-HMAC-SHA256 iterations meets the current (OWASP) floor for
+# this KDF — reviewed under CL-qyav, no bump needed. If this is ever raised,
+# raise it for NEW seals only; unseal of existing vaults must keep working
+# (KDF params are pinned per-vault by the derive_key call site).
 PBKDF2_ITERATIONS = 600_000
 _TAG_LEN = 16
+
+# --- Passphrase strength policy (CL-qyav P2) -------------------------------
+#
+# Enforced for NEW vault creation / passphrase changes via
+# ``require_strong_passphrase``. Unseal of an EXISTING vault must never fail
+# on a weak passphrase — callers on that path use ``passphrase_weakness`` and
+# log a rotation warning instead.
+
+MIN_PASSPHRASE_CHARS = 12
+MIN_PASSPHRASE_BITS = 60.0
+
+# Mirror of the legacy 35-word generator list in
+# scripts/initialize_vault.generate_passphrase (duplicated here because that
+# script imports this module — importing back would be circular). A phrase
+# built solely from these words has only log2(35) ~= 5.13 bits/word against
+# an attacker who has read the repo, regardless of its character length.
+_LEGACY_WORDLIST = frozenset({
+    "abacus", "balance", "cactus", "dagger", "eagle", "fabric", "galaxy",
+    "habitat", "iceberg", "jungle", "kayak", "lantern", "magnet", "nebula",
+    "octopus", "paddle", "quantum", "raccoon", "saddle", "tackle", "umbrella",
+    "vapor", "walnut", "xenon", "yacht", "zebra", "anchor", "blizzard",
+    "captain", "diamond", "emerald", "falcon", "garden", "horizon", "island",
+})
+
+
+def estimate_passphrase_bits(passphrase: str) -> float:
+    """Crude entropy estimate: charset-size ** length, in bits.
+
+    Deliberately simple (no new deps). One refinement: a phrase made only of
+    words from the known legacy 35-word generator list is scored per-word
+    (n * log2(35)) — the attacker knows that list, so character length is
+    irrelevant. This is what makes the ~31-bit legacy passphrase (6 words)
+    actually register as weak instead of looking like a 200-bit string.
+    """
+    if not passphrase:
+        return 0.0
+    words = passphrase.split()
+    if len(words) > 1 and all(w in _LEGACY_WORDLIST for w in words):
+        return len(words) * math.log2(len(_LEGACY_WORDLIST))
+    charset = 0
+    if any(c.islower() for c in passphrase):
+        charset += 26
+    if any(c.isupper() for c in passphrase):
+        charset += 26
+    if any(c.isdigit() for c in passphrase):
+        charset += 10
+    if any(not c.isalnum() for c in passphrase):
+        charset += 33  # printable specials incl. space
+    return len(passphrase) * math.log2(charset) if charset else 0.0
+
+
+def passphrase_weakness(passphrase: str) -> str | None:
+    """Human-readable reason the passphrase fails policy, or None if it passes."""
+    if len(passphrase) < MIN_PASSPHRASE_CHARS:
+        return (
+            f"only {len(passphrase)} characters "
+            f"(minimum {MIN_PASSPHRASE_CHARS})"
+        )
+    bits = estimate_passphrase_bits(passphrase)
+    if bits < MIN_PASSPHRASE_BITS:
+        return (
+            f"estimated entropy ~{bits:.0f} bits "
+            f"(minimum {MIN_PASSPHRASE_BITS:.0f})"
+        )
+    return None
+
+
+def require_strong_passphrase(passphrase: str) -> None:
+    """Raise ValueError if the passphrase fails policy.
+
+    Call this on every NEW vault creation or passphrase change. Do NOT call
+    it on the unseal path — existing vaults must keep opening.
+    """
+    reason = passphrase_weakness(passphrase)
+    if reason is not None:
+        msg = (
+            f"vault passphrase too weak: {reason}. "
+            "Use >=12 characters mixing character classes, or >=6 words from "
+            "a large (2048+) wordlist such as scripts/bip39_english.txt."
+        )
+        raise ValueError(msg)
 
 
 def derive_key(passphrase: str, salt: bytes, iterations: int = PBKDF2_ITERATIONS) -> bytes:
