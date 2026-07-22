@@ -521,6 +521,13 @@ class PortfolioCoordinator:
     # Intent processing — internal stages
     # ------------------------------------------------------------------
 
+    def seed_targets_from_books(self) -> None:
+        """Public wrapper (CL-9dhg): admin CLIs run in fresh processes
+        where cross-tick memory is empty — they MUST seed before
+        remove_strategy or co-holder shares compute as zero."""
+        self._seed_targets_from_books()
+        self._targets_seeded = True
+
     def _seed_targets_from_books(self) -> None:
         """Rebuild cross-tick target memory from strategy books after a
         restart (CL-8lv6). Book-based strategies (event_driven) hold

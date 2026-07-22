@@ -128,8 +128,7 @@ def _seed_coordinator_memory(coord: Any) -> None:
     ``seed_targets_from_books()`` wrapper on PortfolioCoordinator
     delegating to ``_seed_targets_from_books``.
     """
-    coord._seed_targets_from_books()
-    coord._targets_seeded = True
+    coord.seed_targets_from_books()
 
 
 def cmd_add(args: argparse.Namespace) -> int:
