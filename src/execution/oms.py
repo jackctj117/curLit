@@ -21,7 +21,14 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from .broker import Broker, Order, OrderStatus, OrderType, canonical_symbol
+from .broker import (
+    Broker,
+    BrokerRejectedOrderError,
+    Order,
+    OrderStatus,
+    OrderType,
+    canonical_symbol,
+)
 from .trade_journal import EventType, TradeJournal
 
 logger = logging.getLogger(__name__)
@@ -136,6 +143,15 @@ class OrderManager:
             )
             try:
                 placed = self.broker.place_order(order)
+                if placed.status == OrderStatus.REJECTED:
+                    # Ultrareview #2: a REJECTED status must flow through the
+                    # SAME rejection policy as a transport exception — before
+                    # this it entered _pending forever (poisoning
+                    # has_pending), was journaled ORDER_PLACED, and never
+                    # reached the RejectionHandler's halved-retry/halt logic.
+                    raise BrokerRejectedOrderError(
+                        placed.reject_reason or "broker rejected order",
+                    )
                 self._pending[intent.intent_id] = [placed]
                 logger.info(
                     "Placed %s %s %.4f (attempt=%d, fraction=%.2f)",

@@ -68,7 +68,21 @@ class PaperBroker(Broker):
         )
 
     def get_price(self, symbol: str) -> tuple[float, float]:
-        return self._prices.get(symbol, (1.1000, 1.1002))
+        """Bid/ask for a configured symbol. RAISES on unknown symbols
+        (ultrareview follow-up): the old silent (1.1000, 1.1002) default was
+        the same fabricated-price fail-open as the coordinator's mid=1.0 —
+        it priced gold/indices as if they were EURUSD in paper soaks and
+        masked missing set_price wiring. Callers that can tolerate a missing
+        price (coordinator._get_price) catch and fail closed."""
+        try:
+            return self._prices[symbol]
+        except KeyError:
+            msg = (
+                f"PaperBroker has no price for {symbol!r} — call "
+                f"set_price('{symbol}', bid, ask) first (known: "
+                f"{sorted(self._prices)})"
+            )
+            raise KeyError(msg) from None
 
     async def stream_prices(
         self, symbols: list[str],

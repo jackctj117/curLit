@@ -71,3 +71,55 @@ def test_compact_intents_unaffected():
     oms = OrderManager(broker)  # type: ignore[arg-type]
     oms.submit_intent(_intent("EURUSD", 0.0))
     assert broker.orders == [("EURUSD", "sell", 1000.0)]
+
+
+# --------------------------------------------------------------------------- #
+# REJECTED-status routing (ultrareview #2)
+# --------------------------------------------------------------------------- #
+
+
+class _RejectingBroker:
+    """Returns a REJECTED order (no exception) — the OANDA reject shape."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def get_positions(self):
+        return []
+
+    def place_order(self, order):  # noqa: ANN001, ANN201
+        from src.execution.broker import OrderStatus
+        self.calls += 1
+        order.status = OrderStatus.REJECTED
+        order.reject_reason = "INSUFFICIENT_MARGIN"
+        return order
+
+
+class _RecordingRejectionHandler:
+    def __init__(self) -> None:
+        self.handled: list[str] = []
+
+    def handle(self, intent, order, exc, attempt, response_text=None):  # noqa: ANN001, ANN201
+        from types import SimpleNamespace
+        self.handled.append(str(exc))
+        return SimpleNamespace(should_retry=False, halt_strategy=False,
+                               sleep_sec=0.0, next_size_fraction=1.0,
+                               final_resolution=SimpleNamespace(value="abort"))
+
+
+def test_rejected_status_routes_through_rejection_handler():
+    """Before the fix: a REJECTED order entered _pending forever, was
+    journaled ORDER_PLACED, and never reached the RejectionHandler."""
+    broker = _RejectingBroker()
+    handler = _RecordingRejectionHandler()
+    oms = OrderManager(broker, rejection_handler=handler)  # type: ignore[arg-type]
+    oms.submit_intent(_intent("USD_CAD", -8916.0))
+    assert handler.handled == ["INSUFFICIENT_MARGIN"]  # policy path fired
+    assert oms.has_pending() is False                  # no poisoned pending
+
+
+def test_rejected_status_without_handler_drops_cleanly():
+    broker = _RejectingBroker()
+    oms = OrderManager(broker)  # type: ignore[arg-type]
+    oms.submit_intent(_intent("USD_CAD", -8916.0))
+    assert oms.has_pending() is False

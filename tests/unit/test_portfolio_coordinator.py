@@ -793,3 +793,44 @@ class TestBlackoutSizeDown:
         coord, *_ = _make_coord(["s1"], blackout_evaluator=evaluator)
         out = coord._apply_blackout_size_down("EURUSD", -8_000.0)
         assert out == pytest.approx(-4_000.0)
+
+
+# =============================================================================
+# Fail-closed pricing: withhold, never fabricate an exit (CL-e8ze + ultrareview #1)
+# =============================================================================
+
+
+class TestUnpriceableSymbolWithheld:
+    def test_unpriceable_symbol_removed_from_aggregate(self) -> None:
+        """A symbol with no price must be DELETED from the aggregate — the
+        first fix rescaled its target to 0, which flowed a zero-target intent
+        to the OMS and FORCE-LIQUIDATED any held position on a pricing flap."""
+        coord, _oms, _broker, _state = _make_coord()
+        units = 1000.0
+        agg = {
+            "XAU_USD": {  # no price configured for gold → unpriceable
+                "target_position": units,
+                "urgency": "normal",
+                "strategy_contributions": {"s1": units},
+            },
+            "EURUSD": {
+                "target_position": 500.0,
+                "urgency": "normal",
+                "strategy_contributions": {"s1": 500.0},
+            },
+        }
+        out = coord._apply_portfolio_constraints(agg)
+        assert "XAU_USD" not in out          # withheld entirely — no intent
+        assert "EURUSD" in out                # priceable symbol unaffected
+        assert out["EURUSD"]["target_position"] == pytest.approx(500.0)
+
+    def test_all_unpriceable_returns_empty(self) -> None:
+        coord, _oms, _broker, _state = _make_coord()
+        agg = {
+            "XAU_USD": {
+                "target_position": 100.0,
+                "urgency": "normal",
+                "strategy_contributions": {"s1": 100.0},
+            },
+        }
+        assert coord._apply_portfolio_constraints(agg) == {}

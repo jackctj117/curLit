@@ -543,20 +543,30 @@ class PortfolioCoordinator:
         if not aggregated:
             return aggregated
 
-        # FAIL CLOSED on missing prices (CL-e8ze). The old behavior fell back
-        # to mid=1.0, which understates notional by orders of magnitude for
-        # XAU_USD/indices/high-quote pairs — leverage and per-pair caps could
-        # PASS when they should reject. A symbol we cannot price is a symbol
-        # whose risk we cannot validate: drop its target to 0 (loud) rather
-        # than validate fiction.
-        for symbol, agg in aggregated.items():
-            if agg.get("target_position") and self._get_price(symbol) is None:
-                logger.error(
-                    "price unavailable for %s — DROPPING its target of %.2f "
-                    "(fail closed: cannot validate leverage/caps without a "
-                    "price)", symbol, agg["target_position"],
-                )
-                self._rescale_symbol(agg, 0.0)
+        # FAIL CLOSED on missing prices (CL-e8ze, corrected per ultrareview
+        # #1). The original fell back to mid=1.0, understating notional by
+        # orders of magnitude. The FIRST fix rescaled the target to 0 — which
+        # was its own bug: a zero-target intent still flowed to the OMS, whose
+        # delta math (0 - current_qty, positions come from a DIFFERENT
+        # endpoint than /pricing) would FORCE-LIQUIDATE a held position on a
+        # mere pricing flap — carry_vol re-emits held-currency targets every
+        # rebalance, so this was live exposure. "Fail closed" means REFUSE TO
+        # ACT: delete the symbol from the aggregate entirely so no intent —
+        # entry OR fabricated exit — reaches the OMS this cycle.
+        unpriceable = [
+            symbol for symbol, agg in aggregated.items()
+            if agg.get("target_position") and self._get_price(symbol) is None
+        ]
+        for symbol in unpriceable:
+            logger.error(
+                "price unavailable for %s — WITHHOLDING its intent entirely "
+                "this cycle (fail closed: cannot validate risk without a "
+                "price; existing position, if any, is left untouched)",
+                symbol,
+            )
+            del aggregated[symbol]
+        if not aggregated:
+            return aggregated
 
         account = self.broker.get_account()
         equity = account.equity

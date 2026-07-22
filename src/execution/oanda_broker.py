@@ -45,22 +45,27 @@ class OandaBroker(Broker):
 
     _MAX_307_HOPS = 3
 
-    def _post_following_307(self, url: str, json_body: dict) -> httpx.Response:
-        """POST that follows only method-preserving redirects (307/308).
-
-        Any other 3xx raises instead of letting httpx downgrade the
-        POST to a GET — for order placement a silent method change is
-        worse than a hard failure.
+    def _send_following_307(
+        self, method: str, url: str, json_body: dict | None = None,
+    ) -> httpx.Response:
+        """Write request that follows only method-preserving redirects
+        (307/308). Any other 3xx raises instead of letting httpx downgrade
+        the write to a GET — for order placement/cancel a silent method
+        change is worse than a hard failure. (Generalized from POST-only per
+        ultrareview #4 so cancel PUTs get the same protection.)
         """
         for _ in range(self._MAX_307_HOPS):
-            resp = self.write_client.post(url, json=json_body)
+            resp = self.write_client.request(method, url, json=json_body)
             if resp.status_code in (307, 308) and resp.headers.get("location"):
                 url = resp.headers["location"]
                 continue
             resp.raise_for_status()
             return resp
-        msg = f"OANDA POST {url}: exceeded {self._MAX_307_HOPS} redirect hops"
+        msg = f"OANDA {method} {url}: exceeded {self._MAX_307_HOPS} redirect hops"
         raise httpx.TooManyRedirects(msg)
+
+    def _post_following_307(self, url: str, json_body: dict) -> httpx.Response:
+        return self._send_following_307("POST", url, json_body)
 
     def place_order(self, order: Order) -> Order:
         body = {
@@ -84,6 +89,7 @@ class OandaBroker(Broker):
             order.status = OrderStatus.REJECTED
             order.order_id = str(reject.get("id", ""))
             reason = reject.get("rejectReason") or reject.get("reason") or "?"
+            order.reject_reason = str(reason)
             logger.warning(
                 "OANDA REJECTED order %s %s x%s: %s",
                 order.symbol, order.side, order.quantity, reason,
@@ -98,6 +104,7 @@ class OandaBroker(Broker):
             # Created but immediately cancelled (FOK couldn't fill).
             order.status = OrderStatus.REJECTED
             order.order_id = str(cancel.get("id", ""))
+            order.reject_reason = str(cancel.get("reason", "venue cancel"))
             logger.warning(
                 "OANDA order %s %s x%s cancelled by venue: %s",
                 order.symbol, order.side, order.quantity,
@@ -108,6 +115,7 @@ class OandaBroker(Broker):
         order.order_id = str(txn.get("id", ""))
         order.status = OrderStatus.PENDING if order.order_id else OrderStatus.REJECTED
         if not order.order_id:
+            order.reject_reason = "no fill/reject/create transaction in response"
             logger.warning(
                 "OANDA response had no fill/reject/create txn for %s %s x%s: %s",
                 order.symbol, order.side, order.quantity, str(data)[:200],
@@ -119,8 +127,8 @@ class OandaBroker(Broker):
         ``return True`` that never touched the venue, leaving working orders
         live while the OMS believed them cancelled)."""
         try:
-            resp = self.write_client.put(
-                f"/v3/accounts/{self.account_id}/orders/{order_id}/cancel",
+            resp = self._send_following_307(
+                "PUT", f"/v3/accounts/{self.account_id}/orders/{order_id}/cancel",
             )
             if resp.status_code == 200:
                 return True

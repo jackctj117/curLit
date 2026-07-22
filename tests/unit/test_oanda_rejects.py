@@ -68,12 +68,35 @@ def test_empty_txn_no_longer_pending_ghost(monkeypatch):
 def test_cancel_hits_api(monkeypatch):
     b = _broker()
     calls = []
-    b.write_client = SimpleNamespace(put=lambda url: (calls.append(url), SimpleNamespace(status_code=200, text=""))[1])
+
+    def fake_request(method, url, json=None):
+        calls.append((method, url))
+        return SimpleNamespace(status_code=200, text="",
+                               headers={}, raise_for_status=lambda: None)
+
+    b.write_client = SimpleNamespace(request=fake_request)
     assert b.cancel_order("123") is True
-    assert calls == ["/v3/accounts/ACC/orders/123/cancel"]
+    assert calls == [("PUT", "/v3/accounts/ACC/orders/123/cancel")]
 
 
 def test_cancel_failure_returns_false(monkeypatch):
+    import httpx
+
+    def fake_request(method, url, json=None):
+        def _raise():
+            raise httpx.HTTPStatusError("404", request=None, response=None)
+        return SimpleNamespace(status_code=404, text="nope", headers={},
+                               raise_for_status=_raise)
+
     b = _broker()
-    b.write_client = SimpleNamespace(put=lambda url: SimpleNamespace(status_code=404, text="nope"))
+    b.write_client = SimpleNamespace(request=fake_request)
     assert b.cancel_order("123") is False
+
+
+def test_reject_carries_reason(monkeypatch):
+    b = _broker()
+    monkeypatch.setattr(b, "_post_following_307", lambda url, body: _resp({
+        "orderRejectTransaction": {"id": "9", "rejectReason": "INSUFFICIENT_MARGIN"},
+    }))
+    out = b.place_order(_order())
+    assert out.reject_reason == "INSUFFICIENT_MARGIN"

@@ -403,6 +403,12 @@ class PositionReconciler:
                     )
                 else:
                     recorded_in_store = True
+                    # Ultrareview #3: canonicalize like the open_positions
+                    # branch — a store record with "USD_CAD" would otherwise
+                    # mismatch broker "USDCAD" and recreate the CL-8s1e
+                    # restart-flatten for store-writing strategies.
+                    from src.execution.broker import canonical_symbol  # noqa: PLC0415
+                    symbol = canonical_symbol(symbol)
                     per_symbol.setdefault(symbol, []).append({
                         "strategy_id": sid,
                         "quantity": float(qty),

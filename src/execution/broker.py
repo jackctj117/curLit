@@ -35,6 +35,8 @@ class Order:
     order_id: str = field(default_factory=lambda: str(uuid4()))
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     status: OrderStatus = OrderStatus.PENDING
+    #: Venue-supplied reason when status is REJECTED (CL-h4as follow-up).
+    reject_reason: str | None = None
 
 
 @dataclass
@@ -47,6 +49,16 @@ class Fill:
     price: float
     timestamp: datetime
     commission: float = 0.0
+
+
+class BrokerRejectedOrderError(RuntimeError):
+    """A broker returned a REJECTED order status (no exception was raised).
+
+    Raised by the OMS so venue rejects flow through the SAME RejectionHandler
+    policy path (classification by message text, halved retries, strategy
+    halt) as transport exceptions — ultrareview #2: before this, a REJECTED
+    status silently entered _pending forever and was journaled ORDER_PLACED.
+    """
 
 
 def canonical_symbol(symbol: str) -> str:
