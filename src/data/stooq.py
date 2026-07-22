@@ -69,7 +69,9 @@ class StooqIngester(BaseIngester):
                 df = self.provider.fetch_daily(sym, start, end)
                 frames.append(df.reset_index())
             except Exception:
-                logger.warning("Stooq fetch failed for %s", sym)
+                logger.warning(
+                    "Stooq fetch failed for %s", sym, exc_info=True,
+                )
         return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
     def transform(self, raw: pd.DataFrame) -> pd.DataFrame:

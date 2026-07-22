@@ -212,6 +212,10 @@ class DataProvider:
                 result = conn.execute(query).fetchone()
             return float(result[0]) if result else None
         except Exception:
+            logger.warning(
+                "get_latest_rate_spread (US_2Y - DE_2Y) failed",
+                exc_info=True,
+            )
             return None
 
     def get_range(self, start: datetime, end: datetime) -> pd.DataFrame:

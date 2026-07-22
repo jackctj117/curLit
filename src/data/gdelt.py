@@ -28,6 +28,7 @@ import logging
 import time
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pandas as pd
@@ -82,7 +83,7 @@ class GdeltDocProvider:
 
     def fetch_articles(
         self, query: str, start: datetime, end: datetime,
-    ) -> list[dict]:
+    ) -> list[dict[str, Any]]:
         params = {
             "query": query,
             "mode": "ArtList",
@@ -136,7 +137,7 @@ class GdeltIngester(BaseIngester):
         self.pause_sec = pause_sec
 
     def fetch(self, start: datetime, end: datetime) -> pd.DataFrame:
-        rows: list[dict] = []
+        rows: list[dict[str, Any]] = []
         for i, (theme, playbook) in enumerate(self.playbooks.items()):
             if i > 0 and self.pause_sec > 0:
                 time.sleep(self.pause_sec)  # be a polite free-tier citizen
@@ -145,7 +146,9 @@ class GdeltIngester(BaseIngester):
                 articles = self.provider.fetch_articles(query, start, end)
             except Exception:
                 # One flaky theme query must not kill the whole poll.
-                logger.warning("GDELT fetch failed for theme %s", theme)
+                logger.warning(
+                    "GDELT fetch failed for theme %s", theme, exc_info=True,
+                )
                 continue
             for art in articles:
                 rows.append({

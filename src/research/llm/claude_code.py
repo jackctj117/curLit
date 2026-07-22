@@ -66,14 +66,15 @@ class ClaudeCodeDriver(Driver):
         # Deliberately skip Driver.__init__'s non-empty key check —
         # auth is the CLI's stored subscription login.
         self.api_key = ""
-        self._bin = shutil.which("claude")
-        if not self._bin:
+        bin_path = shutil.which("claude")
+        if not bin_path:
             msg = (
                 "claude-code driver: `claude` CLI not found on PATH — "
                 "install Claude Code or switch the provider back to "
                 "`claude` (API billing)"
             )
             raise ValueError(msg)
+        self._bin: str = bin_path
         # Neutral cwd so the CLI doesn't ingest this repo's CLAUDE.md /
         # settings into every role call.
         self._workdir = tempfile.mkdtemp(prefix="curlit-claude-code-")

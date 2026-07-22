@@ -152,6 +152,12 @@ def _read_symbols(strategy_cls: type) -> list[str]:
             inst = strategy_cls()
             syms = getattr(inst, "symbols", None)
         except Exception:
+            # Broad by design: generated strategy code can raise anything
+            # on __init__ — fall through to the EURUSD default below.
+            logger.debug(
+                "instantiating %s to read symbols failed",
+                strategy_cls.__name__, exc_info=True,
+            )
             syms = None
     if not syms:
         logger.warning(

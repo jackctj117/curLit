@@ -467,7 +467,7 @@ class TwitterFetcher:
                 created = datetime.fromisoformat(
                     created_at.replace("Z", "+00:00"),
                 )
-            except Exception:
+            except (ValueError, TypeError, AttributeError):
                 created = datetime.now(UTC)
             author_id = t.get("author_id", "")
             handle = users.get(author_id, "")

@@ -48,7 +48,7 @@ class ECBIngester(BaseIngester):
                     df["series_id"] = sid
                     frames.append(df)
             except Exception:
-                logger.warning("ECB fetch failed for %s", sid)
+                logger.warning("ECB fetch failed for %s", sid, exc_info=True)
         return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
     def transform(self, raw: pd.DataFrame) -> pd.DataFrame:
