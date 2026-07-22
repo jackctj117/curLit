@@ -318,7 +318,8 @@ manual trades, X-API-Key only); Alpaca live needs a dual gate
 (`ALPACA_LIVE_UNLOCK=1` + `--confirm-live`); vault deploy bring-up works
 end-to-end with secrets never touching disk; strategy ticks run off the
 event loop. Residual by design: entry-side book state still advances at intent
-time (phantom pruner covers it); the EXIT side is now confirmed-only.
+time (phantom pruner covers it; full fill-lifecycle remains CL-hqyj);
+the EXIT side is confirmed-only.
 
 Review #3 (2026-07-22, third audit — CL-8cw1) closed its P0 + all
 in-scope P1s: aggregation keys canonically (mixed EURUSD/EUR_USD can't
@@ -329,5 +330,7 @@ until it works), event-book exits are two-phase (pending until broker
 confirms flat, re-emitting every tick — a rejected exit self-heals),
 DB URLs percent-safe + password-redacting everywhere, vault interactive
 writes atomic, dashboard auth hash-then-compare, liquidity sizing fails
-closed. The httpx thread-safety finding was verified FALSE (Client is
+closed — NOTE: adjust_for_liquidity currently has NO production call
+sites (verification finding); the fail-closed behavior is latent until
+it is wired into the sizing path (tracked in CL-9dhg follow-up). The httpx thread-safety finding was verified FALSE (Client is
 documented thread-safe; usage audit clean, comment added).

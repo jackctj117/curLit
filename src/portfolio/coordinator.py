@@ -388,22 +388,6 @@ class PortfolioCoordinator:
                 self._apply_portfolio_constraints, aggregated,
             )
 
-            # Cross-tick memory updates AFTER constraints (CL-8cw1 P1):
-            # contributions here are post-leverage-cut. Remembering the
-            # PRE-constraint values made later ticks re-expand toward the
-            # unconstrained size, silently undoing risk cuts. Symbols the
-            # constraints dropped (unpriceable) keep last tick's memory —
-            # the broker didn't change, so neither did the truth.
-            for canon, info in feasible.items():
-                for sid, tgt in info["strategy_contributions"].items():
-                    self._strategy_targets.setdefault(sid, {})[canon] = tgt
-            for sid in list(self._strategy_targets):
-                self._strategy_targets[sid] = {
-                    k: v for k, v in self._strategy_targets[sid].items() if v
-                }
-                if not self._strategy_targets[sid]:
-                    del self._strategy_targets[sid]
-
             ts = datetime.now(UTC)
             # Pre-trade rejections drop the offending intent from `feasible` so
             # the returned dict reflects what actually went to OMS.
@@ -477,6 +461,26 @@ class PortfolioCoordinator:
                         dict(info["strategy_contributions"]),
                     )
                     accepted[symbol] = info
+
+            # Cross-tick memory updates ONLY for symbols that actually
+            # reached the OMS (CL-9dhg finding 4 — was pre-blackout/
+            # pre-rejection): a pre-trade-REJECTED 100k entry must not be
+            # remembered as a live share, or a later removal/aggregation
+            # "restores" a position that never existed. Contributions are
+            # post-leverage-cut (CL-8cw1); rejected/dropped symbols keep
+            # last tick's memory — the broker didn't change. Blackout
+            # halving mutates the symbol-level target only, so memory can
+            # transiently overstate during a blackout window (documented,
+            # self-corrects when the strategy re-emits).
+            for canon, info in accepted.items():
+                for sid, tgt in info["strategy_contributions"].items():
+                    self._strategy_targets.setdefault(sid, {})[canon] = tgt
+            for sid in list(self._strategy_targets):
+                self._strategy_targets[sid] = {
+                    k: v for k, v in self._strategy_targets[sid].items() if v
+                }
+                if not self._strategy_targets[sid]:
+                    del self._strategy_targets[sid]
 
             return accepted
 
@@ -802,7 +806,15 @@ class PortfolioCoordinator:
         when they should reject. Callers must treat None as "cannot validate
         → drop/zero the target" (see _apply_portfolio_constraints pre-pass).
         """
-        for candidate in dict.fromkeys((symbol, canonical_symbol(symbol))):
+        # Try BOTH dialects (CL-9dhg finding 5): canonical is the compact
+        # form, so a compact-routed symbol also needs the underscore
+        # candidate — a broker seeded only with EUR_USD must still price a
+        # EURUSD-routed aggregate (and vice versa).
+        canon = canonical_symbol(symbol)
+        pair = currency_pair(symbol)
+        underscore = f"{pair[0]}_{pair[1]}" if pair else None
+        candidates = [c for c in (symbol, canon, underscore) if c]
+        for candidate in dict.fromkeys(candidates):
             try:
                 bid, ask = self.broker.get_price(candidate)
                 mid = (bid + ask) / 2

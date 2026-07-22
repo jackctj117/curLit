@@ -619,10 +619,13 @@ class KillSwitchManager:
                 target_fraction=0.5, strategy_id="kill_switch_reduce",
             )
             self.oms.halt_new_trades()
-            if submitted is None:
+            if not submitted:
                 logger.critical(
-                    "reduce_50pct could NOT enumerate positions — halted "
-                    "only; trigger NOT spent, switch will re-fire next tick",
+                    "reduce_50pct submitted ZERO intents (%s) — halted only; "
+                    "trigger NOT spent, switch re-fires next tick (CL-9dhg: "
+                    "an empty positions list can be a degraded API, not a "
+                    "flat book — never spend the brake on nothing)",
+                    "fetch failed" if submitted is None else "no positions",
                 )
                 return False
             logger.critical(
@@ -645,10 +648,13 @@ class KillSwitchManager:
                 target_fraction=0.0, strategy_id="kill_switch_flatten",
             )
             self.oms.halt_new_trades()
-            if submitted is None:
+            if not submitted:
                 logger.critical(
-                    "flatten_all could NOT enumerate positions — halted "
-                    "only; trigger NOT spent, switch will re-fire next tick",
+                    "flatten_all submitted ZERO intents (%s) — halted only; "
+                    "trigger NOT spent, switch re-fires next tick (CL-9dhg: "
+                    "an empty positions list can be a degraded API, not a "
+                    "flat book — never spend the brake on nothing)",
+                    "fetch failed" if submitted is None else "no positions",
                 )
                 return False
             logger.critical(
