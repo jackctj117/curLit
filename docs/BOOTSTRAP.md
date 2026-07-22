@@ -59,7 +59,7 @@ docker run -d --name curlit-postgres-soak -p 127.0.0.1:5432:5432 \
   -e POSTGRES_DB=fx -v curlit_pgdata:/var/lib/postgresql/data \
   timescale/timescaledb:latest-pg15
 # (or point POSTGRES_*/DATABASE_URL at any existing TimescaleDB)
-.venv/bin/python -m migrations.run   # 16 migrations, idempotent
+.venv/bin/python -m migrations.run   # 17 migrations, idempotent
 ```
 
 ## 4. Backfills (order matters; all idempotent, all re-runnable)
