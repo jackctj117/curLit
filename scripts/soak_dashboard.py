@@ -11,11 +11,17 @@ disturbing the running soak. Reads:
 Usage:
     .venv/bin/python scripts/soak_dashboard.py
     open http://127.0.0.1:8201/
+
+Auth (CL-94n2): every data endpoint requires the X-API-Key header
+(WEB_API_SECRET, constant-time compare); the process refuses to start on
+an unset/default secret. The browser page prompts for the key once per
+tab (sessionStorage) and sends it as a header — never in the URL.
 """
 
 from __future__ import annotations
 
 import glob
+import hmac
 import json
 import os
 import time
@@ -26,7 +32,7 @@ from typing import Any
 import httpx
 import psutil
 import uvicorn
-from fastapi import Body, FastAPI, HTTPException, Query
+from fastapi import Body, Depends, FastAPI, Header, HTTPException
 from fastapi.responses import HTMLResponse
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
@@ -43,6 +49,60 @@ LOG_DIR = ROOT / "logs"
 SOAK_LOG = LOG_DIR / "soak_test.jsonl"
 
 app = FastAPI(title="curLit Soak Dashboard", version="0.1.0")
+
+
+# =============================================================================
+# Auth (CL-94n2) — mirrors src/web/api.py's X-API-Key pattern
+# =============================================================================
+
+#: Known-default secrets that must NEVER authenticate (same fail-closed
+#: policy as src/web/api.py). "curlit-dev" was the old hardcoded fallback;
+#: "change-me..." ships in .env.example.
+_FORBIDDEN_SECRETS = frozenset({
+    "", "curlit-dev", "change-me-to-a-random-string",
+})
+
+
+def _secret_is_forbidden(secret: str) -> bool:
+    # CHANGE_ME_* placeholders (see .env.example) are defaults too.
+    return secret in _FORBIDDEN_SECRETS or secret.startswith("CHANGE_ME")
+
+
+def require_api_key(x_api_key: str | None = Header(default=None)) -> None:
+    """Auth for EVERY dashboard route, reads included (CL-94n2).
+
+    * FAIL CLOSED: if WEB_API_SECRET is unset or a known default, all
+      routes return 503 for everyone (same policy as src/web/api.py —
+      main() also refuses to boot in that state, so this is belt+braces
+      for embedded/TestClient use).
+    * X-API-Key HEADER only — query-string secrets leak into access
+      logs, proxies, and Referer headers, so ?secret= is gone.
+    * Constant-time comparison (hmac.compare_digest).
+    """
+    expected = os.environ.get("WEB_API_SECRET", "")
+    if _secret_is_forbidden(expected):
+        raise HTTPException(
+            status_code=503,
+            detail="WEB_API_SECRET is unset or a known default — the "
+                   "dashboard refuses to serve until a real secret is "
+                   "configured (see .env.example).",
+        )
+    supplied = x_api_key or ""
+    if not hmac.compare_digest(supplied.encode(), expected.encode()):
+        raise HTTPException(status_code=403)
+
+
+def _require_boot_secret() -> None:
+    """Refuse to START on a missing/default WEB_API_SECRET (CL-94n2)."""
+    if _secret_is_forbidden(os.environ.get("WEB_API_SECRET", "")):
+        raise SystemExit(
+            "FATAL: WEB_API_SECRET is unset or a known default "
+            "(e.g. 'curlit-dev'). The soak dashboard proxies account/"
+            "position data and applies operator approvals, so it will "
+            "not start without a real secret. Generate one with "
+            "`openssl rand -base64 24` and set WEB_API_SECRET in .env "
+            "(see .env.example)."
+        )
 
 
 # Lazy-initialized DB engine so dashboard polling doesn't create a fresh
@@ -137,12 +197,19 @@ def _recent_errors(n: int = 20) -> list[str]:
 def _engine_api_get(path: str) -> Any:
     """Proxy GET to the engine's web API on :8200. Returns parsed JSON or
     None on any failure (engine down, secret mismatch, transport error).
+
+    Sends the secret as an X-API-Key HEADER (CL-94n2) — the engine's
+    src/web/api.py accepts it; the old ?secret= query param leaked into
+    access logs and proxies. No default fallback: without a configured
+    secret we don't call the engine at all.
     """
-    secret = os.environ.get("WEB_API_SECRET", "curlit-dev")
+    secret = os.environ.get("WEB_API_SECRET", "")
+    if _secret_is_forbidden(secret):
+        return None
     try:
         r = httpx.get(
             f"http://127.0.0.1:8200{path}",
-            params={"secret": secret}, timeout=2.0,
+            headers={"X-API-Key": secret}, timeout=2.0,
         )
         if r.status_code != 200:
             return None
@@ -302,7 +369,7 @@ def _verdict(
 
 
 @app.get("/api/soak")
-def soak_health() -> dict[str, Any]:
+def soak_health(_: None = Depends(require_api_key)) -> dict[str, Any]:
     pid = _find_engine_pid()
     runtime = _engine_runtime(pid) if pid else {}
 
@@ -415,6 +482,30 @@ _HTML = """<!doctype html>
 <div id="root">loading…</div>
 <footer>auto-refresh every 10s · <a href="/api/soak" style="color:#888">raw json</a></footer>
 <script>
+// ---- API key (CL-94n2) -------------------------------------------
+// Every endpoint (reads included) needs the X-API-Key HEADER; the
+// secret never appears in a URL (query strings leak into logs,
+// proxies, Referer). Stored per-tab in sessionStorage; a 403 clears
+// it and re-prompts once.
+function apiKey(forcePrompt) {
+  let k = sessionStorage.getItem("curlit_api_key");
+  if (!k || forcePrompt) {
+    k = prompt("Dashboard API key (WEB_API_SECRET)") || "";
+    if (k) sessionStorage.setItem("curlit_api_key", k);
+  }
+  return k;
+}
+async function apiFetch(url, opts) {
+  opts = opts || {};
+  opts.headers = Object.assign({}, opts.headers, {"X-API-Key": apiKey()});
+  let resp = await fetch(url, opts);
+  if (resp.status === 403) {
+    sessionStorage.removeItem("curlit_api_key");
+    opts.headers["X-API-Key"] = apiKey(true);
+    resp = await fetch(url, opts);
+  }
+  return resp;
+}
 function fmt(n) { return n == null ? "—" : (typeof n === "number" ? n.toLocaleString() : n); }
 function fmtDur(sec) {
   if (sec == null) return "—";
@@ -427,7 +518,11 @@ function row(k, v) { return `<div class="row"><span class="k">${k}</span><span>$
 
 async function refresh() {
   let d;
-  try { d = await fetch("/api/soak").then(r => r.json()); }
+  try {
+    const r = await apiFetch("/api/soak");
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    d = await r.json();
+  }
   catch (e) { document.getElementById("root").innerHTML =
     `<div class="card RED"><h2>Error</h2><div>${e.message}</div></div>`; return; }
 
@@ -574,7 +669,11 @@ async function refreshApprovals() {
   const body = document.getElementById("approvals-body");
   if (!body) return;
   let d;
-  try { d = await fetch("/api/approvals").then(r => r.json()); }
+  try {
+    const r = await apiFetch("/api/approvals");
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    d = await r.json();
+  }
   catch (e) {
     body.innerHTML = `<div class="err">${e.message}</div>`; return;
   }
@@ -622,9 +721,8 @@ async function decide(gate, slug, action) {
   const safeSlug = slug.replace(/[^a-z0-9]/gi,'_');
   const reasonEl = document.getElementById(`reason-${gate}-${safeSlug}`);
   const reason = reasonEl ? reasonEl.value : "";
-  const secret = (new URLSearchParams(window.location.search)).get("secret") || "curlit-dev";
   try {
-    const resp = await fetch(`/api/approvals/${encodeURIComponent(slug)}?secret=${encodeURIComponent(secret)}`, {
+    const resp = await apiFetch(`/api/approvals/${encodeURIComponent(slug)}`, {
       method: "POST",
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({gate, action, reason}),
@@ -650,6 +748,10 @@ setInterval(refreshApprovals, 10000);
 
 @app.get("/", response_class=HTMLResponse)
 def dashboard() -> str:
+    """Static HTML shell — deliberately unauthenticated (it contains no
+    data; browsers can't attach headers to a navigation). Every data
+    route it fetches requires the X-API-Key header (CL-94n2), which the
+    page prompts for and keeps in sessionStorage."""
     return _HTML
 
 
@@ -663,27 +765,17 @@ def dashboard() -> str:
 # data/research/state.json (the source of truth the loop watches) and
 # append a line to data/research/decisions.log for audit.
 #
-# Auth: same WEB_API_SECRET pattern the rest of the dashboard uses for
-# state-mutating endpoints. The list endpoint is read-only and binds
-# only to 127.0.0.1 (uvicorn host below) — that's the dashboard's
-# existing security boundary.
+# Auth: every route — reads included — goes through require_api_key
+# (X-API-Key header, CL-94n2). The old split where the read-only list
+# endpoint was open leaked pipeline state to anything on localhost.
 
 
 _DECISIONS_LOG = Path("data/research/decisions.log")
 
 
-def _check_secret(secret: str) -> None:
-    """Validate the WEB_API_SECRET header. Raises HTTPException(401)
-    on mismatch. Same pattern the engine API uses (see _engine_api
-    above)."""
-    expected = os.environ.get("WEB_API_SECRET", "curlit-dev")
-    if not secret or secret != expected:
-        raise HTTPException(status_code=401, detail="invalid secret")
-
-
 @app.get("/api/approvals")
-def api_approvals() -> dict[str, Any]:
-    """Read-only listing of all pending GATE 1 + GATE 2 entries."""
+def api_approvals(_: None = Depends(require_api_key)) -> dict[str, Any]:
+    """Listing of all pending GATE 1 + GATE 2 entries."""
     try:
         state = load_state(DEFAULT_STATE_PATH)
     except (OSError, ValueError) as exc:
@@ -696,11 +788,10 @@ def api_approvals() -> dict[str, Any]:
 def api_apply_decision(
     slug: str,
     body: dict[str, Any] = Body(...),  # noqa: B008
-    secret: str = Query(""),
+    _: None = Depends(require_api_key),
 ) -> dict[str, Any]:
     """Apply an APPROVE/REJECT decision. Body keys: ``gate`` (1|2),
     ``action`` (APPROVE|REJECT), ``reason`` (optional)."""
-    _check_secret(secret)
     gate = int(body.get("gate", 0))
     action = str(body.get("action", "")).upper()
     reason = str(body.get("reason", ""))
@@ -724,6 +815,7 @@ def main() -> None:
     # without first sourcing the file. Explicit env vars still win.
     from src.dotenv_bootstrap import load_project_env  # noqa: PLC0415
     load_project_env()
+    _require_boot_secret()
     port = int(os.environ.get("SOAK_DASHBOARD_PORT", "8201"))
     print(f"curLit soak dashboard → http://127.0.0.1:{port}/")
     uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")

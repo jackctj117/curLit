@@ -281,9 +281,13 @@ def dashboard_client(
     return TestClient(soak_dashboard.app)
 
 
+#: Auth is via the X-API-Key header (CL-94n2) — never a query param.
+_AUTH = {"X-API-Key": "test-secret"}
+
+
 class TestApprovalsEndpoints:
     def test_list_empty(self, dashboard_client: TestClient) -> None:
-        resp = dashboard_client.get("/api/approvals")
+        resp = dashboard_client.get("/api/approvals", headers=_AUTH)
         assert resp.status_code == 200
         assert resp.json() == {"pending": []}
 
@@ -298,7 +302,7 @@ class TestApprovalsEndpoints:
                 "pending_since": "2026-04-28T00:00:00",
             }},
         ), soak_dashboard.DEFAULT_STATE_PATH)
-        resp = dashboard_client.get("/api/approvals")
+        resp = dashboard_client.get("/api/approvals", headers=_AUTH)
         body = resp.json()
         assert len(body["pending"]) == 1
         assert body["pending"][0]["slug"] == "alpha"
@@ -311,7 +315,7 @@ class TestApprovalsEndpoints:
             ideas={"h1": {"status": "PENDING_OPERATOR_APPROVAL", "slug": "alpha"}},
         ), soak_dashboard.DEFAULT_STATE_PATH)
         resp = dashboard_client.post(
-            "/api/approvals/alpha?secret=test-secret",
+            "/api/approvals/alpha", headers=_AUTH,
             json={"gate": 1, "action": "APPROVE", "reason": "looks good"},
         )
         assert resp.status_code == 200
@@ -328,11 +332,20 @@ class TestApprovalsEndpoints:
             ideas={"h1": {"status": "PENDING_OPERATOR_APPROVAL", "slug": "alpha"}},
         ), soak_dashboard.DEFAULT_STATE_PATH)
         resp = dashboard_client.post(
-            "/api/approvals/alpha?secret=wrong",
+            "/api/approvals/alpha", headers={"X-API-Key": "wrong"},
             json={"gate": 1, "action": "APPROVE"},
         )
-        assert resp.status_code == 401
-        assert "invalid secret" in resp.json()["detail"]
+        assert resp.status_code == 403
+
+    def test_post_rejects_legacy_query_param_secret(
+        self, dashboard_client: TestClient,
+    ) -> None:
+        """?secret= no longer authenticates anything (CL-94n2)."""
+        resp = dashboard_client.post(
+            "/api/approvals/alpha?secret=test-secret",
+            json={"gate": 1, "action": "APPROVE"},
+        )
+        assert resp.status_code == 403
 
     def test_post_rejects_already_decided(
         self, dashboard_client: TestClient,
@@ -342,7 +355,7 @@ class TestApprovalsEndpoints:
             ideas={"h1": {"status": "APPROVED", "slug": "alpha"}},
         ), soak_dashboard.DEFAULT_STATE_PATH)
         resp = dashboard_client.post(
-            "/api/approvals/alpha?secret=test-secret",
+            "/api/approvals/alpha", headers=_AUTH,
             json={"gate": 1, "action": "APPROVE"},
         )
         assert resp.status_code == 400
@@ -352,7 +365,7 @@ class TestApprovalsEndpoints:
         self, dashboard_client: TestClient,
     ) -> None:
         resp = dashboard_client.post(
-            "/api/approvals/alpha?secret=test-secret",
+            "/api/approvals/alpha", headers=_AUTH,
             json={"gate": 9, "action": "APPROVE"},
         )
         assert resp.status_code == 400

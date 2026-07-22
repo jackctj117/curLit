@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pytest
 
-from src.security import vault_agent
+from src.security import vault_agent, vault_wire
 
 pytestmark = pytest.mark.skipif(
     not (sys.platform.startswith("linux") or sys.platform == "darwin"),
@@ -92,11 +92,17 @@ def test_peer_authorized_fails_closed_on_unknown_platform(monkeypatch, caplog):
 # --- end-to-end over a real AF_UNIX socket --------------------------------
 
 async def _request(path: str, payload: dict) -> bytes:
+    """One framed request/response round-trip (CL-1ho7 wire protocol).
+
+    Returns b"" when the agent closes the connection without responding
+    (unauthenticated / malformed-frame peers)."""
     reader, writer = await asyncio.open_unix_connection(path)
     try:
-        writer.write(json.dumps(payload).encode())
-        await writer.drain()
-        return await reader.read(4096)
+        await vault_wire.send_framed_async(writer, json.dumps(payload).encode())
+        try:
+            return await vault_wire.recv_framed_async(reader)
+        except asyncio.IncompleteReadError:
+            return b""
     finally:
         writer.close()
 

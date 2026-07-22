@@ -146,13 +146,20 @@ _TARGETS: dict[str, RotationTarget] = {
 
 def _read_vault_via_agent() -> dict[str, Any]:
     """Pull the current vault state through the running agent. Avoids
-    needing the master passphrase in the rotation script."""
+    needing the master passphrase in the rotation script.
+
+    Uses the length-prefixed frame protocol (CL-1ho7,
+    src.security.vault_wire) — the old single-shot ``recv`` silently
+    truncated any vault response over one buffer.
+    """
+    from src.security.vault_wire import recv_framed, send_framed  # noqa: PLC0415
+
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     sock.settimeout(10.0)
     try:
         sock.connect(_VAULT_AGENT_SOCK)
-        sock.sendall(json.dumps({"action": "list"}).encode())
-        resp = json.loads(sock.recv(8192))
+        send_framed(sock, json.dumps({"action": "list"}).encode())
+        resp = json.loads(recv_framed(sock))
     finally:
         sock.close()
     if not resp.get("ok"):
@@ -161,10 +168,12 @@ def _read_vault_via_agent() -> dict[str, Any]:
     for name in resp.get("names", []):
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         s.settimeout(10.0)
-        s.connect(_VAULT_AGENT_SOCK)
-        s.sendall(json.dumps({"action": "get", "name": name}).encode())
-        r = json.loads(s.recv(4096))
-        s.close()
+        try:
+            s.connect(_VAULT_AGENT_SOCK)
+            send_framed(s, json.dumps({"action": "get", "name": name}).encode())
+            r = json.loads(recv_framed(s))
+        finally:
+            s.close()
         if r.get("ok"):
             out[name] = r["value"]
     return out

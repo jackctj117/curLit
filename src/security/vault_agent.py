@@ -6,6 +6,10 @@ this process's UID. Unknown/unsupported platforms fail CLOSED — the
 connection is rejected and a warning is logged once. The socket file is
 created under a 0o177 umask and pinned to mode 0o600; a loose parent
 directory we own is tightened, one we don't own is warned about.
+
+Wire protocol (CL-1ho7): every request/response is a 4-byte big-endian
+length prefix + JSON payload (src.security.vault_wire) — framing runs
+strictly AFTER peer auth; malformed frames drop the connection.
 """
 
 import asyncio
@@ -29,6 +33,11 @@ from src.security.vault_codec import (  # noqa: E402
     derive_key,
     passphrase_weakness,
     unseal,
+)
+from src.security.vault_wire import (  # noqa: E402
+    FrameError,
+    recv_framed_async,
+    send_framed_async,
 )
 
 # --- Peer credential authentication (CL-xdnh) ------------------------------
@@ -125,7 +134,15 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
         sock = writer.get_extra_info("socket")
         if sock is None or not peer_authorized(sock):
             return  # drop unauthenticated peers without a response
-        data = await reader.read(4096)
+        # Length-prefixed framing (CL-1ho7) — ONLY after peer auth, so an
+        # unauthorized peer never even gets a protocol read. Malformed
+        # frames (empty/oversize/truncated) drop the connection without a
+        # response, same as an unauthenticated peer.
+        try:
+            data = await recv_framed_async(reader)
+        except (FrameError, asyncio.IncompleteReadError) as exc:
+            logger.warning("vault agent: dropping client on bad frame: %s", exc)
+            return
         req = json.loads(data)
         if req.get("action") == "get":
             resp = {"ok": True, "value": creds.get(req.get("name", ""))} if req.get("name") in creds else {"ok": False, "error": "not_found"}
@@ -133,8 +150,7 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
             resp = {"ok": True, "names": list(creds.keys())}
         else:
             resp = {"ok": False, "error": "unknown_action"}
-        writer.write(json.dumps(resp).encode())
-        await writer.drain()
+        await send_framed_async(writer, json.dumps(resp).encode())
     finally:
         writer.close()
 

@@ -31,7 +31,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -233,7 +233,7 @@ def format_age(then: Any, now: datetime | None = None) -> str:
     return f"{int(round(hours / 24.0))}d"
 
 
-def format_price(ticker: str, info: dict[str, Any] | None) -> str:
+def format_price(ticker: str, info: Mapping[str, Any] | None) -> str:
     """Render one price entry for a message: ``$24.10 (+3.2%)`` for
     equities, ``78.4 (+2.1%)`` for OANDA-style ids (no ``$`` — many are
     not dollar-quoted). Empty string when ``info`` is None/unusable —
