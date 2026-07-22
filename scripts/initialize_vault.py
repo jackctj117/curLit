@@ -10,14 +10,25 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 
+def load_bip39_words() -> list[str]:
+    """The canonical 2048-word BIP39 English list vendored at
+    scripts/bip39_english.txt (sha256 2f5eed53…dbda)."""
+    words = (
+        Path(__file__).parent / "bip39_english.txt"
+    ).read_text().strip().split("\n")[:2048]
+    if len(words) != 2048:
+        raise RuntimeError(
+            f"bip39_english.txt has {len(words)} words, expected 2048 — "
+            "refusing to generate weak secrets from a truncated list")
+    return words
+
+
 def generate_passphrase() -> str:
-    words = [
-        "abacus", "balance", "cactus", "dagger", "eagle", "fabric", "galaxy",
-        "habitat", "iceberg", "jungle", "kayak", "lantern", "magnet", "nebula",
-        "octopus", "paddle", "quantum", "raccoon", "saddle", "tackle", "umbrella",
-        "vapor", "walnut", "xenon", "yacht", "zebra", "anchor", "blizzard",
-        "captain", "diamond", "emerald", "falcon", "garden", "horizon", "island",
-    ]
+    """Diceware over the full BIP39 list: 6 × log2(2048) ≈ 66 bits.
+
+    (The old inline 35-word list gave ~31 bits — the live vault's known
+    weakness, CL-qyav; vault_codec now enforces ≥60 bits on new seals.)"""
+    words = load_bip39_words()
     return " ".join(secrets.choice(words) for _ in range(6))
 
 
@@ -27,8 +38,7 @@ def generate_recovery_seed() -> tuple[bytes, list[str]]:
     checksum = sha256(entropy).digest()[0]
     full = entropy + bytes([checksum])
     bit_string = "".join(f"{b:08b}" for b in full)[:264]
-    # BIP39 wordlist — load from file or use baked-in subset
-    bip39 = (Path(__file__).parent / "bip39_english.txt").read_text().strip().split("\n")[:2048]
+    bip39 = load_bip39_words()
     indices = [int(bit_string[i:i+11], 2) for i in range(0, 264, 11)]
     words = [bip39[i] for i in indices[:24]]
     return entropy, words
@@ -37,7 +47,7 @@ def generate_recovery_seed() -> tuple[bytes, list[str]]:
 # Format + key derivation live in ONE module (CL-ujm6) — this script used to
 # write {"ct": ...} while vault_agent read data["ciphertext"], so vaults it
 # created could never be opened. Both sides now share vault_codec.
-from src.security.vault_codec import derive_key  # noqa: E402
+from src.security.vault_codec import derive_key, require_strong_passphrase  # noqa: E402
 from src.security.vault_codec import seal as encrypt  # noqa: E402
 
 
@@ -54,6 +64,7 @@ def main() -> None:
     input("Press ENTER when ready...")
 
     passphrase = generate_passphrase()
+    require_strong_passphrase(passphrase)  # belt-and-suspenders (CL-qyav)
     entropy, seed_words = generate_recovery_seed()
     salt = secrets.token_bytes(16)
     vault_key = derive_key(passphrase, salt)

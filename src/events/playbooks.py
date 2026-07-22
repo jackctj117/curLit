@@ -54,7 +54,7 @@ class Playbook:
         return tuple(i for i in self.instruments if i.kind in TRADABLE_KINDS)
 
 
-def _validate_instrument(theme: str, entry: dict) -> PlaybookInstrument:
+def _validate_instrument(theme: str, entry: dict[str, object]) -> PlaybookInstrument:
     instrument = str(entry.get("instrument", "")).strip()
     kind = str(entry.get("kind", "")).strip()
     direction = str(entry.get("direction", "")).strip()

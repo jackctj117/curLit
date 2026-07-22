@@ -15,8 +15,15 @@ Idempotent: running with the same inputs is a no-op. Any single
 provider's rotation can be done independently — pass --only OANDA to
 rotate just one.
 
+--rotate-passphrase (CL-qyav follow-up) rotates the vault MASTER
+passphrase itself: decrypts vault.enc with the old phrase, re-seals the
+same contents under a NEW strong passphrase (vault_codec policy enforced)
+with a FRESH salt, and replaces vault.enc/vault.salt atomically after
+writing timestamped .bak copies. Restart the vault agent afterwards.
+
 Usage:
   .venv/bin/python -m scripts.rotate_secrets [--only OANDA,FRED]
+  .venv/bin/python -m scripts.rotate_secrets --rotate-passphrase
 """
 
 from __future__ import annotations
@@ -255,6 +262,99 @@ def rotate(targets: list[str]) -> int:
     return 0
 
 
+def reseal_with_new_passphrase(
+    plaintext: bytes,
+    new_passphrase: str,
+    vault_path: Path,
+    salt_path: Path,
+) -> None:
+    """Re-seal vault plaintext under a new passphrase + fresh salt.
+
+    Policy-checked (raises ValueError on a weak passphrase), backed up
+    (timestamped .bak-* copies, mode 0600), and atomic (tmp + os.replace in
+    the same directory — a crash leaves the OLD vault intact).
+    """
+    import secrets as _secrets  # noqa: PLC0415
+
+    from src.security.vault_codec import (  # noqa: PLC0415
+        derive_key,
+        require_strong_passphrase,
+        seal,
+    )
+
+    require_strong_passphrase(new_passphrase)
+    new_salt = _secrets.token_bytes(16)
+    sealed = seal(plaintext, derive_key(new_passphrase, new_salt))
+
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    for p in (vault_path, salt_path):
+        bak = p.with_name(f"{p.name}.bak-{stamp}")
+        bak.write_bytes(p.read_bytes())
+        os.chmod(bak, 0o600)
+
+    for path, payload in (
+        (vault_path, json.dumps(sealed).encode()),
+        (salt_path, new_salt),
+    ):
+        tmp = path.with_name(f"{path.name}.tmp-rotate")
+        tmp.write_bytes(payload)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+
+
+def rotate_passphrase() -> int:
+    """Interactive master-passphrase rotation against the local vault files
+    (VAULT_PATH/VAULT_SALT env, same defaults as initialize_vault)."""
+    from src.security.vault_codec import derive_key, unseal  # noqa: PLC0415
+
+    vault_path = Path(os.environ.get("VAULT_PATH", "vault.enc"))
+    salt_path = Path(os.environ.get("VAULT_SALT", "vault.salt"))
+    if not vault_path.exists() or not salt_path.exists():
+        print(f"Vault files not found ({vault_path}, {salt_path}) — set "
+              "VAULT_PATH/VAULT_SALT or run from the vault directory.",
+              file=sys.stderr)
+        return 2
+
+    old = getpass.getpass("Current master passphrase: ")
+    try:
+        plaintext = unseal(
+            json.loads(vault_path.read_text()),
+            derive_key(old, salt_path.read_bytes()),
+        )
+    except Exception:
+        print("Decryption FAILED (wrong passphrase or corrupt vault) — "
+              "nothing changed.", file=sys.stderr)
+        return 1
+
+    new = getpass.getpass(
+        "New master passphrase (ENTER to generate a strong one): ")
+    if not new:
+        from scripts.initialize_vault import generate_passphrase  # noqa: PLC0415
+        new = generate_passphrase()
+        print(f"\nNEW MASTER PASSPHRASE (write it down NOW):\n  {new}\n")
+        input("Press ENTER after recording it...")
+    else:
+        if getpass.getpass("Confirm: ") != new:
+            print("Mismatch — aborting; nothing changed.", file=sys.stderr)
+            return 1
+
+    try:
+        reseal_with_new_passphrase(plaintext, new, vault_path, salt_path)
+    except ValueError as exc:
+        print(f"{exc} — nothing changed.", file=sys.stderr)
+        return 1
+
+    print("Vault re-sealed under the new passphrase (fresh salt; old files "
+          "kept as .bak-*).")
+    print("IMPORTANT: the printed recovery document still wraps the OLD "
+          "vault key — it can recover the .bak files only. Re-run recovery "
+          "setup if you rely on it, then shred the old document.")
+    print("Restart the vault agent so it prompts for the new passphrase.")
+    with contextlib.suppress(OSError):
+        _write_audit("rotate-passphrase", "master passphrase + salt replaced")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument(
@@ -262,6 +362,10 @@ def main(argv: list[str] | None = None) -> int:
         help=f"Comma-separated subset of {','.join(_TARGETS.keys())}",
     )
     p.add_argument("--all", action="store_true", help="Rotate every target")
+    p.add_argument(
+        "--rotate-passphrase", action="store_true",
+        help="Rotate the vault MASTER passphrase (re-seal + fresh salt)",
+    )
     p.add_argument("-v", "--verbose", action="store_true")
     args = p.parse_args(argv)
 
@@ -270,12 +374,14 @@ def main(argv: list[str] | None = None) -> int:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
+    if args.rotate_passphrase:
+        return rotate_passphrase()
     if args.all:
         targets = list(_TARGETS.keys())
     elif args.only:
         targets = [t.strip() for t in args.only.split(",") if t.strip()]
     else:
-        p.error("must pass --only or --all")
+        p.error("must pass --only, --all, or --rotate-passphrase")
         return 2
 
     return rotate(targets)
