@@ -5,9 +5,18 @@ Auto-executes the desk's red-team-survived niche options ideas on Alpaca paper
 premium <= $500, <= 5/day). Market-hours-aware — a no-op when the options
 market is closed. The Telegram advisory feed is separate and unaffected.
 
+Live-trading gate (CL-8lv6): paper mode is the default and needs nothing.
+Setting ``ALPACA_PAPER=false`` alone is NOT enough to trade real money —
+mirroring OANDA's ``--confirm-live``, live mode requires BOTH the env var
+``ALPACA_LIVE_UNLOCK=1`` AND the ``--confirm-live`` CLI flag; anything
+less refuses to start with a loud error.
+
 Usage:
     .venv/bin/python scripts/execute_options.py --once
     .venv/bin/python scripts/execute_options.py --loop 300
+    # LIVE (real money — dual gate required):
+    ALPACA_PAPER=false ALPACA_LIVE_UNLOCK=1 \\
+        .venv/bin/python scripts/execute_options.py --confirm-live --once
 """
 
 from __future__ import annotations
@@ -96,6 +105,32 @@ def _exit_config_from_env():  # noqa: ANN202
     )
 
 
+def _live_gate_error(*, paper: bool, confirm_live: bool) -> str | None:
+    """Dual live-trading gate (CL-8lv6), mirroring OANDA's --confirm-live.
+
+    Returns an error message when live (non-paper) trading is requested
+    without BOTH ``ALPACA_LIVE_UNLOCK=1`` (env) and ``--confirm-live``
+    (CLI); ``None`` means clear to start. Paper mode always passes — the
+    gate exists so an ``ALPACA_PAPER=false`` left in a .env can never
+    silently flip a restarting daemon to real money.
+    """
+    if paper:
+        return None
+    missing: list[str] = []
+    if not _b("ALPACA_LIVE_UNLOCK", default=False):
+        missing.append("env ALPACA_LIVE_UNLOCK=1")
+    if not confirm_live:
+        missing.append("the --confirm-live CLI flag")
+    if missing:
+        return (
+            "ALPACA_PAPER=false requests LIVE trading with REAL MONEY, but "
+            f"the live gate is not satisfied: missing {' and '.join(missing)}. "
+            "Refusing to start. Either unset ALPACA_PAPER (paper is the "
+            "default) or supply BOTH gates deliberately."
+        )
+    return None
+
+
 def main(argv: list[str] | None = None) -> int:
     from src.dotenv_bootstrap import load_project_env  # noqa: PLC0415
     load_project_env()
@@ -103,6 +138,12 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Alpaca paper options executor.")
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--loop", type=int, metavar="SECONDS", default=None)
+    parser.add_argument(
+        "--confirm-live", action="store_true",
+        help="Second half of the LIVE-trading dual gate (with "
+             "ALPACA_LIVE_UNLOCK=1). Required when ALPACA_PAPER=false; "
+             "a no-op in paper mode.",
+    )
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args(argv)
 
@@ -122,6 +163,17 @@ def main(argv: list[str] | None = None) -> int:
         logger.error("ALPACA_OPTIONS_ENABLED is not set — refusing to trade")
         return 3
 
+    paper = _b("ALPACA_PAPER", default=True)
+    gate_error = _live_gate_error(paper=paper, confirm_live=args.confirm_live)
+    if gate_error is not None:
+        logger.error(gate_error)
+        return 4
+    if not paper:
+        logger.warning(
+            "LIVE MODE ARMED: ALPACA_PAPER=false with ALPACA_LIVE_UNLOCK=1 "
+            "and --confirm-live — orders will use REAL MONEY",
+        )
+
     from src.execution.alpaca_options import AlpacaOptionsClient  # noqa: PLC0415
     from src.execution.alpaca_options_executor import (  # noqa: PLC0415
         execute_pending_options,
@@ -130,9 +182,6 @@ def main(argv: list[str] | None = None) -> int:
         manage_option_exits,
     )
 
-    paper = os.environ.get("ALPACA_PAPER", "true").strip().lower() in (
-        "1", "true", "yes", "on",
-    )
     engine = create_engine(_build_db_url())
     client = AlpacaOptionsClient(key, secret, paper=paper)
     cfg = _config_from_env()

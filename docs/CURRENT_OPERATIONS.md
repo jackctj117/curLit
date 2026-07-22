@@ -233,8 +233,13 @@ Cost controls: triage relevance gate, niche urgency ≥ 7 gate,
 ## 6. Monitoring & manual controls
 
 - Web API (engine-embedded, port 8200): `/health` (open), `/docs`, and
-  authenticated `/api/{account,positions,pnl,signals,system}?secret=<WEB_API_SECRET>`;
-  `POST /api/system/halt` + `/resume` for an emergency stop.
+  authenticated `/api/{account,positions,pnl,signals,system}` — auth is the
+  `X-API-Key: <WEB_API_SECRET>` HEADER only (the legacy `?secret=` query
+  param was removed, CL-pu7i), e.g.
+  `curl -H "X-API-Key: $WEB_API_SECRET" http://127.0.0.1:8200/api/system`;
+  `POST /api/system/halt` + `/resume` for an emergency stop (resume also
+  re-arms the kill-switch daily dedup when the manager is wired —
+  check `kill_switches_rearmed` in the response, CL-8lv6).
 - OANDA practice dashboard: fxTrade Practice login shows positions/history.
 - Alpaca paper dashboard: app.alpaca.markets (paper) shows option positions.
 - Telegram: digests (grounded trade cards, niche 🎯 tags, red-team bear
