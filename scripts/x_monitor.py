@@ -20,8 +20,8 @@ Usage:
 
 Backend selection is via ``X_MONITOR_BACKEND`` (``api`` default;
 ``cli`` runs an operator-supplied external command — see the
-CliTransport docstring in ``src/data/x_monitor.py`` for the ToS /
-ban-risk honesty notes before even thinking about it). The monthly
+CliTransport docstring in ``src/data/x_monitor/transport.py`` for the
+ToS / ban-risk honesty notes before even thinking about it). The monthly
 API read budget is ``X_MONITOR_MONTHLY_CAP`` (default 9000).
 
 Credentials auto-load from ``.env`` via the project dotenv bootstrap;
