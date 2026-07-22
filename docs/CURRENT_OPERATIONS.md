@@ -303,3 +303,19 @@ filed separately). Operationally visible changes:
 - **Structure**: event book state lives in `src/strategies/event_book.py`
   (reconciler contract unchanged); impact-agent assessments are typed
   (`Assessment` dataclass, byte-identical persisted format).
+
+Review #2 (2026-07-22, second audit — CL-8lv6) closed all 4 P0 + 15 P1:
+multi-strategy target memory in the coordinator (one strategy's exit can
+no longer flatten a shared symbol; seeded from books on restart);
+`self_sized` strategies pass through unscaled (root of the boot-time
+size_mismatch); OMS halt passes risk-REDUCING intents, `_pending` no
+longer poisons shutdown, halt is race-free; paper price stream never
+fabricates (unpriced symbols don't tick); slippage bound fails closed
+except for emergency flatten orders; `/api/system/resume` re-arms kill
+switches and control endpoints are honest (503 when unwired, validated
+manual trades, X-API-Key only); Alpaca live needs a dual gate
+(`ALPACA_LIVE_UNLOCK=1` + `--confirm-live`); vault deploy bring-up works
+end-to-end with secrets never touching disk; strategy ticks run off the
+event loop. Residual by design: books still advance at intent time —
+fill-confirmation lifecycle is CL-hqyj (P2); guards (halt-exit
+pass-through, phantom pruner, alignment checks) cover the gap.
