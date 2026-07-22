@@ -53,11 +53,21 @@ def _config_from_env():  # noqa: ANN202
         except ValueError:
             return default
 
+    def _b(name: str, default: bool) -> bool:
+        raw = os.environ.get(name)
+        if raw is None:
+            return default
+        return raw.strip().lower() in ("1", "true", "yes", "on")
+
     return OptionsExecConfig(
         min_confidence=_f("ALPACA_OPT_MIN_CONFIDENCE", 0.55),
         max_premium_usd=_f("ALPACA_OPT_MAX_PREMIUM", 500.0),
         qty=_i("ALPACA_OPT_QTY", 1),
         max_per_day=_i("ALPACA_OPT_MAX_PER_DAY", 5),
+        # Paper-phase knobs: default True (strict); set 0 to widen the pool so
+        # the paper track record actually accumulates a sample.
+        require_niche=_b("ALPACA_OPT_REQUIRE_NICHE", default=True),
+        require_red_team=_b("ALPACA_OPT_REQUIRE_RED_TEAM", default=True),
     )
 
 
