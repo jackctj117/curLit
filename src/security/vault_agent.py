@@ -195,9 +195,13 @@ async def main_async() -> None:
             "old sealed data stays readable.", weakness,
         )
 
-    # Zero passphrase
-    for i in range(len(passphrase)):
-        passphrase = passphrase[:i] + "\x00" + passphrase[i+1:] if i < len(passphrase) else passphrase
+    # The passphrase CANNOT be wiped from memory: Python str is immutable, so
+    # any "zeroing" loop (a prior version here had one) only builds new string
+    # objects while the original bytes stay on the heap until GC — and copies
+    # (getpass buffers, PBKDF2 input) survive anyway. Its lifetime is
+    # process-scoped by design; the real mitigations are the kernel peer-UID
+    # auth on the socket (same-UID only, fail-closed) and the 0600 file/socket
+    # permissions — not in-memory hygiene. (CL-8lv6 P1)
 
     server = await serve(SOCKET_PATH, credentials)
     print(f"Vault agent listening on {SOCKET_PATH}")

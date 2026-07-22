@@ -82,7 +82,10 @@ def _verify_oanda(api_key: str) -> bool:
             timeout=10.0,
         )
     except httpx.HTTPError as exc:
-        logger.error("OANDA verify failed: %s", exc)
+        # Exception TYPE only (CL-8lv6 P1): httpx error text can embed the
+        # request URL/params — never risk credential material in logs.
+        logger.error("OANDA verify failed: %s (exception text suppressed)",
+                     type(exc).__name__)
         return False
     return resp.status_code == 200
 
@@ -98,7 +101,10 @@ def _verify_fred(api_key: str) -> bool:
             timeout=10.0,
         )
     except httpx.HTTPError as exc:
-        logger.error("FRED verify failed: %s", exc)
+        # The FRED key rides in the URL query string, so str(exc) can contain
+        # it verbatim — log the exception TYPE only (CL-8lv6 P1).
+        logger.error("FRED verify failed: %s (exception text suppressed — "
+                     "it can embed the api_key)", type(exc).__name__)
         return False
     return resp.status_code == 200
 
@@ -109,14 +115,28 @@ def _verify_postgres(password: str) -> bool:
     db = os.environ.get("POSTGRES_DB", "fx")
     host = os.environ.get("POSTGRES_HOST", "localhost")
     try:
-        from sqlalchemy import create_engine
-        url = f"postgresql+psycopg2://{user}:{password}@{host}:5432/{db}"
+        from sqlalchemy import create_engine, text  # noqa: PLC0415
+        from sqlalchemy.engine import URL  # noqa: PLC0415
+
+        # URL.create both escapes the password and REDACTS it in str()/repr();
+        # the old f-string DSN embedded it raw, so any exception carrying the
+        # DSN leaked it into logs (CL-8lv6 P1).
+        url = URL.create(
+            "postgresql+psycopg2", username=user, password=password,
+            host=host, port=5432, database=db,
+        )
         engine = create_engine(url, pool_pre_ping=True)
         with engine.connect() as conn:
-            conn.execute(__import__("sqlalchemy").text("SELECT 1"))
+            conn.execute(text("SELECT 1"))
         return True
     except Exception as exc:
-        logger.error("Postgres verify failed: %s", exc)
+        # Exception TYPE + redacted DSN only — sqlalchemy/psycopg2 error text
+        # can echo the full DSN including the password.
+        logger.error(
+            "Postgres verify failed: %s dsn=postgresql+psycopg2://%s:***@%s:5432/%s "
+            "(exception text suppressed — it can embed the password)",
+            type(exc).__name__, user, host, db,
+        )
         return False
 
 

@@ -1,46 +1,45 @@
 #!/usr/bin/env python3
-"""Vault credential management — add, remove, list."""
+"""Vault credential management — add, remove, list.
 
+Seal/unseal and key derivation go through src.security.vault_codec ONLY
+(CL-8lv6 P1: this script used to reimplement both, which is exactly the
+schema-drift class of bug CL-ujm6 fixed elsewhere), and every vault write
+is atomic (tmp + os.replace, mode 0600) so a crash mid-write can never
+leave a torn vault.enc. CLI behavior is unchanged.
+"""
+
+import contextlib
 import getpass
-import hashlib
 import json
 import os
-import secrets
 import sys
 from pathlib import Path
 
+# Keep the documented `python scripts/vault_add.py <cmd>` invocation working:
+# running by file path puts scripts/ (not the repo root) on sys.path, and the
+# vault_codec import below needs the root.
+_REPO_ROOT = str(Path(__file__).resolve().parent.parent)
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
 
-def derive_key(passphrase: str, salt: bytes, iterations: int = 600_000) -> bytes:
-    return hashlib.pbkdf2_hmac("sha256", passphrase.encode(), salt, iterations, 32)
+from src.security.vault_codec import derive_key, seal, unseal  # noqa: E402
 
 
-def decrypt_vault(path: Path, key: bytes) -> dict:
-    data = json.loads(path.read_text())
-    nonce = bytes.fromhex(data["nonce"])
-    ct = bytes.fromhex(data["ciphertext"])
-    tag = bytes.fromhex(data.get("tag", ""))
+def _write_vault_atomic(vault_path: Path, vault: dict, key: bytes) -> None:
+    """Seal via vault_codec and replace the vault file atomically (0600)."""
+    payload = json.dumps(seal(json.dumps(vault).encode(), key)).encode()
+    tmp = vault_path.with_name(f"{vault_path.name}.tmp-{os.getpid()}")
     try:
-        from wolfcrypt.ciphers import MODE_GCM, Aes
-        aes = Aes(key, MODE_GCM, nonce)
-        return json.loads(aes.decrypt(ct, tag))
-    except ImportError:
-        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-        aesgcm = AESGCM(key)
-        return json.loads(aesgcm.decrypt(nonce, ct, None))
-
-
-def encrypt_vault(data: bytes, key: bytes) -> dict:
-    nonce = secrets.token_bytes(12)
-    try:
-        from wolfcrypt.ciphers import MODE_GCM, Aes
-        aes = Aes(key, MODE_GCM, nonce)
-        ct, tag = aes.encrypt(data)
-    except ImportError:
-        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-        aesgcm = AESGCM(key)
-        ct = aesgcm.encrypt(nonce, data, None)
-        tag = b""
-    return {"version": 1, "nonce": nonce.hex(), "ciphertext": ct.hex(), "tag": tag.hex()}
+        with open(tmp, "wb") as f:
+            f.write(payload)
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, vault_path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
 
 
 def open_vault() -> tuple[dict, bytes, Path]:
@@ -49,7 +48,7 @@ def open_vault() -> tuple[dict, bytes, Path]:
     passphrase = getpass.getpass("Vault passphrase: ")
     salt = salt_path.read_bytes()
     key = derive_key(passphrase, salt)
-    vault = decrypt_vault(vault_path, key)
+    vault = json.loads(unseal(json.loads(vault_path.read_text()), key))
     return vault, key, vault_path
 
 
@@ -61,8 +60,7 @@ def cmd_add() -> None:
         sys.exit(1)
     value = getpass.getpass("Credential value: ")
     vault[name] = value
-    encrypted = encrypt_vault(json.dumps(vault).encode(), key)
-    vault_path.write_text(json.dumps(encrypted))
+    _write_vault_atomic(vault_path, vault, key)
     print(f"Added: {name}")
 
 
@@ -73,8 +71,7 @@ def cmd_remove() -> None:
         print(f"Not found: {name}")
         sys.exit(1)
     del vault[name]
-    encrypted = encrypt_vault(json.dumps(vault).encode(), key)
-    vault_path.write_text(json.dumps(encrypted))
+    _write_vault_atomic(vault_path, vault, key)
     print(f"Removed: {name}")
 
 
