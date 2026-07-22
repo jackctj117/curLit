@@ -38,7 +38,7 @@ def generate_recovery_seed() -> tuple[bytes, list[str]]:
 # write {"ct": ...} while vault_agent read data["ciphertext"], so vaults it
 # created could never be opened. Both sides now share vault_codec.
 from src.security.vault_codec import derive_key  # noqa: E402
-from src.security.vault_codec import seal as encrypt
+from src.security.vault_codec import seal as encrypt  # noqa: E402
 
 
 def main() -> None:
