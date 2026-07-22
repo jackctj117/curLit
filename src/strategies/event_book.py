@@ -24,7 +24,11 @@ strategy config object) so this module never imports strategy
 internals. Serialized state format was byte-identical to the
 pre-extraction code until CL-8cw1 added the ADDITIVE ``pending_exits``
 key — a state file WITHOUT it (the pre-CL-8cw1 live format) still loads
-cleanly with no pending exits.
+cleanly with no pending exits. CL-9dhg added the additive per-entry
+``trigger_broker_qty`` (missing loads as None → flat-only confirmation)
+and made a symbol appearing in BOTH ``open_positions`` and
+``pending_exits`` a fail-loud load error (corrupt state refuses to
+start rather than silently losing realized P&L).
 """
 
 from __future__ import annotations
@@ -81,6 +85,11 @@ class ExitRecord:
     held_hours: float
     current_price: float | None
     book_realized_pnl: float
+    #: Exit-intent emissions so far for this leg (1 = the trigger tick).
+    #: The strategy records the exit FeatureSnapshot only on the first
+    #: emission (CL-9dhg finding 10) — re-emissions would write one
+    #: near-identical row per tick per pending exit.
+    emit_count: int = 1
 
 
 @dataclass
@@ -104,6 +113,19 @@ class PendingExit:
     #: 2+ log at WARNING — an unconfirmed exit means a rejected order or
     #: a slow fill, and the operator should see it.
     emit_count: int = 1
+    #: The broker's account-wide NET quantity for this symbol AT TRIGGER
+    #: TIME (canonical-symbol matched, from the same snapshot
+    #: :meth:`EventBook.reconcile` fetched that tick) — CL-9dhg
+    #: findings 1 + 2. Broker positions are account-wide, so a
+    #: co-holding sibling strategy means "flat" never happens; the
+    #: trigger capture lets :meth:`EventBook.confirm_exits` recognize
+    #: "our share is out, the residual is the co-holders'". A capture of
+    #: 0 means the broker demonstrably never held the leg at trigger (a
+    #: rejected entry whose stop crossed inside the reconcile grace) —
+    #: it finalizes as PHANTOM with NO realized P&L. ``None`` = broker
+    #: unreadable at trigger (and every pre-CL-9dhg persisted entry):
+    #: confirm only on broker-flat and book P&L as before — never guess.
+    trigger_broker_qty: float | None = None
 
 
 class EventBook:
@@ -168,6 +190,22 @@ class EventBook:
             except OSError:
                 logger.exception("Could not back up corrupt event book state")
             return
+        # Fail LOUD on a symbol present in BOTH books (CL-9dhg finding
+        # 11): a leg either awaits its stop (open) or awaits broker flat
+        # confirmation (pending) — never both. Silently preferring one
+        # would either double-track broker risk or drop a triggered
+        # exit's realized P&L. Repo rule: corrupt state refuses to start.
+        overlap = sorted(
+            set(payload.get("open_positions") or {})
+            & set(payload.get("pending_exits") or {})
+        )
+        if overlap:
+            raise ValueError(
+                f"Event book state {path} is corrupt: symbol(s) {overlap} "
+                "appear in BOTH open_positions and pending_exits — refusing "
+                "to start. Repair the state file by hand (a leg belongs in "
+                "exactly one of the two books)."
+            )
         self.realized_pnl = float(payload.get("realized_pnl", 0.0))
         self.closed_trades = int(payload.get("closed_trades", 0))
         for sym, pos in (payload.get("open_positions") or {}).items():
@@ -185,12 +223,19 @@ class EventBook:
                 if triggered_ts.tzinfo is None:
                     triggered_ts = triggered_ts.replace(tzinfo=UTC)
                 price_raw = entry.get("trigger_price")
+                # trigger_broker_qty is ABSENT from pre-CL-9dhg pending
+                # entries — missing loads as None (confirm on broker-flat
+                # only, P&L booked as before; never guess a capture).
+                qty_raw = entry.get("trigger_broker_qty")
                 self.pending_exits[sym] = PendingExit(
                     position=self._position_from_payload(sym, entry["position"]),
                     reason=str(entry["reason"]),
                     triggered_ts=triggered_ts,
                     trigger_price=float(price_raw) if price_raw is not None else None,
                     emit_count=int(entry.get("emit_count", 1)),
+                    trigger_broker_qty=(
+                        float(qty_raw) if qty_raw is not None else None
+                    ),
                 )
             except (KeyError, TypeError, ValueError):
                 logger.warning(
@@ -244,6 +289,7 @@ class EventBook:
                     "triggered_ts": entry.triggered_ts.isoformat(),
                     "trigger_price": entry.trigger_price,
                     "emit_count": entry.emit_count,
+                    "trigger_broker_qty": entry.trigger_broker_qty,
                 }
                 for sym, entry in self.pending_exits.items()
             },
@@ -297,12 +343,37 @@ class EventBook:
             symbol=symbol, position=pos, reason=entry.reason, pnl=pnl,
             held_hours=held_hours, current_price=entry.trigger_price,
             book_realized_pnl=self.realized_pnl + pnl,
+            emit_count=entry.emit_count,
         )
+
+    def _net_broker_quantities(
+        self, broker_positions: Iterable[Any],
+    ) -> dict[str, float | None]:
+        """Account-wide NET quantity per canonical symbol from a broker
+        position snapshot (CL-9dhg finding 1). A symbol whose quantity
+        cannot be read maps to None — "held, size unknown": callers must
+        neither confirm against it nor capture it at trigger (never
+        finalize or classify blind). A symbol ABSENT from the returned
+        dict is one the broker does not hold at all (net 0)."""
+        net: dict[str, float | None] = {}
+        for p in broker_positions:
+            sym = self._norm_symbol(str(getattr(p, "symbol", "")))
+            prev = net.get(sym, 0.0)
+            if prev is None:
+                continue  # one unreadable row poisons the symbol's net
+            try:
+                qty = float(p.quantity)
+            except (AttributeError, TypeError, ValueError):
+                net[sym] = None
+                continue
+            net[sym] = prev + qty
+        return net
 
     def check_exits(
         self,
         current_price: Callable[[str], float | None],
         now: datetime,
+        broker_positions: Iterable[Any] | None = None,
     ) -> list[ExitRecord]:
         """Two-phase exit emission (CL-8cw1).
 
@@ -317,7 +388,18 @@ class EventBook:
         current price) MOVE to ``pending_exits`` (persisted) and are
         returned for the initial intent emission. NOTHING is finalized
         here: realized P&L and ``closed_trades`` book exclusively in
-        :meth:`confirm_exits`, once the broker shows flat."""
+        :meth:`confirm_exits`, once the broker confirms.
+
+        ``broker_positions`` is the snapshot :meth:`reconcile` already
+        fetched this tick (None = broker unreadable): a triggering leg
+        captures the broker's net quantity for its symbol as
+        ``trigger_broker_qty`` (CL-9dhg findings 1 + 2) so
+        :meth:`confirm_exits` can confirm a co-held symbol from the
+        residual and finalize a never-filled leg as phantom."""
+        trigger_net = (
+            self._net_broker_quantities(broker_positions)
+            if broker_positions is not None else None
+        )
         records: list[ExitRecord] = []
         # Phase 1 first, so a leg triggered below isn't emitted twice in
         # the same call.
@@ -344,9 +426,18 @@ class EventBook:
                 exit_reason = "time_stop"
             if exit_reason is None:
                 continue
+            # Trigger-time broker capture (CL-9dhg): symbol absent from a
+            # READABLE snapshot nets to 0.0 (broker demonstrably does not
+            # hold it); an unreadable snapshot/quantity captures None.
+            trigger_broker_qty: float | None = None
+            if trigger_net is not None:
+                trigger_broker_qty = trigger_net.get(
+                    self._norm_symbol(symbol), 0.0,
+                )
             entry = PendingExit(
                 position=pos, reason=exit_reason, triggered_ts=now,
                 trigger_price=current,
+                trigger_broker_qty=trigger_broker_qty,
             )
             del self.open_positions[symbol]
             self.pending_exits[symbol] = entry
@@ -361,39 +452,92 @@ class EventBook:
             records.append(self._pending_exit_record(symbol, entry))
         return records
 
+    #: Broker net quantities within this of zero count as FLAT (units are
+    #: broker position units — 1 unit of an FX pair is dust).
+    _FLAT_QTY = 1.0
+
     def confirm_exits(self, broker_positions: Iterable[Any]) -> list[ExitRecord]:
-        """Finalize pending exits the broker CONFIRMS are flat (CL-8cw1).
+        """Finalize pending exits the broker CONFIRMS are out (CL-8cw1;
+        residual + phantom semantics CL-9dhg findings 1 + 2).
 
         ``broker_positions`` is the SAME snapshot :meth:`reconcile`
         fetched this tick — one broker call per tick, never a second.
-        Symbols match via the shared canonical_symbol. A pending symbol
-        the broker still holds stays pending (:meth:`check_exits` keeps
-        re-emitting). A flat one finalizes exactly as the pre-CL-8cw1
-        trigger path did — realized P&L from the trigger price captured
-        at trigger time, ``closed_trades`` bump, persisted, ExitRecord
-        returned — and exactly ONCE: finalized legs leave
-        ``pending_exits``, so a repeat call with the same snapshot is a
-        no-op."""
+        Symbols match via the shared canonical_symbol on account-wide
+        NET quantities. A pending leg confirms when EITHER
+
+          (a) the broker is flat in the symbol (|net qty| < 1 unit), OR
+          (b) ``trigger_broker_qty`` was captured at trigger and the
+              current net equals the expected co-holder residual
+              ``trigger_broker_qty - position.quantity`` within
+              ``max(1, 1% of |position.quantity|)`` — our share is out;
+              the remainder belongs to a sibling strategy that co-holds
+              the instrument, which would otherwise keep the account
+              non-flat FOREVER (re-emit loop, occupied slot, unbooked
+              P&L).
+
+        Legacy pending entries (``trigger_broker_qty`` None — persisted
+        pre-CL-9dhg, or broker unreadable at trigger) confirm only via
+        (a). A confirming leg whose trigger capture shows the broker
+        NEVER held it (``trigger_broker_qty == 0`` — a rejected entry
+        whose stop crossed inside the reconcile grace) finalizes as
+        PHANTOM: WARNING, no realized P&L, no ``closed_trades`` bump, no
+        ExitRecord — booking a loss for a trade that never existed would
+        poison reflective_review and the loss-cap freeze. Everything
+        else finalizes exactly as the pre-CL-8cw1 trigger path did —
+        realized P&L from the trigger price captured at trigger time,
+        ``closed_trades`` bump, persisted, ExitRecord returned — and
+        exactly ONCE: finalized legs leave ``pending_exits``, so a
+        repeat call with the same snapshot is a no-op."""
         if not self.pending_exits:
             return []
-        held = {
-            self._norm_symbol(str(getattr(p, "symbol", "")))
-            for p in broker_positions
-        }
+        net = self._net_broker_quantities(broker_positions)
         records: list[ExitRecord] = []
         for symbol, entry in list(self.pending_exits.items()):
-            if self._norm_symbol(symbol) in held:
-                continue  # broker still holds it — keep retrying the exit
+            current_qty = net.get(self._norm_symbol(symbol), 0.0)
+            if current_qty is None:
+                continue  # quantity unreadable — never finalize blind
+            confirmed = abs(current_qty) < self._FLAT_QTY  # (a) broker flat
+            if not confirmed and entry.trigger_broker_qty is not None:
+                # (b) co-holder residual: our share left the account.
+                expected_residual = (
+                    entry.trigger_broker_qty - entry.position.quantity
+                )
+                tolerance = max(1.0, 0.01 * abs(entry.position.quantity))
+                confirmed = abs(current_qty - expected_residual) <= tolerance
+            if not confirmed:
+                continue  # broker still holds our share — keep retrying
+            del self.pending_exits[symbol]
+            if (
+                entry.trigger_broker_qty is not None
+                and abs(entry.trigger_broker_qty) < 1e-9
+            ):
+                # PHANTOM (CL-9dhg finding 2): the broker demonstrably
+                # never held this leg at trigger — the entry order never
+                # filled. Drop it WITHOUT booking P&L: a fabricated
+                # realized loss would poison reflective_review and could
+                # trip the loss-cap freeze on a trade that never existed.
+                self.save()
+                logger.warning(
+                    "Event exit %s: PHANTOM — broker never held the leg at "
+                    "trigger (trigger_broker_qty=0, reason=%s, event_id=%s, "
+                    "%d emission(s)). Entry order never filled; dropping "
+                    "WITHOUT booking realized P&L.",
+                    symbol, entry.reason, entry.position.event_id,
+                    entry.emit_count,
+                )
+                continue
             record = self._pending_exit_record(symbol, entry)
             self.realized_pnl += record.pnl
             self.closed_trades += 1
-            del self.pending_exits[symbol]
             self.save()
             logger.info(
                 "Event exit %s: %s pnl=%.2f held=%.1fh event_id=%s (broker "
-                "confirmed flat after %d emission(s))",
+                "confirmed %s after %d emission(s))",
                 symbol, entry.reason, record.pnl, record.held_hours,
-                entry.position.event_id, entry.emit_count,
+                entry.position.event_id,
+                "flat" if abs(current_qty) < self._FLAT_QTY
+                else f"co-holder residual {current_qty:.0f}",
+                entry.emit_count,
             )
             records.append(record)
         return records

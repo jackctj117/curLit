@@ -414,6 +414,10 @@ class TestExits:
         assert intents[0].target_position == 0
         # No price at trigger → pnl records as 0 when the exit confirms.
         assert strat.book.pending_exits["USD_CAD"].trigger_price is None
+        # Broker unreadable at trigger (FakeBroker has no get_positions)
+        # → no quantity capture either: confirm on broker-flat only, and
+        # book P&L as before (CL-9dhg — never guess).
+        assert strat.book.pending_exits["USD_CAD"].trigger_broker_qty is None
 
     def test_no_exit_before_time_stop(self, tmp_path: Any) -> None:
         strat = make_strategy(tmp_path, db=make_db())
@@ -1326,6 +1330,211 @@ class TestPendingExitLifecycle:
         assert strat2.book.pending_exits == {}
         assert strat2.book.realized_pnl == pytest.approx(500.0)
         assert strat2.book.closed_trades == 1
+
+
+# =============================================================================
+# Trigger-time broker capture: co-held residual confirmation, phantom
+# finalization, snapshot-once, overlap fail-loud (CL-9dhg)
+# =============================================================================
+
+
+class _BrokerWithNetQty:
+    """Broker stub reporting account-wide NET quantity per symbol
+    (CL-9dhg) — mutate ``net`` between ticks to move the account."""
+
+    def __init__(self, net: dict[str, float]) -> None:
+        self.net = dict(net)
+
+    def get_account(self) -> Any:
+        return SimpleNamespace(balance=100_000.0, equity=100_000.0, margin_used=0.0)
+
+    def get_positions(self) -> list[Any]:
+        return [SimpleNamespace(symbol=s, quantity=q, avg_price=1.0)
+                for s, q in self.net.items()]
+
+
+class _RecordingSnapshotStore:
+    def __init__(self) -> None:
+        self.snapshots: list[Any] = []
+
+    def store(self, snapshot: Any) -> str:
+        self.snapshots.append(snapshot)
+        return "snap-id"
+
+
+def _legacy_pending_state(tmp_path: Any) -> None:
+    """Write a pre-CL-9dhg state file: a pending exit WITHOUT the
+    trigger_broker_qty key (the persisted live format at rollout)."""
+    now = datetime.now(UTC)
+    (tmp_path / "event_book_state.json").write_text(json.dumps({
+        "version": 1, "realized_pnl": 0.0, "closed_trades": 0,
+        "open_positions": {},
+        "pending_exits": {
+            "USD_CAD": {
+                "position": {
+                    "event_id": 1,
+                    "entry_ts": (now - timedelta(hours=5)).isoformat(),
+                    "entry_price": 0.99, "quantity": 50_000.0,
+                    "direction": 1, "stop_price": 0.9801,
+                    "headline": "legacy",
+                },
+                "reason": "time_stop",
+                "triggered_ts": now.isoformat(),
+                "trigger_price": 1.0,
+                "emit_count": 1,
+            },
+        },
+    }))
+
+
+class TestTriggerBrokerCapture:
+    """CL-9dhg findings 1 + 2: broker positions are account-wide NET, so
+    a sibling strategy co-holding the instrument means "flat" never
+    happens — the pending exit must confirm from the co-holder RESIDUAL.
+    And a never-filled leg (trigger capture 0) must finalize as PHANTOM
+    with no fabricated realized P&L."""
+
+    def test_coheld_symbol_confirms_on_residual(self, tmp_path: Any) -> None:
+        # Our leg is 50k; a co-holder owns another 30k → account net 80k
+        # at trigger. When the net drops to exactly the 30k residual, OUR
+        # share is out — confirm and book P&L even though the account is
+        # never flat.
+        strat = make_strategy(tmp_path, db=make_db())
+        seed_position(strat, hours_ago=5.0)  # quantity 50k, entry 0.99
+        broker = _BrokerWithNetQty({"USDCAD": 80_000.0})
+        intents = run(strat, {"USD_CAD": tick(1.0)}, broker)
+        assert [i.target_position for i in intents] == [0]
+        entry = strat.book.pending_exits["USD_CAD"]
+        assert entry.trigger_broker_qty == pytest.approx(80_000.0)
+        # The capture persists (a restart must not forget it).
+        state = json.loads((tmp_path / "event_book_state.json").read_text())
+        assert state["pending_exits"]["USD_CAD"]["trigger_broker_qty"] == (
+            pytest.approx(80_000.0)
+        )
+        # Co-holder residual remains → confirmed, P&L from trigger price.
+        broker.net = {"USDCAD": 30_000.0}
+        assert run(strat, {"USD_CAD": tick(1.0)}, broker) == []
+        assert strat.book.pending_exits == {}
+        assert strat.book.realized_pnl == pytest.approx(500.0)
+        assert strat.book.closed_trades == 1
+
+    def test_partial_fill_outside_tolerance_stays_pending(
+        self, tmp_path: Any,
+    ) -> None:
+        # Net 80k at trigger; only 20k of our 50k exit filled → net 60k,
+        # 30k away from the expected 30k residual (tolerance is
+        # max(1, 1% of 50k) = 500) → NOT confirmed, keeps re-emitting.
+        strat = make_strategy(tmp_path, db=make_db())
+        seed_position(strat, hours_ago=5.0)
+        broker = _BrokerWithNetQty({"USDCAD": 80_000.0})
+        run(strat, {"USD_CAD": tick(1.0)}, broker)
+        broker.net = {"USDCAD": 60_000.0}
+        intents = run(strat, {"USD_CAD": tick(1.0)}, broker)
+        assert [i.target_position for i in intents] == [0]  # re-emitted
+        assert "USD_CAD" in strat.book.pending_exits
+        assert strat.book.realized_pnl == 0.0
+        assert strat.book.closed_trades == 0
+
+    def test_phantom_leg_finalizes_without_pnl(
+        self, tmp_path: Any, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        # A rejected entry inside the reconcile grace: the broker NEVER
+        # held the leg (capture 0), its stop crosses, it parks pending —
+        # and must finalize as PHANTOM: no realized P&L, no
+        # closed_trades, no ExitRecord; a fabricated loss would poison
+        # reflective_review and the loss-cap freeze.
+        strat = make_strategy(tmp_path, db=make_db())
+        # Fresh (36s < 120s grace → not pruned), hard stop crosses.
+        seed_position(strat, hours_ago=0.01, entry_price=1.0, stop_price=0.99)
+        broker = _BrokerWithNetQty({})  # broker demonstrably holds nothing
+        intents = run(strat, {"USD_CAD": tick(0.985)}, broker)
+        assert [i.target_position for i in intents] == [0]
+        entry = strat.book.pending_exits["USD_CAD"]
+        assert entry.trigger_broker_qty == pytest.approx(0.0)
+        with caplog.at_level(logging.WARNING, logger="src.strategies.event_book"):
+            confirmed = strat.book.confirm_exits(broker.get_positions())
+        assert confirmed == []  # phantom yields NO ExitRecord
+        assert strat.book.pending_exits == {}
+        assert strat.book.realized_pnl == 0.0  # no fabricated loss
+        assert strat.book.closed_trades == 0
+        assert any("PHANTOM" in r.getMessage() for r in caplog.records)
+        state = json.loads((tmp_path / "event_book_state.json").read_text())
+        assert state["pending_exits"] == {}
+        assert state["realized_pnl"] == 0.0
+        assert state["closed_trades"] == 0
+
+    def test_legacy_pending_confirms_only_on_broker_flat(
+        self, tmp_path: Any,
+    ) -> None:
+        # A persisted pre-CL-9dhg pending entry has NO trigger capture →
+        # loads as None: the residual rule must never apply (a 30k net
+        # would match "residual" if a capture of 80k existed, but with
+        # None we cannot know), only broker-flat confirms — and P&L
+        # books exactly as before.
+        _legacy_pending_state(tmp_path)
+        strat = make_strategy(tmp_path, db=make_db())
+        assert strat.book.pending_exits["USD_CAD"].trigger_broker_qty is None
+        # Broker not flat → stays pending regardless of the quantity.
+        broker = _BrokerWithNetQty({"USDCAD": 30_000.0})
+        assert strat.book.confirm_exits(broker.get_positions()) == []
+        assert "USD_CAD" in strat.book.pending_exits
+        # Broker flat → confirms, books (1.0 - 0.99) * 50000 = 500.
+        broker.net = {}
+        records = strat.book.confirm_exits(broker.get_positions())
+        assert [r.symbol for r in records] == ["USD_CAD"]
+        assert strat.book.realized_pnl == pytest.approx(500.0)
+        assert strat.book.closed_trades == 1
+
+    def test_exit_snapshot_recorded_only_on_first_emission(
+        self, tmp_path: Any,
+    ) -> None:
+        # CL-9dhg finding 10: re-emissions derive every value from the
+        # trigger-time capture — one FeatureSnapshot per tick per pending
+        # exit is pure spam. Only emission 1 records; re-emitted intents
+        # still flow, just without a snapshot payload.
+        store = _RecordingSnapshotStore()
+        cfg = EventDrivenConfig(
+            event_book_state_path=str(tmp_path / "event_book_state.json"),
+        )
+        strat = EventDrivenStrategy(cfg, db_engine=make_db(), snapshot_store=store)
+        seed_position(strat, hours_ago=5.0)
+        broker = _BrokerWithNetQty({"USDCAD": 50_000.0})  # exit never fills
+        first = run(strat, {"USD_CAD": tick(1.0)}, broker)
+        assert first[0].metadata  # trigger emission carries the snapshot ref
+        for _ in range(2):
+            intents = run(strat, {"USD_CAD": tick(1.0)}, broker)
+            assert [i.target_position for i in intents] == [0]
+            assert intents[0].metadata == {}  # re-emission: no snapshot
+        assert strat.book.pending_exits["USD_CAD"].emit_count == 3
+        exit_snaps = [
+            s for s in store.snapshots if s.values.get("trigger") == "exit"
+        ]
+        assert len(exit_snaps) == 1
+
+    def test_symbol_in_both_books_refuses_to_load(self, tmp_path: Any) -> None:
+        # CL-9dhg finding 11: a symbol in BOTH open_positions and
+        # pending_exits is corrupt state — silently preferring either
+        # book loses realized P&L or double-tracks broker risk. Repo
+        # rule: refuse to start.
+        now = datetime.now(UTC)
+        pos_payload = {
+            "event_id": 1, "entry_ts": now.isoformat(), "entry_price": 1.0,
+            "quantity": 1000.0, "direction": 1, "stop_price": 0.99,
+            "headline": "dup",
+        }
+        (tmp_path / "event_book_state.json").write_text(json.dumps({
+            "version": 1, "realized_pnl": 0.0, "closed_trades": 0,
+            "open_positions": {"USD_CAD": pos_payload},
+            "pending_exits": {
+                "USD_CAD": {
+                    "position": pos_payload, "reason": "hard_stop",
+                    "triggered_ts": now.isoformat(), "trigger_price": 0.99,
+                    "emit_count": 1,
+                },
+            },
+        }))
+        with pytest.raises(ValueError, match="BOTH open_positions and pending_exits"):
+            make_strategy(tmp_path, db=make_db())
 
 
 # =============================================================================

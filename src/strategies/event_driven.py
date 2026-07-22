@@ -331,14 +331,28 @@ class EventDrivenStrategy:
             return None
         return float(value) if value is not None else None
 
-    def _check_exits(self, prices: dict[str, Any], now: datetime) -> list[OrderIntent]:
+    def _check_exits(
+        self,
+        prices: dict[str, Any],
+        now: datetime,
+        broker_positions: list[Any] | None = None,
+    ) -> list[OrderIntent]:
+        """Emit exit intents. ``broker_positions`` is the snapshot
+        :meth:`EventBook.reconcile` fetched this tick (None = broker
+        unreadable) — a triggering leg captures its symbol's net broker
+        quantity for residual/phantom confirmation (CL-9dhg)."""
         exits: list[OrderIntent] = []
         closed = self.book.check_exits(
             lambda symbol: self._current_price(symbol, prices, now), now,
+            broker_positions,
         )
         for rec in closed:
             pos = rec.position
-            meta = self._emit_snapshot({
+            # Snapshot only on the FIRST emission (CL-9dhg finding 10):
+            # every value in a re-emission derives from the trigger-time
+            # capture, so per-tick re-recording would just write a
+            # near-identical row per pending exit per tick.
+            meta = {} if rec.emit_count > 1 else self._emit_snapshot({
                 "trigger": "exit",
                 "exit_reason": rec.reason,
                 "symbol": rec.symbol,
@@ -574,7 +588,10 @@ class EventDrivenStrategy:
         broker_positions = self.book.reconcile(broker, now)
         if broker_positions is not None:
             self.book.confirm_exits(broker_positions)
-        intents = self._check_exits(prices, now)
+        # The same snapshot feeds check_exits so a leg triggering THIS
+        # tick captures trigger_broker_qty for residual/phantom
+        # confirmation (CL-9dhg findings 1 + 2).
+        intents = self._check_exits(prices, now, broker_positions)
 
         rows = self._fetch_assessed()
         if rows is None:
