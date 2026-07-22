@@ -1161,3 +1161,72 @@ class TestPhantomReconciliation:
         assert len(strat.open_positions) >= strat.config.max_concurrent_event_positions
         strat._reconcile_positions(_BrokerWithPositions(set()), datetime.now(UTC))
         assert len(strat.open_positions) == 0  # cap freed
+
+
+# =============================================================================
+# Cross-asset entry gate (CL-6mzn, gating half)
+# =============================================================================
+
+
+def _ca_row() -> dict[str, Any]:
+    return {"id": 9, "headline": "Hormuz closure threat"}
+
+
+def _ca_assessment() -> dict[str, Any]:
+    return {"urgency": 8, "confidence": 0.8, "affected": [
+        {"instrument": "USD_CAD", "kind": "fx", "direction": "short",
+         "reason": "oil currency"},
+    ]}
+
+
+_CA_PRICES = {"USD_CAD": {"bid": 1.3999, "ask": 1.4001}}
+
+
+class TestCrossAssetGate:
+    def _enter(self, tmp_path: Any, ca: Any, **cfg: Any):
+        strat = make_strategy(tmp_path, cross_asset_gate_enabled=True, **cfg)
+        return strat._enter_confirmed(
+            _ca_row(), _ca_assessment(), _CA_PRICES, 100_000.0,
+            datetime.now(UTC), cross_asset=ca,
+        )
+
+    def test_contradictory_read_vetoes_entries(self, tmp_path: Any) -> None:
+        intents, entered, skipped = self._enter(
+            tmp_path, SimpleNamespace(confirmed=False))
+        assert intents == [] and entered == []
+        assert skipped == [("USD_CAD", "cross_asset_veto")]
+
+    def test_confirming_read_allows_entries(self, tmp_path: Any) -> None:
+        intents, entered, skipped = self._enter(
+            tmp_path, SimpleNamespace(confirmed=True))
+        assert len(intents) == 1 and len(entered) == 1
+
+    def test_missing_read_allows_by_default(self, tmp_path: Any) -> None:
+        # confirmed=None (no data) and cross_asset=None (layer off) both pass
+        # under the default fail-open-on-missing posture. Distinct state
+        # paths — each iteration must start with an empty book.
+        for n, ca in enumerate((SimpleNamespace(confirmed=None), None)):
+            strat = make_strategy(
+                tmp_path, cross_asset_gate_enabled=True,
+                event_book_state_path=str(tmp_path / f"book_{n}.json"),
+            )
+            i, _e, _s = strat._enter_confirmed(
+                _ca_row(), _ca_assessment(), _CA_PRICES, 100_000.0,
+                datetime.now(UTC), cross_asset=ca,
+            )
+            assert len(i) == 1, f"blocked unexpectedly for {ca!r}"
+
+    def test_missing_read_blocks_in_strict_mode(self, tmp_path: Any) -> None:
+        intents, entered, skipped = self._enter(
+            tmp_path, None, cross_asset_block_on_missing=True)
+        assert intents == []
+        assert skipped == [("USD_CAD", "cross_asset_no_data")]
+
+    def test_gate_disabled_ignores_contradiction(self, tmp_path: Any) -> None:
+        strat = make_strategy(tmp_path)  # gate off (default)
+        assert strat.config.cross_asset_gate_enabled is False
+        intents, entered, _ = strat._enter_confirmed(
+            _ca_row(), _ca_assessment(), _CA_PRICES, 100_000.0,
+            datetime.now(UTC), cross_asset=SimpleNamespace(confirmed=False),
+        )
+        assert len(intents) == 1  # contradiction ignored when gate off

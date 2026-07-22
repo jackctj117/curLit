@@ -160,8 +160,24 @@ class EventDrivenConfig:
     event_book_state_path: str = "data/event_book_state.json"
     # ---- Cross-asset corroboration (CL-6mzn) ---------------------------
     # Path to the per-theme corroborating-instruments config. The read is
-    # a DISPLAY annotation on confirmed events, never a hard gate.
+    # a DISPLAY annotation on confirmed events, and — when the gate below
+    # is enabled — an ENTRY gate on the machine legs.
     cross_asset_checks_path: str = "configs/cross_asset_checks.yaml"
+    # ENTRY GATE (CL-6mzn, gating half): when True, a confirmed event whose
+    # cross-asset read POSITIVELY FAILS (confirmed is False — the related
+    # assets moved against the theme, i.e. contradictory) has its machine
+    # legs SKIPPED (reason 'cross_asset_veto'). The event still confirms,
+    # still alerts (with the veto noted), advisory ideas still flow — only
+    # the auto-traded legs are blocked. Fade risk should not be machine-
+    # traded.
+    cross_asset_gate_enabled: bool = False
+    # Stricter mode: ALSO veto when the cross-asset read is UNAVAILABLE
+    # (confirmed is None — instruments unmapped / no price data). Default
+    # False on purpose: this repo's history shows silent data gaps already
+    # zeroed the book once (CL-5lpp/CL-gr8o); fail-closed-on-missing would
+    # recreate that failure mode. Enable once cross-asset data coverage is
+    # proven complete.
+    cross_asset_block_on_missing: bool = False
     # ---- Alerts --------------------------------------------------------
     # EXPIRED events at/above this urgency get a brief info alert.
     expired_alert_min_urgency: int = 8
@@ -679,6 +695,7 @@ class EventDrivenStrategy:
         prices: dict[str, Any],
         equity: float | None,
         now: datetime,
+        cross_asset: Any = None,
     ) -> tuple[
         list[OrderIntent],
         list[tuple[str, str, str, float, str]],
@@ -706,6 +723,35 @@ class EventDrivenStrategy:
         ]
         if not tradables:
             return intents, entered, skipped
+
+        # Cross-asset ENTRY GATE (CL-6mzn): a positively-contradictory read
+        # (related assets moved AGAINST the theme) vetoes the machine legs —
+        # fade risk isn't machine-traded. An UNAVAILABLE read (None) only
+        # vetoes under the stricter block_on_missing mode; see the config
+        # comments for why that defaults off. Advisory ideas and the
+        # confirmed alert are unaffected either way.
+        if self.config.cross_asset_gate_enabled:
+            ca_confirmed = getattr(cross_asset, "confirmed", None)
+            veto = ca_confirmed is False or (
+                ca_confirmed is None and self.config.cross_asset_block_on_missing
+            )
+            if veto:
+                reason = (
+                    "cross_asset_veto"
+                    if ca_confirmed is False else "cross_asset_no_data"
+                )
+                logger.warning(
+                    "cross-asset gate BLOCKED event id=%s entries (%s): "
+                    "related assets %s — skipping %d leg(s)",
+                    event_id, reason,
+                    "contradict the theme" if ca_confirmed is False
+                    else "unreadable",
+                    len(tradables),
+                )
+                return intents, entered, [
+                    (str(aff.get("instrument") or ""), reason)
+                    for aff in tradables
+                ]
 
         if equity is None or equity <= 0:
             logger.warning(
@@ -1162,6 +1208,7 @@ class EventDrivenStrategy:
             assessment = EventConfluence.parse_assessment(row.get("assessment")) or {}
             entry_intents, entered, skipped = self._enter_confirmed(
                 row, assessment, prices, equity, now,
+                cross_asset=result.cross_asset,
             )
             # Stamp the cross-asset read onto the persisted trade ideas'
             # notes so `idea <id>` surfaces it later (CL-6mzn). Additive,

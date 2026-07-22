@@ -155,6 +155,14 @@ strategies:
       # persists in event_book_state_path (atomic writes).
       event_book_max_loss_pct: 0.02
       event_book_state_path: data/event_book_state.json
+      # ---- Cross-asset entry gate (CL-6mzn) --------------------------
+      # A confirmed event whose related assets moved AGAINST the theme
+      # (cross-asset read positively contradictory) has its machine legs
+      # vetoed — fade risk isn't machine-traded. Advisory ideas + alerts
+      # unaffected. block_on_missing stays off (see EventDrivenConfig
+      # comments — fail-closed-on-missing recreates the data-gap zeroing).
+      cross_asset_gate_enabled: true
+      cross_asset_block_on_missing: false
       # ---- Alerts ----------------------------------------------------
       # EXPIRED (unconfirmed) events at/above this urgency still get a
       # brief info alert, capped at 1 per run.
