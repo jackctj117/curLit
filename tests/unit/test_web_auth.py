@@ -21,6 +21,23 @@ def test_unset_secret_refuses_everyone(monkeypatch):
     assert client.get("/api/system").status_code == 503
 
 
+def test_change_me_placeholder_refuses_everyone(monkeypatch):
+    """CL-9dhg: CHANGE_ME* placeholders from .env.example are known
+    defaults — the trade-placing API must reject them exactly like the
+    read-only dashboard does, even for a caller who knows the value."""
+    monkeypatch.setenv("WEB_API_SECRET", "CHANGE_ME_WEB_API_SECRET")
+    r = client.get(
+        "/api/system", headers={"X-API-Key": "CHANGE_ME_WEB_API_SECRET"},
+    )
+    assert r.status_code == 503
+
+
+def test_change_me_bare_prefix_refuses_everyone(monkeypatch):
+    monkeypatch.setenv("WEB_API_SECRET", "CHANGE_ME")
+    r = client.get("/api/system", headers={"X-API-Key": "CHANGE_ME"})
+    assert r.status_code == 503
+
+
 def test_wrong_secret_403(monkeypatch):
     monkeypatch.setenv("WEB_API_SECRET", "a-real-secret-value")
     r = client.get("/api/system", headers={"X-API-Key": "nope"})

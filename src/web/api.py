@@ -77,13 +77,25 @@ _FORBIDDEN_SECRETS = frozenset({
 })
 
 
+def _secret_is_forbidden(secret: str) -> bool:
+    """True when the configured secret is a known default (CL-9dhg).
+
+    ``CHANGE_ME*`` placeholders (see .env.example) are defaults too —
+    the read-only soak dashboard already rejects them; the trade-placing
+    API must not be the weaker surface.
+    """
+    return secret in _FORBIDDEN_SECRETS or secret.startswith("CHANGE_ME")
+
+
 def verify_secret(
     x_api_key: str | None = Header(default=None),
 ) -> None:
     """Auth for every /api/* route (CL-k55b hardening; CL-pu7i header-only).
 
-    * FAIL CLOSED on a missing/default secret: if WEB_API_SECRET is unset or
-      one of the known defaults, /api/* returns 503 for EVERYONE — these
+    * FAIL CLOSED on a missing/default secret: if WEB_API_SECRET is unset,
+      one of the known defaults, or a CHANGE_ME* placeholder (CL-9dhg —
+      same policy as the read-only soak dashboard), /api/* returns 503
+      for EVERYONE — these
       endpoints place trades and halt the engine; a guessable default on a
       0.0.0.0 bind was a takeover path. /health stays open.
     * X-API-Key HEADER ONLY (CL-pu7i). The legacy ``?secret=`` query param
@@ -94,7 +106,7 @@ def verify_secret(
       mean a length mismatch can neither raise nor leak length via timing.
     """
     expected = os.environ.get("WEB_API_SECRET", "")
-    if expected in _FORBIDDEN_SECRETS:
+    if _secret_is_forbidden(expected):
         raise HTTPException(
             status_code=503,
             detail="WEB_API_SECRET is unset or a known default — the API "

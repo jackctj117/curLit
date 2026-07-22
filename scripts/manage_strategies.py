@@ -64,16 +64,76 @@ def _load_paper_returns(
     return df[strategy_id].dropna()
 
 
-def _build_coordinator() -> Any:
-    """Wire a coordinator using run_engine's defaults. Production has
-    one running coordinator; this script must reach the same Postgres
-    state. Heavy lift: import-on-demand to keep --help fast."""
-    from src.runtime.run_engine import _build_coordinator_for_admin
-    return _build_coordinator_for_admin()
+def _build_coordinator(broker_mode: str = "oanda-practice") -> Any:
+    """Wire a coordinator using run_engine's real builders (CL-9dhg).
+
+    Production has one running coordinator; this script must reach the
+    same Postgres state and the same broker, so we reuse run_engine's
+    build_broker / build_strategies / build_coordinator rather than a
+    private admin hook (the previously imported
+    ``_build_coordinator_for_admin`` never existed — every mutating
+    subcommand died on ImportError). Heavy lift: import-on-demand to
+    keep --help fast.
+    """
+    from src.execution.oms import OrderManager
+    from src.execution.rejection import RejectionHandler
+    from src.runtime.run_engine import (
+        CONFIG_PATH,
+        build_blackout_evaluator,
+        build_broker,
+        build_coordinator,
+        build_strategies,
+        build_trade_journal,
+        load_config,
+    )
+
+    config = load_config(CONFIG_PATH)
+    broker = build_broker(broker_mode)
+    journal = build_trade_journal()
+    oms = OrderManager(
+        broker,
+        rejection_handler=RejectionHandler(journal=journal),
+        journal=journal,
+    )
+    strategies = build_strategies(config, broker, oms)
+    coordinator = build_coordinator(
+        config, strategies, oms, broker,
+        blackout_evaluator=build_blackout_evaluator(config),
+    )
+    if coordinator is None:
+        # build_coordinator degrades to None when the portfolio state
+        # store (Postgres) is unreachable — acceptable for the engine
+        # (legacy direct-OMS mode), NOT for an admin CLI that mutates
+        # allocations and liquidates positions. Fail loud.
+        raise RuntimeError(
+            "Could not construct PortfolioCoordinator (is Postgres "
+            "reachable?) — refusing to run admin commands without "
+            "portfolio state.",
+        )
+    return coordinator
+
+
+def _seed_coordinator_memory(coord: Any) -> None:
+    """Seed cross-tick target memory before any position-mutating op.
+
+    A fresh CLI process has EMPTY ``_strategy_targets`` — the engine only
+    seeds it on the first ``process_intents`` tick, which never runs
+    here. ``remove_strategy`` computes each co-holder's remaining share
+    from that memory, so without seeding it submits target=0
+    liquidations that flatten EVERY strategy's position on shared
+    symbols while printing success.
+
+    The coordinator module is orchestrator-owned, so we reach the
+    private seeder from here; suggested follow-up: a public
+    ``seed_targets_from_books()`` wrapper on PortfolioCoordinator
+    delegating to ``_seed_targets_from_books``.
+    """
+    coord._seed_targets_from_books()
+    coord._targets_seeded = True
 
 
 def cmd_add(args: argparse.Namespace) -> int:
-    coord = _build_coordinator()
+    coord = _build_coordinator(args.broker)
     strategy = coord.strategies.get(args.strategy)
     if strategy is None:
         # In production, strategies are constructed at engine startup —
@@ -94,7 +154,7 @@ def cmd_add(args: argparse.Namespace) -> int:
 
 
 def cmd_evaluate(args: argparse.Namespace) -> int:
-    coord = _build_coordinator()
+    coord = _build_coordinator(args.broker)
     if args.strategy not in coord.allocations:
         print(f"Strategy '{args.strategy}' not registered", file=sys.stderr)
         return 2
@@ -132,7 +192,7 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
 
 
 def cmd_promote(args: argparse.Namespace) -> int:
-    coord = _build_coordinator()
+    coord = _build_coordinator(args.broker)
     coord.promote_strategy_to_live(
         args.strategy, initial_weight=args.weight,
     )
@@ -142,7 +202,7 @@ def cmd_promote(args: argparse.Namespace) -> int:
 
 
 def cmd_remove(args: argparse.Namespace) -> int:
-    coord = _build_coordinator()
+    coord = _build_coordinator(args.broker)
     if args.strategy not in coord.strategies:
         print(f"Strategy '{args.strategy}' not registered", file=sys.stderr)
         return 2
@@ -153,9 +213,27 @@ def cmd_remove(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
+    # MUST run before remove_strategy — see _seed_coordinator_memory
+    # (CL-9dhg: unseeded memory => zero-target liquidations flatten
+    # every co-holder on shared symbols).
+    _seed_coordinator_memory(coord)
     coord.remove_strategy(args.strategy)
     print(f"Removed {args.strategy}; positions flattened, rebalance scheduled.")
     return 0
+
+
+def _add_broker_arg(sub_parser: argparse.ArgumentParser) -> None:
+    """Every subcommand builds the full stack, so every subcommand needs
+    the broker mode. Default matches the production fleet
+    (oanda-practice — see docs/CURRENT_OPERATIONS.md); choices are
+    validated by run_engine.build_broker, not duplicated here."""
+    sub_parser.add_argument(
+        "--broker", default="oanda-practice",
+        help=(
+            "Broker mode (must match the running engine's mode; same "
+            "values as run_engine --broker). Default: oanda-practice."
+        ),
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -168,6 +246,7 @@ def main(argv: list[str] | None = None) -> int:
 
     p_add = sub.add_parser("add", help="Add strategy in paper mode")
     p_add.add_argument("--strategy", required=True)
+    _add_broker_arg(p_add)
     p_add.add_argument(
         "--paper-days", type=int, default=90,
         help="Required paper period before evaluate() will promote",
@@ -178,14 +257,18 @@ def main(argv: list[str] | None = None) -> int:
         "evaluate", help="Show promotion verdict from AllocationPolicy",
     )
     p_eval.add_argument("--strategy", required=True)
+    _add_broker_arg(p_eval)
     p_eval.set_defaults(func=cmd_evaluate)
 
     p_prom = sub.add_parser("promote", help="Promote paper → live")
     p_prom.add_argument("--strategy", required=True)
     p_prom.add_argument(
         "--weight", type=float, default=0.05,
-        help="Initial allocation weight (default 5%)",
+        # %% — argparse help strings interpolate %-specifiers; a bare %
+        # is a "badly formed help string" ValueError on Python >= 3.14.
+        help="Initial allocation weight (default 5%%)",
     )
+    _add_broker_arg(p_prom)
     p_prom.set_defaults(func=cmd_promote)
 
     p_rem = sub.add_parser("remove", help="Liquidate and remove")
@@ -194,6 +277,7 @@ def main(argv: list[str] | None = None) -> int:
         "--confirm", action="store_true",
         help="Required: confirms immediate liquidation of all positions",
     )
+    _add_broker_arg(p_rem)
     p_rem.set_defaults(func=cmd_remove)
 
     args = parser.parse_args(argv)
