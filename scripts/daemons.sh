@@ -58,7 +58,24 @@ for entry in "${DAEMONS[@]}"; do
       ;;
     stop)
       if [ -n "$pid" ]; then
-        kill -TERM "$pid" && echo "  ■ $name stopped (pid $pid)"
+        kill -TERM "$pid" || true
+        # WAIT for actual exit (up to 30s, then SIGKILL): daemons finish
+        # their in-flight cycle on SIGTERM (x_monitor can take minutes) —
+        # returning early let a following `start` see the dying process,
+        # print "already running", and leave a gap when it finally exited
+        # (bit us twice on 2026-07-22).
+        waited=0
+        while pgrep -f "$pattern" >/dev/null 2>&1 && [ "$waited" -lt 30 ]; do
+          sleep 1
+          waited=$((waited + 1))
+        done
+        if pgrep -f "$pattern" >/dev/null 2>&1; then
+          pkill -KILL -f "$pattern" || true
+          sleep 1
+          echo "  ■ $name KILLED after ${waited}s (graceful stop timed out)"
+        else
+          echo "  ■ $name stopped (pid $pid, ${waited}s)"
+        fi
       else
         echo "  - $name not running"
       fi
