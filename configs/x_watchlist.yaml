@@ -65,6 +65,9 @@ categories:
       - handle: AlderLaneEggs
         note: "Short-seller / forensic-accounting commentary."
         priority: low
+      - handle: Brad_Setser
+        note: "Brad Setser (CFR) — capital flows, trade balances, China external accounts; data-heavy analysis, not breaking news."
+        priority: low
       - handle: CulperResearch
         note: "Activist short-seller research."
         priority: low
@@ -106,6 +109,24 @@ categories:
         priority: low
       - handle: CalibreObscura
         note: "Weapons identification and arms-flow tracking."
+        priority: low
+      - handle: PhillipsPOBrien
+        note: "Phillips O'Brien — daily Russia-Ukraine strategic analysis; considered, not breaking."
+        priority: normal
+      - handle: oryxspioenkop
+        note: "Oryx — visually-confirmed equipment-loss documentation; methodical OSINT."
+        priority: low
+      - handle: CSIS
+        note: "CSIS think tank — defense/geopolitics reports incl. China Power + missile-defense trackers; institutional, slow but authoritative."
+        priority: low
+      - handle: RUSI_org
+        note: "RUSI — UK defense think tank; land-war and sanctions analysis."
+        priority: low
+      - handle: CFR_org
+        note: "Council on Foreign Relations — institutional geopolitics context."
+        priority: low
+      - handle: AtlanticCouncil
+        note: "Atlantic Council — geopolitics/energy programs; institutional."
         priority: low
 
   africa_mining:
