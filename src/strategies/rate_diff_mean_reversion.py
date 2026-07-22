@@ -180,16 +180,28 @@ class RateDiffMRStrategy:
             return
         logger.info("Model refit starting (last=%s)", self._last_fit)
         try:
+            # CL-gr8o follow-up: fit against the CONFIGURED spread series
+            # (US2Y_MINUS_DE2Y in live config — now populated daily by
+            # scripts/refresh_rates.py). The old hardcoded US_10Y/DE_10Y
+            # legs were never ingested, so dropna() collapsed the fit to a
+            # handful of stray rows (n=9, R²=0.235 < the 0.25 gate) and the
+            # strategy stayed dormant even after the data gap was fixed.
             df = self.data.get_aligned_series(
-                [self.config.pair, "US_10Y", "DE_10Y"],
+                [self.config.pair, self.config.rate_spread_series],
                 now - timedelta(days=self.config.lookback_days * 2), now,
             )
             if df is None or len(df) < 100:
                 logger.warning("Model refit skipped — insufficient data (%d rows)", len(df) if df is not None else 0)
                 return
+            if self.config.rate_spread_series not in df.columns:
+                logger.warning(
+                    "Model refit skipped — spread series %s absent from "
+                    "aligned data", self.config.rate_spread_series,
+                )
+                return
             import statsmodels.api as sm
             df = df.dropna().tail(self.config.lookback_days)
-            df["spread"] = df.get("US_10Y", 0) - df.get("DE_10Y", 0)
+            df["spread"] = df[self.config.rate_spread_series]
             X = sm.add_constant(df[["spread"]])
             y = df[self.config.pair]
             ols = sm.OLS(y, X).fit()
