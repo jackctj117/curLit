@@ -323,3 +323,97 @@ class TestRobustness:
                 broker, _RecordingOMS(), _FakeStateStore({}),  # type: ignore[arg-type]
                 strategies=[],
             )
+
+
+# =============================================================================
+# Multi-position strategy books (CL-8s1e)
+# =============================================================================
+
+
+class _BookStrategyDouble:
+    """Strategy double with an event_driven-style multi-position book."""
+
+    def __init__(self, sid: str, book: dict[str, Any]) -> None:
+        self.id = sid
+        self.open_positions = book
+
+
+class _BookPos:
+    def __init__(self, quantity: float) -> None:
+        self.quantity = quantity
+
+
+class TestMultiPositionBook:
+    def test_book_legs_match_broker_and_are_not_flattened(self) -> None:
+        """The live incident: event legs held at the broker but absent from
+        the single-position store were flattened as orphaned_broker. With the
+        book consulted, they MATCH (note the underscore normalization:
+        USD_JPY -> USDJPY) and the flatten never fires."""
+        broker = _make_broker_with([
+            Position(symbol="USDJPY", quantity=-500.0, avg_price=150.0),
+            Position(symbol="EURUSD", quantity=1000.0, avg_price=1.10),
+        ])
+        state = _FakeStateStore({"ev": None})  # store knows nothing
+        oms = _RecordingOMS()
+        recon = PositionReconciler(
+            broker, oms, state,  # type: ignore[arg-type]
+            strategies=[_BookStrategyDouble("ev", {
+                "USD_JPY": _BookPos(-500.0),
+                "EUR_USD": _BookPos(1000.0),
+            })],
+        )
+        report = recon.reconcile()
+        assert not report.has_mismatches
+        assert all(
+            e.status == ReconciliationStatus.MATCHED for e in report.entries
+        )
+        assert oms.submitted == []  # nothing flattened
+
+    def test_store_position_suppresses_book_double_count(self) -> None:
+        """A strategy present in the store must not ALSO contribute its book
+        (double counting would misreport a size mismatch)."""
+        broker = _make_broker_with([
+            Position(symbol="EURUSD", quantity=1000.0, avg_price=1.10),
+        ])
+        state = _FakeStateStore({
+            "s1": {"symbol": "EURUSD", "size": 1000.0},
+        })
+        recon = PositionReconciler(
+            broker, _RecordingOMS(), state,  # type: ignore[arg-type]
+            strategies=[_BookStrategyDouble("s1", {
+                "EUR_USD": _BookPos(1000.0),  # same position, book form
+            })],
+        )
+        report = recon.reconcile()
+        assert not report.has_mismatches  # 1000 vs 1000, not 2000 vs 1000
+
+    def test_true_orphan_still_flattened(self) -> None:
+        """The safety net stays intact: a broker position in NO store and NO
+        book is still classified orphaned_broker and flattened."""
+        broker = _make_broker_with([
+            Position(symbol="GBPUSD", quantity=700.0, avg_price=1.25),
+        ])
+        state = _FakeStateStore({"ev": None})
+        oms = _RecordingOMS()
+        recon = PositionReconciler(
+            broker, oms, state,  # type: ignore[arg-type]
+            strategies=[_BookStrategyDouble("ev", {"USD_JPY": _BookPos(-1.0)})],
+            policy=ReconciliationPolicy(on_orphaned_broker="flatten"),
+        )
+        report = recon.reconcile()
+        statuses = {e.symbol: e.status for e in report.entries}
+        assert statuses["GBPUSD"] == ReconciliationStatus.ORPHANED_BROKER
+        assert any(i.symbol == "GBPUSD" for i in oms.submitted)  # flattened
+
+    def test_empty_or_missing_book_is_harmless(self) -> None:
+        broker = _make_broker_with([])
+        state = _FakeStateStore({"a": None, "b": None})
+        recon = PositionReconciler(
+            broker, _RecordingOMS(), state,  # type: ignore[arg-type]
+            strategies=[
+                _BookStrategyDouble("a", {}),
+                _StrategyDouble("b"),  # no open_positions attr at all
+            ],
+        )
+        report = recon.reconcile()
+        assert report.entries == []

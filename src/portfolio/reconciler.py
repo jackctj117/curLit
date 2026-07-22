@@ -367,30 +367,63 @@ class PositionReconciler:
     def _fetch_internal_positions_per_symbol(
         self,
     ) -> dict[str, list[dict[str, Any]]]:
-        """Aggregate per-strategy current positions into a per-symbol map."""
+        """Aggregate per-strategy current positions into a per-symbol map.
+
+        Two additive sources:
+          1. The shared state store's ``get_current_position(sid)`` — the
+             single-position-per-strategy model most strategies use.
+          2. A strategy's own ``open_positions`` dict (CL-8s1e) — multi-leg
+             strategies (event_driven) track several simultaneous positions in
+             their OWN persisted book, which the single-position store cannot
+             represent. Before this, their broker legs were invisible
+             internally, classified orphaned_broker, and FLATTENED by the
+             default policy on every engine restart (observed live: 2 open
+             event FX legs auto-closed at boot). Symbols are normalized to
+             broker form (underscores stripped, upper-cased — ``USD_CAD`` →
+             ``USDCAD``) so they match ``Position.symbol``.
+        """
         per_symbol: dict[str, list[dict[str, Any]]] = {}
         for strategy in self.strategies:
             sid = strategy.id
+            recorded_in_store = False
             try:
                 pos = self.state.get_current_position(sid)
             except Exception:
                 logger.exception(
                     "Reconciliation: get_current_position(%s) failed", sid,
                 )
+                pos = None
+            if pos is not None:
+                symbol = pos.get("symbol")
+                qty = pos.get("size") if "size" in pos else pos.get("quantity")
+                if symbol is None or qty is None:
+                    logger.warning(
+                        "Strategy %s position record missing symbol/size: %s",
+                        sid, pos,
+                    )
+                else:
+                    recorded_in_store = True
+                    per_symbol.setdefault(symbol, []).append({
+                        "strategy_id": sid,
+                        "quantity": float(qty),
+                        "raw": pos,
+                    })
+            # Multi-position book (CL-8s1e). Skipped when the store already
+            # carries this strategy's position, to avoid double counting.
+            if recorded_in_store:
                 continue
-            if pos is None:
+            book = getattr(strategy, "open_positions", None)
+            if not isinstance(book, dict) or not book:
                 continue
-            symbol = pos.get("symbol")
-            qty = pos.get("size") if "size" in pos else pos.get("quantity")
-            if symbol is None or qty is None:
-                logger.warning(
-                    "Strategy %s position record missing symbol/size: %s",
-                    sid, pos,
-                )
-                continue
-            per_symbol.setdefault(symbol, []).append({
-                "strategy_id": sid,
-                "quantity": float(qty),
-                "raw": pos,
-            })
+            for raw_symbol, bpos in book.items():
+                qty_val = getattr(bpos, "quantity", None)
+                if qty_val is None:
+                    continue
+                norm = str(raw_symbol).replace("_", "").upper()
+                per_symbol.setdefault(norm, []).append({
+                    "strategy_id": sid,
+                    "quantity": float(qty_val),
+                    "raw": {"symbol": norm, "quantity": float(qty_val),
+                            "source": "open_positions"},
+                })
         return per_symbol
