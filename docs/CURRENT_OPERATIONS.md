@@ -163,7 +163,7 @@ activity** (P/C volume skew, volume vs self-built baseline, ATM IV).
 
 ---
 
-## 3. The nine daemons
+## 3. The ten daemons
 
 | Daemon | Command | Cadence | Log |
 |---|---|---|---|
@@ -176,6 +176,7 @@ activity** (P/C volume skew, volume vs self-built baseline, ATM IV).
 | Options activity | `scripts/options_activity.py --loop 86400` | daily chain snapshots | `logs/options_activity.log` |
 | Outcome scorer | `scripts/score_outcomes.py --loop 86400` | daily | `logs/score_outcomes.log` |
 | Telegram bot | `scripts/telegram_approval_bot.py` | long-poll | `logs/` |
+| Morning LONG digest | `scripts/daily_long_digest.py --loop 300` | once per trading morning at 09:15 ET (`LONG_DIGEST_TIME_ET`) — Telegram list of every LONG holding (OANDA positive-unit trades + Alpaca option positions, entry/current/P&L/DTE; shorts counted in footer, CL-lpai) | `logs/long_digest.log` |
 
 **Fleet control: `./scripts/daemons.sh start|stop|status`** (idempotent —
 start skips running daemons; logs to `logs/<name>.log`). Fresh-device
