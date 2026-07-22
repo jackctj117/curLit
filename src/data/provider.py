@@ -154,13 +154,16 @@ class DataProvider:
         except Exception:
             logger.exception("get_aligned_series: prices query failed")
 
-        # Pass 2: macro_data for any symbol still missing AND FRED-mappable.
-        # Without this fallback, queries like ['EURUSD', 'US_10Y', 'DE_10Y']
-        # drop DE_10Y (FRED-only) because the prices-only result is non-empty.
+        # Pass 2: macro_data for any symbol still missing. Legacy aliases go
+        # through fred_map (US_10Y → DGS10); anything else is looked up by
+        # its OWN series_id (CL-gr8o follow-up — the old fred_map-only gate
+        # silently dropped direct macro ids like US2Y_MINUS_DE2Y / CVIX /
+        # USD_3M_OIS, so the rate-diff refit never saw its spread series
+        # even after the data was ingested).
         found = {s.name for s in per_symbol}
-        missing = [s for s in symbols if s not in found and s in fred_map]
+        missing = [s for s in symbols if s not in found]
         if missing:
-            fred_to_caller = {fred_map[s]: s for s in missing}
+            fred_to_caller = {fred_map.get(s, s): s for s in missing}
             try:
                 df = pd.read_sql(
                     text("""
