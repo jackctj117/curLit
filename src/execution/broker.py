@@ -37,6 +37,12 @@ class Order:
     stop_price: float | None = None
     time_in_force: str = "GTC"
     order_id: str = field(default_factory=lambda: str(uuid4()))
+    #: Stable client-side id echoed back by the venue on fills (CL-vj74).
+    #: The OMS sets it to the intent id so an async ORDER_FILL from the OANDA
+    #: transaction stream maps back to the pending intent (OANDA clientExtensions
+    #: .id / Alpaca client_order_id). ``order_id`` is overwritten with the
+    #: venue's own transaction id at placement, so it can't serve this role.
+    client_order_id: str | None = None
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     status: OrderStatus = OrderStatus.PENDING
     #: Venue-supplied reason when status is REJECTED (CL-h4as follow-up).

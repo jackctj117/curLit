@@ -129,7 +129,7 @@ class OandaBroker(Broker):
         return self._send_following_307("POST", url, json_body)
 
     def place_order(self, order: Order) -> Order:
-        body = {
+        body: dict[str, dict[str, Any]] = {
             "order": {
                 "type": "MARKET",
                 "instrument": self._to_oanda(order.symbol),
@@ -137,6 +137,11 @@ class OandaBroker(Broker):
                 "timeInForce": "FOK",
             }
         }
+        # CL-vj74: tag the order with our stable client id so the async
+        # ORDER_FILL from the transactions stream carries it back and the OMS
+        # can attribute the fill to this intent without a position delta.
+        if order.client_order_id:
+            body["order"]["clientExtensions"] = {"id": order.client_order_id}
         # Slippage enforcement (CL-qyav): the intent's max_slippage_bps was
         # journaled but never enforced. priceBound makes the venue reject a
         # FOK market order that could only fill beyond tolerance (parsed
@@ -448,6 +453,96 @@ class OandaBroker(Broker):
                 logger.warning(
                     "OANDA price stream error (%s: %s) — reconnecting in "
                     "%.0fs", type(exc).__name__, str(exc)[:120], backoff,
+                )
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, self._STREAM_BACKOFF_MAX)
+
+    async def stream_transactions(self) -> AsyncIterator[dict[str, Any]]:
+        """Self-healing OANDA transactions stream (CL-vj74).
+
+        Consumes ``/v3/accounts/{id}/transactions/stream`` and yields a
+        normalized dict per ORDER_FILL so the OMS can emit a real ORDER_FILLED
+        (not just ORDER_PLACED) and clear a sticky pending intent by client id
+        in milliseconds — instead of the ~300s poll-and-diff. Same reconnect
+        supervisor as :meth:`stream_prices`: transient transport errors retry
+        with exponential backoff, a clean server close reconnects, CANCELLED
+        (shutdown) propagates, and a 4xx (bad creds/request) is PERMANENT.
+        Non-fill transactions (HEARTBEAT, order create/cancel, funding, …) are
+        skipped; a fill carries ``orderID``, echoed ``clientExtensions.id``,
+        ``units`` and ``price`` for per-order attribution.
+        """
+        base_url = (
+            self.STREAM_PRACTICE if "practice" in str(self.client.base_url)
+            else self.STREAM_LIVE
+        )
+        backoff = self._STREAM_BACKOFF_START
+        while True:
+            try:
+                async with (
+                    httpx.AsyncClient(
+                        base_url=base_url, headers=self.headers, timeout=None,
+                    ) as client,
+                    client.stream(
+                        "GET",
+                        f"/v3/accounts/{self.account_id}/transactions/stream",
+                    ) as resp,
+                ):
+                    if resp.status_code >= 400:
+                        if resp.status_code < 500:
+                            logger.critical(
+                                "OANDA transaction stream rejected with %d "
+                                "(bad credentials / request) — NOT retrying",
+                                resp.status_code,
+                            )
+                            resp.raise_for_status()
+                        logger.warning(
+                            "OANDA transaction stream HTTP %d — reconnecting "
+                            "in %.0fs", resp.status_code, backoff,
+                        )
+                        await asyncio.sleep(backoff)
+                        backoff = min(backoff * 2, self._STREAM_BACKOFF_MAX)
+                        continue
+                    backoff = self._STREAM_BACKOFF_START  # connected — reset
+                    async for line in resp.aiter_lines():
+                        if not line.strip():
+                            continue
+                        try:
+                            msg = json.loads(line)
+                        except ValueError:
+                            continue  # heartbeat / partial line — skip
+                        if msg.get("type") != "ORDER_FILL":
+                            continue
+                        cext = msg.get("clientExtensions") or {}
+                        try:
+                            units = float(msg.get("units", 0.0))
+                            price = float(msg.get("price", 0.0))
+                        except (TypeError, ValueError):
+                            units, price = 0.0, 0.0
+                        yield {
+                            "type": "ORDER_FILL",
+                            "transaction_id": str(msg.get("id", "")),
+                            "order_id": str(msg.get("orderID", "")),
+                            "client_order_id": cext.get("id"),
+                            "instrument": self._from_oanda(
+                                str(msg.get("instrument", "")),
+                            ),
+                            "units": units,
+                            "price": price,
+                            "ts": msg.get("time"),
+                        }
+                    logger.warning(
+                        "OANDA transaction stream closed by server — "
+                        "reconnecting",
+                    )
+                    await asyncio.sleep(self._STREAM_BACKOFF_START)
+            except asyncio.CancelledError:
+                raise  # shutdown — never swallow
+            except httpx.HTTPStatusError:
+                raise  # 4xx surfaced above is PERMANENT — don't retry
+            except (httpx.HTTPError, OSError) as exc:
+                logger.warning(
+                    "OANDA transaction stream error (%s: %s) — reconnecting "
+                    "in %.0fs", type(exc).__name__, str(exc)[:120], backoff,
                 )
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, self._STREAM_BACKOFF_MAX)

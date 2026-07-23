@@ -143,6 +143,13 @@ class LiveEngine:
         ]
         if self.coordinator is not None:
             coros.append(("rebalance", self._rebalance_task()))
+        # CL-vj74: consume the OANDA transaction stream for real, low-latency,
+        # per-order fill confirmation — only when the broker exposes it (OANDA;
+        # the paper broker fills synchronously and has no stream).
+        if hasattr(self.broker, "stream_transactions") and hasattr(
+            self.oms, "on_fill",
+        ):
+            coros.append(("transaction_stream", self._transaction_stream_task()))
         self._tasks = [
             asyncio.create_task(coro, name=name) for name, coro in coros
         ]
@@ -182,6 +189,24 @@ class LiveEngine:
                     self._last_prices[tick["symbol"]] = tick
             except Exception:
                 logger.exception("Price stream error")
+                await asyncio.sleep(5)
+
+    async def _transaction_stream_task(self) -> None:
+        """Drive OMS fill events from the OANDA transaction stream (CL-vj74):
+        each ORDER_FILL becomes a real ORDER_FILLED journal row and clears the
+        matching PENDING intent in ms, instead of waiting on the ~300s position
+        poll. The stream self-heals internally (reconnect + backoff); a
+        permanent 4xx propagates out and ends the task (bad creds can't self-
+        fix). The poll-based confirmation stays as the backstop."""
+        while self.running:
+            try:
+                async for fill in self.broker.stream_transactions():
+                    try:
+                        self.oms.on_fill(fill)
+                    except Exception:
+                        logger.exception("on_fill failed for %r", fill)
+            except Exception:
+                logger.exception("Transaction stream error")
                 await asyncio.sleep(5)
 
     async def _signal_generation_task(self) -> None:

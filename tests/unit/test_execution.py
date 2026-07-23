@@ -384,3 +384,68 @@ class TestOmsLockWidth:
                         target_position=1000.0),
         )
         assert oms.has_pending() is False
+
+
+class _CapturingBroker(_NetTrackingBlockingBroker):
+    """Captures the last placed Order to assert client_order_id wiring."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.last_order: Order | None = None
+        self.release.set()  # never block
+
+    def place_order(self, order: Order) -> Order:
+        self.last_order = order
+        order.status = OrderStatus.FILLED
+        return order
+
+
+class TestOnFill:
+    """CL-vj74: OMS consumes ORDER_FILL events from the transaction stream."""
+
+    def _oms_pending(self) -> tuple[OrderManager, OrderIntent]:
+        oms = OrderManager(PaperBroker())
+        intent = OrderIntent(strategy_id="s", symbol="EURUSD", target_position=1000.0)
+        oms._pending[intent.intent_id] = []          # simulate PENDING OANDA order
+        oms._pending_intents[intent.intent_id] = intent
+        return oms, intent
+
+    def _fill(self, intent_id: str, txn: str = "t1") -> dict:
+        return {
+            "type": "ORDER_FILL", "transaction_id": txn, "order_id": "o1",
+            "client_order_id": intent_id, "instrument": "EURUSD",
+            "units": 1000.0, "price": 1.1,
+        }
+
+    def test_fill_clears_pending_and_returns_true(self) -> None:
+        oms, intent = self._oms_pending()
+        assert oms.on_fill(self._fill(intent.intent_id)) is True
+        assert intent.intent_id not in oms._pending
+        assert intent.intent_id not in oms._pending_intents
+        assert oms.has_pending() is False
+
+    def test_idempotent_on_redelivery(self) -> None:
+        oms, intent = self._oms_pending()
+        ev = self._fill(intent.intent_id, txn="dup")
+        assert oms.on_fill(ev) is True
+        assert oms.on_fill(ev) is False  # same transaction id → deduped
+
+    def test_sync_fill_not_double_processed(self) -> None:
+        # A synchronous FOK fill records its fill-txn id at placement; the
+        # streamed duplicate must be skipped.
+        oms, intent = self._oms_pending()
+        oms._seen_fills.add("t1")
+        assert oms.on_fill(self._fill(intent.intent_id, txn="t1")) is False
+
+    def test_unknown_client_id_still_processed(self) -> None:
+        oms = OrderManager(PaperBroker())
+        ev = self._fill("no-such-intent", txn="t9")
+        assert oms.on_fill(ev) is True  # synthetic intent, no crash, no pending
+
+    def test_submit_intent_sets_client_order_id(self) -> None:
+        broker = _CapturingBroker()
+        oms = OrderManager(broker)
+        intent = OrderIntent(strategy_id="s", symbol="EURUSD", target_position=1000.0)
+        oms.submit_intent(intent)
+        assert broker.last_order is not None
+        assert broker.last_order.client_order_id == intent.intent_id

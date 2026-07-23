@@ -35,6 +35,11 @@ from .trade_journal import EventType, TradeJournal
 
 logger = logging.getLogger(__name__)
 
+#: CL-vj74: cap on the fill-dedup set. Redelivered fills are always recent
+#: (a stream reconnect resumes near now), so dropping ids past this bound is
+#: safe. Sized far above any realistic per-session fill count.
+_SEEN_FILLS_CAP = 10_000
+
 
 class Urgency(enum.StrEnum):
     """Canonical intent-urgency vocabulary (CL-ikz2; review §6.1.2/§9.1).
@@ -110,6 +115,12 @@ class OrderManager:
         self._inflight: dict[str, threading.Lock] = {}
         self._halted = False
         self._pending: dict[str, list[Order]] = {}
+        # CL-vj74: intent kept alongside a PENDING order so an async
+        # ORDER_FILL (OANDA transaction stream) can journal ORDER_FILLED and
+        # clear the pending entry by client id; _seen_fills dedups by the
+        # venue transaction id (the stream can redeliver on reconnect).
+        self._pending_intents: dict[str, OrderIntent] = {}
+        self._seen_fills: set[str] = set()
 
     def submit_intent(
         self,
@@ -318,6 +329,9 @@ class OrderManager:
                 side=side,
                 quantity=qty,
                 order_type=OrderType.MARKET,
+                # CL-vj74: stable client id so an async ORDER_FILL from the
+                # OANDA transaction stream maps back to this intent.
+                client_order_id=intent.intent_id,
                 # Enforced at the venue (CL-qyav): OANDA turns this into a
                 # FOK priceBound; PaperBroker simulates the same check. The
                 # intent's limit was previously journaled but never enforced.
@@ -350,8 +364,20 @@ class OrderManager:
                 with self._lock:
                     if placed.status == OrderStatus.FILLED:
                         self._pending.pop(intent.intent_id, None)
+                        self._pending_intents.pop(intent.intent_id, None)
+                        # CL-vj74: a synchronous FOK fill journals ORDER_FILLED
+                        # below; record its venue fill-txn id (placed.order_id
+                        # is the orderFillTransaction id here) so the SAME fill
+                        # redelivered on the transaction stream is deduped by
+                        # on_fill and never double-journaled.
+                        if placed.order_id:
+                            self._seen_fills.add(placed.order_id)
                     else:
                         self._pending[intent.intent_id] = [placed]
+                        # CL-vj74: keep the intent so a later async ORDER_FILL
+                        # from the transaction stream can journal a real
+                        # ORDER_FILLED and clear this pending entry.
+                        self._pending_intents[intent.intent_id] = intent
                 logger.info(
                     "Placed %s %s %.4f (attempt=%d, fraction=%.2f)",
                     intent.symbol, side, qty, attempt, size_fraction,
@@ -421,6 +447,67 @@ class OrderManager:
     # positive machine that trained operators to ignore real desync. The
     # live engine's periodic alignment check now delegates to
     # src/portfolio/reconciler.PositionReconciler.check_alignment().
+
+    def on_fill(self, fill: dict[str, Any]) -> bool:
+        """Consume one ORDER_FILL from the broker's transaction stream (CL-vj74).
+
+        Idempotent by the venue transaction id (the stream can redeliver on
+        reconnect, and a synchronous FOK fill is recorded at placement so its
+        streamed duplicate is skipped). Emits a real ORDER_FILLED journal row
+        with per-order attribution and clears the matching PENDING intent by
+        its client id — so a FOK order OANDA created-then-filled asynchronously
+        no longer sits in ``_pending`` forever (poisoning has_pending / the
+        shutdown drain). Returns True when the fill was newly processed.
+
+        The position-poll confirmation (EventBook.confirm_entries/confirm_exits)
+        stays as the backstop; this is the low-latency, attributed fast path.
+        """
+        fill_id = str(fill.get("transaction_id") or "")
+        client_id = fill.get("client_order_id")
+        with self._lock:
+            if fill_id and fill_id in self._seen_fills:
+                return False  # already handled (redelivery or sync fill)
+            if fill_id:
+                self._seen_fills.add(fill_id)
+                if len(self._seen_fills) > _SEEN_FILLS_CAP:
+                    # Bounded: redeliveries are always recent, so dropping old
+                    # ids is safe. Keep the one we just processed.
+                    self._seen_fills = {fill_id}
+            intent = (
+                self._pending_intents.pop(str(client_id), None)
+                if client_id else None
+            )
+            if client_id:
+                self._pending.pop(str(client_id), None)
+        symbol = str(fill.get("instrument") or (intent.symbol if intent else ""))
+        # Reuse the original intent so the ORDER_FILLED row links to the
+        # INTENT_SUBMITTED row; fall back to a synthetic one (e.g. a fill for
+        # an order already terminal via the sync path, or an unknown client id).
+        journal_intent = intent or OrderIntent(
+            strategy_id="oanda-fill-stream",
+            symbol=symbol,
+            target_position=0.0,
+            intent_id=str(client_id) if client_id else (fill_id or "unknown"),
+        )
+        self._journal_event(
+            EventType.ORDER_FILLED,
+            intent=journal_intent,
+            payload={
+                "source": "oanda_transaction_stream",
+                "order_id": fill.get("order_id"),
+                "client_order_id": client_id,
+                "fill_id": fill_id,
+                "symbol": symbol,
+                "units": fill.get("units"),
+                "price": fill.get("price"),
+            },
+        )
+        logger.info(
+            "ORDER_FILLED (stream): client=%s order=%s %s units=%s @ %s",
+            client_id, fill.get("order_id"), symbol,
+            fill.get("units"), fill.get("price"),
+        )
+        return True
 
     def halt_new_trades(self) -> None:
         # Under the same lock that guards submit_intent's halt check —
