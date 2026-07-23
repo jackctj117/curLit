@@ -63,7 +63,7 @@ Everything is PAPER. No real money moves anywhere.
     (`ALPACA_OPT_MIN_CONFIDENCE`); niche/red-team gates OFF
     (`ALPACA_OPT_REQUIRE_NICHE/RED_TEAM=0`) — re-tighten before any
     real-money move;
-  - each day it takes the TOP-5 by confidence (`ALPACA_OPT_MAX_PER_DAY`),
+  - up to `ALPACA_OPT_MAX_PER_DAY` (10) buys/day, PACED at `ALPACA_OPT_MAX_PER_HOUR` (2) so entries spread across the session instead of a single open burst — intraday events can still be bought in the afternoon (CL-h02l). Top-by-confidence first;
     1 contract each (`ALPACA_OPT_QTY`), skipping any contract whose premium
     exceeds $500 (`ALPACA_OPT_MAX_PREMIUM`);
   - contract selection parses the idea's moneyness band + DTE window
@@ -92,7 +92,7 @@ Everything is PAPER. No real money moves anywhere.
      `ALPACA_OPT_DEFAULT_TIME_STOP_DAYS`), 3. `stop_loss` (premium −40%,
      `ALPACA_OPT_STOP_LOSS_PCT`; **disabled on the entry day** — opening
      spreads masquerade as losses — except the −60% extreme-move valve,
-     `ALPACA_OPT_ENTRY_DAY_EXTREME_STOP`), 4. `profit_target` (premium
+     `ALPACA_OPT_ENTRY_DAY_EXTREME_STOP`) — and even that valve is suppressed for the first `ALPACA_OPT_ENTRY_SETTLE_MIN` (15) min after entry so opening spread on cheap contracts can't trip it (CL-h02l), 4. `profit_target` (premium
      +80%, `ALPACA_OPT_PROFIT_TARGET_PCT`), 5. `expiry_protect` (≤4 DTE
      and not up ≥25%, `ALPACA_OPT_EXPIRY_PROTECT_DAYS` /
      `ALPACA_OPT_EXPIRY_MIN_PROFIT`; ≤1 DTE closes regardless — date-based,

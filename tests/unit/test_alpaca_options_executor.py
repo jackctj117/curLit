@@ -144,6 +144,20 @@ def test_daily_cap_enforced(engine):
     assert len(client.orders) == 2
 
 
+def test_hourly_pace_caps_this_cycle(engine):
+    # CL-h02l: even with daily room to spare, no more than max_per_hour buy
+    # in one cycle — the rest spread to later cycles.
+    for i in range(6):
+        _seed(engine, f"h{i}")
+    client = _FakeClient(ask=1.0)
+    counts = execute_pending_options(
+        engine, client, _price,
+        cfg=OptionsExecConfig(max_per_day=10, max_per_hour=2),
+        now=NOW, technicals_fn=_no_tech)
+    assert counts["submitted"] == 2  # hourly pace, not the 10/day room
+    assert len(client.orders) == 2
+
+
 def test_dedup_not_reexecuted(engine):
     _seed(engine, "once")
     client = _FakeClient(ask=1.0)

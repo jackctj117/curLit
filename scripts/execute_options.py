@@ -65,7 +65,9 @@ def _config_from_env():  # noqa: ANN202
         min_confidence=_f("ALPACA_OPT_MIN_CONFIDENCE", 0.55),
         max_premium_usd=_f("ALPACA_OPT_MAX_PREMIUM", 500.0),
         qty=_i("ALPACA_OPT_QTY", 1),
-        max_per_day=_i("ALPACA_OPT_MAX_PER_DAY", 5),
+        max_per_day=_i("ALPACA_OPT_MAX_PER_DAY", 10),
+        # Intraday pacing so buys spread across the day (CL-h02l).
+        max_per_hour=_i("ALPACA_OPT_MAX_PER_HOUR", 2),
         # Paper-phase knobs: default True (strict); set 0 to widen the pool so
         # the paper track record actually accumulates a sample.
         require_niche=_b("ALPACA_OPT_REQUIRE_NICHE", default=True),
@@ -92,6 +94,9 @@ def _exit_config_from_env():  # noqa: ANN202
         expiry_protect_days=_i("ALPACA_OPT_EXPIRY_PROTECT_DAYS", 4),
         expiry_protect_min_profit=_f("ALPACA_OPT_EXPIRY_MIN_PROFIT", 0.25),
         default_time_stop_days=_i("ALPACA_OPT_DEFAULT_TIME_STOP_DAYS", 10),
+        # Settle window: suppress premium stops for the first N min after
+        # entry so opening spread on cheap contracts can't trip them (CL-h02l).
+        entry_settle_min=_i("ALPACA_OPT_ENTRY_SETTLE_MIN", 15),
     )
 
 

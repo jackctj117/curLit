@@ -21,7 +21,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -62,7 +62,12 @@ class OptionsExecConfig:
     min_confidence: float = 0.55
     max_premium_usd: float = 500.0
     qty: int = 1
-    max_per_day: int = 5
+    max_per_day: int = 10
+    #: Intraday pacing (CL-h02l): at most this many new buys per rolling
+    #: 60 min, so the daily budget is NOT dumped in one burst at the open —
+    #: entries spread across the session and fresh intraday events can still
+    #: get bought in the afternoon instead of finding the cap already spent.
+    max_per_hour: int = 2
     require_niche: bool = True
     require_red_team: bool = True
     selection: ContractSelectionConfig = ContractSelectionConfig()
@@ -134,13 +139,22 @@ def fetch_executable_ideas(
             text(sql), {"min_conf": cfg.min_confidence})]
 
 
-def _submitted_today(engine: Any, now: datetime) -> int:
-    start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+def _submitted_since(engine: Any, since: datetime) -> int:
     with engine.connect() as conn:
         return int(conn.execute(text(
             "SELECT COUNT(*) FROM alpaca_option_orders "
-            "WHERE status = 'submitted' AND submitted_at >= :start",
-        ), {"start": start}).scalar() or 0)
+            "WHERE status = 'submitted' AND submitted_at >= :since",
+        ), {"since": since}).scalar() or 0)
+
+
+def _submitted_today(engine: Any, now: datetime) -> int:
+    return _submitted_since(
+        engine, now.replace(hour=0, minute=0, second=0, microsecond=0),
+    )
+
+
+def _submitted_last_hour(engine: Any, now: datetime) -> int:
+    return _submitted_since(engine, now - timedelta(hours=1))
 
 
 def _record(engine: Any, row: dict[str, Any]) -> None:
@@ -183,9 +197,16 @@ def execute_pending_options(
         counts["market_closed"] = 1
         return counts
 
-    budget = max(0, cfg.max_per_day - _submitted_today(engine, now))
+    day_left = max(0, cfg.max_per_day - _submitted_today(engine, now))
+    hour_left = max(0, cfg.max_per_hour - _submitted_last_hour(engine, now))
+    budget = min(day_left, hour_left)
     if budget <= 0:
-        logger.info("alpaca options: daily cap reached — no new orders")
+        if day_left <= 0:
+            logger.info("alpaca options: daily cap reached — no new orders")
+        else:
+            logger.info("alpaca options: hourly pace reached (%d/hr) — "
+                        "%d left today, resuming next cycle", cfg.max_per_hour,
+                        day_left)
         return counts
 
     delay_active = _entry_delay_active(now, cfg.entry_delay_min)

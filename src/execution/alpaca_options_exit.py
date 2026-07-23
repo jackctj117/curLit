@@ -89,6 +89,13 @@ class OptionsExitConfig:
     #: cheap OTM contracts register as instant −40% "losses" without any
     #: real move; from day 2 the mark is meaningful.
     stop_loss_pct: float = 0.40
+    #: Settle window (CL-h02l): for the first N minutes after entry, NO
+    #: premium-based stop fires — not even the extreme valve. A cheap OTM
+    #: contract's bid/ask spread alone can exceed 60% right after the buy,
+    #: so the indicative mark shows a huge phantom loss that isn't a real
+    #: move (2026-07-23: EE/FLNG sold at −60/−73% six minutes after entry
+    #: on spread noise). Date/thesis/profit rules still apply. 0 disables.
+    entry_settle_min: int = 15
     #: Entry-day safety valve: an extreme adverse move still closes even
     #: during the grace period (0.60 = −60%).
     entry_day_extreme_stop_pct: float = 0.60
@@ -178,6 +185,14 @@ def evaluate_exit(
         entered is not None
         and entered.astimezone(_NY).date() == now.astimezone(_NY).date()
     )
+    # Minutes since the buy — used to suppress premium stops until the
+    # indicative quote settles (CL-h02l). Unknown entry time → treat as
+    # settled (don't hold a position hostage to a missing timestamp).
+    mins_held = (
+        (now - entered).total_seconds() / 60.0 if entered is not None
+        else None
+    )
+    settled = mins_held is None or mins_held >= cfg.entry_settle_min
 
     # 1. Thesis invalidated — the desk ACTIVELY no longer believes the
     #    story: event DISMISSED or idea cancelled. Deliberately NOT
@@ -204,10 +219,14 @@ def evaluate_exit(
     #    safety valve.
     if pnl is not None:
         if is_entry_day:
-            if pnl <= -cfg.entry_day_extreme_stop_pct:
+            # Extreme valve fires only AFTER the settle window (CL-h02l) —
+            # inside it, a cheap contract's spread masquerades as a −60%+
+            # loss and would sell on noise, not a real move.
+            if settled and pnl <= -cfg.entry_day_extreme_stop_pct:
                 return (ExitReason.STOP_LOSS,
                         f"extreme adverse move {pnl:+.0%} on entry day "
-                        f"(<= -{cfg.entry_day_extreme_stop_pct:.0%} valve)")
+                        f"(<= -{cfg.entry_day_extreme_stop_pct:.0%} valve, "
+                        f"{mins_held:.0f}min held)")
         elif pnl <= -cfg.stop_loss_pct:
             return (ExitReason.STOP_LOSS,
                     f"premium {pnl:+.0%} <= -{cfg.stop_loss_pct:.0%}")

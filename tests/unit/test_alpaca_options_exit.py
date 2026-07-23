@@ -221,7 +221,8 @@ def test_entry_day_grace_holds_through_stop_level(engine):
 
 
 def test_entry_day_extreme_valve_still_fires(engine):
-    # -65% breaches the -60% safety valve even on entry day.
+    # -65% breaches the -60% valve on entry day, AFTER the 15-min settle
+    # window (ENTRY_TODAY = 9:31 ET, ~89 min before NOW).
     _seed(engine, "valve", submitted_at=ENTRY_TODAY)
     client = _FakeClient([_pos(avg="2.0", cur="0.7")])  # -65%
     counts = manage_option_exits(engine, client, now=NOW)
@@ -229,6 +230,16 @@ def test_entry_day_extreme_valve_still_fires(engine):
     row = _row(engine, "valve")
     assert row["exit_reason"] == "stop_loss"
     assert "entry day" in _detail_of_last_eval(engine, "valve")
+
+
+def test_extreme_valve_suppressed_during_settle_window(engine):
+    # CL-h02l: -65% just 5 min after entry is spread noise on a cheap
+    # contract — the settle window must HOLD it, not sell on the valve.
+    _seed(engine, "fresh", submitted_at="2026-07-22T14:55:00+00:00")  # 5min
+    client = _FakeClient([_pos(avg="2.0", cur="0.7")])  # -65%
+    counts = manage_option_exits(engine, client, now=NOW)
+    assert counts["held"] == 1 and counts["exit_submitted"] == 0
+    assert client.orders == []
 
 
 def _detail_of_last_eval(engine, idea_id):
