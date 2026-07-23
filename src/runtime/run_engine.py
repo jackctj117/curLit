@@ -333,9 +333,16 @@ def build_strategies(
                 )
             )
         elif "carry" in sid or "vol_filter" in sid:
+            carry_cfg = (
+                CarryVolFilterConfig(**scfg) if scfg else CarryVolFilterConfig()
+            )
+            # CL-885p: durable basket path for the live strategy (config
+            # default None keeps unit tests isolated).
+            if carry_cfg.state_path is None:
+                carry_cfg.state_path = "data/carry_vol_state.json"
             strategies.append(
                 CarryVolFilterStrategy(
-                    CarryVolFilterConfig(**scfg) if scfg else CarryVolFilterConfig(),
+                    carry_cfg,
                     data_provider=data_provider,
                     state_store=state_store,
                     snapshot_store=snapshot_store,

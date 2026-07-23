@@ -11,6 +11,8 @@ import asyncio
 from datetime import UTC, date, datetime
 from typing import Any
 
+import pytest
+
 from src.execution.broker import Account
 from src.risk.liquidity_window import LiquidityProfile
 from src.strategies.carry_vol_filter import (
@@ -442,3 +444,69 @@ class TestLiquidityGate:
         nonzero = [i for i in intents if i.target_position != 0]
         assert len(nonzero) == 6  # all retained legs still traded
         assert len(strat.current_positions) == 6
+
+
+# =============================================================================
+# CL-885p: durable basket persistence + quantity-based reconciler view
+# =============================================================================
+
+
+class TestStatePersistence:
+    def _pos(self, ccy: str, pair: str, qty: float) -> CarryPosition:
+        return CarryPosition(
+            currency=ccy, side=1 if qty > 0 else -1, weight=1 / 3,
+            entry_ts=datetime.now(UTC), reference_rate=0.04,
+            pair=pair, quantity=qty,
+        )
+
+    def test_open_positions_view_keyed_by_pair_with_quantity(self) -> None:
+        s = CarryVolFilterStrategy(CarryVolFilterConfig())
+        s.current_positions["GBP"] = self._pos("GBP", "GBPUSD", 5000.0)
+        op = s.open_positions
+        assert "GBPUSD" in op            # keyed by PAIR (reconciler dialect)
+        assert op["GBPUSD"].quantity == 5000.0
+
+    def test_zero_qty_or_no_pair_not_exposed(self) -> None:
+        s = CarryVolFilterStrategy(CarryVolFilterConfig())
+        s.current_positions["GBP"] = self._pos("GBP", "GBPUSD", 0.0)  # flat
+        s.current_positions["EUR"] = self._pos("EUR", "", 5000.0)     # no pair
+        assert s.open_positions == {}
+
+    def test_save_reload_roundtrip(self, tmp_path) -> None:
+        path = str(tmp_path / "carry.json")
+        s1 = CarryVolFilterStrategy(CarryVolFilterConfig(state_path=path))
+        s1.current_positions["GBP"] = self._pos("GBP", "GBPUSD", -5000.0)
+        s1._last_rebalance = date(2026, 3, 1)
+        s1._save_state()
+        s2 = CarryVolFilterStrategy(CarryVolFilterConfig(state_path=path))
+        assert "GBP" in s2.current_positions
+        assert s2.open_positions["GBPUSD"].quantity == -5000.0
+        assert s2._last_rebalance == date(2026, 3, 1)  # rebalance clock survives
+
+    def test_rebalance_persists_and_reloads_reconciler_view(self, tmp_path) -> None:
+        # A rebalance sets pair+quantity on each leg and saves; a fresh
+        # instance reloads a non-empty reconciler view (no cold-start flatten).
+        path = str(tmp_path / "carry.json")
+        s1 = CarryVolFilterStrategy(
+            CarryVolFilterConfig(top_k=3, bottom_k=3, state_path=path),
+            data_provider=_FakeDataProvider(rates=_RATES),
+        )
+        asyncio.run(s1.generate_intents(_DEFAULT_PRICES, _FakeBroker()))
+        assert len(s1.open_positions) == 6            # 6 basket legs, by pair
+        s2 = CarryVolFilterStrategy(
+            CarryVolFilterConfig(top_k=3, bottom_k=3, state_path=path),
+        )
+        assert len(s2.open_positions) == 6            # survived the restart
+
+    def test_corrupt_file_fails_loud(self, tmp_path) -> None:
+        import json
+        path = tmp_path / "carry.json"
+        path.write_text("{ not json")
+        with pytest.raises(json.JSONDecodeError):
+            CarryVolFilterStrategy(CarryVolFilterConfig(state_path=str(path)))
+
+    def test_no_path_is_in_memory_only(self, tmp_path) -> None:
+        s = CarryVolFilterStrategy(CarryVolFilterConfig(state_path=None))
+        s.current_positions["GBP"] = self._pos("GBP", "GBPUSD", 5000.0)
+        s._save_state()
+        assert not list(tmp_path.glob("*.json"))

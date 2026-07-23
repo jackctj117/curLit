@@ -97,6 +97,8 @@ class CarryVolFilterConfig:
     signal_interval_seconds: int = 86_400
 
     id: str = "carry_vol_filter"
+    # CL-885p: durable basket-book path (None keeps in-memory-only for tests).
+    state_path: str | None = None
 
 
 @dataclass
@@ -108,6 +110,12 @@ class CarryPosition:
     weight: float
     entry_ts: datetime
     reference_rate: float
+    # CL-885p: the concrete broker pair + last target quantity for this leg,
+    # set at rebalance/scale. CarryPosition is otherwise weight-based (qty is
+    # derived from equity), so these give the reconciler a symbol + .quantity
+    # view (via the open_positions property) and survive a restart.
+    pair: str = ""
+    quantity: float = 0.0
 
 
 class CarryVolFilterStrategy:
@@ -138,6 +146,82 @@ class CarryVolFilterStrategy:
         self.current_positions: dict[str, CarryPosition] = {}
         self._last_rebalance: date | None = None
         self._current_exposure: float = 1.0
+        # CL-885p: reload the basket BEFORE the cold-start reconcile runs.
+        self._state_path = self.config.state_path
+        self._load_state()
+
+    @property
+    def open_positions(self) -> dict[str, CarryPosition]:
+        """Reconciler-facing view (CL-885p): keyed by broker PAIR with a real
+        .quantity (current_positions is keyed by currency and is weight-based,
+        which the reconciler can't read). Only legs with a live pair + non-zero
+        qty are exposed so a restart's carry legs classify as MATCHED instead
+        of being flattened as orphans."""
+        return {
+            p.pair: p
+            for p in self.current_positions.values()
+            if p.pair and abs(p.quantity) > 1e-9
+        }
+
+    def _load_state(self) -> None:
+        """Restore the basket from the durable state file (CL-885p). Corrupt
+        file raises (fail loud); missing file is the normal cold start."""
+        if not self._state_path:
+            return
+        import json  # noqa: PLC0415
+        import os  # noqa: PLC0415
+        if not os.path.exists(self._state_path):
+            return
+        with open(self._state_path) as fh:
+            payload = json.load(fh)
+        for ccy, d in (payload.get("current_positions") or {}).items():
+            self.current_positions[ccy] = CarryPosition(
+                currency=str(d["currency"]),
+                side=int(d["side"]),
+                weight=float(d["weight"]),
+                entry_ts=datetime.fromisoformat(d["entry_ts"]),
+                reference_rate=float(d["reference_rate"]),
+                pair=str(d.get("pair", "")),
+                quantity=float(d.get("quantity", 0.0)),
+            )
+        lr = payload.get("last_rebalance")
+        if lr:
+            self._last_rebalance = date.fromisoformat(lr)
+
+    def _save_state(self) -> None:
+        """Atomically persist the basket (CL-885p, tmp+os.replace). Best-effort."""
+        if not self._state_path:
+            return
+        import json  # noqa: PLC0415
+        import os  # noqa: PLC0415
+        import tempfile  # noqa: PLC0415
+        try:
+            payload = {
+                "current_positions": {
+                    ccy: {
+                        "currency": p.currency,
+                        "side": p.side,
+                        "weight": p.weight,
+                        "entry_ts": p.entry_ts.isoformat(),
+                        "reference_rate": p.reference_rate,
+                        "pair": p.pair,
+                        "quantity": p.quantity,
+                    }
+                    for ccy, p in self.current_positions.items()
+                },
+                "last_rebalance": (
+                    self._last_rebalance.isoformat()
+                    if self._last_rebalance else None
+                ),
+            }
+            directory = os.path.dirname(os.path.abspath(self._state_path))
+            os.makedirs(directory, exist_ok=True)
+            fd, tmp = tempfile.mkstemp(dir=directory, suffix=".tmp")
+            with os.fdopen(fd, "w") as fh:
+                json.dump(payload, fh)
+            os.replace(tmp, self._state_path)
+        except Exception:
+            logger.warning("%s: state save failed", self.id, exc_info=True)
 
     def _emit_snapshot(self, values: dict[str, Any]) -> dict[str, Any]:
         """Build, persist, and return a snapshot-reference payload (or {})."""
@@ -447,6 +531,11 @@ class CarryVolFilterStrategy:
                         target_qty = liq_qty
             else:
                 target_qty = 0.0
+            if ccy in new_positions:
+                # CL-885p: record the concrete pair + target qty so the
+                # reconciler-facing open_positions view has a symbol + quantity.
+                new_positions[ccy].pair = pair
+                new_positions[ccy].quantity = target_qty
             intents.append(
                 OrderIntent(
                     strategy_id=self.id,
@@ -464,6 +553,7 @@ class CarryVolFilterStrategy:
         self.current_positions = new_positions
         self._current_exposure = new_exposure
         self._last_rebalance = now.date()
+        self._save_state()  # after last_rebalance is set, so the reload is fresh
         self._record_rebalance(now, rates, baskets, vol_z, new_exposure)
         self._tag_intents(
             intents, vol_z, new_exposure, trigger="rebalance",
@@ -576,6 +666,7 @@ class CarryVolFilterStrategy:
                 ),
             )
         self.current_positions.clear()
+        self._save_state()  # CL-885p: persist the now-flat book
         return intents
 
     def _record_rebalance(
