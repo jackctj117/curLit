@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from datetime import date, datetime
 from pathlib import Path
 
 import yaml
@@ -48,10 +49,37 @@ class Playbook:
     description: str
     watch_terms: tuple[str, ...]
     instruments: tuple[PlaybookInstrument, ...]
+    #: When the operator last reviewed/curated this theme's FACTS (mine
+    #: ownership, territorial control, supply routes). Feeds the stale-fact
+    #: confidence ceiling (CL-ylak): once older than the configured window,
+    #: the confluence layer caps an event's confidence so aging facts can't
+    #: clear Gate A on conviction alone. None = undated → never capped.
+    last_reviewed: date | None = None
 
     @property
     def tradable_instruments(self) -> tuple[PlaybookInstrument, ...]:
         return tuple(i for i in self.instruments if i.kind in TRADABLE_KINDS)
+
+
+def _parse_review_date(theme: str, raw: object) -> date | None:
+    """Parse an optional ``last_reviewed`` value. YAML already yields a
+    ``date`` for an unquoted ``2026-07-20``; strings (quoted / other loaders)
+    are parsed as ISO. Fail-LOUD on a malformed value — a review date the
+    loader silently drops would make the staleness ceiling a no-op."""
+    if raw is None or raw == "":
+        return None
+    if isinstance(raw, datetime):
+        return raw.date()
+    if isinstance(raw, date):
+        return raw
+    if isinstance(raw, str):
+        try:
+            return date.fromisoformat(raw.strip())
+        except ValueError as exc:
+            msg = f"playbook {theme!r}: last_reviewed {raw!r} is not ISO YYYY-MM-DD"
+            raise ValueError(msg) from exc
+    msg = f"playbook {theme!r}: last_reviewed must be a date, got {type(raw).__name__}"
+    raise ValueError(msg)
 
 
 def _validate_instrument(theme: str, entry: dict[str, object]) -> PlaybookInstrument:
@@ -126,6 +154,7 @@ def load_playbooks(
             description=str(body.get("description", "")).strip(),
             watch_terms=watch_terms,
             instruments=instruments,
+            last_reviewed=_parse_review_date(key, body.get("last_reviewed")),
         )
     return playbooks
 

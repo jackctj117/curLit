@@ -33,10 +33,12 @@ import json
 import logging
 import math
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import text
+
+from src.events.playbooks import Playbook
 
 logger = logging.getLogger(__name__)
 
@@ -114,6 +116,17 @@ class ConfluenceConfig:
     # price as "now", and requires a real quote near seen_at. Beyond it, the
     # daily close is used (pre-CL-dz71 behavior).
     intraday_max_staleness_minutes: int = 15
+    # ---- Stale-fact confidence ceiling (CL-ylak) --------------------
+    # Playbook facts (mine ownership, territorial control, supply routes) go
+    # stale — the YAML carries a per-theme `last_reviewed` date. When the
+    # matched theme's facts are older than this many days, the LLM's
+    # self-assessed confidence is CAPPED at stale_confidence_ceiling BEFORE
+    # Gate A, so an aging playbook can no longer clear min_confidence on
+    # conviction alone (it drops to advisory and rides out to EXPIRED). A
+    # theme with NO last_reviewed date is NOT capped (dormant until dated);
+    # stale_review_days <= 0 disables the ceiling entirely.
+    stale_review_days: int = 90
+    stale_confidence_ceiling: float = 0.58
 
 
 @dataclass
@@ -186,6 +199,9 @@ class ConfluenceResult:
     #: layer isn't configured / the event didn't reach confirmation. This
     #: is a DISPLAY annotation, not a gate: it never changes ``outcome``.
     cross_asset: Any = None
+    #: True when the stale-fact ceiling (CL-ylak) capped ``confidence``
+    #: because the matched theme's playbook facts are past stale_review_days.
+    stale_capped: bool = False
 
 
 class EventConfluence:
@@ -205,6 +221,7 @@ class EventConfluence:
         db_engine: Any = None,
         instrument_map: dict[str, str] | None = None,
         cross_asset_config: Any = None,
+        playbooks: dict[str, Playbook] | None = None,
     ) -> None:
         self.config = config or ConfluenceConfig()
         self.data = data_provider
@@ -214,6 +231,15 @@ class EventConfluence:
         #: :class:`src.events.cross_asset.CrossAssetConfig`. Optional —
         #: when None the cross-asset annotation is simply not computed.
         self.cross_asset_config = cross_asset_config
+        #: theme key → last_reviewed date, for the stale-fact confidence
+        #: ceiling (CL-ylak). Themes with no date are absent from the map
+        #: (never capped). Empty when no playbooks were injected → ceiling
+        #: dormant (pre-CL-ylak behavior).
+        self._theme_last_reviewed: dict[str, date] = {
+            key: pb.last_reviewed
+            for key, pb in (playbooks or {}).items()
+            if pb.last_reviewed is not None
+        }
 
     # ------------------------------------------------------------------
     # Assessment parsing
@@ -236,6 +262,39 @@ class EventConfluence:
     # ------------------------------------------------------------------
     # Evaluation
     # ------------------------------------------------------------------
+
+    def _apply_stale_ceiling(
+        self,
+        result: ConfluenceResult,
+        theme: Any,
+        now: datetime,
+    ) -> None:
+        """Cap ``result.confidence`` when the matched theme's playbook facts
+        are past ``stale_review_days`` (CL-ylak). No-op when the ceiling is
+        disabled (<=0 days), the theme is empty/undated, or the confidence is
+        already at/under the ceiling — so a fresh or already-hedged
+        assessment is never touched."""
+        days = self.config.stale_review_days
+        if days <= 0 or not theme:
+            return
+        last_reviewed = self._theme_last_reviewed.get(str(theme))
+        if last_reviewed is None:
+            return
+        age_days = (now.date() - last_reviewed).days
+        ceiling = self.config.stale_confidence_ceiling
+        if age_days > days and result.confidence > ceiling:
+            logger.info(
+                "stale-fact ceiling: theme %s last reviewed %s (%dd > %dd) — "
+                "confidence %.2f capped to %.2f",
+                theme,
+                last_reviewed,
+                age_days,
+                days,
+                result.confidence,
+                ceiling,
+            )
+            result.confidence = ceiling
+            result.stale_capped = True
 
     def evaluate_and_transition(
         self,
@@ -298,6 +357,13 @@ class EventConfluence:
                 event_id,
             )
             return result
+
+        # Stale-fact confidence ceiling (CL-ylak): a matched theme whose
+        # playbook facts were last reviewed more than stale_review_days ago
+        # has its confidence capped BEFORE Gate A — aging ownership/control
+        # facts can't clear min_confidence on the LLM's conviction alone, so
+        # the event degrades to advisory and rides out to EXPIRED.
+        self._apply_stale_ceiling(result, event.get("theme"), now)
 
         # Gate A — quality. Failures stay pending and ride out the
         # window to EXPIRED (not DISMISSED) so big-but-unconfirmable

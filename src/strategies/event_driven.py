@@ -139,6 +139,21 @@ class EventDrivenStrategy:
         )
         # Cross-asset corroboration config (CL-6mzn) — best-effort load.
         cross_asset_config = self._load_cross_asset_config()
+        # Event playbooks — loaded ONCE, fail-SOFT: an unloadable/absent
+        # config leaves an EMPTY map, which makes both consumers INERT rather
+        # than break engine boot — theme-primary scoping (CL-9nvq) below, and
+        # the confluence stale-fact confidence ceiling (CL-ylak, which reads
+        # each theme's `last_reviewed` date passed in here).
+        self._playbooks: dict[str, Playbook] = {}
+        try:
+            self._playbooks = load_playbooks(self.config.event_playbooks_path)
+        except Exception:
+            logger.warning(
+                "event playbooks unloadable at %s — theme-primary scoping and "
+                "the stale-fact confidence ceiling are INERT",
+                self.config.event_playbooks_path,
+                exc_info=True,
+            )
         self.confluence = EventConfluence(
             config=ConfluenceConfig(
                 min_urgency=self.config.min_urgency,
@@ -151,11 +166,14 @@ class EventDrivenStrategy:
                 vol_spike_check_enabled=self.config.vol_spike_check_enabled,
                 vol_spike_window=self.config.vol_spike_window,
                 vol_spike_ratio=self.config.vol_spike_ratio,
+                stale_review_days=self.config.stale_review_days,
+                stale_confidence_ceiling=self.config.stale_confidence_ceiling,
             ),
             data_provider=data_provider,
             db_engine=db_engine,
             instrument_map=self.config.instrument_map,
             cross_asset_config=cross_asset_config,
+            playbooks=self._playbooks,
         )
         # Per-event position-book state (CL-e6lx extraction) — loads any
         # persisted legs/P&L immediately, so open positions survive an
@@ -168,23 +186,13 @@ class EventDrivenStrategy:
             max_holding_hours=self.config.event_max_holding_hours,
             reconcile_grace_sec=self.config.position_reconcile_grace_sec,
         )
-        # Theme-primary scoping (CL-9nvq): the matched-theme → tradable
-        # instrument-name sets, so a CONFIRMED event can only open machine
-        # legs on instruments its OWN theme playbook lists. Fail-SOFT — an
-        # unloadable/absent config leaves scoping inert (every leg passes,
-        # i.e. the pre-CL-9nvq behavior); engine boot must never break.
-        self._theme_primary: dict[str, frozenset[str]] = {}
-        if self.config.theme_primary_only:
-            try:
-                playbooks = load_playbooks(self.config.event_playbooks_path)
-                self._theme_primary = _build_theme_primary(playbooks)
-            except Exception:
-                logger.warning(
-                    "event playbooks unloadable at %s — theme-primary scoping "
-                    "INERT (machine legs fall back to un-scoped affected list)",
-                    self.config.event_playbooks_path,
-                    exc_info=True,
-                )
+        # Theme-primary scoping (CL-9nvq): matched-theme → tradable
+        # instrument-name sets, derived from the playbooks loaded above. When
+        # scoping is off (or playbooks failed to load) this is empty, so
+        # _theme_primary_instruments returns None → scoping inert (fail-open).
+        self._theme_primary: dict[str, frozenset[str]] = (
+            _build_theme_primary(self._playbooks) if self.config.theme_primary_only else {}
+        )
         # geo_events missing (producer migration not applied) is logged
         # ONCE, not every poll — engine boot must never break or spam.
         self._table_missing_logged = False

@@ -335,3 +335,33 @@ class TestValidation:
         pbs = load_playbooks(p)
         kinds = {i.kind for i in pbs["t"].instruments}
         assert kinds == {"fx", "polymarket"}
+
+    # ---- last_reviewed (CL-ylak) -------------------------------------
+
+    def test_last_reviewed_parses_yaml_date(self, tmp_path: Path) -> None:
+        from datetime import date
+
+        p = self._write(tmp_path, {"themes": {"t": self._theme(last_reviewed=date(2026, 7, 20))}})
+        assert load_playbooks(p)["t"].last_reviewed == date(2026, 7, 20)
+
+    def test_last_reviewed_parses_iso_string(self, tmp_path: Path) -> None:
+        from datetime import date
+
+        p = self._write(tmp_path, {"themes": {"t": self._theme(last_reviewed="2026-07-20")}})
+        assert load_playbooks(p)["t"].last_reviewed == date(2026, 7, 20)
+
+    def test_last_reviewed_absent_is_none(self, tmp_path: Path) -> None:
+        p = self._write(tmp_path, {"themes": {"t": self._theme()}})
+        assert load_playbooks(p)["t"].last_reviewed is None
+
+    def test_last_reviewed_malformed_raises(self, tmp_path: Path) -> None:
+        p = self._write(tmp_path, {"themes": {"t": self._theme(last_reviewed="not-a-date")}})
+        with pytest.raises(ValueError, match="last_reviewed"):
+            load_playbooks(p)
+
+    def test_real_yaml_dates_every_theme(self) -> None:
+        # The shipped config MUST date every theme, or the stale-fact ceiling
+        # silently no-ops for the undated ones.
+        pbs = load_playbooks("configs/event_playbooks.yaml")
+        undated = [k for k, v in pbs.items() if v.last_reviewed is None]
+        assert undated == []

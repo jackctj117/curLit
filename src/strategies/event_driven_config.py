@@ -68,6 +68,13 @@ class EventDrivenConfig:
     vol_spike_check_enabled: bool = False
     vol_spike_window: int = 5
     vol_spike_ratio: float = 1.5
+    # Stale-fact confidence ceiling (CL-ylak; mirrors ConfluenceConfig).
+    # A CONFIRMED-candidate whose theme's playbook facts were last reviewed
+    # more than stale_review_days ago has its LLM confidence capped at
+    # stale_confidence_ceiling before Gate A — aging ownership/control facts
+    # can't clear min_confidence on conviction alone. 0 days disables.
+    stale_review_days: int = 90
+    stale_confidence_ceiling: float = 0.58
     # ---- Trading -----------------------------------------------------
     # Risk per event trade as a fraction of equity. 0.005 = 50bps —
     # deliberately half the CB-sentiment risk; event assessments are the
