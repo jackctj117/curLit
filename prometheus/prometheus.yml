@@ -38,8 +38,3 @@ scrape_configs:
         labels:
           service: ingestion
 
-  - job_name: "fx_risk_monitor"
-    static_configs:
-      - targets: ["host.docker.internal:8002"]
-        labels:
-          service: risk_monitor
