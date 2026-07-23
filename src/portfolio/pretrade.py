@@ -45,7 +45,13 @@ from enum import Enum
 from typing import Any, Protocol, runtime_checkable
 
 from src.data.economic_calendar import BlackoutAction, BlackoutEvaluator
-from src.execution.broker import Broker, Position, currency_pair
+from src.execution.broker import (
+    Account,
+    Broker,
+    Position,
+    canonical_symbol,
+    currency_pair,
+)
 from src.execution.oms import OrderIntent
 from src.monitoring.metrics import pretrade_rejections
 from src.portfolio.coordinator import PortfolioConstraints
@@ -143,11 +149,24 @@ class PreTradeValidator:
         self,
         intent: OrderIntent,
         current_positions: list[Position] | None = None,
+        price_map: dict[str, float] | None = None,
+        account: Account | None = None,
     ) -> RejectionEvent | None:
         """Validate one intent. Returns RejectionEvent if rejected, else None.
 
         current_positions: optional pre-fetched positions (avoids re-fetching
         when validating a batch). If None, queries broker.
+
+        price_map / account (CL-qsue): optional shared {canonical_symbol: mid}
+        map + Account snapshot built once per tick by the coordinator. When
+        supplied, every price / equity / margin read below resolves from them
+        instead of re-hitting the broker per position×intent — collapsing an
+        O(positions) HTTP storm into this tick's single pricing/account pass.
+        When None, the validator fetches live exactly as before (correct for
+        standalone callers). Fail-closed is unchanged: a price the map cannot
+        supply falls back to the 1.0-fallback _get_price only when no map was
+        passed; with a map, a miss is looked up live so a single stale symbol
+        can never silently corrupt the whole batch's leverage math.
         """
         # Cheapest checks first — fail fast.
         rejection = self._check_instrument_supported(intent)
@@ -165,7 +184,7 @@ class PreTradeValidator:
         if rejection is not None:
             return self._record(rejection)
 
-        price = self._get_price(intent.symbol)
+        price = self._price(intent.symbol, price_map)
         new_pair_qty = intent.target_position
         existing_pair_qty = (
             position_map[intent.symbol].quantity
@@ -178,12 +197,17 @@ class PreTradeValidator:
         if abs(delta_qty) < 1e-9:
             return None
 
-        rejection = self._check_per_pair_concentration(intent, new_pair_qty, price)
+        account_equity = self._equity(account)
+
+        rejection = self._check_per_pair_concentration(
+            intent, new_pair_qty, price, account_equity,
+        )
         if rejection is not None:
             return self._record(rejection)
 
-        account_equity = self._broker_equity()
-        rejection = self._check_margin(intent, delta_qty, price, account_equity)
+        rejection = self._check_margin(
+            intent, delta_qty, price, account_equity, account,
+        )
         if rejection is not None:
             return self._record(rejection)
 
@@ -193,13 +217,13 @@ class PreTradeValidator:
         # caller should pass an updated current_positions reflecting prior
         # accepted intents.
         rejection = self._check_post_trade_leverage(
-            intent, position_map, new_pair_qty, price, account_equity,
+            intent, position_map, new_pair_qty, price, account_equity, price_map,
         )
         if rejection is not None:
             return self._record(rejection)
 
         rejection = self._check_currency_exposure(
-            intent, position_map, new_pair_qty, account_equity,
+            intent, position_map, new_pair_qty, account_equity, price_map,
         )
         if rejection is not None:
             return self._record(rejection)
@@ -300,8 +324,10 @@ class PreTradeValidator:
         intent: OrderIntent,
         new_pair_qty: float,
         price: float,
+        equity: float,
     ) -> RejectionEvent | None:
-        equity = self._broker_equity()
+        # equity is the tick's shared snapshot value (CL-qsue) — one fetch
+        # reused across all per-symbol checks instead of a fresh get_account.
         max_pair_notional = equity * self.constraints.max_notional_per_pair_pct
         post_pair_notional = abs(new_pair_qty) * price
         if post_pair_notional > max_pair_notional + 1e-6:
@@ -321,8 +347,14 @@ class PreTradeValidator:
         delta_qty: float,
         price: float,
         equity: float,
+        account: Account | None = None,
     ) -> RejectionEvent | None:
-        account = self.broker.get_account()
+        # Reuse the tick's shared Account snapshot (CL-qsue) when supplied;
+        # otherwise fetch live (standalone callers). margin_available /
+        # margin_used come from the same snapshot the equity check used, so
+        # the margin decision stays internally consistent within the tick.
+        if account is None:
+            account = self.broker.get_account()
         # Required margin for the *additional* exposure (delta only).
         delta_notional = abs(delta_qty) * price
         required = delta_notional * self.margin_requirement_pct
@@ -351,11 +383,14 @@ class PreTradeValidator:
         new_pair_qty: float,
         price: float,
         equity: float,
+        price_map: dict[str, float] | None = None,
     ) -> RejectionEvent | None:
-        # Build post-trade notional map across all symbols.
+        # Build post-trade notional map across all symbols. Held-position
+        # prices resolve from the shared snapshot (CL-qsue) when supplied —
+        # this loop was the O(positions) re-pricing hot path per intent.
         post_notional_signed: dict[str, float] = {}
         for sym, pos in position_map.items():
-            sym_price = self._get_price(sym)
+            sym_price = self._price(sym, price_map)
             post_notional_signed[sym] = pos.quantity * sym_price
         post_notional_signed[intent.symbol] = new_pair_qty * price
 
@@ -391,15 +426,18 @@ class PreTradeValidator:
         position_map: dict[str, Position],
         new_pair_qty: float,
         equity: float,
+        price_map: dict[str, float] | None = None,
     ) -> RejectionEvent | None:
-        # Aggregate post-trade per-currency exposure.
+        # Aggregate post-trade per-currency exposure. Prices resolve from the
+        # shared snapshot (CL-qsue) when supplied — the second O(positions)
+        # re-pricing loop per intent.
         exposures: dict[str, float] = defaultdict(float)
         for sym, pos in position_map.items():
             pair = currency_pair(sym)  # CL-rybp: dialect-safe, skips non-FX
             if pair is None:
                 continue
             base, quote = pair
-            sym_price = self._get_price(sym)
+            sym_price = self._price(sym, price_map)
             notional = pos.quantity * sym_price
             exposures[base] += notional
             exposures[quote] -= notional
@@ -408,11 +446,12 @@ class PreTradeValidator:
         if intent_pair is not None:
             base, quote = intent_pair
             old_notional = (
-                position_map[intent.symbol].quantity * self._get_price(intent.symbol)
+                position_map[intent.symbol].quantity
+                * self._price(intent.symbol, price_map)
                 if intent.symbol in position_map
                 else 0.0
             )
-            new_notional = new_pair_qty * self._get_price(intent.symbol)
+            new_notional = new_pair_qty * self._price(intent.symbol, price_map)
             delta = new_notional - old_notional
             exposures[base] += delta
             exposures[quote] -= delta
@@ -461,6 +500,34 @@ class PreTradeValidator:
         except Exception:
             logger.exception("Could not fetch price for %s; using 1.0 fallback", symbol)
             return 1.0
+
+    def _price(
+        self, symbol: str, price_map: dict[str, float] | None,
+    ) -> float:
+        """Mid for ``symbol`` from the shared snapshot, else a live fetch.
+
+        CL-qsue: consult the coordinator's per-tick {canonical_symbol: mid}
+        map first (keyed canonically, so either dialect hits). A map MISS
+        means the coordinator could not price this symbol this tick — rather
+        than trust the 1.0 fabricated fallback for a whole-batch leverage sum,
+        fall back to a live _get_price for just that one symbol (its own
+        1.0-fallback-on-failure policy is unchanged). When no map is passed
+        (standalone caller), behavior is byte-identical to the old
+        _get_price(symbol) call.
+        """
+        if price_map is not None:
+            mid = price_map.get(canonical_symbol(symbol))
+            if mid is not None:
+                return mid
+        return self._get_price(symbol)
+
+    def _equity(self, account: Account | None) -> float:
+        """Equity from the shared Account snapshot (CL-qsue) or a live fetch."""
+        if account is None:
+            account = self.broker.get_account()
+        equity = account.equity
+        assert equity > 0, f"non-positive equity {equity}"
+        return equity
 
     def _broker_equity(self) -> float:
         equity = self.broker.get_account().equity

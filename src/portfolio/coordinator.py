@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -37,7 +38,7 @@ import numpy as np
 import pandas as pd
 
 from src.data.economic_calendar import BlackoutAction, BlackoutEvaluator
-from src.execution.broker import Broker, canonical_symbol, currency_pair
+from src.execution.broker import Account, Broker, canonical_symbol, currency_pair
 from src.execution.oms import OrderIntent, OrderManager, Urgency
 from src.monitoring.logging_setup import LogContext
 from src.monitoring.metrics import blackout_size_down
@@ -238,6 +239,23 @@ class PortfolioConstraints:
         )
 
 
+@dataclass
+class _SharedSnapshot:
+    """One tick's shared broker read (CL-qsue).
+
+    price_map: {canonical_symbol: mid} for every symbol we could price this
+               tick — aggregated intent symbols AND currently-held position
+               symbols (the validator's post-trade leverage / currency loops
+               need held-position prices). A symbol that FAILED to price is
+               absent (fail-closed: callers drop it), never a fabricated 1.0.
+    account:   single Account snapshot reused across every constraint /
+               validator equity+margin read this tick.
+    """
+
+    price_map: dict[str, float]
+    account: Account | None
+
+
 # =============================================================================
 # PortfolioCoordinator
 # =============================================================================
@@ -374,30 +392,52 @@ class PortfolioCoordinator:
         are logged via the validator and do NOT appear in the returned dict.
         """
         async with self._intent_lock:
+            t_start = time.monotonic()
             if not self._targets_seeded:
                 self._seed_targets_from_books()
                 self._targets_seeded = True
             scaled = self._scale_intents(raw_intents)
             aggregated = self._aggregate_by_symbol(scaled)
-            # Blocking broker I/O (get_account + get_price per symbol) runs
-            # off-loop (CL-xdnh): with the httpx-based OANDA broker these are
-            # synchronous HTTP round-trips that froze the event loop — and
-            # with it the price stream, health ticks, and kill switches —
-            # for the duration of each call.
+
+            # Shared snapshot (CL-qsue): fetch each symbol's mid ONCE and one
+            # Account per tick, then thread them through constraints AND the
+            # pre-trade validator. Previously constraints called _get_price
+            # 3-4× per symbol (unpriceable pre-pass, gross, per-pair,
+            # per-currency) and the validator re-fetched prices+account per
+            # position×intent — an O(P)+ storm of OANDA round-trips per tick.
+            # current_positions is fetched here too so held-position symbols
+            # (needed by the validator's post-trade leverage / currency loops)
+            # are in the map. All of this is blocking broker HTTP, so it runs
+            # off-loop (CL-xdnh) alongside the constraint pass.
+            #
+            # Fail-closed is preserved: _build_price_map records only symbols
+            # that actually priced; a symbol missing from the map is still
+            # dropped by _apply_portfolio_constraints' unpriceable pre-pass and
+            # never reaches the OMS.
+            current_positions: list[Any] | None = None
+            if self.pre_trade_validator is not None:
+                current_positions = await asyncio.to_thread(
+                    self.broker.get_positions,
+                )
+
+            snapshot = await asyncio.to_thread(
+                self._build_shared_snapshot, aggregated, current_positions,
+            )
+            price_map = snapshot.price_map
+            account = snapshot.account
+
+            # Blocking broker I/O runs off-loop (CL-xdnh). The constraint pass
+            # now consults the pre-built price_map / account snapshot instead
+            # of re-hitting the broker per check (CL-qsue).
             feasible = await asyncio.to_thread(
                 self._apply_portfolio_constraints, aggregated,
+                price_map, account,
             )
 
             ts = datetime.now(UTC)
             # Pre-trade rejections drop the offending intent from `feasible` so
             # the returned dict reflects what actually went to OMS.
             accepted: dict[str, dict[str, Any]] = {}
-            current_positions: list[Any] | None = None
-            if self.pre_trade_validator is not None:
-                # Single broker query reused across all per-symbol checks.
-                current_positions = await asyncio.to_thread(
-                    self.broker.get_positions,
-                )
 
             for symbol, info in feasible.items():
                 # Aggregation keys are canonical; ROUTE with the original
@@ -421,10 +461,18 @@ class PortfolioCoordinator:
 
                     if self.pre_trade_validator is not None:
                         # validate() hits the broker for prices/account —
-                        # blocking HTTP, keep it off the loop (CL-xdnh).
+                        # blocking HTTP, keep it off the loop (CL-xdnh). Pass
+                        # the shared price_map + account snapshot (CL-qsue) so
+                        # it reuses this tick's single pricing/account pass
+                        # instead of re-fetching per position×intent; a symbol
+                        # absent from price_map still fails closed inside the
+                        # validator (fabricated-price policy unchanged).
                         rejection = await asyncio.to_thread(
                             self.pre_trade_validator.validate,
-                            final, current_positions=current_positions,
+                            final,
+                            current_positions=current_positions,
+                            price_map=price_map,
+                            account=account,
                         )
                         if rejection is not None:
                             # Validator already logged + recorded metric.
@@ -482,7 +530,71 @@ class PortfolioCoordinator:
                 if not self._strategy_targets[sid]:
                     del self._strategy_targets[sid]
 
+            # Intent-path timing (CL-3lga): total wall-ms plus the count of
+            # pricing/account broker round-trips this tick, so the CL-qsue
+            # snapshot win is measurable in the logs. price_fetches counts
+            # symbols we attempted to price (one get_price pass); account_fetch
+            # is 1 when a snapshot was taken. Complements per-symbol Submitting
+            # lines with a single per-tick summary.
+            elapsed_ms = (time.monotonic() - t_start) * 1000.0
+            price_fetches = len(price_map)
+            account_fetches = 1 if account is not None else 0
+            logger.info(
+                "process_intents: %.1fms symbols_in=%d submitted=%d "
+                "price_fetches=%d account_fetches=%d",
+                elapsed_ms,
+                len(aggregated),
+                len(accepted),
+                price_fetches,
+                account_fetches,
+            )
+
             return accepted
+
+    def _build_shared_snapshot(
+        self,
+        aggregated: dict[str, dict[str, Any]],
+        current_positions: list[Any] | None,
+    ) -> _SharedSnapshot:
+        """Fetch each symbol's mid ONCE + one Account per tick (CL-qsue).
+
+        Builds a {canonical_symbol: mid} price map covering both the
+        aggregated intent symbols (keyed by their canonical form so both
+        constraints and the validator hit on either dialect) and every
+        currently-held position symbol — the validator's post-trade leverage
+        and per-currency loops re-price every held symbol, so they must be in
+        the map to avoid falling back to per-call broker HTTP.
+
+        Fail-closed policy is preserved (CL-e8ze): _get_price already tries
+        both dialects and returns None when a symbol cannot be priced; those
+        symbols are simply omitted from the map, and the constraint pass'
+        unpriceable pre-pass drops any intent whose symbol is missing. No
+        fabricated 1.0 is ever inserted. Runs entirely on a worker thread
+        (called via to_thread) so the event loop never blocks on broker HTTP.
+        """
+        price_map: dict[str, float] = {}
+
+        def _record(route_symbol: str) -> None:
+            canon = canonical_symbol(route_symbol)
+            if canon in price_map:
+                return
+            mid = self._get_price(route_symbol)
+            if mid is not None:
+                price_map[canon] = mid
+
+        for symbol, agg in aggregated.items():
+            _record(str(agg.get("symbol") or symbol))
+        if current_positions is not None:
+            for pos in current_positions:
+                _record(str(pos.symbol))
+
+        account: Account | None = None
+        if aggregated or current_positions is not None:
+            # Only touch the account endpoint when there is work: an empty
+            # batch with no held positions has nothing to validate.
+            account = self.broker.get_account()
+
+        return _SharedSnapshot(price_map=price_map, account=account)
 
     def _apply_blackout_size_down(
         self, symbol: str, target_position: float,
@@ -679,6 +791,8 @@ class PortfolioCoordinator:
     def _apply_portfolio_constraints(
         self,
         aggregated: dict[str, dict[str, Any]],
+        price_map: dict[str, float] | None = None,
+        account: Account | None = None,
     ) -> dict[str, dict[str, Any]]:
         """Apply gross leverage cap, per-pair cap; warn on per-currency exceedance.
 
@@ -688,6 +802,15 @@ class PortfolioCoordinator:
 
         Per-currency exposure is warn-only here; the pre-trade gate (CL-srsy)
         will reject orders that would breach per-currency caps once implemented.
+
+        price_map / account (CL-qsue): pre-built {canonical_symbol: mid} +
+        Account snapshot for THIS tick. When supplied, every price/equity read
+        below resolves from them instead of re-hitting the broker per check —
+        one pricing pass + one account fetch per batch instead of ~4 per
+        symbol. When None (standalone callers), falls back to live per-call
+        fetches — behavior-identical to before CL-qsue. A symbol MISSING from
+        a supplied price_map is treated exactly as before: unpriceable → its
+        intent is dropped (fail closed), never fabricated.
         """
         if not aggregated:
             return aggregated
@@ -705,7 +828,8 @@ class PortfolioCoordinator:
         unpriceable = [
             symbol for symbol, agg in aggregated.items()
             if agg.get("target_position")
-            and self._get_price(str(agg.get("symbol") or symbol)) is None
+            and self._resolve_price(str(agg.get("symbol") or symbol), price_map)
+            is None
         ]
         for symbol in unpriceable:
             logger.error(
@@ -718,7 +842,8 @@ class PortfolioCoordinator:
         if not aggregated:
             return aggregated
 
-        account = self.broker.get_account()
+        if account is None:
+            account = self.broker.get_account()
         equity = account.equity
         assert equity > 0, (
             f"broker reported non-positive equity {equity}; cannot compute leverage"
@@ -727,7 +852,7 @@ class PortfolioCoordinator:
         # 1) Gross leverage cap.
         gross_notional = sum(
             abs(a["target_position"])
-            * (self._get_price(str(a.get("symbol") or sym)) or 0.0)
+            * (self._resolve_price(str(a.get("symbol") or sym), price_map) or 0.0)
             for sym, a in aggregated.items()
         )
         gross_leverage = gross_notional / equity
@@ -744,7 +869,9 @@ class PortfolioCoordinator:
         # 2) Per-pair cap.
         max_pair_notional = equity * self.constraints.max_notional_per_pair_pct
         for symbol, agg in aggregated.items():
-            price = self._get_price(str(agg.get("symbol") or symbol)) or 0.0
+            price = self._resolve_price(
+                str(agg.get("symbol") or symbol), price_map,
+            ) or 0.0
             notional = abs(agg["target_position"]) * price
             if notional > max_pair_notional:
                 scale = max_pair_notional / notional
@@ -758,7 +885,7 @@ class PortfolioCoordinator:
                 self._rescale_symbol(agg, scale)
 
         # 3) Per-currency exposure (warn-only).
-        currency_exposure = self._compute_currency_exposure(aggregated)
+        currency_exposure = self._compute_currency_exposure(aggregated, price_map)
         max_ccy_exposure = equity * self.constraints.max_directional_exposure_per_currency
         for ccy, exposure in currency_exposure.items():
             if abs(exposure) > max_ccy_exposure:
@@ -785,8 +912,14 @@ class PortfolioCoordinator:
     def _compute_currency_exposure(
         self,
         aggregated: dict[str, dict[str, Any]],
+        price_map: dict[str, float] | None = None,
     ) -> dict[str, float]:
-        """Sum notional exposure per currency. EUR/USD long → +EUR, -USD."""
+        """Sum notional exposure per currency. EUR/USD long → +EUR, -USD.
+
+        price_map (CL-qsue): when supplied, prices resolve from the shared
+        snapshot; otherwise fall back to a live per-symbol fetch (unchanged
+        behavior for standalone callers).
+        """
         exposures: dict[str, float] = defaultdict(float)
         for symbol, agg in aggregated.items():
             pair = currency_pair(symbol)
@@ -799,11 +932,29 @@ class PortfolioCoordinator:
                 continue
             base, quote = pair
             notional = agg["target_position"] * (
-                self._get_price(str(agg.get("symbol") or symbol)) or 0.0
+                self._resolve_price(str(agg.get("symbol") or symbol), price_map)
+                or 0.0
             )
             exposures[base] += notional
             exposures[quote] -= notional
         return dict(exposures)
+
+    def _resolve_price(
+        self, symbol: str, price_map: dict[str, float] | None,
+    ) -> float | None:
+        """Price for ``symbol`` from the shared snapshot, else a live fetch.
+
+        Consults the pre-built {canonical_symbol: mid} map (CL-qsue) keyed on
+        canonical form so either dialect resolves. A price_map miss means the
+        builder could not price the symbol this tick — that is authoritative
+        (fail closed: return None, do NOT silently re-fetch a symbol the map
+        already tried and failed). Only when price_map is None (standalone
+        callers that never built a snapshot) do we fetch live, preserving the
+        exact pre-CL-qsue behavior.
+        """
+        if price_map is None:
+            return self._get_price(symbol)
+        return price_map.get(canonical_symbol(symbol))
 
     def _get_price(self, symbol: str) -> float | None:
         """Mid-price from broker, or None when unavailable (CL-e8ze).

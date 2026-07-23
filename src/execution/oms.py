@@ -122,6 +122,16 @@ class OrderManager:
         symbol), so one snapshot is delta-accurate for the whole batch —
         reusing it drops N per-intent get_positions round-trips. When
         None, fetch live (correct default for standalone callers).
+
+        Lock width (CL-8s2a): the DECISION (delta compute + halt gate +
+        INTENT_SUBMITTED journal + min-size skip) runs under the lock so a
+        health-tick halt racing a strategy place still serializes and the
+        halt-TOCTOU fix (CL-8lv6) holds. But the BLOCKING part — place_order
+        HTTP plus the RejectionHandler retry-sleep loop — is released from the
+        lock: previously an emergency de-risk (bypass_halt) could queue for
+        seconds behind a stuck/retrying strategy order that held the RLock the
+        whole time. _pending is re-acquired under the lock for its own writes
+        inside _submit_with_retry, so shutdown-drain accounting stays correct.
         """
         with self._lock:
             # Position matching MUST use the canonical key (CL-qqra): broker
@@ -144,7 +154,9 @@ class OrderManager:
             # intents still pass — a halted OMS must never trap a strategy's
             # exit while its book already closed (broker keeps the risk, book
             # says flat). Reducing = smaller absolute size, same side (or
-            # flat); flips and adds are blocked.
+            # flat); flips and adds are blocked. This gate MUST stay inside
+            # the lock (halt-TOCTOU, CL-8lv6): halt_new_trades takes the same
+            # lock, so the flag read and the place decision are atomic.
             if self._halted and not bypass_halt:
                 reducing = (
                     abs(intent.target_position) < abs(current_qty)
@@ -188,9 +200,15 @@ class OrderManager:
                 return intent.intent_id
 
             side = "buy" if delta > 0 else "sell"
-            self._submit_with_retry(intent, side, abs(delta),
-                                    emergency=bypass_halt)
-            return intent.intent_id
+
+        # Lock RELEASED before the blocking submit (CL-8s2a): place_order HTTP
+        # + RejectionHandler retry sleeps no longer hold the RLock, so a
+        # concurrent bypass_halt emergency de-risk isn't queued behind a slow
+        # strategy order. _submit_with_retry re-acquires the lock only for its
+        # short _pending mutations.
+        self._submit_with_retry(intent, side, abs(delta),
+                                emergency=bypass_halt)
+        return intent.intent_id
 
     async def submit_intent_async(
         self,
@@ -255,11 +273,16 @@ class OrderManager:
                 # _pending means "submitted, not yet terminal" (CL-8lv6):
                 # a synchronously-FILLED order must NOT linger — it poisoned
                 # has_pending() forever and graceful_shutdown always burned
-                # its full drain timeout.
-                if placed.status == OrderStatus.FILLED:
-                    self._pending.pop(intent.intent_id, None)
-                else:
-                    self._pending[intent.intent_id] = [placed]
+                # its full drain timeout. Guarded by a SHORT re-acquire of the
+                # lock (CL-8s2a): submit_intent released it before this
+                # blocking loop, so the _pending write must re-lock to stay
+                # consistent with has_pending()/shutdown drain and concurrent
+                # submitters. RLock → safe even if a callback path re-enters.
+                with self._lock:
+                    if placed.status == OrderStatus.FILLED:
+                        self._pending.pop(intent.intent_id, None)
+                    else:
+                        self._pending[intent.intent_id] = [placed]
                 logger.info(
                     "Placed %s %s %.4f (attempt=%d, fraction=%.2f)",
                     intent.symbol, side, qty, attempt, size_fraction,

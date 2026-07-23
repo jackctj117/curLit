@@ -906,11 +906,22 @@ class _ThreadRecordingOMS(_RecordingOMS):
 class _ThreadRecordingValidator:
     def __init__(self) -> None:
         self.call_threads: list[int] = []
+        # Captured to assert the shared snapshot (CL-qsue) is threaded through.
+        self.price_maps: list[Any] = []
+        self.accounts: list[Any] = []
 
-    def validate(self, intent: OrderIntent, current_positions=None):  # noqa: ANN001, ANN201
+    def validate(  # noqa: ANN201
+        self,
+        intent: OrderIntent,
+        current_positions=None,  # noqa: ANN001
+        price_map=None,  # noqa: ANN001
+        account=None,  # noqa: ANN001
+    ):
         import threading
 
         self.call_threads.append(threading.get_ident())
+        self.price_maps.append(price_map)
+        self.accounts.append(account)
         return None
 
 
