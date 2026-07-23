@@ -36,6 +36,15 @@ services:
     container_name: curlit-postgres
     restart: unless-stopped
     networks: [observability]
+    # Publish to the HOST loopback so the native engine, migrations and
+    # daemons (which connect to 127.0.0.1:5432, not the Docker network) can
+    # actually reach it — without this, `docker compose up` starts a Postgres
+    # only other containers can see, and every host-side step fails to connect
+    # (the README/BOOTSTRAP bring-up assumed a reachable localhost:5432). Bound
+    # to loopback only. Mirrors the standalone curlit-postgres-soak container
+    # BOOTSTRAP documents; run ONE of the two, never both (they share :5432).
+    ports:
+      - "127.0.0.1:5432:5432"
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-fx}
       POSTGRES_USER: ${POSTGRES_USER:-fx}

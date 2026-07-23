@@ -5,7 +5,8 @@ Algorithmic FX trading system: pulls live ticker values for currencies, cryptocu
 ## Status
 
 **Live paper trading on two venues** — the full event→idea→execution→scorecard
-loop runs unattended across 9 daemons: OANDA practice machine-trades FX legs of
+loop runs unattended across ~13 daemons (12 on Linux; the macOS keep-awake is
+skipped there): OANDA practice machine-trades FX legs of
 confirmed geopolitical events; Alpaca paper auto-buys the top options ideas
 daily; every surfaced idea's forward return is scored into a track record that
 a weekly reflective review will tune the system from. 140+ tracked issues

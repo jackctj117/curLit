@@ -23,6 +23,8 @@ and why), `BOOT.md` (engine-centric details), `.env.example` (every knob)._
 git clone <repo> && cd curLit
 python3 -m venv .venv                    # Makefile does NOT create the venv
 .venv/bin/pip install -e ".[dev]"        # core + test deps
+.venv/bin/python -m spacy download en_core_web_sm   # NLP preprocessing model
+                                         # (CB-sentiment / scraper paths need it)
 .venv/bin/pytest tests/unit -q           # must be green BEFORE any config
 ```
 
@@ -51,9 +53,10 @@ leave unset and the monitor idles (GDELT still feeds events).
 
 ## 3. Database + schema
 ```bash
-# NOTE: the compose `postgres` service does NOT publish 5432 to the host,
-# and the native daemons need host access. Fresh device: run a standalone
-# TimescaleDB container (this mirrors the original box's soak container):
+# The native daemons connect to 127.0.0.1:5432, so the DB must be published to
+# the host loopback. Two equivalent options — run exactly ONE (they share 5432):
+#   (a) compose: `docker compose up -d postgres` (now publishes 127.0.0.1:5432)
+#   (b) standalone soak container (what the original box runs):
 docker run -d --name curlit-postgres-soak -p 127.0.0.1:5432:5432 \
   -e POSTGRES_USER=fx -e POSTGRES_PASSWORD=<your POSTGRES_PASSWORD> \
   -e POSTGRES_DB=fx -v curlit_pgdata:/var/lib/postgresql/data \
@@ -88,6 +91,14 @@ curl -s localhost:8200/health # {"status":"ok"}
 ```
 Engine boot log must show the DATA-HEALTH banner and
 `risk profile active: aggressive`.
+
+**No OANDA yet?** The engine's `--broker oanda-practice` fail-fasts without
+credentials (by design — no silent fake broker). For a keys-less smoke, run the
+engine directly on the paper broker instead of the fleet:
+`.venv/bin/python -m src.runtime.run_engine --broker paper` (or, to keep the
+`oanda-practice` line but downgrade when creds are absent, set
+`ALLOW_PAPER_FALLBACK=1`). The other daemons idle cleanly until their keys
+exist — GDELT still feeds events without X/Reddit, etc.
 
 ## 7. Ongoing
 - `bd ready` for open work; `docs/CURRENT_OPERATIONS.md` for policies/knobs.

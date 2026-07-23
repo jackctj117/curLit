@@ -21,12 +21,6 @@ export CURLIT_RISK_PROFILE
 
 # name | pgrep pattern | command
 DAEMONS=(
-  # keep_awake: macOS caffeinate keeps the box from sleeping while the fleet
-  # runs (CL-vff9 companion). -d display, -i idle, -m disk, -s system-sleep
-  # (the -s assertion is AC-power-only, so it never drains the battery flat).
-  # Tied to the fleet: `daemons.sh stop` lets the Mac sleep again. The box
-  # must stay plugged in with the lid OPEN — clamshell/battery still sleeps.
-  "keep_awake|caffeinate -dims|caffeinate -dims"
   "engine|run_engine --broker oanda-practice|$PY -m src.runtime.run_engine --broker oanda-practice"
   "event_pipeline|event_pipeline.py --ingest|$PY scripts/event_pipeline.py --ingest --assess --loop 900"
   "intraday_pricer|intraday_pricer.py --loop|$PY scripts/intraday_pricer.py --loop 120"
@@ -42,6 +36,18 @@ DAEMONS=(
   # reddit_monitor: uncomment once Reddit API approval lands (CL-okww)
   # "reddit_monitor|reddit_monitor.py --loop|$PY scripts/reddit_monitor.py --loop 300"
 )
+
+# keep_awake (macOS only, CL-vff9 companion): caffeinate keeps the box from
+# sleeping while the fleet runs — -d display, -i idle, -m disk, -s system-sleep
+# (the -s assertion is AC-power-only, so it never drains the battery flat).
+# Tied to the fleet: `daemons.sh stop` lets the Mac sleep again; the box must
+# stay plugged in with the lid OPEN (clamshell/battery still sleeps). Skipped
+# on Linux/other — `caffeinate` doesn't exist there, so on a server rely on the
+# OS staying awake (no-sleep is the norm) rather than a bogus failing daemon.
+# Prepended so it starts first, before the engine.
+if [ "$(uname -s)" = "Darwin" ]; then
+  DAEMONS=("keep_awake|caffeinate -dims|caffeinate -dims" "${DAEMONS[@]}")
+fi
 
 cmd="${1:-status}"
 for entry in "${DAEMONS[@]}"; do
