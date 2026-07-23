@@ -399,6 +399,11 @@ class _FakeProvider:
         if symbols == [PAIR] and self.pair_closes is not None:
             idx = pd.date_range(end=end, periods=len(self.pair_closes), freq="D")
             return pd.DataFrame({PAIR: self.pair_closes}, index=idx)
+        # CL-z1: the live tick now fetches the CONFIGURED spread series (the
+        # one the model was fit on), not a hardcoded US_10Y/DE_10Y pair.
+        if symbols == [SPREAD]:
+            idx = pd.date_range(end=end, periods=5, freq="D")
+            return pd.DataFrame({SPREAD: [1.5] * 5}, index=idx)
         if set(symbols) == {"US_10Y", "DE_10Y"}:
             idx = pd.date_range(end=end, periods=3, freq="D")
             return pd.DataFrame({"US_10Y": 4.0, "DE_10Y": 2.5}, index=idx)
@@ -510,6 +515,53 @@ class TestLivePathFilters:
         for name in ("carry", "momentum", "regime"):
             assert values["filters"][name]["enabled"] is False
             assert values["filters"][name]["passed"] is True
+
+
+class TestLiveSpreadSeries:
+    """CL-z1 (P0): the live z-score must use config.rate_spread_series (the
+    series the model was fit on), NOT a hardcoded US_10Y-DE_10Y (not ingested)
+    or a constant 0.5 fallback."""
+
+    def _strat(self, provider: _FakeProvider) -> tuple[
+        RateDiffMRStrategy, _CapturingStore,
+    ]:
+        store = _CapturingStore()
+        s = RateDiffMRStrategy(
+            _config(), data_provider=provider, snapshot_store=store,
+        )
+        # beta=1 so the spread VALUE actually reaches z (unlike the beta=0
+        # fixture) — proves which series feeds the model at tick time.
+        s._model = {
+            "alpha": 0.0, "beta": 1.0, "r_squared": 0.9, "residual_std": 0.01,
+        }
+        s._last_fit = datetime.now(UTC)
+        return s, store
+
+    def test_uses_configured_series_not_placeholder(self) -> None:
+        s, store = self._strat(_FakeProvider())  # serves SPREAD=1.5
+        asyncio.run(s.generate_intents(_PRICES, _FakeBroker()))
+        # The recorded spread is the configured series (1.5), never 0.5.
+        assert store.snapshots[-1].values["spread"] == 1.5
+        assert s._last_spread == 1.5
+
+    def test_no_series_and_no_cache_skips_tick(self) -> None:
+        class _EmptyProv(_FakeProvider):
+            def get_aligned_series(self, symbols, start, end):  # type: ignore[override]
+                return None
+        s, _ = self._strat(_EmptyProv())
+        # Fail closed: no fabricated 0.5 spread, no trade.
+        assert asyncio.run(s.generate_intents(_PRICES, _FakeBroker())) == []
+        assert s._position_size == 0.0
+
+    def test_cache_bridges_transient_gap(self) -> None:
+        # Tick 1 populates the cache from SPREAD=1.5; tick 2's provider
+        # returns nothing → reuse 1.5 rather than skip or fabricate.
+        s, store = self._strat(_FakeProvider())
+        asyncio.run(s.generate_intents(_PRICES, _FakeBroker()))
+        assert s._last_spread == 1.5
+        s.data = None  # simulate the data provider going away
+        asyncio.run(s.generate_intents(_PRICES, _FakeBroker()))
+        assert s._last_spread == 1.5  # bridged, not skipped
 
 
 class TestLivePathLiquidity:

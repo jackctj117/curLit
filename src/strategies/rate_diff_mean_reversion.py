@@ -126,6 +126,10 @@ class RateDiffMRStrategy:
         self._position_size: float = 0.0
         self._entry_z: float | None = None
         self._entry_ts: datetime | None = None
+        # CL-z1: last known-good value of the CONFIGURED rate-spread series
+        # (the one the model was fit on). Reused across a transient data gap
+        # so a brief outage does not fabricate a spread the model never saw.
+        self._last_spread: float | None = None
         # CL-x50g: True while an OIS data gap is active — the missing-carry
         # warning is logged once per gap (reset when data returns), not per
         # tick, so an outage doesn't flood the logs.
@@ -529,23 +533,46 @@ class RateDiffMRStrategy:
         current_price = (tick["bid"] + tick["ask"]) / 2
         assert current_price > 0, f"non-positive price {current_price}"
 
-        current_spread = 0.5  # fallback placeholder
+        # CL-z1 (P0): the live spread MUST be the SAME series the model was
+        # fit on (config.rate_spread_series). The old code hardcoded
+        # US_10Y-DE_10Y — a series that is not even ingested — so it always
+        # fell through to a constant 0.5, and z was computed against a
+        # fabricated spread the model never learned: every entry/exit/stop
+        # fired on a residual disconnected from the actual rate differential.
+        series_id = self.config.rate_spread_series
+        now = datetime.now(UTC)
+        current_spread: float | None = None
         if self.data:
             try:
-                spread_data = self.data.get_aligned_series(
-                    ["US_10Y", "DE_10Y"],
-                    datetime.now(UTC) - timedelta(days=5), datetime.now(UTC),
+                spread_df = self.data.get_aligned_series(
+                    [series_id], now - timedelta(days=5), now,
                 )
-                if spread_data is not None and len(spread_data) > 0:
-                    current_spread = float(spread_data["US_10Y"].iloc[-1] - spread_data["DE_10Y"].iloc[-1])
+                if spread_df is not None and series_id in spread_df.columns:
+                    col = spread_df[series_id].dropna()
+                    if len(col) > 0:
+                        current_spread = float(col.iloc[-1])
             except Exception as exc:
                 # Broad by design: the tick must survive a data-provider
-                # failure — but a fallback spread distorts the z-score, so
-                # log it visibly (CL-gmr1). warning w/o traceback per CL-2yta.
+                # failure. warning w/o traceback per CL-2yta.
                 logger.warning(
-                    "%s: spread query failed (%s: %s) — using fallback 0.5",
-                    self.id, type(exc).__name__, exc,
+                    "%s: spread query for %s failed (%s: %s)",
+                    self.id, series_id, type(exc).__name__, exc,
                 )
+        if current_spread is None:
+            # Data gap: reuse the last known-good value rather than fabricate.
+            current_spread = self._last_spread
+        if current_spread is None:
+            # No live value AND no cache (cold start / persistent outage).
+            # Fail CLOSED — skip the tick rather than trade on a made-up
+            # spread. There is no open position to strand on a true cold
+            # start (this strategy does not persist size across restart).
+            logger.warning(
+                "%s: no live value for %s and no cached spread — skipping "
+                "tick (refusing to fabricate the model's input)",
+                self.id, series_id,
+            )
+            return []
+        self._last_spread = current_spread
 
         z = self._compute_z_score(current_price, current_spread)
         if z is None:
