@@ -111,6 +111,22 @@ class TestDailyPnl:
         # Day-start survives the bad mark.
         assert b.build(98_000.0)["daily_pnl_pct"] == pytest.approx(-0.02)
 
+    def test_nonpositive_equity_omits_pnl_and_dd_keys(self) -> None:
+        # CL-ubo0 (P0): a zero/negative mark must NOT fabricate a -100%
+        # daily_pnl_pct / portfolio_dd (which would trip daily_loss_limit +
+        # drawdown_limit → flatten_all on a single feed glitch). The keys are
+        # omitted entirely — "no opinion" — until a good mark returns.
+        b = _builder()
+        b.build(110_000.0)  # establish a good day-start + peak
+        for bad in (0.0, -5.0):
+            ctx = b.build(bad)
+            assert "daily_pnl_pct" not in ctx, f"fabricated pnl at eq={bad}"
+            assert "portfolio_dd" not in ctx, f"fabricated dd at eq={bad}"
+        # The next good mark restores correct values against the prior state.
+        good = b.build(104_500.0)
+        assert good["daily_pnl_pct"] == pytest.approx(-0.05)
+        assert good["portfolio_dd"] == pytest.approx(-0.05)
+
 
 # --------------------------------------------------------------------- #
 # portfolio_dd (running peak)

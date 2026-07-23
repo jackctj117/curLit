@@ -154,10 +154,18 @@ class RiskContextBuilder:
 
         try:
             self._update_equity_state(now, eq)
-            if self._day_start_equity is not None and self._day_start_equity > 0:
-                ctx["daily_pnl_pct"] = eq / self._day_start_equity - 1.0
-            if self._peak_equity is not None and self._peak_equity > 0:
-                ctx["portfolio_dd"] = eq / self._peak_equity - 1.0
+            # CL-ubo0 (P0): guard the NUMERATOR, not just the denominator. A
+            # zero/negative equity mark (a feed/mark glitch) divided by a good
+            # prior day-start/peak yields daily_pnl_pct/portfolio_dd = -1.0
+            # (-100%), which trips daily_loss_limit (halt) AND drawdown_limit
+            # (flatten_all) — a full book flatten on one bad tick. Omit the
+            # keys instead: a missing key is "no opinion" (switches read
+            # ctx.get(..., 0.0)) and the next good mark restores them.
+            if eq > 0:
+                if self._day_start_equity is not None and self._day_start_equity > 0:
+                    ctx["daily_pnl_pct"] = eq / self._day_start_equity - 1.0
+                if self._peak_equity is not None and self._peak_equity > 0:
+                    ctx["portfolio_dd"] = eq / self._peak_equity - 1.0
         except Exception:
             logger.exception("risk context: equity state update failed")
 
