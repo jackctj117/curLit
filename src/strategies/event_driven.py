@@ -168,6 +168,8 @@ class EventDrivenStrategy:
                 vol_spike_ratio=self.config.vol_spike_ratio,
                 stale_review_days=self.config.stale_review_days,
                 stale_confidence_ceiling=self.config.stale_confidence_ceiling,
+                generic_min_confidence=self.config.generic_min_confidence,
+                generic_min_confirmed_instruments=self.config.generic_min_confirmed_instruments,
             ),
             data_provider=data_provider,
             db_engine=db_engine,

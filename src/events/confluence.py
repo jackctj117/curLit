@@ -127,6 +127,19 @@ class ConfluenceConfig:
     # stale_review_days <= 0 disables the ceiling entirely.
     stale_review_days: int = 90
     stale_confidence_ceiling: float = 0.58
+    # ---- Generic-theme gating (CL-gn6k) -----------------------------
+    # Generic catch-all themes (Playbook.tier == "generic": war_escalation,
+    # natural_disaster, africa_power_shift) carry weak edge and noisy machine
+    # signals, so they face a HARDER machine bar: Gate A needs at least this
+    # confidence, and Gate B needs at least this many INDIVIDUALLY confirmed
+    # instruments, before a generic event can CONFIRM. Specific themes are
+    # unaffected. Both are floors combined with the base thresholds via max(),
+    # so setting them <= the base disables the extra bar (generic then trades
+    # like specific). The intent is to default catch-alls toward advisory:
+    # they still alert/expire for the operator, just don't machine-trade on
+    # thin conviction.
+    generic_min_confidence: float = 0.82
+    generic_min_confirmed_instruments: int = 2
 
 
 @dataclass
@@ -202,6 +215,9 @@ class ConfluenceResult:
     #: True when the stale-fact ceiling (CL-ylak) capped ``confidence``
     #: because the matched theme's playbook facts are past stale_review_days.
     stale_capped: bool = False
+    #: True when the matched theme is a GENERIC catch-all (CL-gn6k) — it
+    #: faced the harder generic Gate A / Gate B thresholds.
+    generic: bool = False
 
 
 class EventConfluence:
@@ -240,6 +256,10 @@ class EventConfluence:
             for key, pb in (playbooks or {}).items()
             if pb.last_reviewed is not None
         }
+        #: theme key → tier ("specific"/"generic") for the harder generic
+        #: machine bar (CL-gn6k). Empty when no playbooks injected → every
+        #: theme is treated as specific (pre-CL-gn6k gating).
+        self._theme_tier: dict[str, str] = {key: pb.tier for key, pb in (playbooks or {}).items()}
 
     # ------------------------------------------------------------------
     # Assessment parsing
@@ -365,12 +385,22 @@ class EventConfluence:
         # the event degrades to advisory and rides out to EXPIRED.
         self._apply_stale_ceiling(result, event.get("theme"), now)
 
+        # Generic-theme bar (CL-gn6k): a catch-all theme (war_escalation,
+        # natural_disaster, africa_power_shift) must clear a HIGHER confidence
+        # AND more confirmed instruments to machine-trade — floors combined
+        # via max(), so specific themes and a disabled config are unchanged.
+        min_confidence = self.config.min_confidence
+        min_confirmed = self.config.min_confirmed_instruments
+        if self._theme_tier.get(str(event.get("theme") or "")) == "generic":
+            result.generic = True
+            min_confidence = max(min_confidence, self.config.generic_min_confidence)
+            min_confirmed = max(min_confirmed, self.config.generic_min_confirmed_instruments)
+
         # Gate A — quality. Failures stay pending and ride out the
         # window to EXPIRED (not DISMISSED) so big-but-unconfirmable
         # events still reach the operator via the expired alert.
         result.quality_passed = (
-            result.urgency >= self.config.min_urgency
-            and result.confidence >= self.config.min_confidence
+            result.urgency >= self.config.min_urgency and result.confidence >= min_confidence
         )
         if not result.quality_passed or elapsed < window_min:
             return result
@@ -394,7 +424,7 @@ class EventConfluence:
             if check.confirmed:
                 confirmed_count += 1
 
-        if confirmed_count >= self.config.min_confirmed_instruments:
+        if confirmed_count >= min_confirmed:
             result.outcome = "confirmed"
             result.transitioned = self.transition(event_id, "ASSESSED", "CONFIRMED")
             # Cross-asset corroboration (CL-6mzn) — a DISPLAY annotation,

@@ -75,6 +75,12 @@ class EventDrivenConfig:
     # can't clear min_confidence on conviction alone. 0 days disables.
     stale_review_days: int = 90
     stale_confidence_ceiling: float = 0.58
+    # Generic-theme machine bar (CL-gn6k; mirrors ConfluenceConfig). Catch-all
+    # themes (Playbook.tier == "generic") need >= generic_min_confidence AND
+    # >= generic_min_confirmed_instruments to CONFIRM; specific themes are
+    # unaffected. Floors via max() — set <= the base thresholds to disable.
+    generic_min_confidence: float = 0.82
+    generic_min_confirmed_instruments: int = 2
     # ---- Trading -----------------------------------------------------
     # Risk per event trade as a fraction of equity. 0.005 = 50bps —
     # deliberately half the CB-sentiment risk; event assessments are the

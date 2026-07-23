@@ -131,3 +131,106 @@ def test_real_playbooks_cap_once_aged_past_window() -> None:
     res = conf.evaluate_and_transition(ev, now=now)
     assert res.stale_capped is True
     assert res.confidence == 0.58
+
+
+# --------------------------------------------------------------------------- #
+# Generic-theme machine bar (CL-gn6k)
+# --------------------------------------------------------------------------- #
+
+
+def _tiered_pb(key: str, tier: str) -> Playbook:
+    # Fresh review date so the stale ceiling never interferes with tier tests.
+    return Playbook(
+        key=key,
+        name=key,
+        description="",
+        watch_terms=("x",),
+        instruments=(PlaybookInstrument("XAU_USD", "oanda", "long", "r"),),
+        tier=tier,
+        last_reviewed=date(2026, 7, 19),
+    )
+
+
+def _gen_conf(**cfg: Any) -> EventConfluence:
+    base = {
+        "min_confidence": 0.75,
+        "generic_min_confidence": 0.82,
+        "generic_min_confirmed_instruments": 2,
+    }
+    base.update(cfg)
+    return EventConfluence(
+        ConfluenceConfig(**base),
+        playbooks={"gen": _tiered_pb("gen", "generic"), "spec": _tiered_pb("spec", "specific")},
+    )
+
+
+def test_generic_theme_needs_higher_confidence_at_gate_a() -> None:
+    conf = _gen_conf()
+    # 0.80 clears the base 0.75 but NOT the generic 0.82 bar → Gate A fails.
+    res = conf.evaluate_and_transition(_event("gen", 0.80), now=_NOW)
+    assert res.generic is True
+    assert res.quality_passed is False
+
+
+def test_specific_theme_unaffected_by_generic_bar() -> None:
+    conf = _gen_conf()
+    # Same 0.80 confidence on a SPECIFIC theme clears the base 0.75 bar.
+    res = conf.evaluate_and_transition(_event("spec", 0.80), now=_NOW)
+    assert res.generic is False
+    assert res.quality_passed is True
+
+
+def test_generic_theme_clears_gate_a_above_bar() -> None:
+    conf = _gen_conf()
+    res = conf.evaluate_and_transition(_event("gen", 0.85), now=_NOW)
+    assert res.generic is True
+    assert res.quality_passed is True
+
+
+def test_generic_bar_disabled_when_thresholds_at_base() -> None:
+    # generic_min_confidence <= base → the max() floor is inert.
+    conf = _gen_conf(generic_min_confidence=0.75, generic_min_confirmed_instruments=1)
+    res = conf.evaluate_and_transition(_event("gen", 0.80), now=_NOW)
+    assert res.generic is True  # still flagged...
+    assert res.quality_passed is True  # ...but gated like a specific theme
+
+
+class _OneLegConfirmProvider:
+    """Intraday shows a +2% move on the single leg (confirms Gate B); the
+    daily close is flat. Mirrors test_intraday_pricer._FakeProvider."""
+
+    def get_intraday_value(self, symbol: str, as_of: datetime, max_staleness_minutes: Any = None):
+        ref = _SEEN + timedelta(minutes=30)
+        return 100.0 if as_of <= ref else 102.0
+
+    def get_latest_value(self, symbol: str, as_of: datetime) -> float:
+        return 100.0
+
+    def get_realized_vol(self, symbol: str, window: int, as_of: datetime) -> float:
+        return 0.16  # annualized → daily ≈ 1%, threshold ≈ 0.25%
+
+
+def _gate_b_conf(tier: str) -> EventConfluence:
+    return EventConfluence(
+        ConfluenceConfig(
+            min_confidence=0.75,
+            intraday_max_staleness_minutes=15,
+            generic_min_confidence=0.82,
+            generic_min_confirmed_instruments=2,
+        ),
+        data_provider=_OneLegConfirmProvider(),
+        playbooks={"t": _tiered_pb("t", tier)},
+    )
+
+
+def test_generic_needs_two_confirmed_so_one_leg_stays_pending() -> None:
+    # now inside the 30-120 window so Gate B actually runs.
+    now = _SEEN + timedelta(minutes=60)
+    # SPECIFIC theme: 1 confirmed leg >= 1 → confirms.
+    res_spec = _gate_b_conf("specific").evaluate_and_transition(_event("t", 0.9), now=now)
+    assert res_spec.outcome == "confirmed"
+    # GENERIC theme with the SAME single confirming leg: needs 2 → stays
+    # pending (rides out to the operator's expired alert, never machine-trades).
+    res_gen = _gate_b_conf("generic").evaluate_and_transition(_event("t", 0.9), now=now)
+    assert res_gen.generic is True
+    assert res_gen.outcome == "pending"
