@@ -163,10 +163,14 @@ activity** (P/C volume skew, volume vs self-built baseline, ATM IV).
 
 ---
 
-## 3. The twelve daemons
+## 3. The daemons (12 core + a macOS-only keep_awake = 13 on macOS)
+
+`daemons.sh` prepends `keep_awake` (caffeinate) **only on macOS** — on Linux it
+is skipped (a server does not sleep), so the fleet is 12 there.
 
 | Daemon | Command | Cadence | Log |
 |---|---|---|---|
+| Keep awake (macOS only) | `caffeinate -dims` | held while the fleet runs | — |
 | Trading engine | `CURLIT_RISK_PROFILE=aggressive .venv/bin/python -m src.runtime.run_engine --broker oanda-practice` | async loop | `logs/engine_stdout.log`, `logs/live_engine.jsonl` |
 | Event pipeline | `scripts/event_pipeline.py --ingest --assess --loop 900` | 15 min | `logs/event_pipeline.log` |
 | Intraday pricer | `scripts/intraday_pricer.py --loop 120` | 2 min + daily candle backfill | `logs/intraday_pricer.log` |
@@ -188,9 +192,17 @@ runs the DATA-HEALTH preflight (CL-q4n1) at boot — a starved series is a
 loud WARN banner, never a silent dormant strategy.
 
 **Restart rules**
-- Engine: safe with open positions since CL-8s1e; still check
+- Engine: safe with open positions since CL-8s1e — extended to the non-event
+  strategies (rate_diff/CB/carry) in CL-bccy, which now persist their book
+  (rate_diff→`StrategyStateStore`; CB/carry→`data/{cb_sentiment,carry_vol}_state.json`)
+  and reconcile it from the broker each tick (CL-0h30), so the cold-start
+  reconcile matches their legs instead of flattening them. Still check
   `/api/positions` first out of caution. Always preserve
   `CURLIT_RISK_PROFILE=aggressive`.
+- Fills: on OANDA the engine also consumes the transaction stream
+  (`_transaction_stream_task`) for real-time ORDER_FILLED / pending-clear
+  (CL-vj74); the 300s position poll is the backstop, so a restart never loses
+  a fill.
 - Pipeline/monitors: restart freely; state (since_ids, event book, research
   state) persists in files/DB.
 
