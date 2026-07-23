@@ -122,6 +122,26 @@ def require_strong_passphrase(passphrase: str) -> None:
 
 
 def derive_key(passphrase: str, salt: bytes, iterations: int = PBKDF2_ITERATIONS) -> bytes:
+    # Salt-agnostic by design: the caller owns the salt, so a per-vault RANDOM
+    # salt is fully supported here with no change (CL-8s2a recovery-KDF note).
+    #
+    # Two derivation call sites exist in the repo:
+    #   * the primary vault key — already uses a per-vault random 16-byte salt
+    #     persisted as vault.salt (scripts/initialize_vault.py, vault_add.py,
+    #     rotate_secrets.py). No fixed salt.
+    #   * the RECOVERY key — scripts/initialize_vault.py wraps the vault key
+    #     under derive_key(entropy.hex(), b"fx-recovery-v1"), a FIXED public
+    #     salt. entropy is 256 fresh random bits, so a rainbow table is already
+    #     infeasible and the fixed salt is only weak defense-in-depth.
+    #
+    # A per-vault random recovery salt is safe to add for NEW vaults (write a
+    # recovery.salt companion the manual recovery procedure reads), but MUST
+    # NOT be retrofitted to an EXISTING vault: its printed recovery document +
+    # recovery.enc are pinned to b"fx-recovery-v1", and re-deriving under a new
+    # salt would make that already-printed document undecryptable — breaking
+    # disaster recovery for the live vault (backward compat is mandatory). That
+    # call-site change lives in scripts/initialize_vault.py (out of this lane);
+    # this KDF needs nothing changed to support it.
     return hashlib.pbkdf2_hmac("sha256", passphrase.encode(), salt, iterations, 32)
 
 

@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import time
 from collections.abc import AsyncIterator
 from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
 from typing import Any
@@ -88,8 +89,22 @@ class OandaBroker(Broker):
             base_url=stream, headers=self.headers, timeout=None,
             follow_redirects=True,
         )
+        # Last streamed quote per OANDA-symbol, for the slippage reference
+        # (CL-7vn9). Populated by stream_prices as ticks flow; read by
+        # _compute_price_bound to skip a redundant /pricing GET when the
+        # streamed mid is fresh. Each entry is a single dict replaced
+        # atomically (one dict.__setitem__), so the worker-thread reader in
+        # place_order sees either the old or the new entry, never a torn one.
+        self._last_stream_price: dict[str, dict[str, Any]] = {}
 
     _MAX_307_HOPS = 3
+
+    #: Max age of a streamed quote still usable as a slippage reference
+    #: (CL-7vn9). Beyond this the streamed mid is considered stale and
+    #: place_order falls back to a fresh /pricing GET. OANDA streams FX ticks
+    #: sub-second in an active session, so 2 s comfortably covers a healthy
+    #: stream while rejecting a mid left over from a stalled/reconnecting one.
+    _REF_PRICE_MAX_AGE_SEC = 2.0
 
     def _send_following_307(
         self, method: str, url: str, json_body: dict[str, Any] | None = None,
@@ -188,13 +203,42 @@ class OandaBroker(Broker):
             )
         return order
 
+    def _fresh_stream_ref(self, order: Order) -> str | None:
+        """Fill-side reference from the last STREAMED quote, if fresh enough
+        (CL-7vn9). buy → ask, sell → bid, as the raw venue string so the
+        derived bound keeps the instrument's quote precision.
+
+        Returns None when there is no cached streamed quote for the symbol or
+        the newest one is older than ``_REF_PRICE_MAX_AGE_SEC`` — the caller
+        then falls back to a fresh /pricing GET. Freshness uses
+        ``time.monotonic`` so a wall-clock adjustment can't make a stale quote
+        look fresh (or vice-versa).
+        """
+        cache = getattr(self, "_last_stream_price", None)
+        if not cache:
+            return None
+        entry = cache.get(self._to_oanda(order.symbol))
+        if entry is None:
+            return None
+        age = time.monotonic() - entry["mono"]
+        if age > self._REF_PRICE_MAX_AGE_SEC:
+            return None
+        return str(entry["ask"] if order.side == "buy" else entry["bid"])
+
     def _compute_price_bound(self, order: Order) -> str | None:
         """Reference-price → FOK priceBound for an outgoing market order.
 
         Reference is the venue's live quote on the fill side (buy → ask,
-        sell → bid), fetched as the raw string so the bound inherits the
-        instrument's quote precision. Returns None (no bound) when the order
-        carries no slippage cap.
+        sell → bid), as the raw string so the bound inherits the instrument's
+        quote precision. Returns None (no bound) when the order carries no
+        slippage cap.
+
+        Reference source (CL-7vn9): prefer the engine's last STREAMED quote
+        when it's fresh (≤ _REF_PRICE_MAX_AGE_SEC old) — the stream already
+        carries a sub-second mid, so a separate /pricing round-trip per order
+        was redundant latency + quota. Fall back to a fresh /pricing GET when
+        no fresh streamed quote exists (stale stream, cold start, symbol never
+        streamed).
 
         Fetch-failure posture (CL-8lv6 — was fail-open for everything):
 
@@ -208,6 +252,10 @@ class OandaBroker(Broker):
         bps = order.max_slippage_bps
         if bps is None or bps <= 0:
             return None
+        # Fresh streamed mid wins — no /pricing call needed (CL-7vn9).
+        stream_ref = self._fresh_stream_ref(order)
+        if stream_ref is not None:
+            return _price_bound_str(order.side, stream_ref, bps)
         try:
             resp = self.client.get(
                 f"/v3/accounts/{self.account_id}/pricing",
@@ -322,6 +370,11 @@ class OandaBroker(Broker):
             self.STREAM_PRACTICE if "practice" in str(self.client.base_url)
             else self.STREAM_LIVE
         )
+        # Lazily ensure the streamed-quote cache exists (CL-7vn9) — the engine
+        # builds the broker via __init__, but some tests construct it with
+        # __new__ and never run __init__.
+        if not hasattr(self, "_last_stream_price"):
+            self._last_stream_price = {}
         backoff = self._STREAM_BACKOFF_START
         while True:
             try:
@@ -359,6 +412,18 @@ class OandaBroker(Broker):
                         except ValueError:
                             continue  # heartbeat / partial line — skip
                         if msg.get("type") == "PRICE":
+                            # Cache the RAW venue quote strings + a monotonic
+                            # capture time (CL-7vn9) so _compute_price_bound
+                            # can reuse this streamed quote as its slippage
+                            # reference — at the venue's own precision, with a
+                            # clock-adjustment-immune freshness check — instead
+                            # of issuing a fresh /pricing GET. Single atomic
+                            # dict assignment; see _last_stream_price note.
+                            self._last_stream_price[msg["instrument"]] = {
+                                "bid": str(msg["bids"][0]["price"]),
+                                "ask": str(msg["asks"][0]["price"]),
+                                "mono": time.monotonic(),
+                            }
                             yield {
                                 "symbol": self._from_oanda(msg["instrument"]),
                                 "bid": float(msg["bids"][0]["price"]),

@@ -79,7 +79,11 @@ class TestComplete:
         assert resp.output_tokens == 7
         assert resp.usd_cost == 0.0  # subscription — never bills the API org
         cmd = run.call_args.args[0]
-        assert cmd[:3] == ["/fake/claude", "-p", "hi"]
+        # Prompt rides STDIN now (CL-8s2a), not argv: `-p` is bare and the
+        # prompt is passed as subprocess input.
+        assert cmd[:2] == ["/fake/claude", "-p"]
+        assert run.call_args.kwargs["input"] == "hi"
+        assert "hi" not in cmd  # never on argv (ps / ARG_MAX safe)
         assert "--system-prompt" in cmd and "persona" in cmd
         assert "--model" in cmd and "claude-fable-5" in cmd
 
@@ -103,8 +107,29 @@ class TestComplete:
                  Message("user", "c")],
                 model="claude-fable-5",
             )
-        prompt = run.call_args.args[0][2]
+        # Flattened transcript now arrives via stdin (CL-8s2a).
+        prompt = run.call_args.kwargs["input"]
         assert "[USER]\na" in prompt and "[ASSISTANT]\nb" in prompt
+
+    def test_prompt_goes_to_stdin_not_argv(self) -> None:
+        """CL-8s2a: the (possibly multi-KB) prompt must be passed via stdin,
+        never on argv — argv is visible in `ps` and bounded by ARG_MAX."""
+        drv = _driver()
+        secret_long_prompt = "SENSITIVE-" + "x" * 5000
+        with patch(
+            "subprocess.run", return_value=_proc(json.dumps(_OK_PAYLOAD)),
+        ) as run:
+            drv.complete(
+                [Message("system", "persona"),
+                 Message("user", secret_long_prompt)],
+                model="claude-fable-5",
+            )
+        argv = run.call_args.args[0]
+        # The prompt is nowhere on the command line...
+        assert not any(secret_long_prompt in str(a) for a in argv)
+        assert "-p" in argv and argv[argv.index("-p") + 1].startswith("--")
+        # ...and is delivered as stdin instead.
+        assert run.call_args.kwargs["input"] == secret_long_prompt
 
     def test_nonzero_exit_raises(self) -> None:
         drv = _driver()

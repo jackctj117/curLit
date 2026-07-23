@@ -216,6 +216,164 @@ class TestOandaPriceBoundPayload:
 
 
 # ---------------------------------------------------------------------------
+# OANDA: streamed reference price (CL-7vn9) — reuse the engine's last streamed
+# mid instead of a fresh /pricing GET when it's fresh enough.
+# ---------------------------------------------------------------------------
+
+
+class _CountingPricingClient:
+    """/pricing client that records how many times it was hit."""
+
+    def __init__(self, bid: str, ask: str) -> None:
+        self.calls = 0
+        self._payload = {
+            "prices": [{"bids": [{"price": bid}], "asks": [{"price": ask}]}],
+        }
+
+    def get(self, url: str, params: dict | None = None) -> SimpleNamespace:
+        self.calls += 1
+        return SimpleNamespace(
+            json=lambda: self._payload, raise_for_status=lambda: None,
+        )
+
+
+class TestStreamedReferencePrice:
+    def _seed_stream(
+        self, b: OandaBroker, oanda_sym: str, bid: str, ask: str,
+        age_sec: float,
+    ) -> None:
+        import time
+        b._last_stream_price = {
+            oanda_sym: {
+                "bid": bid, "ask": ask,
+                "mono": time.monotonic() - age_sec,
+            },
+        }
+
+    def test_fresh_stream_mid_used_and_no_pricing_call(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        b = _broker()
+        pricing = _CountingPricingClient("9.99990", "9.99999")  # distinct
+        b.client = pricing
+        self._seed_stream(b, "EUR_USD", "1.10000", "1.10020", age_sec=0.1)
+        bodies = _capture_post(b, monkeypatch)
+        order = Order(
+            symbol="EUR_USD", side="buy", quantity=1000,
+            order_type=OrderType.MARKET, max_slippage_bps=2.0,
+        )
+        out = b.place_order(order)
+        assert out.status == OrderStatus.FILLED
+        assert pricing.calls == 0  # no redundant /pricing round-trip
+        bound = Decimal(bodies[0]["order"]["priceBound"])
+        # Bound derives from the STREAMED ask (1.10020 → 1.10042 at 2 bps),
+        # not the distinct /pricing quote (which would be ~10.0).
+        assert bound == Decimal("1.10042")
+
+    def test_sell_uses_streamed_bid(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        b = _broker()
+        pricing = _CountingPricingClient("9.0", "9.0")
+        b.client = pricing
+        self._seed_stream(b, "EUR_USD", "1.10000", "1.10020", age_sec=0.1)
+        bodies = _capture_post(b, monkeypatch)
+        order = Order(
+            symbol="EUR_USD", side="sell", quantity=1000,
+            order_type=OrderType.MARKET, max_slippage_bps=2.0,
+        )
+        b.place_order(order)
+        assert pricing.calls == 0
+        bound = Decimal(bodies[0]["order"]["priceBound"])
+        assert bound < Decimal("1.10000")  # below the streamed bid
+
+    def test_stale_stream_falls_back_to_pricing(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        b = _broker()
+        pricing = _CountingPricingClient("1.20000", "1.20020")
+        b.client = pricing
+        # Streamed mid older than the max age → ignored.
+        self._seed_stream(
+            b, "EUR_USD", "1.10000", "1.10020",
+            age_sec=OandaBroker._REF_PRICE_MAX_AGE_SEC + 1.0,
+        )
+        bodies = _capture_post(b, monkeypatch)
+        order = Order(
+            symbol="EUR_USD", side="buy", quantity=1000,
+            order_type=OrderType.MARKET, max_slippage_bps=2.0,
+        )
+        b.place_order(order)
+        assert pricing.calls == 1  # fell back to a fresh fetch
+        bound = Decimal(bodies[0]["order"]["priceBound"])
+        # Bound derives from the /pricing ask (1.20020), not the stale stream.
+        assert bound > Decimal("1.20020")
+
+    def test_no_streamed_symbol_falls_back_to_pricing(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        b = _broker()
+        pricing = _CountingPricingClient("1.30000", "1.30020")
+        b.client = pricing
+        # Cache holds a DIFFERENT symbol — the order's symbol was never streamed.
+        self._seed_stream(b, "GBP_USD", "1.10000", "1.10020", age_sec=0.1)
+        bodies = _capture_post(b, monkeypatch)
+        order = Order(
+            symbol="EUR_USD", side="buy", quantity=1000,
+            order_type=OrderType.MARKET, max_slippage_bps=2.0,
+        )
+        b.place_order(order)
+        assert pricing.calls == 1
+        assert Decimal(bodies[0]["order"]["priceBound"]) > Decimal("1.30020")
+
+    def test_stale_stream_and_broken_pricing_still_fails_closed(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # CL-8lv6 posture is intact: when the stream is stale AND /pricing
+        # fails, a NORMAL capped order is REJECTED (not sent unbound).
+        b = _broker()
+
+        def boom(url: str, params: dict | None = None) -> SimpleNamespace:
+            raise OSError("pricing endpoint down")
+
+        b.client = SimpleNamespace(get=boom)
+        self._seed_stream(
+            b, "EUR_USD", "1.10000", "1.10020",
+            age_sec=OandaBroker._REF_PRICE_MAX_AGE_SEC + 1.0,
+        )
+        bodies = _capture_post(b, monkeypatch)
+        order = Order(
+            symbol="EUR_USD", side="buy", quantity=1000,
+            order_type=OrderType.MARKET, max_slippage_bps=2.0,
+        )
+        out = b.place_order(order)
+        assert out.status == OrderStatus.REJECTED
+        assert out.reject_reason == "SLIPPAGE_REF_UNAVAILABLE"
+        assert bodies == []
+
+    def test_fresh_stream_bypasses_broken_pricing(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # A fresh streamed mid means a dead /pricing endpoint is irrelevant —
+        # the order still gets a bound and fills (the whole point of CL-7vn9).
+        b = _broker()
+
+        def boom(url: str, params: dict | None = None) -> SimpleNamespace:
+            raise OSError("pricing endpoint down")
+
+        b.client = SimpleNamespace(get=boom)
+        self._seed_stream(b, "EUR_USD", "1.10000", "1.10020", age_sec=0.1)
+        bodies = _capture_post(b, monkeypatch)
+        order = Order(
+            symbol="EUR_USD", side="buy", quantity=1000,
+            order_type=OrderType.MARKET, max_slippage_bps=2.0,
+        )
+        out = b.place_order(order)
+        assert out.status == OrderStatus.FILLED
+        assert Decimal(bodies[0]["order"]["priceBound"]) > Decimal("1.10020")
+
+
+# ---------------------------------------------------------------------------
 # PaperBroker: simulated enforcement
 # ---------------------------------------------------------------------------
 

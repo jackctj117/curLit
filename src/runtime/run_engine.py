@@ -145,14 +145,46 @@ def _build_db_engine() -> Any:
     return create_engine(build_db_url())
 
 
-def build_trade_journal() -> TradeJournal | None:
+def build_shared_db_engine() -> Any | None:
+    """Build the ONE SQLAlchemy engine the whole boot shares (CL-7vn9/CL-8s2a).
+
+    Before this every DB-touching builder called ``_build_db_engine()`` for
+    itself — 5 separate engines, so 5 independent connection pools sat idle
+    (~25 conns) against a single-process engine that only ever needs one. A
+    SQLAlchemy ``Engine`` is threadsafe and its pool checks connections
+    in/out per operation, so a single shared engine is the correct primitive:
+    the OMS-submit / coordinator / health-tick worker threads (CL-8cw1) each
+    borrow their own connection from the one pool.
+
+    Returns None (never raises) when the URL can't even be constructed, so the
+    engine still boots DB-less — every builder that receives None already
+    degrades gracefully (journal off, snapshots off, legacy OMS mode, etc.).
+    Note: ``create_engine`` is lazy — it does NOT open a socket — so a
+    successful return here does not prove the DB is reachable; each builder
+    still fails open on the first real query if it isn't.
+    """
+    try:
+        return _build_db_engine()
+    except Exception:
+        logger.exception(
+            "Failed to build the shared DB engine; the engine will boot "
+            "without any DB-backed components (journal, snapshots, "
+            "coordinator, kill-switch correlation)",
+        )
+        return None
+
+
+def build_trade_journal(engine: Any | None = None) -> TradeJournal | None:
     """Construct the audit-trail journal. Returns None if the DB is unreachable
     so the engine still starts — losing audit on a single boot is preferable
     to refusing to trade.
+
+    Reuses the shared engine (CL-7vn9) when one is passed; when called with no
+    engine (out-of-lane admin CLIs, tests) it builds one locally, preserving
+    the original zero-arg contract.
     """
     try:
-        engine = _build_db_engine()
-        return TradeJournal(engine)
+        return TradeJournal(engine if engine is not None else _build_db_engine())
     except Exception:
         logger.exception(
             "Failed to construct TradeJournal; engine will run without audit log"
@@ -160,16 +192,19 @@ def build_trade_journal() -> TradeJournal | None:
         return None
 
 
-def build_feature_snapshot_store() -> FeatureSnapshotStore | None:
+def build_feature_snapshot_store(
+    engine: Any | None = None,
+) -> FeatureSnapshotStore | None:
     """Construct the feature-snapshot store for reproducibility tagging.
 
-    Returns None if the DB is unreachable so the engine still starts —
-    losing snapshot capture on a single boot is preferable to refusing
-    to trade. Strategies that get None skip emitting snapshots.
+    Returns None if the DB is unreachable so the engine still starts — losing
+    snapshot capture on a single boot is preferable to refusing to trade.
+    Strategies that get None skip emitting snapshots. Reuses the shared engine
+    (CL-7vn9) when passed, else builds one locally (zero-arg contract).
     """
     try:
-        engine = _build_db_engine()
-        return FeatureSnapshotStore(engine)
+        store_engine = engine if engine is not None else _build_db_engine()
+        return FeatureSnapshotStore(store_engine)
     except Exception:
         logger.exception(
             "Failed to construct FeatureSnapshotStore; intents will not "
@@ -212,8 +247,16 @@ def build_strategies(
     broker: Any,
     oms: OrderManager,
     snapshot_store: FeatureSnapshotStore | None = None,
+    engine: Any | None = None,
 ) -> list[Any]:
-    engine = _build_db_engine()
+    # Strategies always need a live engine for their DataProvider /
+    # NLPProvider / StrategyStateStore. The shared engine (CL-7vn9) is passed
+    # in; if the boot couldn't build one (engine is None) fall back to a
+    # local build so strategy construction still proceeds — the same contract
+    # as before, only now the shared engine is reused when present instead of
+    # every builder minting its own pool.
+    if engine is None:
+        engine = _build_db_engine()
     # CL-q4n1: surface data-starved strategies loudly at boot (logs a WARN
     # report; never blocks startup) so a silently-gated strategy is visible.
     log_startup_health(engine)
@@ -326,19 +369,25 @@ def build_coordinator(
     oms: OrderManager,
     broker: Any,
     blackout_evaluator: BlackoutEvaluator | None = None,
+    engine: Any | None = None,
 ) -> PortfolioCoordinator | None:
     """Construct the PortfolioCoordinator from config.
 
     Returns None and logs a warning if DB is unreachable — the engine will run
-    in legacy direct-OMS mode in that case rather than refusing to start.
+    in legacy direct-OMS mode in that case rather than refusing to start. Uses
+    the shared engine (CL-7vn9); None (boot couldn't build one) → legacy mode.
     """
     portfolio_cfg = config.get("portfolio", {})
     constraints_cfg = portfolio_cfg.get("constraints", {})
     constraints = PortfolioConstraints(**constraints_cfg) if constraints_cfg else None
 
     try:
-        engine = _build_db_engine()
-        state = PortfolioStateStore(engine)
+        # Reuse the shared engine (CL-7vn9) when passed; else build locally so
+        # out-of-lane callers (manage_strategies admin CLI) keep the original
+        # "construct my own engine" behavior.
+        state = PortfolioStateStore(
+            engine if engine is not None else _build_db_engine(),
+        )
     except Exception:
         logger.exception(
             "Failed to construct PortfolioStateStore; engine will run in legacy mode"
@@ -380,12 +429,15 @@ def build_coordinator(
     return coordinator
 
 
-def build_kill_switch_manager(broker: Any, oms: OrderManager) -> Any:
+def build_kill_switch_manager(
+    broker: Any, oms: OrderManager, engine: Any | None = None,
+) -> Any:
     """CL-ep0c: construct the KillSwitchManager for the live engine.
 
     Config comes from the active risk profile's kill_switches block; the
     DataProvider feeds the open_position_correlation switch (None-safe —
-    if the DB is unreachable that switch simply never fires).
+    if the DB is unreachable that switch simply never fires). Uses the shared
+    engine (CL-7vn9) for the DataProvider.
 
     FAIL CLOSED (CL-r8gv): a construction failure RAISES instead of
     returning None — an engine that silently boots without its automated
@@ -399,7 +451,11 @@ def build_kill_switch_manager(broker: Any, oms: OrderManager) -> Any:
 
     data_provider: DataProvider | None = None
     try:
-        data_provider = DataProvider(_build_db_engine())
+        # Reuse the shared engine (CL-7vn9) when passed; else build locally so
+        # out-of-lane callers keep the original DataProvider behavior.
+        data_provider = DataProvider(
+            engine if engine is not None else _build_db_engine(),
+        )
     except Exception:
         logger.exception(
             "DataProvider unavailable for kill switches — "
@@ -468,20 +524,27 @@ async def run_engine(broker_mode: str = "paper") -> None:
             "downgrade is active; NOT connected to OANDA",
             broker_mode, effective_mode,
         )
-    journal = build_trade_journal()
-    snapshot_store = build_feature_snapshot_store()
+    # ONE shared SQLAlchemy engine for every DB-backed builder (CL-7vn9 /
+    # CL-8s2a): journal, snapshot store, strategy providers, coordinator
+    # state, and the kill-switch DataProvider all borrow from this single
+    # connection pool instead of minting one pool each (~25 idle conns → ~5).
+    db_engine = build_shared_db_engine()
+    journal = build_trade_journal(db_engine)
+    snapshot_store = build_feature_snapshot_store(db_engine)
     blackout_evaluator = build_blackout_evaluator(config)
     rejection_handler = RejectionHandler(journal=journal)
     oms = OrderManager(broker, rejection_handler=rejection_handler, journal=journal)
-    strategies = build_strategies(config, broker, oms, snapshot_store=snapshot_store)
+    strategies = build_strategies(
+        config, broker, oms, snapshot_store=snapshot_store, engine=db_engine,
+    )
     coordinator = build_coordinator(
         config, strategies, oms, broker,
-        blackout_evaluator=blackout_evaluator,
+        blackout_evaluator=blackout_evaluator, engine=db_engine,
     )
     reconciler = build_cold_start_reconciler(
         config, strategies, oms, broker, journal=journal,
     )
-    kill_switch_manager = build_kill_switch_manager(broker, oms)
+    kill_switch_manager = build_kill_switch_manager(broker, oms, engine=db_engine)
     engine = LiveEngine(
         strategies, oms, broker,
         coordinator=coordinator,

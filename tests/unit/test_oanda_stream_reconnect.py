@@ -141,3 +141,26 @@ def test_4xx_is_permanent(monkeypatch):
 
     with pytest.raises(httpx.HTTPStatusError):
         asyncio.run(run())
+
+
+def test_stream_populates_slippage_reference_cache(monkeypatch):
+    # CL-7vn9: each streamed PRICE caches the RAW venue quote strings +
+    # a monotonic capture time, so _compute_price_bound can reuse it as the
+    # slippage reference instead of issuing a fresh /pricing GET.
+    import time
+    _patch(monkeypatch, [_FakeResp([_PRICE_LINE])])
+    b = _broker()
+
+    async def run():  # noqa: ANN202
+        gen = b.stream_prices(["EUR_USD"])
+        await gen.__anext__()
+        await gen.aclose()
+
+    before = time.monotonic()
+    asyncio.run(run())
+    entry = b._last_stream_price["EUR_USD"]
+    # Raw strings (venue precision preserved), not floats.
+    assert entry["bid"] == "1.0840" and entry["ask"] == "1.0842"
+    assert isinstance(entry["bid"], str) and isinstance(entry["ask"], str)
+    # Monotonic stamp captured at yield time.
+    assert entry["mono"] >= before

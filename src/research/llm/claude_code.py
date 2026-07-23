@@ -101,8 +101,15 @@ class ClaudeCodeDriver(Driver):
                 f"[{m.role.upper()}]\n{m.content}" for m in chat
             )
 
+        # Prompt goes over STDIN, not argv (CL-8s2a). ``claude -p`` with no
+        # trailing prompt argument reads the prompt from stdin (the documented
+        # pipe usage), so a bare ``-p`` here + ``input=prompt`` below is
+        # equivalent to the old ``-p <prompt>`` — but the (often multi-KB)
+        # prompt is no longer visible in ``ps``/process listings and can't hit
+        # the OS ARG_MAX ceiling on long research prompts. Flags/behavior are
+        # otherwise unchanged.
         cmd = [
-            self._bin, "-p", prompt,
+            self._bin, "-p",
             "--model", model,
             "--output-format", "json",
             "--exclude-dynamic-system-prompt-sections",
@@ -119,7 +126,7 @@ class ClaudeCodeDriver(Driver):
 
         t0 = time.time()
         proc = subprocess.run(
-            cmd, capture_output=True, text=True,
+            cmd, capture_output=True, text=True, input=prompt,
             timeout=_CALL_TIMEOUT_SEC, env=env, cwd=self._workdir,
             check=False,
         )

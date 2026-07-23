@@ -54,6 +54,46 @@ def test_wrong_key_fails():
         unseal(sealed, other)
 
 
+# --- Recovery-KDF salt (CL-8s2a) -------------------------------------------
+#
+# The recovery path (scripts/initialize_vault.py, out of the vault_codec lane)
+# wraps the vault key under a FIXED public salt b"fx-recovery-v1". These pin
+# the two facts that govern whether a per-vault random recovery salt can be
+# added: derive_key is salt-agnostic (so it CAN), and the fixed-salt
+# derivation is byte-stable (so existing recovery.enc/documents keep opening —
+# backward compat is mandatory).
+
+
+def test_derive_key_is_salt_agnostic_supports_random_recovery_salt():
+    import secrets
+    entropy = secrets.token_bytes(32)
+    # Same "passphrase" (entropy), two DIFFERENT random salts → two different
+    # recovery keys, both valid: a per-vault random recovery salt needs no
+    # change to this KDF.
+    k_fixed = derive_key(entropy.hex(), b"fx-recovery-v1", iterations=1000)
+    k_rand = derive_key(entropy.hex(), secrets.token_bytes(16), iterations=1000)
+    assert len(k_fixed) == 32 and len(k_rand) == 32
+    assert k_fixed != k_rand
+    # A recovery.enc sealed under either key round-trips.
+    for k in (k_fixed, k_rand):
+        assert unseal(seal(b"vault-key-material", k), k) == b"vault-key-material"
+
+
+def test_fixed_recovery_salt_derivation_is_byte_stable():
+    """Backward-compat proof: the fixed-salt recovery derivation must stay
+    byte-for-byte identical, or existing printed recovery documents +
+    recovery.enc for the LIVE vault would no longer decrypt."""
+    entropy_hex = "00" * 32  # a fixed known entropy for a stable vector
+    k1 = derive_key(entropy_hex, b"fx-recovery-v1", iterations=1000)
+    k2 = derive_key(entropy_hex, b"fx-recovery-v1", iterations=1000)
+    assert k1 == k2  # deterministic
+    # Pin the exact bytes so a future KDF tweak can't silently break recovery.
+    import hashlib
+    assert k1 == hashlib.pbkdf2_hmac(
+        "sha256", entropy_hex.encode(), b"fx-recovery-v1", 1000, 32,
+    )
+
+
 def test_initialize_and_agent_roundtrip():
     """The actual incident: a vault written by initialize_vault's encrypt must
     open via vault_agent's decrypt path."""
