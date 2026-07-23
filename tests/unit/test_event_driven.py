@@ -307,6 +307,271 @@ class TestWindow:
 
 
 # =============================================================================
+# Gate B batch parity + bounded ASSESSED poll (CL-9ts9 / CL-8s2a)
+# =============================================================================
+
+
+def make_price_db() -> Any:
+    """In-memory sqlite with prices + intraday_quotes tables so a REAL
+    DataProvider (not the FakeProvider) drives Gate B — needed to prove the
+    batched read path yields byte-identical verdicts to the per-call path
+    against genuine rows (parity, not a mock)."""
+    engine = sa.create_engine("sqlite://")
+    with engine.begin() as conn:
+        conn.execute(text("""
+            CREATE TABLE prices (
+                ts TIMESTAMP, symbol VARCHAR(64), close FLOAT,
+                PRIMARY KEY (ts, symbol)
+            )
+        """))
+        conn.execute(text("""
+            CREATE TABLE macro_data (
+                observation_date DATE, series_id VARCHAR(64),
+                value FLOAT, release_date DATE,
+                PRIMARY KEY (observation_date, series_id)
+            )
+        """))
+        conn.execute(text("""
+            CREATE TABLE intraday_quotes (
+                ts TIMESTAMP, symbol VARCHAR(64), mid FLOAT
+            )
+        """))
+        # 25 daily closes per DB-native symbol (GOLD, USDCAD, OIL_WTI) so
+        # get_realized_vol has its window+1 rows. USDCAD trends up.
+        for i in range(25):
+            d = f"2026-02-{i + 1:02d} 00:00:00"
+            conn.execute(text(
+                "INSERT INTO prices VALUES (:t, 'GOLD', :c)",
+            ), {"t": d, "c": 2400.0 + i * 2.0})
+            conn.execute(text(
+                "INSERT INTO prices VALUES (:t, 'USDCAD', :c)",
+            ), {"t": d, "c": 1.30 + i * 0.001})
+            conn.execute(text(
+                "INSERT INTO prices VALUES (:t, 'OIL_WTI', :c)",
+            ), {"t": d, "c": 70.0 + i * 0.1})
+    return engine
+
+
+def _seed_intraday(engine: Any, symbol: str, ts: datetime, mid: float) -> None:
+    # Space-separated format so sqlite's TIMESTAMP text comparison matches
+    # the datetime bind params get_intraday_value passes (an ISO-with-T /
+    # tz-offset string would sort differently and never match).
+    with engine.begin() as conn:
+        conn.execute(
+            text("INSERT INTO intraday_quotes VALUES (:t, :s, :m)"),
+            {"t": ts.strftime("%Y-%m-%d %H:%M:%S"), "s": symbol, "m": mid},
+        )
+
+
+class TestGateBBatchParity:
+    """CL-9ts9 / CL-8s2a task 3: the batched Gate-B lookups must yield the
+    SAME verdicts as the per-instrument path. Runs the SAME confluence over
+    the SAME real-DB fixture twice — once with poll_cache=None (per-call
+    reads) and once with a built PollCache (batched reads) — and asserts
+    every InstrumentCheck field matches, plus the outcome/transition."""
+
+    def _confluence(self, engine: Any) -> Any:
+        from src.data.provider import DataProvider
+        from src.events.confluence import ConfluenceConfig, EventConfluence
+        provider = DataProvider(engine)
+        return EventConfluence(
+            config=ConfluenceConfig(), data_provider=provider, db_engine=engine,
+            instrument_map=_default_instrument_map_for_test(),
+        )
+
+    def _fixture_events(self, now: datetime) -> list[dict[str, Any]]:
+        seen = now - timedelta(minutes=60)
+        # A spread of tradable legs across three instruments + a couple of
+        # non-tradable/unmapped ones the batch must simply skip.
+        def ev(eid: int, aff: list[dict[str, Any]]) -> dict[str, Any]:
+            return {
+                "id": eid, "seen_at": seen.isoformat(), "theme": "energy",
+                "assessment": json.dumps({
+                    "urgency": 8, "confidence": 0.9, "affected": aff,
+                }),
+            }
+        return [
+            ev(1, [{"instrument": "USD_CAD", "kind": "fx",
+                    "direction": "long", "reason": "a"}]),
+            ev(2, [{"instrument": "XAU_USD", "kind": "oanda",
+                    "direction": "long", "reason": "b"},
+                   {"instrument": "USD_CAD", "kind": "fx",
+                    "direction": "short", "reason": "c"}]),
+            ev(3, [{"instrument": "BCO_USD", "kind": "oanda",
+                    "direction": "long", "reason": "d"},
+                   {"instrument": "SOME_EQUITY", "kind": "equity_watch",
+                    "direction": "watch", "reason": "e"}]),
+        ]
+
+    def _checks_signature(self, result: Any) -> list[tuple[Any, ...]]:
+        return [
+            (c.instrument, c.symbol, c.confirmed, c.move_frac,
+             c.threshold_frac, c.reason)
+            for c in result.checks
+        ]
+
+    def test_batched_verdicts_are_byte_identical(self) -> None:
+        now = datetime.now(UTC)
+        seen = now - timedelta(minutes=60)
+        # Two independent identical DBs so the guarded UPDATE in one run
+        # doesn't change the other run's starting status.
+        eng_a = make_price_db()
+        eng_b = make_price_db()
+        # Intraday quotes: reference at seen_at, moved current at now — a
+        # real intraday move so Gate B does non-trivial math (not just the
+        # daily-close short-circuit).
+        for eng in (eng_a, eng_b):
+            with eng.begin() as conn:  # geo_events for the transition write
+                conn.execute(text("""
+                    CREATE TABLE geo_events (
+                        id INTEGER PRIMARY KEY, status TEXT,
+                        status_updated_at TEXT
+                    )
+                """))
+                for eid in (1, 2, 3):
+                    conn.execute(
+                        text("INSERT INTO geo_events VALUES (:i, 'ASSESSED', '')"),
+                        {"i": eid},
+                    )
+            for sym, ref, cur in [
+                ("USD_CAD", 1.34, 1.36), ("XAU_USD", 2400.0, 2440.0),
+                ("BCO_USD", 70.0, 71.5),
+            ]:
+                _seed_intraday(eng, sym, seen, ref)
+                _seed_intraday(eng, sym, now, cur)
+
+        conf_a = self._confluence(eng_a)   # per-call path
+        conf_b = self._confluence(eng_b)   # batched path
+        events = self._fixture_events(now)
+        cache = conf_b.build_poll_cache(events, now)
+        # The cache actually batched the tradable instrument set.
+        assert cache.prefetched
+        assert cache.batch_queries >= 1
+        assert cache.instruments_looked_up >= 2
+
+        for ev_a, ev_b in zip(events, events, strict=True):
+            r_call = conf_a.evaluate_and_transition(ev_a, prices={}, now=now)
+            r_batch = conf_b.evaluate_and_transition(
+                ev_b, prices={}, now=now, poll_cache=cache,
+            )
+            assert r_call.outcome == r_batch.outcome
+            assert r_call.transitioned == r_batch.transitioned
+            assert self._checks_signature(r_call) == self._checks_signature(r_batch)
+        # And at least one event genuinely CONFIRMED (proves the fixture
+        # exercised a real Gate-B pass, not just uniform no_price rejects).
+        outcomes = [
+            conf_a.evaluate_and_transition(e, prices={}, now=now).outcome
+            for e in self._fixture_events(now)
+        ]
+        # (re-eval on eng_a whose rows are now CONFIRMED — outcome still
+        # reports the computed verdict regardless of transitioned.)
+        assert "confirmed" in outcomes
+
+    def test_live_tick_still_beats_cache(self) -> None:
+        # The live tick must retain priority over the batched fallback mid,
+        # exactly as it beats the per-call _provider_price(now).
+        now = datetime.now(UTC)
+        seen = now - timedelta(minutes=60)
+        eng = make_price_db()
+        _seed_intraday(eng, "USD_CAD", seen, 1.34)
+        _seed_intraday(eng, "USD_CAD", now, 1.30)  # batched mid = DOWN move
+        conf = self._confluence(eng)
+        events = self._fixture_events(now)
+        cache = conf.build_poll_cache(events, now)
+        # Live tick UP (1.40) must confirm the long despite the batch's
+        # down intraday — proving the tick, not the cache, drove p1.
+        ev1 = events[0]
+        r = conf.evaluate_and_transition(
+            ev1, prices={"USD_CAD": tick(1.40)}, now=now, poll_cache=cache,
+        )
+        chk = next(c for c in r.checks if c.symbol == "USD_CAD")
+        assert chk.confirmed
+        assert chk.move_frac is not None and chk.move_frac > 0
+
+
+def _default_instrument_map_for_test() -> dict[str, str]:
+    # OANDA ids pass through as the market symbol (same as the live config).
+    return {
+        "USD_CAD": "USD_CAD", "XAU_USD": "XAU_USD", "BCO_USD": "BCO_USD",
+    }
+
+
+class TestBoundedAssessedPoll:
+    """CL-9ts9: the ASSESSED scan is time-windowed + LIMITed, ordered
+    freshest-first, and LOGS when the cap elides rows (never silent)."""
+
+    def test_window_excludes_stale_rows(self, tmp_path: Any) -> None:
+        db = make_db()
+        # In-window (fresh) vs out-of-window (older than the 6h default).
+        fresh = insert_event(db, minutes_ago=60)
+        stale = insert_event(db, minutes_ago=60 * 10)  # 10h > 6h window
+        strat = make_strategy(tmp_path, db=db, provider=confirming_provider())
+        rows = strat._fetch_assessed()
+        assert rows is not None
+        ids = {r["id"] for r in rows}
+        assert fresh in ids
+        assert stale not in ids
+
+    def test_limit_caps_and_orders_freshest_first(self, tmp_path: Any) -> None:
+        db = make_db()
+        # Insert 5 in-window rows at increasing recency (older → newer).
+        ids_in_order = [
+            insert_event(db, minutes_ago=60 + (5 - i)) for i in range(5)
+        ]
+        strat = make_strategy(
+            tmp_path, db=db, provider=confirming_provider(),
+            assessed_poll_limit=3,
+        )
+        rows = strat._fetch_assessed()
+        assert rows is not None
+        assert len(rows) == 3  # LIMIT honored
+        # Freshest-first: the 3 most-recent (last inserted) rows, DESC.
+        returned = [r["id"] for r in rows]
+        assert returned == list(reversed(ids_in_order))[:3]
+
+    def test_cap_elision_is_logged(
+        self, tmp_path: Any, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        db = make_db()
+        for _ in range(4):
+            insert_event(db, minutes_ago=60)
+        strat = make_strategy(
+            tmp_path, db=db, provider=confirming_provider(),
+            assessed_poll_limit=2,
+        )
+        with caplog.at_level("WARNING", logger="src.strategies.event_driven"):
+            rows = strat._fetch_assessed()
+        assert rows is not None and len(rows) == 2
+        assert any(
+            "ASSESSED poll capped" in r.message and "elided" in r.message
+            for r in caplog.records
+        )
+
+    def test_no_log_when_under_cap(
+        self, tmp_path: Any, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        db = make_db()
+        insert_event(db, minutes_ago=60)
+        strat = make_strategy(
+            tmp_path, db=db, provider=confirming_provider(),
+            assessed_poll_limit=200,
+        )
+        with caplog.at_level("WARNING", logger="src.strategies.event_driven"):
+            strat._fetch_assessed()
+        assert not any("ASSESSED poll capped" in r.message for r in caplog.records)
+
+    def test_bounded_poll_preserves_confirmation(self, tmp_path: Any) -> None:
+        # End-to-end: a fresh confirmable event still confirms+trades under
+        # the bounded poll (the bound never drops a tradable in-window row).
+        db = make_db()
+        eid = insert_event(db, minutes_ago=60)
+        strat = make_strategy(tmp_path, db=db, provider=confirming_provider())
+        intents = run(strat, CONFIRM_PRICES)
+        assert len(intents) == 1
+        assert get_status(db, eid) == "TRADED"
+
+
+# =============================================================================
 # Sizing / stop math
 # =============================================================================
 
@@ -1651,14 +1916,20 @@ class TestEntryLifecycle:
     def test_pending_entry_occupies_a_slot(self, tmp_path: Any) -> None:
         # A submitted-but-unfilled entry must count against
         # max_concurrent_event_positions so the strategy can't over-submit
-        # while the fill is in flight. cap=1: after the first entry parks
-        # pending, a second confirmed event on a DIFFERENT symbol is
-        # slot-blocked.
+        # while the fill is in flight. cap=1: the FIRST confirmed event
+        # parks a pending entry that fills the slot, the SECOND confirmed
+        # event on a DIFFERENT symbol is slot-blocked and stays CONFIRMED.
+        #
+        # The ASSESSED poll orders FRESHEST-FIRST (CL-9ts9), so the
+        # later-inserted event (BCO_USD, eid2) is processed first and wins
+        # the slot; the older USD_CAD event is slot-blocked. This test
+        # asserts the SLOT MECHANISM (exactly one pending, exactly one
+        # blocked) rather than which specific symbol wins.
         db = make_db()
-        insert_event(db)  # long USD_CAD
+        eid1 = insert_event(db)  # long USD_CAD (older)
         affected2 = [{"instrument": "BCO_USD", "kind": "oanda",
                       "direction": "long", "reason": "second"}]
-        eid2 = insert_event(db, affected=affected2)
+        eid2 = insert_event(db, affected=affected2)  # BCO_USD (fresher)
         strat = make_strategy(
             tmp_path, db=db, provider=confirming_provider(),
             max_concurrent_event_positions=1, per_instrument_max_pct=1.0,
@@ -1668,9 +1939,13 @@ class TestEntryLifecycle:
         intents = run(strat, prices, broker)
         # Only ONE entry intent — the pending leg occupies the single slot.
         assert len(intents) == 1
-        assert "USD_CAD" in strat.book.pending_entries
-        # The second symbol was slot-blocked, its row stays CONFIRMED.
-        assert get_status(db, eid2) == "CONFIRMED"
+        # Exactly one symbol parked pending; freshest-first → BCO_USD wins.
+        assert len(strat.book.pending_entries) == 1
+        assert "BCO_USD" in strat.book.pending_entries
+        assert intents[0].symbol == "BCO_USD"
+        # The other event was slot-blocked, its row stays CONFIRMED.
+        assert get_status(db, eid2) == "TRADED"
+        assert get_status(db, eid1) == "CONFIRMED"
 
     def test_pending_entry_counts_toward_concentration_cap(
         self, tmp_path: Any,

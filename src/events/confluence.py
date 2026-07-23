@@ -117,6 +117,46 @@ class ConfluenceConfig:
 
 
 @dataclass
+class PollCache:
+    """Per-poll-cycle batched price/vol cache for Gate B (CL-9ts9 / CL-8s2a).
+
+    Confluence Gate B used to look mid/vol up PER event × PER instrument,
+    each call opening a NEW DB connection → hundreds of PG round-trips per
+    tick as the ASSESSED set grew. This cache holds the values that are
+    IDENTICAL across every event in a single tick — the current mid (at
+    ``now``) and the realized daily vol (at ``now``) per instrument —
+    prefetched ONCE via the DataProvider ``*_batch`` helpers, plus a
+    lazily-filled per-(symbol, seen_at) reference-price memo so a repeated
+    seen_at isn't re-queried within the cycle.
+
+    STRICTLY single-cycle: a fresh cache is built each poll (built by
+    :meth:`EventConfluence.build_poll_cache`), so there is NO cross-tick
+    staleness — a stale value can never outlive the tick that fetched it.
+    When ``None`` is passed to evaluate_and_transition, the confluence
+    layer falls straight back to the byte-identical per-symbol reads.
+    """
+
+    #: symbol → current mid at ``now`` (intraday-at-now, daily-close
+    #: fallback) — replaces the ``_provider_price(symbol, now)`` fallback
+    #: leg. Absent key = the batched lookup found nothing (→ per-call path).
+    mid_now: dict[str, float] = field(default_factory=dict)
+    #: symbol → DAILY realized vol at ``now`` (already de-annualized).
+    #: Absent key = no vol data batched (→ per-call path).
+    daily_vol_now: dict[str, float] = field(default_factory=dict)
+    #: (symbol, seen_at) → reference price memo, filled lazily by the
+    #: reference-price leg so a shared seen_at is queried at most once.
+    ref_price: dict[tuple[str, datetime], float | None] = field(default_factory=dict)
+    #: True once mid_now/daily_vol_now have been prefetched — so a cache
+    #: object built but never populated (empty instrument set) still routes
+    #: through the per-call path rather than treating "" as "no data".
+    prefetched: bool = False
+    #: Diagnostics for the one-line timing log (CL-3lga): how many symbols
+    #: were batched and how many DB queries the batch prefetch issued.
+    instruments_looked_up: int = 0
+    batch_queries: int = 0
+
+
+@dataclass
 class InstrumentCheck:
     """Gate-B outcome for a single affected instrument."""
 
@@ -202,12 +242,20 @@ class EventConfluence:
         event: dict[str, Any],
         prices: dict[str, Any] | None = None,
         now: datetime | None = None,
+        poll_cache: PollCache | None = None,
     ) -> ConfluenceResult:
         """Evaluate one ASSESSED row; write CONFIRMED/EXPIRED atomically.
 
         ``prices`` is the live tick dict the engine hands strategies
         ({symbol: {"bid":…, "ask":…}}); used for the current-price leg
         when available, DataProvider closes otherwise.
+
+        ``poll_cache`` (CL-9ts9 / CL-8s2a) is an optional per-tick
+        :class:`PollCache` of pre-batched current-mid / daily-vol reads
+        shared across all events in a poll cycle. It never changes any
+        gate decision — the same value the per-instrument path would have
+        read is served from the batch instead — so a batched verdict is
+        byte-identical to the per-call verdict. None → per-call reads.
         """
         now = now or datetime.now(UTC)
         event_id = event.get("id")
@@ -268,7 +316,9 @@ class EventConfluence:
         for aff in affected:
             if not isinstance(aff, dict):
                 continue
-            check = self._check_instrument(aff, seen_at, now, prices or {})
+            check = self._check_instrument(
+                aff, seen_at, now, prices or {}, poll_cache,
+            )
             result.checks.append(check)
             if check.confirmed:
                 confirmed_count += 1
@@ -305,6 +355,7 @@ class EventConfluence:
         seen_at: datetime,
         now: datetime,
         prices: dict[str, Any],
+        poll_cache: PollCache | None = None,
     ) -> InstrumentCheck:
         instrument = str(aff.get("instrument") or "")
         kind = str(aff.get("kind") or "")
@@ -322,17 +373,23 @@ class EventConfluence:
             check.reason = "watch_only"
             return check
 
-        # Current price: live tick first, provider close fallback.
+        # Current price: live tick first, provider close fallback. The
+        # fallback leg (and only that leg) is served from the per-tick
+        # batch cache when present — the same value _provider_price(now)
+        # would have read (CL-9ts9). Live-tick priority is unchanged.
         p1 = mid_price(prices.get(symbol))
         if p1 is None:
-            p1 = self._provider_price(symbol, now)
-        # Reference price at (or just before) seen_at: provider closes.
-        p0 = self._provider_price(symbol, seen_at)
+            p1 = self._current_price(symbol, now, poll_cache)
+        # Reference price at (or just before) seen_at: provider closes,
+        # memoized per (symbol, seen_at) within the cycle.
+        p0 = self._reference_price(symbol, seen_at, poll_cache)
         if p0 is None or p1 is None or p0 <= 0:
             check.reason = "no_price_data"
             return check
 
-        daily_vol = self._daily_vol(symbol, self.config.realized_vol_window, now)
+        daily_vol = self._cached_daily_vol(
+            symbol, self.config.realized_vol_window, now, poll_cache,
+        )
         if daily_vol is None or daily_vol <= 0:
             check.reason = "no_vol_data"
             return check
@@ -358,6 +415,151 @@ class EventConfluence:
         check.confirmed = True
         check.reason = "confirmed"
         return check
+
+    # ------------------------------------------------------------------
+    # Per-tick batch cache (CL-9ts9 / CL-8s2a)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def collect_instruments(
+        events: list[dict[str, Any]],
+        instrument_map: dict[str, str],
+    ) -> list[str]:
+        """The unique set of Gate-B market symbols across ``events`` —
+        only tradable-kind, tradable-direction affected instruments, since
+        those are the only ones that hit price/vol reads. Symbols are the
+        instrument_map-resolved ids the DataProvider batch helpers key on.
+        Non-dict / malformed rows are skipped exactly as Gate B skips them."""
+        symbols: set[str] = set()
+        for event in events:
+            assessment = EventConfluence.parse_assessment(event.get("assessment"))
+            if assessment is None:
+                continue
+            affected = assessment.get("affected") or []
+            if not isinstance(affected, list):
+                continue
+            for aff in affected:
+                if not isinstance(aff, dict):
+                    continue
+                if str(aff.get("kind") or "") not in TRADABLE_KINDS:
+                    continue
+                if str(aff.get("direction") or "") not in TRADE_DIRECTIONS:
+                    continue
+                instrument = str(aff.get("instrument") or "")
+                symbols.add(instrument_map.get(instrument, instrument))
+        return sorted(symbols)
+
+    def build_poll_cache(
+        self, events: list[dict[str, Any]], now: datetime,
+    ) -> PollCache:
+        """Prefetch the current-mid and daily-vol for the WHOLE instrument
+        set of a poll cycle in one batch each (CL-9ts9 / CL-8s2a), so Gate
+        B reads them from memory instead of a per-event × per-instrument DB
+        round-trip. The reference-price-at-seen_at leg stays per-call
+        (seen_at differs per event) but is memoized within the cycle.
+
+        Best-effort: any batch error leaves the corresponding map empty and
+        Gate B transparently falls back to the byte-identical per-symbol
+        reads — never breaks a poll. No provider → an empty (unprefetched)
+        cache, i.e. the per-call path throughout."""
+        cache = PollCache()
+        if self.data is None:
+            return cache
+        symbols = self.collect_instruments(events, self.instrument_map)
+        cache.instruments_looked_up = len(symbols)
+        if not symbols:
+            cache.prefetched = True
+            return cache
+
+        # Current mid @ now: intraday-at-now (within staleness) first, daily
+        # close fallback for whatever intraday didn't cover — mirrors the
+        # per-symbol _provider_price(now) order exactly.
+        mid: dict[str, float] = {}
+        getter = getattr(self.data, "get_intraday_values_batch", None)
+        if getter is not None:
+            try:
+                mid.update(getter(
+                    symbols, now, self.config.intraday_max_staleness_minutes,
+                ))
+                cache.batch_queries += 1
+            except Exception:
+                logger.debug("intraday batch prefetch failed", exc_info=True)
+        missing_mid = [s for s in symbols if s not in mid]
+        latest_getter = getattr(self.data, "get_latest_values_batch", None)
+        if missing_mid and latest_getter is not None:
+            try:
+                mid.update(latest_getter(missing_mid, now))
+                cache.batch_queries += 1
+            except Exception:
+                logger.debug("latest-value batch prefetch failed", exc_info=True)
+        cache.mid_now = mid
+
+        # Daily realized vol @ now (de-annualized, matching _daily_vol).
+        vol_getter = getattr(self.data, "get_realized_vols_batch", None)
+        if vol_getter is not None:
+            try:
+                annualized = vol_getter(
+                    symbols, self.config.realized_vol_window, now,
+                )
+                cache.batch_queries += 1
+                cache.daily_vol_now = {
+                    sym: float(v) / math.sqrt(_TRADING_DAYS_PER_YEAR)
+                    for sym, v in annualized.items()
+                    if v is not None
+                }
+            except Exception:
+                logger.debug("realized-vol batch prefetch failed", exc_info=True)
+        cache.prefetched = True
+        return cache
+
+    def _current_price(
+        self, symbol: str, now: datetime, poll_cache: PollCache | None,
+    ) -> float | None:
+        """Current-price fallback leg — served from the per-tick batch when
+        the cache prefetched it, else the byte-identical per-symbol read."""
+        if poll_cache is not None and poll_cache.prefetched:
+            cached = poll_cache.mid_now.get(symbol)
+            if cached is not None:
+                return cached
+            # Absent from the batch means the batched read found nothing —
+            # the per-call read would find nothing too. But fall through so
+            # a partial/failed batch (empty map) still self-heals per call.
+            if poll_cache.mid_now:
+                return None
+        return self._provider_price(symbol, now)
+
+    def _reference_price(
+        self, symbol: str, seen_at: datetime, poll_cache: PollCache | None,
+    ) -> float | None:
+        """Reference price at ``seen_at`` — per-call (seen_at differs per
+        event) but memoized per (symbol, seen_at) within the cycle so a
+        shared seen_at is queried at most once."""
+        if poll_cache is None:
+            return self._provider_price(symbol, seen_at)
+        key = (symbol, seen_at)
+        if key not in poll_cache.ref_price:
+            poll_cache.ref_price[key] = self._provider_price(symbol, seen_at)
+        return poll_cache.ref_price[key]
+
+    def _cached_daily_vol(
+        self, symbol: str, window: int, now: datetime,
+        poll_cache: PollCache | None,
+    ) -> float | None:
+        """Daily realized vol at ``now`` — from the per-tick batch when
+        prefetched (default window only), else the per-symbol read. A
+        non-default window (never used in the live path) always reads per
+        call so the batched value can't be served for the wrong window."""
+        if (
+            poll_cache is not None
+            and poll_cache.prefetched
+            and window == self.config.realized_vol_window
+        ):
+            cached = poll_cache.daily_vol_now.get(symbol)
+            if cached is not None:
+                return cached
+            if poll_cache.daily_vol_now:
+                return None
+        return self._daily_vol(symbol, window, now)
 
     # ------------------------------------------------------------------
     # Data access

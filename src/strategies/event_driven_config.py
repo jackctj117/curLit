@@ -99,6 +99,21 @@ class EventDrivenConfig:
     # recreate that failure mode. Enable once cross-asset data coverage is
     # proven complete.
     cross_asset_block_on_missing: bool = False
+    # ---- ASSESSED poll bounds (CL-9ts9) --------------------------------
+    # The ASSESSED scan was an UNBOUNDED `SELECT ... WHERE status='ASSESSED'`
+    # (see event_driven._POLL_SQL): it grew with the backlog, and rows with a
+    # bad/never-confirming seen_at could linger forever, so every poll paid
+    # to re-scan (and Gate-B re-price) a set that only ever grew. Bound it:
+    #   * time window — only rows seen within the last N hours are polled.
+    #     Anything older is already past confirm_window_max_minutes (2h by
+    #     default) → it would only ever EXPIRE, so excluding it changes no
+    #     tradable outcome. Default 6h leaves generous headroom above the 2h
+    #     window for the once-per-run expired alert to still fire.
+    #   * LIMIT — at most this many rows per poll, ordered freshest-first so
+    #     the highest-urgency, most-recent (most tradable) events are always
+    #     processed; if the cap elides rows it is LOGGED (never silent).
+    assessed_poll_window_hours: float = 6.0
+    assessed_poll_limit: int = 200
     # ---- Alerts --------------------------------------------------------
     # EXPIRED events at/above this urgency get a brief info alert.
     expired_alert_min_urgency: int = 8

@@ -40,7 +40,8 @@ engine must never fail to boot because the sibling half hasn't landed.
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime
+import time
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import text
@@ -312,14 +313,29 @@ class EventDrivenStrategy:
     # DB polling
     # ------------------------------------------------------------------
 
+    # BOUNDED ASSESSED scan (CL-9ts9): the old query was an unbounded
+    # `WHERE status='ASSESSED' ORDER BY seen_at` that grew with the backlog
+    # and never shed a bad/never-confirming row. Now it is windowed
+    # (seen_at >= :floor) and LIMITed, ordered FRESHEST-FIRST (seen_at DESC)
+    # so the most-recent / most-tradable events are always processed; the
+    # count query below detects when the LIMIT elided rows so the cap is
+    # logged, never silent. seen_at is a bind param (portable across the
+    # pg live path and the sqlite ISO-TEXT test fixtures).
     _POLL_SQL = text(
         "SELECT id, seen_at, source, external_id, headline, url, theme, "
         "assessment, status "
-        "FROM geo_events WHERE status = 'ASSESSED' ORDER BY seen_at"
+        "FROM geo_events WHERE status = 'ASSESSED' AND seen_at >= :floor "
+        "ORDER BY seen_at DESC LIMIT :lim"
+    )
+    _POLL_COUNT_SQL = text(
+        "SELECT count(*) FROM geo_events "
+        "WHERE status = 'ASSESSED' AND seen_at >= :floor"
     )
 
     def _fetch_assessed(self) -> list[dict[str, Any]] | None:
-        """ASSESSED rows, oldest first. None = table unreachable (NO-OP)."""
+        """ASSESSED rows within the poll window, freshest first, capped at
+        ``assessed_poll_limit`` (CL-9ts9). None = table unreachable (NO-OP).
+        When the cap elides rows it is LOGGED — never silently dropped."""
         if self.db is None:
             if not self._table_missing_logged:
                 logger.warning(
@@ -328,9 +344,27 @@ class EventDrivenStrategy:
                 )
                 self._table_missing_logged = True
             return None
+        floor = (
+            datetime.now(UTC)
+            - timedelta(hours=self.config.assessed_poll_window_hours)
+        ).isoformat()
+        limit = self.config.assessed_poll_limit
+        params = {"floor": floor, "lim": limit}
         try:
             with self.db.connect() as conn:
-                rows = [dict(r) for r in conn.execute(self._POLL_SQL).mappings().all()]
+                rows = [
+                    dict(r)
+                    for r in conn.execute(self._POLL_SQL, params).mappings().all()
+                ]
+                # Only pay for the count when we actually hit the cap — a
+                # full page means there MAY be elided rows worth logging.
+                total = (
+                    conn.execute(
+                        self._POLL_COUNT_SQL, {"floor": floor},
+                    ).scalar()
+                    if len(rows) >= limit
+                    else len(rows)
+                )
         except Exception as exc:
             if not self._table_missing_logged:
                 logger.warning(
@@ -344,6 +378,14 @@ class EventDrivenStrategy:
         if self._table_missing_logged:
             logger.info("geo_events table now reachable — event polling active")
             self._table_missing_logged = False
+        if total and total > len(rows):
+            logger.warning(
+                "ASSESSED poll capped: processing %d of %d in-window rows "
+                "(limit=%d, window=%.1fh, freshest first) — %d older row(s) "
+                "elided this cycle (CL-9ts9)",
+                len(rows), total, limit,
+                self.config.assessed_poll_window_hours, total - len(rows),
+            )
         return rows
 
     # ------------------------------------------------------------------
@@ -689,9 +731,18 @@ class EventDrivenStrategy:
         # confirmation (CL-9dhg findings 1 + 2).
         intents = self._check_exits(prices, now, broker_positions)
 
+        poll_started = time.monotonic()
         rows = self._fetch_assessed()
         if rows is None:
             return intents  # geo_events unreachable — NO-OP (logged once)
+
+        # Batch the Gate-B current-mid / daily-vol reads for the WHOLE
+        # instrument set of this tick ONCE (CL-9ts9 / CL-8s2a) — one
+        # connection, one query per metric — instead of a fresh connection
+        # per event × per instrument. Single-cycle only: a fresh cache each
+        # poll, so no cross-tick staleness. Byte-identical verdicts: the
+        # cache serves the same value the per-call read would have.
+        poll_cache = self.confluence.build_poll_cache(rows, now)
 
         equity = self._get_equity(broker) if rows else None
         # ENTRY half of CL-hqyj: record_entry captures the submit-time
@@ -708,7 +759,7 @@ class EventDrivenStrategy:
         for row in rows:
             try:
                 result = self.confluence.evaluate_and_transition(
-                    row, prices=prices, now=now,
+                    row, prices=prices, now=now, poll_cache=poll_cache,
                 )
             except Exception:
                 logger.exception(
@@ -762,5 +813,16 @@ class EventDrivenStrategy:
                 self.confluence.transition(row.get("id"), "CONFIRMED", "TRADED")
             # else: row stays CONFIRMED — visible in the table as
             # "confirmed but not traded" (caps / unknown instruments).
+
+        # One-line poll-cycle timing (CL-3lga): events scanned, instruments
+        # batched, batch DB queries issued, wall-ms. Makes the batch win
+        # (queries flat as the event set grows) measurable in the logs.
+        logger.info(
+            "event poll cycle: events=%d instruments=%d batch_queries=%d "
+            "wall_ms=%.1f",
+            len(rows), poll_cache.instruments_looked_up,
+            poll_cache.batch_queries,
+            (time.monotonic() - poll_started) * 1000.0,
+        )
 
         return intents

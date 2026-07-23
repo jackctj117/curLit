@@ -351,6 +351,128 @@ class TestReadMethodsNormalize:
         assert prices_call == ["GOLD", "EURUSD", "WHEAT_USD"]
 
 
+class TestBatchReads:
+    """Batched price/vol helpers (CL-9ts9 / CL-8s2a) — one connection, one
+    query per metric over the whole instrument set. Each must return
+    BYTE-IDENTICAL values to the per-symbol path (the batch is a pure
+    round-trip reduction, never a semantic change), key by the caller's
+    ORIGINAL id, honor the OANDA→DB normalization, and no-op on []."""
+
+    def _seed_vol(self, engine) -> None:  # type: ignore[no-untyped-def]
+        with engine.begin() as conn:
+            for i in range(25):
+                d = f"2026-02-{i + 1:02d} 00:00:00"
+                conn.execute(text(
+                    "INSERT INTO prices VALUES "
+                    f"('{d}', 'GOLD', {2400.0 + i * 1.5})",
+                ))
+                conn.execute(text(
+                    "INSERT INTO prices VALUES "
+                    f"('{d}', 'USDJPY', {150.0 + i * 0.05})",
+                ))
+
+    def test_latest_values_batch_matches_per_symbol(self, provider_engine) -> None:  # type: ignore[no-untyped-def]
+        with provider_engine.begin() as conn:
+            conn.execute(text(
+                "INSERT INTO prices VALUES ('2026-04-03 00:00:00', 'GOLD', 2400.0)",
+            ))
+        provider = DataProvider(provider_engine)
+        as_of = datetime(2026, 4, 3, tzinfo=UTC)
+        # XAU_USD→GOLD (prices), DGS2 (macro), EURUSD (prices).
+        batch = provider.get_latest_values_batch(["XAU_USD", "DGS2", "EURUSD"], as_of)
+        assert batch["XAU_USD"] == provider.get_latest_value("XAU_USD", as_of)
+        assert batch["DGS2"] == provider.get_latest_value("DGS2", as_of)
+        assert batch["EURUSD"] == provider.get_latest_value("EURUSD", as_of)
+        # Keyed by the ORIGINAL id (the OANDA id, not the DB symbol GOLD).
+        assert "GOLD" not in batch and batch["XAU_USD"] == 2400.0
+
+    def test_latest_values_batch_omits_missing(self, provider_engine) -> None:  # type: ignore[no-untyped-def]
+        provider = DataProvider(provider_engine)
+        batch = provider.get_latest_values_batch(
+            ["EURUSD", "NEVER_EXISTS"], datetime(2026, 4, 3, tzinfo=UTC),
+        )
+        assert "EURUSD" in batch
+        assert "NEVER_EXISTS" not in batch  # None per-symbol → absent in batch
+
+    def test_realized_vols_batch_matches_per_symbol(self, provider_engine) -> None:  # type: ignore[no-untyped-def]
+        self._seed_vol(provider_engine)
+        provider = DataProvider(provider_engine)
+        as_of = datetime(2026, 3, 1, tzinfo=UTC)
+        batch = provider.get_realized_vols_batch(["XAU_USD", "USD_JPY"], 20, as_of)
+        assert batch["XAU_USD"] == provider.get_realized_vol("XAU_USD", 20, as_of)
+        assert batch["USD_JPY"] == provider.get_realized_vol("USD_JPY", 20, as_of)
+
+    def test_realized_vols_batch_omits_thin_series(self, provider_engine) -> None:  # type: ignore[no-untyped-def]
+        provider = DataProvider(provider_engine)
+        # Default fixture EURUSD has 3 rows; window=20 needs 21 → omitted,
+        # exactly as the per-symbol call returns None.
+        batch = provider.get_realized_vols_batch(
+            ["EURUSD"], 20, datetime(2026, 4, 3, tzinfo=UTC),
+        )
+        assert "EURUSD" not in batch
+        assert provider.get_realized_vol("EURUSD", 20) is None
+
+    def test_intraday_values_batch_matches_per_symbol(self, provider_engine) -> None:  # type: ignore[no-untyped-def]
+        with provider_engine.begin() as conn:
+            conn.execute(text("""
+                CREATE TABLE intraday_quotes (
+                    ts TIMESTAMP, symbol TEXT, mid FLOAT
+                )
+            """))
+            conn.execute(text(
+                "INSERT INTO intraday_quotes VALUES "
+                "('2026-04-03 11:00:00', 'XAU_USD', 2401.0), "
+                "('2026-04-03 11:30:00', 'XAU_USD', 2402.0), "
+                "('2026-04-03 11:00:00', 'USD_CAD', 1.36)",
+            ))
+        provider = DataProvider(provider_engine)
+        as_of = datetime(2026, 4, 3, 12, tzinfo=UTC)
+        batch = provider.get_intraday_values_batch(["XAU_USD", "USD_CAD"], as_of, 120)
+        # Nearest at/before as_of, RAW-keyed (no normalization), same as
+        # the per-symbol get_intraday_value.
+        assert batch["XAU_USD"] == provider.get_intraday_value("XAU_USD", as_of, 120)
+        assert batch["XAU_USD"] == 2402.0
+        assert batch["USD_CAD"] == provider.get_intraday_value("USD_CAD", as_of, 120)
+
+    def test_intraday_batch_honors_staleness(self, provider_engine) -> None:  # type: ignore[no-untyped-def]
+        with provider_engine.begin() as conn:
+            conn.execute(text("""
+                CREATE TABLE intraday_quotes (
+                    ts TIMESTAMP, symbol TEXT, mid FLOAT
+                )
+            """))
+            conn.execute(text(
+                "INSERT INTO intraday_quotes VALUES "
+                "('2026-04-03 10:00:00', 'XAU_USD', 2400.0)",
+            ))
+        provider = DataProvider(provider_engine)
+        as_of = datetime(2026, 4, 3, 12, tzinfo=UTC)  # quote is 120min old
+        # 60min bound → too stale, omitted (matches per-symbol None).
+        assert provider.get_intraday_values_batch(["XAU_USD"], as_of, 60) == {}
+        assert provider.get_intraday_value("XAU_USD", as_of, 60) is None
+        # 180min bound → within, returned.
+        assert provider.get_intraday_values_batch(["XAU_USD"], as_of, 180) == {
+            "XAU_USD": 2400.0,
+        }
+
+    def test_all_batches_noop_on_empty(self, provider_engine) -> None:  # type: ignore[no-untyped-def]
+        provider = DataProvider(provider_engine)
+        now = datetime(2026, 4, 3, tzinfo=UTC)
+        assert provider.get_latest_values_batch([], now) == {}
+        assert provider.get_realized_vols_batch([], 20, now) == {}
+        assert provider.get_intraday_values_batch([], now, 120) == {}
+
+    def test_batch_missing_table_returns_empty(self) -> None:
+        # No tables at all — batch reads must fail soft (empty dict), never
+        # raise (a missing intraday_quotes / prices must idle the caller).
+        bad = create_engine("sqlite:///:memory:")
+        provider = DataProvider(bad)
+        now = datetime(2026, 4, 1, tzinfo=UTC)
+        assert provider.get_latest_values_batch(["X"], now) == {}
+        assert provider.get_realized_vols_batch(["X"], 20, now) == {}
+        assert provider.get_intraday_values_batch(["X"], now, 120) == {}
+
+
 class TestFxStrategyPathUnaffected:
     """The existing FX/macro strategy lookups query DB-native names and
     must resolve exactly as before — normalization is a no-op for them."""

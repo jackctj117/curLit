@@ -6,7 +6,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
 
 logger = logging.getLogger(__name__)
 
@@ -431,3 +431,193 @@ class DataProvider:
         if log_ret.empty:
             return None
         return float(log_ret.std(ddof=1) * (252.0 ** 0.5))
+
+    # ------------------------------------------------------------------
+    # Batched reads (CL-9ts9 / CL-8s2a) — confluence Gate B looked prices
+    # and vol up PER event × PER instrument, opening a NEW connection each
+    # call → hundreds of PG round-trips per poll as the ASSESSED backlog
+    # grows. These helpers collect the FULL instrument set for a tick and
+    # read each metric ONCE (one connection, one query per table) with an
+    # IN/ANY over the set, so the cost is O(1) connections + O(1) queries
+    # per metric instead of O(events × instruments). Results are keyed by
+    # the CALLER's original id (the OANDA/event id it passed) so the
+    # confluence layer can look them up directly; the byte-identical
+    # per-symbol path (get_latest_value / get_intraday_value /
+    # get_realized_vol) is still there for cache misses and non-batched
+    # callers.
+    # ------------------------------------------------------------------
+
+    def get_latest_values_batch(
+        self, symbols: list[str], as_of: datetime,
+    ) -> dict[str, float]:
+        """Most-recent value at/before ``as_of`` for each of ``symbols``,
+        keyed by the caller's ORIGINAL id. macro_data first then prices,
+        exactly mirroring :meth:`get_latest_value` — but for the whole set
+        in ONE connection (two IN queries). Symbols with no value are
+        simply absent from the returned dict (same as None per-symbol).
+
+        SQL is portable (expanding IN + row_number() window) so it runs on
+        the pg live path AND the sqlite test fixtures — the Gate-B parity
+        test exercises it against real in-memory data."""
+        out: dict[str, float] = {}
+        if not symbols:
+            return out
+        # original id → normalized DB symbol (many originals can map to one
+        # normalized symbol, e.g. BCO_USD & WTICO_USD → OIL_WTI).
+        norm = {s: _normalize_symbol(s) for s in symbols}
+        db_symbols = sorted(set(norm.values()))
+        macro: dict[str, float] = {}
+        prices: dict[str, float] = {}
+        try:
+            with self.engine.connect() as conn:
+                macro_q = text("""
+                    SELECT series_id, value FROM (
+                        SELECT series_id, value,
+                               row_number() OVER (
+                                   PARTITION BY series_id
+                                   ORDER BY observation_date DESC, release_date DESC
+                               ) AS rn
+                        FROM macro_data
+                        WHERE series_id IN :sids AND observation_date <= :as_of
+                    ) t WHERE rn = 1
+                """).bindparams(bindparam("sids", expanding=True))
+                for row in conn.execute(
+                    macro_q, {"sids": db_symbols, "as_of": as_of.date()},
+                ):
+                    if row[1] is not None:
+                        macro[str(row[0])] = float(row[1])
+                still = [s for s in db_symbols if s not in macro]
+                if still:
+                    prices_q = text("""
+                        SELECT symbol, close FROM (
+                            SELECT symbol, close,
+                                   row_number() OVER (
+                                       PARTITION BY symbol ORDER BY ts DESC
+                                   ) AS rn
+                            FROM prices
+                            WHERE symbol IN :sids AND ts <= :as_of
+                        ) t WHERE rn = 1
+                    """).bindparams(bindparam("sids", expanding=True))
+                    for row in conn.execute(
+                        prices_q, {"sids": still, "as_of": as_of},
+                    ):
+                        if row[1] is not None:
+                            prices[str(row[0])] = float(row[1])
+        except Exception as exc:
+            logger.warning(
+                "get_latest_values_batch(%d symbols, %s) failed: %s: %s",
+                len(db_symbols), as_of, type(exc).__name__, exc,
+            )
+            return out
+        for orig, db_sym in norm.items():
+            if db_sym in macro:
+                out[orig] = macro[db_sym]
+            elif db_sym in prices:
+                out[orig] = prices[db_sym]
+        return out
+
+    def get_intraday_values_batch(
+        self,
+        symbols: list[str],
+        as_of: datetime,
+        max_staleness_minutes: int | None = None,
+    ) -> dict[str, float]:
+        """Nearest intraday mid at/before ``as_of`` (within the staleness
+        bound) for each of ``symbols`` in ONE query — batched
+        :meth:`get_intraday_value`. Keyed by the RAW OANDA id (NO
+        normalization), matching the per-symbol method. Missing/absent
+        symbols are omitted; a missing table returns {} (logged debug)."""
+        out: dict[str, float] = {}
+        if not symbols:
+            return out
+        uniq = sorted(set(symbols))
+        floor = (
+            as_of - timedelta(minutes=max_staleness_minutes)
+            if max_staleness_minutes is not None else None
+        )
+        params: dict[str, Any] = {"sids": uniq, "as_of": as_of}
+        floor_clause = ""
+        if floor is not None:
+            floor_clause = "AND ts >= :floor"
+            params["floor"] = floor
+        try:
+            with self.engine.connect() as conn:
+                q = text(f"""
+                    SELECT symbol, mid FROM (
+                        SELECT symbol, mid,
+                               row_number() OVER (
+                                   PARTITION BY symbol ORDER BY ts DESC
+                               ) AS rn
+                        FROM intraday_quotes
+                        WHERE symbol IN :sids AND ts <= :as_of {floor_clause}
+                    ) t WHERE rn = 1
+                """).bindparams(bindparam("sids", expanding=True))
+                for row in conn.execute(q, params):
+                    if row[1] is not None:
+                        out[str(row[0])] = float(row[1])
+        except Exception as exc:
+            logger.debug(
+                "get_intraday_values_batch(%d symbols, %s) failed "
+                "(table missing?): %s: %s",
+                len(uniq), as_of, type(exc).__name__, exc,
+            )
+        return out
+
+    def get_realized_vols_batch(
+        self, symbols: list[str], window: int, as_of: datetime,
+    ) -> dict[str, float]:
+        """Annualized realized vol for each of ``symbols`` in ONE query,
+        keyed by the caller's ORIGINAL id — batched
+        :meth:`get_realized_vol`. Pulls window+1 closes per (normalized)
+        symbol via a windowed row_number(), then reuses the identical
+        per-symbol log-return math so a batched verdict is byte-identical
+        to the per-instrument path. Symbols with < window+1 closes are
+        omitted (same as None per-symbol)."""
+        out: dict[str, float] = {}
+        if not symbols:
+            return out
+        norm = {s: _normalize_symbol(s) for s in symbols}
+        db_symbols = sorted(set(norm.values()))
+        try:
+            q = text("""
+                SELECT symbol, close FROM (
+                    SELECT symbol, ts, close,
+                           row_number() OVER (
+                               PARTITION BY symbol ORDER BY ts DESC
+                           ) AS rn
+                    FROM prices
+                    WHERE symbol IN :sids AND ts <= :cutoff
+                ) t
+                WHERE rn <= :n
+                ORDER BY symbol, ts DESC
+            """).bindparams(bindparam("sids", expanding=True))
+            with self.engine.connect() as conn:
+                df = pd.read_sql(
+                    q, conn,
+                    params={"sids": db_symbols, "cutoff": as_of, "n": window + 1},
+                )
+        except Exception as exc:
+            logger.warning(
+                "get_realized_vols_batch(%d symbols) failed: %s: %s",
+                len(db_symbols), type(exc).__name__, exc,
+            )
+            return out
+        if df.empty:
+            return out
+        per_db: dict[str, float] = {}
+        for db_sym, group in df.groupby("symbol"):
+            if len(group) < window + 1:
+                continue
+            # group is ts DESC; reverse to chronological — identical to the
+            # per-symbol get_realized_vol math (iloc[::-1] + log returns).
+            closes = group["close"].astype(float).iloc[::-1].reset_index(drop=True)
+            log_ret = (closes / closes.shift(1)).map(
+                lambda x: 0.0 if x is None or x <= 0 else float(np.log(x)),
+            ).dropna()
+            if log_ret.empty:
+                continue
+            per_db[str(db_sym)] = float(log_ret.std(ddof=1) * (252.0 ** 0.5))
+        for orig, db_sym in norm.items():
+            if db_sym in per_db:
+                out[orig] = per_db[db_sym]
+        return out
