@@ -29,6 +29,12 @@ DEFAULT_PLAYBOOKS_PATH = Path("configs/event_playbooks.yaml")
 VALID_KINDS = frozenset({"oanda", "fx", "equity_watch", "polymarket"})
 TRADABLE_KINDS = frozenset({"oanda", "fx"})
 VALID_DIRECTIONS = frozenset({"long", "short", "watch"})
+#: Theme tiers (CL-gn6k). "specific" = a named geography/entity/mechanism
+#: with real trading edge; "generic" = a broad catch-all (war_escalation,
+#: natural_disaster, africa_power_shift) — good for ingest coverage, weak
+#: edge, so it faces a harder machine-trading bar and loses theme-attribution
+#: ties to a specific theme. Absent tier defaults to "specific".
+VALID_TIERS = frozenset({"specific", "generic"})
 
 #: OANDA-style symbol shape — the "clearly reachable" gate for tradables.
 INSTRUMENT_RE = re.compile(r"^[A-Z0-9_]+$")
@@ -49,6 +55,10 @@ class Playbook:
     description: str
     watch_terms: tuple[str, ...]
     instruments: tuple[PlaybookInstrument, ...]
+    #: Theme tier (CL-gn6k): "specific" (default) or "generic". Generic
+    #: catch-alls face a harder machine-trading bar and lose attribution
+    #: ties to a specific theme (see VALID_TIERS).
+    tier: str = "specific"
     #: When the operator last reviewed/curated this theme's FACTS (mine
     #: ownership, territorial control, supply routes). Feeds the stale-fact
     #: confidence ceiling (CL-ylak): once older than the configured window,
@@ -148,12 +158,17 @@ def load_playbooks(
         if not instruments:
             msg = f"playbook {key!r}: instruments must be a non-empty list"
             raise ValueError(msg)
+        tier = str(body.get("tier", "specific")).strip().lower()
+        if tier not in VALID_TIERS:
+            msg = f"playbook {key!r}: tier {tier!r} not in {sorted(VALID_TIERS)}"
+            raise ValueError(msg)
         playbooks[key] = Playbook(
             key=key,
             name=str(body.get("name", key)),
             description=str(body.get("description", "")).strip(),
             watch_terms=watch_terms,
             instruments=instruments,
+            tier=tier,
             last_reviewed=_parse_review_date(key, body.get("last_reviewed")),
         )
     return playbooks

@@ -365,3 +365,23 @@ class TestValidation:
         pbs = load_playbooks("configs/event_playbooks.yaml")
         undated = [k for k, v in pbs.items() if v.last_reviewed is None]
         assert undated == []
+
+    # ---- tier (CL-gn6k) ----------------------------------------------
+
+    def test_tier_defaults_to_specific(self, tmp_path: Path) -> None:
+        p = self._write(tmp_path, {"themes": {"t": self._theme()}})
+        assert load_playbooks(p)["t"].tier == "specific"
+
+    def test_tier_generic_parses(self, tmp_path: Path) -> None:
+        p = self._write(tmp_path, {"themes": {"t": self._theme(tier="generic")}})
+        assert load_playbooks(p)["t"].tier == "generic"
+
+    def test_tier_invalid_raises(self, tmp_path: Path) -> None:
+        p = self._write(tmp_path, {"themes": {"t": self._theme(tier="middling")}})
+        with pytest.raises(ValueError, match="tier"):
+            load_playbooks(p)
+
+    def test_real_yaml_generic_tier_is_the_catch_alls(self) -> None:
+        pbs = load_playbooks("configs/event_playbooks.yaml")
+        generic = {k for k, v in pbs.items() if v.tier == "generic"}
+        assert generic == {"war_escalation", "natural_disaster", "africa_power_shift"}

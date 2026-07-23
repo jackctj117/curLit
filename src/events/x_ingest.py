@@ -114,16 +114,17 @@ def match_theme(
     Case-insensitive. Returns the theme with the STRONGEST match, or
     ``None`` when nothing matches (which is the relevance gate: a
     no-match post is never ingested). "Strongest" = most terms matched;
-    ties broken by the longest single matched term (a specific phrase
-    like 'strait of hormuz' beats a lone generic word). Deterministic on
-    ties: playbook insertion order is the final tiebreak.
+    then a SPECIFIC theme beats a GENERIC catch-all on an equal count
+    (CL-gn6k: 'taiwan_semiconductor' beats 'war_escalation' when both
+    match equally well); then the longest single matched term (a specific
+    phrase like 'strait of hormuz' beats a lone generic word).
+    Deterministic on ties: playbook insertion order is the final tiebreak.
     """
     if not post_text or not post_text.strip():
         return None
     text_lower = post_text.lower()
     best_theme: str | None = None
-    best_count = 0
-    best_longest = 0
+    best_key = (0, 0, 0)  # (count, specific_rank, longest)
     for theme, pb in playbooks.items():
         count = 0
         longest = 0
@@ -134,10 +135,15 @@ def match_theme(
                 longest = max(longest, len(term_lower))
         if count == 0:
             continue
-        if (count, longest) > (best_count, best_longest):
+        # specific_rank ranks a specific theme ABOVE a generic catch-all on an
+        # equal matched-term count — but never overrides a stronger (higher
+        # count) generic match, so a headline that is genuinely about the
+        # catch-all is still attributed to it.
+        specific_rank = 0 if pb.tier == "generic" else 1
+        key = (count, specific_rank, longest)
+        if key > best_key:
             best_theme = theme
-            best_count = count
-            best_longest = longest
+            best_key = key
     return best_theme
 
 

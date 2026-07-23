@@ -15,7 +15,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 
 from src.data.x_monitor import Post, WatchAccount
-from src.events.playbooks import load_playbooks
+from src.events.playbooks import Playbook, PlaybookInstrument, load_playbooks
 from src.events.x_ingest import (
     DEFAULT_INGEST_CAP,
     IngestResult,
@@ -87,6 +87,25 @@ class TestMatchTheme:
         # other theme → africa_power_shift wins on count.
         text_in = "Military coup: the junta seizes power and announces an export ban on cobalt"
         assert match_theme(text_in, PLAYBOOKS) == "africa_power_shift"
+
+    def test_specific_beats_generic_on_equal_count(self) -> None:
+        # CL-gn6k: same single matched term → equal count+longest; the
+        # SPECIFIC theme wins the tie regardless of insertion order.
+        inst = (PlaybookInstrument("EUR_USD", "fx", "long", "r"),)
+        generic = Playbook("g", "G", "", ("border clash",), inst, tier="generic")
+        specific = Playbook("s", "S", "", ("border clash",), inst, tier="specific")
+        assert match_theme("a border clash erupted", {"g": generic, "s": specific}) == "s"
+        assert match_theme("a border clash erupted", {"s": specific, "g": generic}) == "s"
+
+    def test_generic_still_wins_on_higher_count(self) -> None:
+        # CL-gn6k: specific preference is a TIE-break only — a stronger
+        # (higher term count) generic match still wins, so a headline that is
+        # genuinely about the catch-all is still attributed to it.
+        inst = (PlaybookInstrument("EUR_USD", "fx", "long", "r"),)
+        generic = Playbook("g", "G", "", ("border clash", "troops massing"), inst, tier="generic")
+        specific = Playbook("s", "S", "", ("border clash",), inst, tier="specific")
+        text_in = "border clash as troops massing on the line"
+        assert match_theme(text_in, {"s": specific, "g": generic}) == "g"
 
     def test_single_word_boundary_not_substring(self) -> None:
         # 'coup' must not fire inside 'couple'; 'junta' isn't present.

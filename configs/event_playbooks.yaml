@@ -35,6 +35,7 @@
 themes:
   energy_chokepoint:
     last_reviewed: 2026-07-20  # facts curated CL-01zt; bump on re-verify (CL-ylak)
+    tier: specific  # CL-gn6k
     name: Energy chokepoint disruption
     description: >
       Physical disruption or credible closure threat at a maritime oil/LNG
@@ -100,6 +101,7 @@ themes:
 
   red_sea_shipping:
     last_reviewed: 2026-07-20  # facts curated CL-01zt; bump on re-verify (CL-ylak)
+    tier: specific  # CL-gn6k
     name: Red Sea / Suez shipping disruption
     description: >
       Attacks on shipping in the Red Sea / Bab el-Mandeb, Suez transit
@@ -150,6 +152,7 @@ themes:
 
   oil_supply_shock:
     last_reviewed: 2026-07-20  # facts curated CL-01zt; bump on re-verify (CL-ylak)
+    tier: specific  # CL-gn6k
     name: Oil supply shock
     description: >
       Supply-side crude shock away from chokepoints — OPEC+ emergency
@@ -209,6 +212,7 @@ themes:
 
   russia_ukraine:
     last_reviewed: 2026-07-20  # facts curated CL-01zt; bump on re-verify (CL-ylak)
+    tier: specific  # CL-gn6k
     name: Russia-Ukraine war and regional escalation
     description: >
       Escalation or de-escalation in the Russia-Ukraine war and its
@@ -303,6 +307,7 @@ themes:
 
   africa_power_shift:
     last_reviewed: 2026-07-20  # facts curated CL-01zt; bump on re-verify (CL-ylak)
+    tier: generic  # catch-all: harder machine bar, loses ties (CL-gn6k)
     name: African power shift (umbrella)
     description: >
       Catch-all for coups, junta takeovers, mine nationalizations, and
@@ -352,6 +357,7 @@ themes:
 
   drc_copper_cobalt:
     last_reviewed: 2026-07-20  # facts curated CL-01zt; bump on re-verify (CL-ylak)
+    tier: specific  # CL-gn6k
     name: DRC copper-cobalt belt disruption
     description: >
       Political change, resource nationalism, export policy, or conflict
@@ -406,6 +412,7 @@ themes:
 
   sahel_gold_uranium:
     last_reviewed: 2026-07-20  # facts curated CL-01zt; bump on re-verify (CL-ylak)
+    tier: specific  # CL-gn6k
     name: Sahel gold and uranium (Mali/Niger/Burkina Faso)
     description: >
       Junta actions against Western miners in the Alliance of Sahel
@@ -465,6 +472,7 @@ themes:
 
   guinea_iron_bauxite:
     last_reviewed: 2026-07-20  # facts curated CL-01zt; bump on re-verify (CL-ylak)
+    tier: specific  # CL-gn6k
     name: Guinea iron ore and bauxite
     description: >
       Political or policy disruption in Guinea — the world's top bauxite
@@ -507,6 +515,7 @@ themes:
 
   south_africa_pgm_gold:
     last_reviewed: 2026-07-20  # facts curated CL-01zt; bump on re-verify (CL-ylak)
+    tier: specific  # CL-gn6k
     name: South Africa PGMs, gold, and grid risk
     description: >
       South Africa supplies ~70% of mined platinum and ~35% of palladium
@@ -564,6 +573,7 @@ themes:
 
   taiwan_semiconductor:
     last_reviewed: 2026-07-20  # facts curated CL-01zt; bump on re-verify (CL-ylak)
+    tier: specific  # CL-gn6k
     name: China-Taiwan escalation / semiconductor supply
     description: >
       Cross-strait escalation — blockade drills, ADIZ incursions,
@@ -663,6 +673,7 @@ themes:
 
   black_sea_grain:
     last_reviewed: 2026-07-20  # facts curated CL-01zt; bump on re-verify (CL-ylak)
+    tier: specific  # CL-gn6k
     name: Black Sea grain corridor
     description: >
       Grain-flow disruption in the Black Sea — corridor/deal collapse,
@@ -713,6 +724,7 @@ themes:
 
   war_escalation:
     last_reviewed: 2026-07-20  # facts curated CL-01zt; bump on re-verify (CL-ylak)
+    tier: generic  # catch-all: harder machine bar, loses ties (CL-gn6k)
     name: War escalation / armed conflict
     description: >
       State-level military escalation — declaration of war, cross-border
@@ -780,6 +792,7 @@ themes:
 
   cb_surprise:
     last_reviewed: 2026-07-20  # facts curated CL-01zt; bump on re-verify (CL-ylak)
+    tier: specific  # CL-gn6k
     name: Central bank surprise
     description: >
       Unscheduled or off-consensus central-bank action — emergency
@@ -826,6 +839,7 @@ themes:
 
   natural_disaster:
     last_reviewed: 2026-07-20  # facts curated CL-01zt; bump on re-verify (CL-ylak)
+    tier: generic  # catch-all: harder machine bar, loses ties (CL-gn6k)
     name: Major natural disaster
     description: >
       Region-dependent catastrophe — major earthquake (Japan: JPY
@@ -872,6 +886,7 @@ themes:
 
   sanctions_trade:
     last_reviewed: 2026-07-20  # facts curated CL-01zt; bump on re-verify (CL-ylak)
+    tier: specific  # CL-gn6k
     name: Sanctions / trade war escalation
     description: >
       Tariff announcements, export controls, sanctions packages, trade
@@ -927,6 +942,7 @@ themes:
 
   pharma_api_supply:
     last_reviewed: 2026-07-20  # facts curated CL-01zt; bump on re-verify (CL-ylak)
+    tier: specific  # CL-gn6k
     name: Pharmaceutical API and supply-chain disruption
     description: >
       Pharmaceutical API / Key Starting Material supply chain: APIs,
