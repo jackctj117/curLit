@@ -325,13 +325,20 @@ def _poly_step(args: argparse.Namespace) -> Any:
 
 
 def _cycle(args: argparse.Namespace) -> None:
+    # CL-3lga: per-phase wall-clock so 48h of logs can rank the P0 work
+    # (which phase actually dominates a cycle) without a profiler attached.
+    _t_cycle = time.monotonic()
+    _phase_ms: dict[str, float] = {}
+
     if args.ingest:
         from src.data.gdelt import GdeltIngester  # noqa: PLC0415
 
+        _t = time.monotonic()
         ingester = GdeltIngester(build_db_url(), playbooks_path=args.playbooks)
         end = datetime.now(UTC)
         start = end - timedelta(minutes=args.lookback_minutes)
         rows = ingester.run(start, end)
+        _phase_ms["ingest"] = (time.monotonic() - _t) * 1000.0
         logger.info("ingest: %d new geo_events rows", rows)
 
     if args.scan:
@@ -339,6 +346,7 @@ def _cycle(args: argparse.Namespace) -> None:
         # can annotate Watch tickers with fresh marks. A scan failure
         # (yfinance outage, missing table) must never kill the cycle
         # — RVOL is advisory confirmation, not pipeline plumbing.
+        _t = time.monotonic()
         try:
             from src.scanners.relative_volume import (  # noqa: PLC0415
                 RelativeVolumeScanner,
@@ -354,6 +362,7 @@ def _cycle(args: argparse.Namespace) -> None:
             )
         except Exception:
             logger.exception("volume scan failed; continuing")
+        _phase_ms["scan"] = (time.monotonic() - _t) * 1000.0
 
     if args.assess:
         from sqlalchemy import create_engine  # noqa: PLC0415
@@ -363,6 +372,7 @@ def _cycle(args: argparse.Namespace) -> None:
             EventImpactAgent,
         )
 
+        _t_assess = time.monotonic()
         engine = create_engine(build_db_url())
         agent = EventImpactAgent(
             engine=engine,
@@ -386,6 +396,7 @@ def _cycle(args: argparse.Namespace) -> None:
         # merged niche ideas flow through the same ledger/digest path.
         # High-urgency ASSESSED events only (quota discipline); fail-soft.
         if args.niche:
+            _t_niche = time.monotonic()
             try:
                 niche_min = getattr(args, "niche_min_urgency", None)
                 if niche_min is None:
@@ -393,6 +404,7 @@ def _cycle(args: argparse.Namespace) -> None:
                 _niche_step(engine, results, niche_min)
             except Exception:
                 logger.exception("niche step failed; continuing")
+            _phase_ms["niche"] = (time.monotonic() - _t_niche) * 1000.0
 
         # Idea ledger + one price batch per cycle (CL-mgcp) — fail-soft.
         prices, seen_ats = _enrich_and_persist(engine, results)
@@ -433,6 +445,10 @@ def _cycle(args: argparse.Namespace) -> None:
                         "digest: sent (telegram ok=%s)",
                         disp.telegram_succeeded,
                     )
+
+        # assess phase spans LLM assessment + niche + enrich + digest; the
+        # niche sub-phase is tracked separately above.
+        _phase_ms["assess"] = (time.monotonic() - _t_assess) * 1000.0
     elif args.poly:
         # --poly without --assess: still poll + alert on shifts (the
         # notifications are the point), just no digest corroboration.
@@ -440,6 +456,14 @@ def _cycle(args: argparse.Namespace) -> None:
             _poly_step(args)
         except Exception:
             logger.exception("poly step failed; continuing")
+
+    # CL-3lga: one compact phase-timing line per cycle. Ranks where wall time
+    # goes (ingest vs assess vs niche) across the 48h measurement window.
+    _phase_ms["total"] = (time.monotonic() - _t_cycle) * 1000.0
+    logger.info(
+        "cycle timing: %s",
+        " ".join(f"{name}={ms:.0f}ms" for name, ms in _phase_ms.items()),
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
