@@ -2664,6 +2664,75 @@ class TestCrossAssetGate:
 
 
 # =============================================================================
+# Theme-primary scoping (CL-9nvq) — machine legs only on the event's own theme
+# =============================================================================
+
+
+class TestThemePrimaryScoping:
+    """A CONFIRMED event may open machine legs ONLY on instruments its own
+    theme playbook lists. Cross-theme instruments (gold/USDJPY/indices that
+    appear in OTHER themes and ride in via the impact agent's cross-theme
+    whitelist) are demoted to advisory — recorded in `skipped` (reason
+    'cross_theme') so the alert still lists them, but never auto-traded."""
+
+    _PRICES = {
+        "BCO_USD": {"bid": 79.99, "ask": 80.01},
+        "USD_JPY": {"bid": 149.99, "ask": 150.01},
+    }
+
+    def _assessment(self) -> dict[str, Any]:
+        # BCO_USD IS in energy_chokepoint; USD_JPY is NOT (it lives in other
+        # themes) — the impact agent still surfaces it via its cross-theme
+        # whitelist, so it reaches _enter_confirmed as a tradable leg.
+        return {
+            "urgency": 8,
+            "confidence": 0.85,
+            "affected": [
+                {"instrument": "BCO_USD", "kind": "oanda", "direction": "long", "reason": "brent"},
+                {"instrument": "USD_JPY", "kind": "fx", "direction": "long", "reason": "off-theme"},
+            ],
+        }
+
+    def _enter(self, strat: EventDrivenStrategy, theme: str | None) -> Any:
+        return strat._enter_confirmed(
+            {"id": 1, "headline": "Hormuz closure threat", "theme": theme},
+            self._assessment(),
+            self._PRICES,
+            100_000.0,
+            datetime.now(UTC),
+        )
+
+    def test_cross_theme_leg_demoted(self, tmp_path: Any) -> None:
+        strat = make_strategy(tmp_path)  # theme_primary_only=True (default)
+        _intents, entered, skipped = self._enter(strat, "energy_chokepoint")
+        traded = {e[0] for e in entered}
+        assert "BCO_USD" in traded  # in-theme → machine leg
+        assert "USD_JPY" not in traded  # cross-theme → demoted, never traded
+        assert ("USD_JPY", "cross_theme") in skipped
+
+    def test_unknown_theme_fails_open(self, tmp_path: Any) -> None:
+        # 'energy' is NOT a configured theme key — scoping stays inert, so the
+        # pre-CL-9nvq behavior stands and USD_JPY is allowed to trade.
+        strat = make_strategy(tmp_path)
+        _intents, entered, skipped = self._enter(strat, "energy")
+        traded = {e[0] for e in entered}
+        assert "USD_JPY" in traded
+        assert ("USD_JPY", "cross_theme") not in skipped
+
+    def test_missing_theme_fails_open(self, tmp_path: Any) -> None:
+        # No 'theme' on the row at all → empty string → scoping inert.
+        strat = make_strategy(tmp_path)
+        _intents, entered, _skipped = self._enter(strat, None)
+        assert "USD_JPY" in {e[0] for e in entered}
+
+    def test_flag_disabled_no_scoping(self, tmp_path: Any) -> None:
+        strat = make_strategy(tmp_path, theme_primary_only=False)
+        assert strat._theme_primary == {}  # playbooks never loaded when off
+        _intents, entered, _skipped = self._enter(strat, "energy_chokepoint")
+        assert "USD_JPY" in {e[0] for e in entered}  # not scoped away when off
+
+
+# =============================================================================
 # Urgency vocabulary (CL-ikz2) — event intents speak the coordinator's enum
 # =============================================================================
 

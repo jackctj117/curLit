@@ -96,6 +96,19 @@ class EventDrivenConfig:
     # one full haven leg (~0.50) plus a small second, never two full metal
     # legs of stacked gap risk. 0.60 = ~1.2 base legs of combined metals.
     haven_max_pct: float = 0.60
+    # ---- Theme-primary scoping (CL-9nvq) ------------------------------
+    # Machine legs may ONLY use instruments listed in the CONFIRMED event's
+    # OWN theme playbook. Gold/USDJPY/indices appear in many themes, and the
+    # impact agent's cross-theme whitelist (all_tradable_instruments) admits
+    # any instrument known to ANY playbook — so without this gate a theme
+    # that does not list gold could still open a gold leg ("gold on
+    # everything"). Cross-theme instruments are demoted to advisory (skipped,
+    # reason 'cross_theme'); the confirmed alert still lists them so the
+    # operator can act manually. Fail-OPEN: an empty/unknown theme, or an
+    # unloadable playbook config, leaves the pre-existing behavior intact
+    # (no in-theme instrument set to scope against). Set False to disable.
+    theme_primary_only: bool = True
+    event_playbooks_path: str = "configs/event_playbooks.yaml"
     # ---- Event-book protection ----------------------------------------
     # Cumulative realized loss (fraction of equity) that freezes NEW
     # event entries. Exits always still flow.

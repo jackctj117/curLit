@@ -54,6 +54,7 @@ from src.events.confluence import (
     mid_price,
 )
 from src.events.event_notifier import EventNotifier
+from src.events.playbooks import Playbook, load_playbooks
 from src.execution.oms import OrderIntent, Urgency
 from src.models.feature_versioning import (
     FeatureSnapshot,
@@ -84,6 +85,18 @@ logger = logging.getLogger(__name__)
 
 _FEATURE_SET_NAME = "event_driven"
 _FEATURE_SET_VERSION = "v1"
+
+
+def _build_theme_primary(playbooks: dict[str, Playbook]) -> dict[str, frozenset[str]]:
+    """theme key → the set of TRADABLE (oanda/fx) instrument names that
+    theme's playbook lists (CL-9nvq). This is the whitelist a CONFIRMED
+    event of that theme may open machine legs on — equity_watch/polymarket
+    are excluded (already advisory-only), and instruments belonging only to
+    OTHER themes are absent, so they get demoted to advisory at trade time."""
+    return {
+        key: frozenset(i.instrument for i in pb.tradable_instruments)
+        for key, pb in playbooks.items()
+    }
 
 
 class EventDrivenStrategy:
@@ -155,6 +168,23 @@ class EventDrivenStrategy:
             max_holding_hours=self.config.event_max_holding_hours,
             reconcile_grace_sec=self.config.position_reconcile_grace_sec,
         )
+        # Theme-primary scoping (CL-9nvq): the matched-theme → tradable
+        # instrument-name sets, so a CONFIRMED event can only open machine
+        # legs on instruments its OWN theme playbook lists. Fail-SOFT — an
+        # unloadable/absent config leaves scoping inert (every leg passes,
+        # i.e. the pre-CL-9nvq behavior); engine boot must never break.
+        self._theme_primary: dict[str, frozenset[str]] = {}
+        if self.config.theme_primary_only:
+            try:
+                playbooks = load_playbooks(self.config.event_playbooks_path)
+                self._theme_primary = _build_theme_primary(playbooks)
+            except Exception:
+                logger.warning(
+                    "event playbooks unloadable at %s — theme-primary scoping "
+                    "INERT (machine legs fall back to un-scoped affected list)",
+                    self.config.event_playbooks_path,
+                    exc_info=True,
+                )
         # geo_events missing (producer migration not applied) is logged
         # ONCE, not every poll — engine boot must never break or spam.
         self._table_missing_logged = False
@@ -478,6 +508,19 @@ class EventDrivenStrategy:
             )
         return exits
 
+    def _theme_primary_instruments(self, theme_key: str) -> frozenset[str] | None:
+        """The tradable instrument names the event's OWN theme may open
+        machine legs on (CL-9nvq), or ``None`` to disable scoping — which is
+        FAIL-OPEN (every affected leg passes, the pre-CL-9nvq behavior).
+
+        ``None`` when scoping is off / playbooks failed to load, or the theme
+        is empty/unknown (not a configured key). A KNOWN theme with no
+        tradable instruments returns an empty frozenset — correctly scoping
+        machine legs to nothing (that theme is watch-only)."""
+        if not theme_key or not self._theme_primary:
+            return None
+        return self._theme_primary.get(theme_key)
+
     # ------------------------------------------------------------------
     # Entries for a newly-CONFIRMED event
     # ------------------------------------------------------------------
@@ -523,6 +566,23 @@ class EventDrivenStrategy:
             and str(aff.get("kind") or "") in TRADABLE_KINDS
             and str(aff.get("direction") or "") in TRADE_DIRECTIONS
         ]
+        # Theme-primary scoping (CL-9nvq): a CONFIRMED event may only open
+        # machine legs on instruments its OWN theme playbook lists. The impact
+        # agent's whitelist admits any instrument known to ANY theme
+        # (all_tradable_instruments), so gold/USDJPY/indices leak across
+        # themes; here the cross-theme ones are demoted to advisory (recorded
+        # in `skipped` so the confirmed alert still lists them) and never
+        # auto-trade. FAIL-OPEN: empty/unknown theme or unloaded playbook
+        # returns None → no scoping (see _theme_primary_instruments).
+        theme_primary = self._theme_primary_instruments(str(row.get("theme") or ""))
+        if theme_primary is not None:
+            in_theme = []
+            for aff in all_tradables:
+                if str(aff.get("instrument") or "") in theme_primary:
+                    in_theme.append(aff)
+                else:
+                    skipped.append((str(aff.get("instrument") or ""), "cross_theme"))
+            all_tradables = in_theme
         # CL-tbl8: machine-trade ONLY the legs that individually confirmed.
         # Unconfirmed co-legs stay advisory (recorded in `skipped` so the
         # operator alert still lists them).
