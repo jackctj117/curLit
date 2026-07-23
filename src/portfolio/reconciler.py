@@ -28,7 +28,7 @@ from datetime import UTC, datetime
 from enum import Enum
 from typing import Any, Protocol, runtime_checkable
 
-from src.execution.broker import Broker, Position
+from src.execution.broker import Broker, Position, canonical_symbol
 from src.execution.oms import OrderIntent, OrderManager
 from src.execution.trade_journal import EventType, TradeJournal
 
@@ -231,7 +231,13 @@ class PositionReconciler:
                 "unknown this cycle", exc_info=True,
             )
             return None
-        broker_positions = {p.symbol: p for p in broker_list}
+        # CL-n5xk (P0): canonicalize broker keys to match the internal side
+        # (which is canonicalized). A paper broker holds event legs in
+        # OANDA-underscore form (USD_CAD) while internal keys are compact
+        # (USDCAD) — keyed raw they never match, so a real position looks like
+        # an orphan on BOTH sides and gets flattened. The OMS already fixed
+        # this (CL-qqra); the reconciler had not.
+        broker_positions = {canonical_symbol(p.symbol): p for p in broker_list}
 
         report = ReconciliationReport()
         report.entries.extend(self._build_entries(broker_positions))
@@ -420,7 +426,10 @@ class PositionReconciler:
         except Exception:
             logger.exception("Reconciliation: broker.get_positions() failed")
             return {}
-        return {p.symbol: p for p in positions}
+        # CL-n5xk (P0): canonical keys so an underscore-dialect broker leg
+        # (paper USD_CAD) matches the canonical internal key (USDCAD) instead
+        # of being flattened as a false orphan.
+        return {canonical_symbol(p.symbol): p for p in positions}
 
     def _fetch_internal_positions_per_symbol(
         self,

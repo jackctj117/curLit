@@ -36,6 +36,8 @@ from typing import Any
 import httpx
 from sqlalchemy import text
 
+from src.execution.broker import canonical_symbol
+
 logger = logging.getLogger(__name__)
 
 
@@ -166,8 +168,13 @@ def fetch_oanda_fills(
 
 
 def _oanda_to_pair(symbol: str) -> str:
-    """OANDA uses EUR_USD; we use EURUSD."""
-    return symbol.replace("_", "")
+    """OANDA uses EUR_USD; we use EURUSD. Canonicalize (CL-2zt0) so this
+    matches the internal journal side, which is also canonicalized — a raw
+    ``.replace("_","")`` missed mixed-case/`/`/`-` dialects and, more
+    importantly, the internal side wasn't normalized at all, so event legs
+    (USD_CAD journal vs USDCAD OANDA) never matched → permanent
+    missing_internal/missing_broker noise that buried real drift."""
+    return canonical_symbol(symbol)
 
 
 def fetch_internal_fills(
@@ -204,7 +211,10 @@ def fetch_internal_fills(
         price = float(payload.get("fill_price", 0))
         out.append(FillRecord(
             ts=ts if isinstance(ts, datetime) else datetime.fromisoformat(str(ts)),
-            instrument=str(symbol),
+            # CL-2zt0: canonicalize the journal symbol to match the OANDA
+            # side (also canonicalized) — event legs journal as USD_CAD but
+            # OANDA reports USDCAD; raw they never matched.
+            instrument=canonical_symbol(str(symbol)),
             units=qty,
             price=price,
             transaction_id=str(intent_id or ""),

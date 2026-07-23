@@ -89,6 +89,27 @@ class TestReconciliationOutcomes:
         assert ReconciliationStatus.MATCHED in statuses
         assert not report.has_mismatches
 
+    def test_underscore_broker_symbol_matches_canonical_internal(self) -> None:
+        # CL-n5xk (P0): a paper broker holds an event leg in OANDA-underscore
+        # form (USD_CAD); the strategy claims the same leg. Both sides must
+        # canonicalize to USDCAD and MATCH — NOT be double-orphaned and
+        # flattened (the false-orphan-flatten money-path bug).
+        broker = _make_broker_with([
+            Position(symbol="USD_CAD", quantity=-500.0, avg_price=1.36),
+        ])
+        state = _FakeStateStore({"s1": {"symbol": "USD_CAD", "size": -500.0}})
+        oms = _RecordingOMS()
+        recon = PositionReconciler(
+            broker, oms, state,  # type: ignore[arg-type]
+            strategies=[_StrategyDouble("s1")],
+        )
+        report = recon.reconcile()
+        statuses = [e.status for e in report.entries]
+        assert ReconciliationStatus.MATCHED in statuses
+        assert ReconciliationStatus.ORPHANED_BROKER not in statuses
+        assert ReconciliationStatus.ORPHANED_INTERNAL not in statuses
+        assert oms.submitted == []  # nothing falsely flattened
+
     def test_size_mismatch_detected(self) -> None:
         broker = _make_broker_with([
             Position(symbol="EURUSD", quantity=1500.0, avg_price=1.10),

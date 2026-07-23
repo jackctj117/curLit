@@ -7,13 +7,25 @@ fetch + DB read are exercised via fakes — no live network or DB.
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from typing import Any
 
 from src.execution.broker_reconciliation import (
     FillRecord,
-    ReconciliationReport,
+    _oanda_to_pair,
     reconcile_fills,
 )
+
+
+class TestDialectNormalization:
+    """CL-2zt0 (P1): both the OANDA and journal sides canonicalize the symbol
+    so an event leg (OANDA USDCAD vs journal USD_CAD) matches instead of
+    generating permanent missing_internal/missing_broker noise."""
+
+    def test_oanda_to_pair_canonicalizes(self) -> None:
+        assert _oanda_to_pair("USD_CAD") == "USDCAD"
+        assert _oanda_to_pair("EUR_USD") == "EURUSD"
+        # Now also handles mixed case / other separators via canonical_symbol.
+        assert _oanda_to_pair("eur/usd") == "EURUSD"
+        assert _oanda_to_pair("xau-usd") == "XAUUSD"
 
 
 def _o(ts: datetime, instrument: str, units: float, price: float, tid: str = "txn") -> FillRecord:
