@@ -100,6 +100,31 @@ def test_bearish_put_win_on_downmove(engine):
     assert _outcome(engine, "p1")["return_pct"] == pytest.approx(0.10)
 
 
+def test_contradictory_action_wins_over_direction(engine):
+    # CL-67m9 (P1): action=buy_puts (bearish) but direction=bullish. The OLD
+    # OR-logic scored this as a LONG (inverted). Action must win: on a +10%
+    # spot move a put idea is a LOSS, not a win.
+    _seed(engine, "c1", "MP", "buy_puts", "bullish", 100.0, days_ago=20)
+    score_open_ideas(engine, price_fn=lambda t: {"MP": 110.0}, now=NOW)
+    o = _outcome(engine, "c1")
+    assert o["outcome"] == "loss"
+    assert o["return_pct"] == pytest.approx(-0.10)  # short sign applied
+
+
+def test_idea_sign_precedence():
+    from src.events.outcome_tracker import _idea_is_bullish
+    # action wins over direction
+    assert _idea_is_bullish("buy_puts", "bullish") is False
+    assert _idea_is_bullish("buy_calls", "bearish") is True
+    assert _idea_is_bullish("long", "bearish") is True
+    assert _idea_is_bullish("short", "bullish") is False
+    # falls back to direction when action is unknown/absent
+    assert _idea_is_bullish("", "bullish") is True
+    assert _idea_is_bullish("", "bearish") is False
+    # indeterminate → None (scored no_data, not guessed)
+    assert _idea_is_bullish("", "") is None
+
+
 def test_loss_at_horizon(engine):
     _seed(engine, "l1", "MP", "long", "bullish", 100.0, days_ago=20)
     score_open_ideas(engine, price_fn=lambda t: {"MP": 90.0}, now=NOW)

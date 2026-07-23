@@ -32,6 +32,30 @@ from src.events.prices import parse_ts
 logger = logging.getLogger(__name__)
 
 _BULLISH_ACTIONS = frozenset({"long", "buy_calls"})
+_BEARISH_ACTIONS = frozenset({"short", "buy_puts"})
+
+
+def _idea_is_bullish(action: str, direction: str) -> bool | None:
+    """Canonical long/short sign for scoring (CL-67m9, P1).
+
+    ``action`` is the concrete instruction (long/short/buy_calls/buy_puts) and
+    WINS; ``direction`` (bullish/bearish) is descriptive and only used when the
+    action is absent/unknown. The old code OR-ed the two, so a contradictory
+    idea like ``action=buy_puts`` (bearish) with ``direction=bullish`` scored
+    as a LONG — inverting the outcome and poisoning the reflective loop.
+    Returns ``None`` when neither field yields a sign (→ no_data, don't guess).
+    """
+    a = action.lower()
+    if a in _BULLISH_ACTIONS:
+        return True
+    if a in _BEARISH_ACTIONS:
+        return False
+    d = direction.lower()
+    if d == "bullish":
+        return True
+    if d == "bearish":
+        return False
+    return None
 
 #: Matches the niche marker the ledger folds into notes, e.g. "[niche 3hop …]".
 _NICHE_RE = re.compile(r"\[niche(?:\s+(\d+)hop)?[^\]]*\]", re.I)
@@ -139,15 +163,16 @@ def score_open_ideas(
                 else config.default_horizon_days
             )
             due = entry_at is not None and now >= entry_at + timedelta(days=horizon)
-            bullish = (
-                str(r["direction"] or "").lower() == "bullish"
-                or str(r["action"] or "").lower() in _BULLISH_ACTIONS
+            bullish = _idea_is_bullish(
+                str(r["action"] or ""), str(r["direction"] or ""),
             )
             last = current.get(str(r["ticker"]))
             prev_mfe = r["prev_mfe"]
             prev_mae = r["prev_mae"]
 
-            if last is None or entry <= 0:
+            # bullish is None → the idea's sign is indeterminate; score no_data
+            # rather than guess a direction (which would mislabel the outcome).
+            if last is None or entry <= 0 or bullish is None:
                 outcome = "no_data"
                 signed = None
                 mfe = float(prev_mfe) if prev_mfe is not None else None
