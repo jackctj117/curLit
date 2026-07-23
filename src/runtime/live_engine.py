@@ -363,7 +363,12 @@ class LiveEngine:
         if self.risk_context_builder is not None:
             context = self.risk_context_builder.build(float(account.equity))
             if self.risk_context_builder.consume_day_rollover():
-                self.kill_switch_manager.reset_daily()
+                # CL-ssoh (P1): automatic rollover re-arms the daily trigger
+                # dedup but must NOT clear active halt causes while the OMS is
+                # still halted — that would strand it (auto-resume would read
+                # the empty cause set as a manual halt and never lift it). The
+                # manual /api/system/resume path keeps the default (clears).
+                self.kill_switch_manager.reset_daily(clear_causes=False)
         else:
             context = {"equity": account.equity}
         self.kill_switch_manager.check(context)

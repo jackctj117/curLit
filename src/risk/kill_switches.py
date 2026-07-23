@@ -566,7 +566,14 @@ class KillSwitchManager:
                     "Kill switch %s evaluation failed (consecutive=%d)",
                     sw.name, failures,
                 )
-                if failures == _EVAL_FAILURES_BEFORE_HALT:
+                if failures >= _EVAL_FAILURES_BEFORE_HALT:
+                    # CL-7zwp (P1): >= not == so a broken evaluator RE-halts
+                    # every subsequent tick (halt_new is idempotent) — with
+                    # == the halt only ever fired exactly at the 3rd failure
+                    # and a later data-gate auto-resume could un-halt it
+                    # permanently. Register it as a sticky (non-data-gate)
+                    # cause so attempt_auto_resume never lifts a fail-closed
+                    # halt: only a manual /api/system/resume clears it.
                     logger.critical(
                         "Kill switch %s failed %d consecutive evaluations — "
                         "failing CLOSED: halting new trades. OPERATOR ACTION "
@@ -575,6 +582,7 @@ class KillSwitchManager:
                         sw.name, failures,
                     )
                     self.oms.halt_new_trades()
+                    self._active_halt_causes.add(sw.name)
                 continue
             self._consecutive_failures[sw.name] = 0
             if fired:
@@ -634,17 +642,22 @@ class KillSwitchManager:
             # CL-i4tx: real broker-integrated reduction — one halved-target
             # intent per net open position through the OMS, then halt new
             # trades and page the operator with the evidence.
-            submitted = self._submit_position_intents(
+            result = self._submit_position_intents(
                 target_fraction=0.5, strategy_id="kill_switch_reduce",
             )
             self.oms.halt_new_trades()
-            if not submitted:
+            if not result or result[0] < result[1] or result[0] == 0:
+                # CL-xh6g (P1): re-fire (trigger NOT spent) unless EVERY
+                # actionable leg was submitted. A partial reduce (some legs
+                # rejected) leaves residual open risk, so retry next tick;
+                # None=fetch failed, (0,0)=flat/degraded — both re-fire per
+                # CL-9dhg ("never spend the brake on nothing").
+                sub = 0 if not result else result[0]
+                act = 0 if not result else result[1]
                 logger.critical(
-                    "reduce_50pct submitted ZERO intents (%s) — halted only; "
-                    "trigger NOT spent, switch re-fires next tick (CL-9dhg: "
-                    "an empty positions list can be a degraded API, not a "
-                    "flat book — never spend the brake on nothing)",
-                    "fetch failed" if submitted is None else "no positions",
+                    "reduce_50pct INCOMPLETE (%d/%s legs) — halted only; "
+                    "trigger NOT spent, switch re-fires next tick to retry",
+                    sub, "fetch-failed" if result is None else act,
                 )
                 return False
             logger.critical(
@@ -653,7 +666,7 @@ class KillSwitchManager:
                 "and residual exposure. Open-position correlation evidence "
                 "(if corr-triggered): directions=%s mean_adjusted=%s "
                 "matrix=\n%s",
-                submitted,
+                result[0],
                 self.open_position_corr.last_directions,
                 self.open_position_corr.last_mean_adjusted,
                 self.open_position_corr.last_matrix,
@@ -663,24 +676,31 @@ class KillSwitchManager:
             # CL-i4tx: real flatten — one target-0 intent per net open
             # broker position through the OMS, then halt new trades. Was a
             # log-stub before ("requires broker integration").
-            submitted = self._submit_position_intents(
+            result = self._submit_position_intents(
                 target_fraction=0.0, strategy_id="kill_switch_flatten",
             )
             self.oms.halt_new_trades()
-            if not submitted:
+            if not result or result[0] < result[1] or result[0] == 0:
+                # CL-xh6g (P1): a PARTIAL flatten (some legs rejected) leaves
+                # unstopped risk — do NOT spend the once-per-day trigger, so
+                # the switch re-fires next tick and keeps retrying the failed
+                # legs (target-0 is idempotent — already-flat legs are skipped
+                # as sub-actionable, so it converges). None=fetch failed,
+                # (0,0)=flat/degraded also re-fire (CL-9dhg).
+                sub = 0 if not result else result[0]
+                act = 0 if not result else result[1]
                 logger.critical(
-                    "flatten_all submitted ZERO intents (%s) — halted only; "
-                    "trigger NOT spent, switch re-fires next tick (CL-9dhg: "
-                    "an empty positions list can be a degraded API, not a "
-                    "flat book — never spend the brake on nothing)",
-                    "fetch failed" if submitted is None else "no positions",
+                    "flatten_all INCOMPLETE (%d/%s legs) — halted only; "
+                    "trigger NOT spent, switch re-fires next tick to retry "
+                    "the unclosed legs",
+                    sub, "fetch-failed" if result is None else act,
                 )
                 return False
             logger.critical(
                 "flatten_all executed: %d closing intents submitted via OMS; "
                 "new trades halted. OPERATOR ACTION REQUIRED: verify all "
                 "positions closed at the broker.",
-                submitted,
+                result[0],
             )
             return True
         else:
@@ -695,11 +715,13 @@ class KillSwitchManager:
 
     def _submit_position_intents(
         self, target_fraction: float, strategy_id: str,
-    ) -> int | None:
+    ) -> tuple[int, int] | None:
         """Submit ``target = net_qty * target_fraction`` intents for every
-        net open broker position. Returns the number of intents submitted;
-        ``None`` when the position fetch failed (nothing was even attempted
-        — distinct from 0, which means genuinely flat).
+        net open broker position. Returns ``(submitted, actionable)`` — how
+        many intents were accepted vs how many net positions needed one — so
+        the caller can distinguish a COMPLETE de-risk from a PARTIAL one
+        (some legs rejected, CL-xh6g). ``None`` when the position fetch failed
+        (nothing was even attempted — distinct from (0, 0), genuinely flat).
 
         Positions are netted by :func:`canonical_symbol` (CL-qqra) so the
         broker's compact form and OANDA-underscore event legs cannot
@@ -731,10 +753,12 @@ class KillSwitchManager:
             net_qty[key] = net_qty.get(key, 0.0) + float(qty)
             route_symbol.setdefault(key, str(symbol))
         submitted = 0
+        actionable = 0
         for key in sorted(net_qty):
             qty = net_qty[key]
             if abs(qty) < _MIN_ACTIONABLE_QTY:
                 continue
+            actionable += 1
             intent = OrderIntent(
                 strategy_id=strategy_id,
                 symbol=route_symbol[key],
@@ -753,7 +777,7 @@ class KillSwitchManager:
                     "%s: submit_intent failed for %s", strategy_id,
                     route_symbol[key],
                 )
-        return submitted
+        return submitted, actionable
 
     def log_arming(self, provided_keys: Iterable[str]) -> None:
         """Boot-time honesty (CL-i4tx): one line per switch, ARMED vs UNARMED.
@@ -780,20 +804,31 @@ class KillSwitchManager:
                     ", ".join(sw.required_keys) or "self-feeding",
                 )
 
-    def reset_daily(self) -> None:
+    def reset_daily(self, *, clear_causes: bool = True) -> None:
         """Re-arm the once-per-day trigger dedup. Called by the live engine
         health tick at UTC-day rollover (CL-i4tx) and by /api/system/resume
         — before that, nothing called this and a fired switch stayed deduped
-        until restart. Also clears the halt-cause set (CL-nxjx): a manual
-        resume is the operator declaring the halt reviewed, so any sticky
-        risk cause is released too."""
+        until restart.
+
+        ``clear_causes`` (CL-ssoh, P1): the AUTOMATIC UTC rollover MUST NOT
+        clear ``_active_halt_causes`` while a halt is still in force — doing
+        so left the OMS halted but the cause set empty, so
+        ``attempt_auto_resume`` read it as a manual halt and NEVER lifted it
+        (permanent deadlock, common on the weekend rollover when the price-age
+        key is omitted so ``check`` can't re-populate the cause). The rollover
+        path passes ``clear_causes=False``: ``_triggered_today`` is still
+        re-armed (so ``stale_prices`` can fire again) while the active cause
+        stays sticky and auto-resume keeps ownership. Only a manual
+        ``/api/system/resume`` (operator declaring the halt reviewed) clears
+        the causes — that keeps the default ``True``."""
         if self._triggered_today:
             logger.info(
                 "Kill switches re-armed for the new UTC day (had fired: %s)",
                 sorted(self._triggered_today),
             )
         self._triggered_today.clear()
-        self._active_halt_causes.clear()
+        if clear_causes:
+            self._active_halt_causes.clear()
 
     def attempt_auto_resume(self, context: dict[str, Any]) -> bool:
         """Auto-lift a halt caused ONLY by data-availability gates whose

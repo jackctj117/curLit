@@ -208,7 +208,8 @@ class TestStalePricesAutoResume:
 
     def test_auto_resumes_when_stream_recovers(self) -> None:
         mgr, oms = self._mgr()
-        stale = _baseline_ctx(); stale["price_stream_age_sec"] = 700
+        stale = _baseline_ctx()
+        stale["price_stream_age_sec"] = 700
         mgr.check(stale)                       # fires stale_prices -> halt
         assert oms.halts == ["all"]
         fresh = _baseline_ctx()                # price_stream_age_sec = 5
@@ -221,7 +222,8 @@ class TestStalePricesAutoResume:
 
     def test_risk_switch_stays_sticky(self) -> None:
         mgr, oms = self._mgr()
-        bad = _baseline_ctx(); bad["daily_pnl_pct"] = -0.50  # daily_loss_limit
+        bad = _baseline_ctx()
+        bad["daily_pnl_pct"] = -0.50  # daily_loss_limit
         mgr.check(bad)
         assert oms.halts == ["all"]
         recovered = _baseline_ctx()  # pnl back to +1%
@@ -247,11 +249,48 @@ class TestStalePricesAutoResume:
 
     def test_reset_daily_clears_causes(self) -> None:
         mgr, _oms = self._mgr()
-        stale = _baseline_ctx(); stale["price_stream_age_sec"] = 700
+        stale = _baseline_ctx()
+        stale["price_stream_age_sec"] = 700
         mgr.check(stale)
         assert mgr._active_halt_causes
-        mgr.reset_daily()
+        mgr.reset_daily()  # manual-resume default clears
         assert not mgr._active_halt_causes
+
+    def test_rollover_keeps_causes_no_deadlock(self) -> None:
+        # CL-ssoh (P1): an AUTOMATIC UTC rollover (clear_causes=False) must NOT
+        # strand a stale_prices halt. Old bug: it cleared causes with the OMS
+        # still halted, so auto-resume saw an empty set, thought "manual halt",
+        # and never lifted it — permanent weekend deadlock.
+        mgr, oms = self._mgr()
+        stale = _baseline_ctx()
+        stale["price_stream_age_sec"] = 700
+        mgr.check(stale)
+        assert mgr._active_halt_causes == {"stale_prices"}
+        mgr.reset_daily(clear_causes=False)  # the rollover path
+        assert mgr._active_halt_causes == {"stale_prices"}  # NOT stranded
+        assert "stale_prices" not in mgr._triggered_today   # but re-armed
+        # Stream recovers -> auto-resume lifts it (no deadlock).
+        assert mgr.attempt_auto_resume(_baseline_ctx()) is True
+        assert oms.resumes == 1
+
+    def test_eval_failclosed_halt_is_sticky_vs_auto_resume(self) -> None:
+        # CL-7zwp (P1): a fail-closed eval-failure halt registers a sticky
+        # cause, so even when a co-active stale_prices gate clears, auto-resume
+        # must NOT lift trading while the evaluator is still broken.
+        mgr, oms = self._mgr()
+        for sw in mgr.switches:
+            if sw.name == "daily_loss_limit":
+                def _boom(ctx: dict[str, object]) -> bool:
+                    raise RuntimeError("broken")
+                sw.condition = _boom
+        stale = _baseline_ctx()
+        stale["price_stream_age_sec"] = 700
+        for _ in range(3):
+            mgr.check(stale)  # 3 eval failures -> fail-closed; stale also fires
+        assert "daily_loss_limit" in mgr._active_halt_causes  # sticky
+        # Stream recovers, but the broken-evaluator halt holds trading closed.
+        assert mgr.attempt_auto_resume(_baseline_ctx()) is False
+        assert oms.resumes == 0
 
     def test_reconciliation_failure_triggers(self) -> None:
         mgr = KillSwitchManager(_FakeBroker(), _FakeOMS(), {},
@@ -322,6 +361,43 @@ class TestFlattenAndReduce:
         assert {t["switch"] for t in triggered} == {"drawdown_limit"}
         assert oms.halts == ["all"]
 
+    def test_partial_flatten_does_not_spend_trigger(self) -> None:
+        # CL-xh6g (P1): one leg's flatten is rejected by the broker -> the
+        # de-risk is INCOMPLETE, so the once-per-day trigger is NOT spent and
+        # the switch re-fires next tick to retry the unclosed leg (residual
+        # open risk must not go quiet for the rest of the UTC day).
+        class _PartialFailOMS(_FakeOMS):
+            def submit_intent(self, intent, *, bypass_halt: bool = False):  # noqa: ANN001, ANN201
+                if intent.symbol == "USDCAD":
+                    raise RuntimeError("broker rejected")
+                return super().submit_intent(intent, bypass_halt=bypass_halt)
+
+        oms = _PartialFailOMS()
+        broker = _FakeBroker([
+            Position("EURUSD", 5_000.0, 1.10),
+            Position("USDCAD", -8_000.0, 1.41),
+        ])
+        mgr = KillSwitchManager(broker, oms, {}, trailing_state_path=None)
+        ctx = _baseline_ctx()
+        ctx["portfolio_dd"] = -0.50  # drawdown -> flatten
+        mgr.check(ctx)
+        assert ("EURUSD", 0.0, True) in oms.intents      # good leg closed
+        assert "drawdown_limit" not in mgr._triggered_today  # NOT spent
+        # Next tick re-fires and retries (the good leg is re-submitted, the
+        # bad leg re-attempted) — still incomplete, still not spent.
+        mgr.check(ctx)
+        assert "drawdown_limit" not in mgr._triggered_today
+
+    def test_complete_flatten_spends_trigger(self) -> None:
+        # Companion: when EVERY leg closes, the trigger IS spent (no re-fire).
+        oms = _FakeOMS()
+        broker = _FakeBroker([Position("EURUSD", 5_000.0, 1.10)])
+        mgr = KillSwitchManager(broker, oms, {}, trailing_state_path=None)
+        ctx = _baseline_ctx()
+        ctx["portfolio_dd"] = -0.50
+        mgr.check(ctx)
+        assert "drawdown_limit" in mgr._triggered_today
+
 
 class TestFailClosedOnEvalErrors:
     @staticmethod
@@ -343,8 +419,13 @@ class TestFailClosedOnEvalErrors:
         assert oms.halts == []  # two failures: logged, not yet fail-closed
         mgr.check(_baseline_ctx())
         assert oms.halts == ["all"]  # third consecutive failure fails CLOSED
+        # CL-7zwp (P1): >= not == — a still-broken evaluator RE-halts every
+        # subsequent tick (halt_new is idempotent) so that if anything ever
+        # resumes trading, the next failing tick corrects it. It also
+        # registers a sticky halt cause so auto-resume never lifts it.
         mgr.check(_baseline_ctx())
-        assert oms.halts == ["all"]  # no re-halt spam on the 4th
+        assert oms.halts == ["all", "all"]  # re-halts on the 4th (idempotent)
+        assert "daily_loss_limit" in mgr._active_halt_causes  # sticky cause
 
     def test_success_resets_failure_streak(self) -> None:
         oms = _FakeOMS()
