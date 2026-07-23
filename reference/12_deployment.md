@@ -279,8 +279,12 @@ echo "Initial hardening complete"
 
 ## Backup Script
 
-**Location:** `scripts/backup.sh`
-**Purpose:** Daily encrypted backup of database, vault, state, configs.
+**Location:** `deploy/scripts/backup.sh` (canonical, CL-2e2). `scripts/backup.sh`
+is a thin wrapper that delegates to it — do NOT restore the old inline version,
+which staged plaintext in `/tmp` and produced an unencrypted archive (CL-fg46).
+**Purpose:** Daily gpg-encrypted (AES256) backup of database, vault, state,
+configs. Every artifact is streamed straight into gpg — no plaintext dump or
+tarball is ever written to disk. Key: `/etc/curlit/backup.key`.
 
 ```bash
 #!/bin/bash
@@ -444,8 +448,8 @@ curl -s http://localhost:8000/metrics | grep -E "fx_(account_equity|portfolio_dr
 **Purpose:** Scheduled jobs for the fx user.
 
 ```cron
-# Daily backup at 01:00 UTC
-0 1 * * * fx /opt/fx-system/scripts/backup.sh > /var/log/fx-backup.log 2>&1
+# Daily backup at 01:00 UTC (canonical hardened script — CL-2e2)
+0 1 * * * fx /opt/curlit/deploy/scripts/backup.sh > /var/log/fx-backup.log 2>&1
 
 # Morning health check at 07:00 local
 0 7 * * * fx /opt/fx-system/scripts/morning_check.sh | mail -s "FX Daily Check" your@email.com

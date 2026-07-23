@@ -23,36 +23,35 @@ fi
 mkdir -p "$BACKUP_DIR/daily" "$BACKUP_DIR/weekly" "$BACKUP_DIR/monthly"
 
 # ----------------------------------------------------------------------
-# Postgres dump (custom format — fast restore, parallel-friendly)
+# Postgres dump (custom format — fast restore, parallel-friendly).
+# Streamed straight into gpg (CL-fg46/E11): the plaintext dump — the whole
+# database — never touches disk, so there is no window where it sits
+# unencrypted next to the key material. pipefail makes a pg_dump failure
+# fail the whole step loudly instead of sealing a truncated dump.
 # ----------------------------------------------------------------------
-PG_DUMP="$BACKUP_DIR/daily/${NAME}.pgdump"
-echo "[backup] pg_dump $PG_DB → $PG_DUMP"
-sudo -u postgres pg_dump -Fc -d "$PG_DB" -U "$PG_USER" -f "$PG_DUMP"
+ENC_DUMP="$BACKUP_DIR/daily/${NAME}.pgdump.gpg"
+echo "[backup] pg_dump $PG_DB → $ENC_DUMP (streamed, no plaintext on disk)"
+sudo -u postgres pg_dump -Fc -d "$PG_DB" -U "$PG_USER" \
+    | gpg --batch --yes --symmetric --cipher-algo AES256 \
+        --passphrase-file "$KEYFILE" \
+        --output "$ENC_DUMP"
 
 # ----------------------------------------------------------------------
-# Tarball of operator state — vault, configs, recent reports.
-# Trade journal lives in Postgres so the dump captures it.
-# ----------------------------------------------------------------------
-TAR="$BACKUP_DIR/daily/${NAME}.tar"
-tar -cf "$TAR" \
-    -C /etc/curlit . \
-    -C /opt/curlit configs \
-    -C /opt/curlit reports/reconciliation 2>/dev/null || true
-
-# ----------------------------------------------------------------------
-# Encrypt — gpg symmetric, AES256.
+# Tarball of operator state — vault, configs, recent reports — streamed
+# straight into gpg for the same reason (no plaintext .tar intermediate).
+# The vault file is already encrypted, but configs can carry secrets, so
+# the archive itself is never written in the clear. A missing optional dir
+# is tolerated (|| true on the subshell) without dropping pipefail on gpg.
+# Trade journal lives in Postgres so the dump above captures it.
 # ----------------------------------------------------------------------
 ENC="${BACKUP_DIR}/daily/${NAME}.tar.gpg"
-gpg --batch --yes --symmetric --cipher-algo AES256 \
-    --passphrase-file "$KEYFILE" \
-    --output "$ENC" "$TAR"
-rm "$TAR"
-
-ENC_DUMP="${PG_DUMP}.gpg"
-gpg --batch --yes --symmetric --cipher-algo AES256 \
-    --passphrase-file "$KEYFILE" \
-    --output "$ENC_DUMP" "$PG_DUMP"
-rm "$PG_DUMP"
+{ tar -cf - \
+    -C /etc/curlit . \
+    -C /opt/curlit configs \
+    -C /opt/curlit reports/reconciliation 2>/dev/null || true ; } \
+    | gpg --batch --yes --symmetric --cipher-algo AES256 \
+        --passphrase-file "$KEYFILE" \
+        --output "$ENC"
 
 # ----------------------------------------------------------------------
 # Promote: weekly = Sunday's daily, monthly = 1st-of-month's daily.
