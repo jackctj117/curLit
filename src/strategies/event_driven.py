@@ -481,12 +481,20 @@ class EventDrivenStrategy:
         now: datetime,
         cross_asset: Any = None,
         broker_positions: list[Any] | None = None,
+        confirmed_instruments: set[str] | None = None,
     ) -> tuple[
         list[OrderIntent],
         list[tuple[str, str, str, float, str]],
         list[tuple[str, str]],
     ]:
         """Emit entry intents for the tradable affected instruments.
+
+        ``confirmed_instruments`` (CL-tbl8, P0): the set of instrument ids that
+        INDIVIDUALLY passed Gate B. Only those are machine-traded — with
+        ``min_confirmed_instruments=1`` a single leg's move confirms the whole
+        EVENT, but that must not open a full-size leg on every affected
+        instrument, including co-legs that showed no post-headline move.
+        ``None`` disables the per-leg filter (direct-call/back-compat).
 
         Returns (intents, entered, skipped): entered is [(symbol,
         direction_str, size_str, entry_price, reason)] with reason from
@@ -498,12 +506,26 @@ class EventDrivenStrategy:
         event_id = row.get("id")
         headline = str(row.get("headline") or "")
 
-        tradables = [
+        all_tradables = [
             aff for aff in (assessment.get("affected") or [])
             if isinstance(aff, dict)
             and str(aff.get("kind") or "") in TRADABLE_KINDS
             and str(aff.get("direction") or "") in TRADE_DIRECTIONS
         ]
+        # CL-tbl8: machine-trade ONLY the legs that individually confirmed.
+        # Unconfirmed co-legs stay advisory (recorded in `skipped` so the
+        # operator alert still lists them).
+        if confirmed_instruments is None:
+            tradables = all_tradables
+        else:
+            tradables = []
+            for aff in all_tradables:
+                if str(aff.get("instrument") or "") in confirmed_instruments:
+                    tradables.append(aff)
+                else:
+                    skipped.append(
+                        (str(aff.get("instrument") or ""), "leg_unconfirmed"),
+                    )
         if not tradables:
             return intents, entered, skipped
 
@@ -828,10 +850,17 @@ class EventDrivenStrategy:
                 continue  # pending, or another writer won the transition
 
             assessment = EventConfluence.parse_assessment(row.get("assessment")) or {}
+            # CL-tbl8 (P0): only the instruments that INDIVIDUALLY passed
+            # Gate B are machine-traded — not every affected leg just because
+            # the event-level confirm gate (min_confirmed_instruments) tripped.
+            confirmed_instruments = {
+                str(c.instrument) for c in result.checks if c.confirmed
+            }
             entry_intents, entered, skipped = self._enter_confirmed(
                 row, assessment, prices, equity, now,
                 cross_asset=result.cross_asset,
                 broker_positions=broker_positions,
+                confirmed_instruments=confirmed_instruments,
             )
             # Stamp the cross-asset read onto the persisted trade ideas'
             # notes so `idea <id>` surfaces it later (CL-6mzn). Additive,

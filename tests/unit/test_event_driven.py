@@ -113,16 +113,23 @@ def get_status(db: Any, event_id: int) -> str:
 class FakeProvider:
     """DataProvider stand-in.
 
-    get_latest_value always returns ``p0`` (the reference price at
-    seen_at) — tests supply the CURRENT price via the live ``prices``
-    tick dict, so the two legs stay unambiguous. get_realized_vol
-    returns ``daily_vol`` re-annualized, matching the real provider's
-    annualized contract.
+    get_intraday_value returns ``p0`` (the intraday reference price at
+    seen_at, per CL-hn0t: Gate B's baseline must be an intraday quote) —
+    tests supply the CURRENT price via the live ``prices`` tick dict, so the
+    two legs stay unambiguous. get_realized_vol returns ``daily_vol``
+    re-annualized, matching the real provider's annualized contract.
     """
 
     def __init__(self, p0: float = 1.0, daily_vol: float = 0.01) -> None:
         self.p0 = p0
         self.daily_vol = daily_vol
+
+    def get_intraday_value(
+        self, symbol: str, as_of: datetime, max_staleness_minutes: int = 15,
+    ) -> float | None:
+        # CL-hn0t: the reference baseline is now sourced from the intraday
+        # store, so the fake serves p0 here (an event-timescale quote).
+        return self.p0
 
     def get_latest_value(self, series_id: str, as_of: datetime) -> float | None:
         return self.p0
@@ -800,6 +807,28 @@ class TestLiquidityWindowGate:
         assert len(run(strat, _WIDE_CONFIRM_PRICES, FakeBroker(equity=100_000))) == 1
 
 
+class TestPerLegConfirmation:
+    """CL-tbl8 (P0): one instrument's Gate-B pass confirms the EVENT (with
+    min_confirmed_instruments=1), but only the instrument(s) that INDIVIDUALLY
+    confirmed may be machine-traded — not every affected co-leg."""
+
+    def test_only_individually_confirmed_leg_is_traded(self, tmp_path: Any) -> None:
+        db = make_db()
+        insert_event(db, affected=[
+            {"instrument": "USD_CAD", "kind": "oanda",
+             "direction": "long", "reason": "moved"},
+            {"instrument": "USD_JPY", "kind": "oanda",
+             "direction": "long", "reason": "did-not-move"},
+        ])
+        strat = make_strategy(tmp_path, db=db, provider=confirming_provider())
+        # USD_CAD moves vs its 0.99 reference (confirms); USD_JPY is flat at
+        # the reference (does NOT individually confirm).
+        prices = {"USD_CAD": tick(1.0), "USD_JPY": tick(0.99)}
+        intents = run(strat, prices, FakeBroker(equity=100_000))
+        traded = {i.symbol for i in intents if i.target_position != 0}
+        assert traded == {"USD_CAD"}  # the unconfirmed co-leg is NOT opened
+
+
 # =============================================================================
 # Concentration caps (CL-wbmw generalizes CL-5mkf) — real enforcement
 # =============================================================================
@@ -1346,6 +1375,13 @@ class _CrossAssetProvider:
             "USD_CAD": (0.99, 0.99),  # cross-asset flat; Gate B via live tick
             "USD_NOK": (10.5, 10.4),
         }
+
+    def get_intraday_value(
+        self, instrument: str, as_of: datetime, max_staleness_minutes: int = 15,
+    ) -> float | None:
+        # CL-hn0t: Gate B's reference baseline now reads the intraday store,
+        # so mirror get_latest_value here (ref at seen_at, moved at now).
+        return self.get_latest_value(instrument, as_of)
 
     def get_latest_value(self, instrument: str, as_of: datetime) -> float | None:
         leg = self._legs.get(instrument)

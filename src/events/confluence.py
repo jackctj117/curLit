@@ -533,12 +533,21 @@ class EventConfluence:
     ) -> float | None:
         """Reference price at ``seen_at`` — per-call (seen_at differs per
         event) but memoized per (symbol, seen_at) within the cycle so a
-        shared seen_at is queried at most once."""
+        shared seen_at is queried at most once.
+
+        CL-hn0t (P1): the baseline MUST be an INTRADAY quote at/near seen_at
+        (within ``intraday_max_staleness_minutes``) — NOT the daily-close
+        fallback. A daily close has no freshness bound relative to seen_at, so
+        a stale close (last night's / Friday's) as the baseline miscounted a
+        normal pre-event overnight/weekend gap as post-headline confirmation.
+        Gate B is explicitly an intraday confirmation gate; with no intraday
+        reference the leg reports ``no_price_data`` and does NOT confirm rather
+        than confirm on a gap that happened before the headline."""
         if poll_cache is None:
-            return self._provider_price(symbol, seen_at)
+            return self._intraday_price(symbol, seen_at)
         key = (symbol, seen_at)
         if key not in poll_cache.ref_price:
-            poll_cache.ref_price[key] = self._provider_price(symbol, seen_at)
+            poll_cache.ref_price[key] = self._intraday_price(symbol, seen_at)
         return poll_cache.ref_price[key]
 
     def _cached_daily_vol(
