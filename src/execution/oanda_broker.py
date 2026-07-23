@@ -1,5 +1,7 @@
 """OANDA broker — REST + streaming API v20."""
 
+import asyncio
+import json
 import logging
 from collections.abc import AsyncIterator
 from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
@@ -294,30 +296,96 @@ class OandaBroker(Broker):
         p = resp.json()["prices"][0]
         return float(p["bids"][0]["price"]), float(p["asks"][0]["price"])
 
+    #: Reconnect backoff bounds for the price stream (CL-vff9).
+    _STREAM_BACKOFF_START = 1.0
+    _STREAM_BACKOFF_MAX = 30.0
+
     async def stream_prices(
         self, symbols: list[str],
     ) -> AsyncIterator[dict[str, Any]]:
+        """Self-healing OANDA price stream (CL-vff9).
+
+        The stream is a long-lived HTTP connection that dies on any network
+        blip (WiFi roam, DNS hiccup, laptop wake) — before this it died hard
+        and only the engine's outer 5 s retry re-established it. Now the
+        connection + read loop live inside a reconnect supervisor: transient
+        errors (connect/read/protocol/OS) are caught, logged, and retried
+        with exponential backoff (1 s → 30 s), rebuilding the client each
+        time; a clean server-side close also reconnects. So a blip
+        self-heals in seconds instead of relying on the caller. CANCELLED
+        (shutdown) always propagates. A 4xx (bad credentials / bad request)
+        is PERMANENT — logged CRITICAL and raised, since retrying can't fix
+        it and hammering OANDA with bad auth is pointless.
+        """
         oanda_syms = ",".join(self._to_oanda(s) for s in symbols)
-        base_url = self.STREAM_PRACTICE if "practice" in str(self.client.base_url) else self.STREAM_LIVE
-        async with (
-            httpx.AsyncClient(base_url=base_url, headers=self.headers, timeout=None) as client,
-            client.stream(
-                "GET", f"/v3/accounts/{self.account_id}/pricing/stream",
-                params={"instruments": oanda_syms},
-            ) as resp,
-        ):
-                async for line in resp.aiter_lines():
-                    import json
-                    if not line.strip():
+        base_url = (
+            self.STREAM_PRACTICE if "practice" in str(self.client.base_url)
+            else self.STREAM_LIVE
+        )
+        backoff = self._STREAM_BACKOFF_START
+        while True:
+            try:
+                async with (
+                    httpx.AsyncClient(
+                        base_url=base_url, headers=self.headers, timeout=None,
+                    ) as client,
+                    client.stream(
+                        "GET",
+                        f"/v3/accounts/{self.account_id}/pricing/stream",
+                        params={"instruments": oanda_syms},
+                    ) as resp,
+                ):
+                    if resp.status_code >= 400:
+                        if resp.status_code < 500:
+                            logger.critical(
+                                "OANDA price stream rejected with %d "
+                                "(bad credentials / request) — NOT retrying",
+                                resp.status_code,
+                            )
+                            resp.raise_for_status()
+                        logger.warning(
+                            "OANDA price stream HTTP %d — reconnecting in "
+                            "%.0fs", resp.status_code, backoff,
+                        )
+                        await asyncio.sleep(backoff)
+                        backoff = min(backoff * 2, self._STREAM_BACKOFF_MAX)
                         continue
-                    msg = json.loads(line)
-                    if msg.get("type") == "PRICE":
-                        yield {
-                            "symbol": self._from_oanda(msg["instrument"]),
-                            "bid": float(msg["bids"][0]["price"]),
-                            "ask": float(msg["asks"][0]["price"]),
-                            "ts": msg["time"],
-                        }
+                    backoff = self._STREAM_BACKOFF_START  # connected — reset
+                    async for line in resp.aiter_lines():
+                        if not line.strip():
+                            continue
+                        try:
+                            msg = json.loads(line)
+                        except ValueError:
+                            continue  # heartbeat / partial line — skip
+                        if msg.get("type") == "PRICE":
+                            yield {
+                                "symbol": self._from_oanda(msg["instrument"]),
+                                "bid": float(msg["bids"][0]["price"]),
+                                "ask": float(msg["asks"][0]["price"]),
+                                "ts": msg["time"],
+                            }
+                    # aiter_lines ended without error → server closed the
+                    # stream cleanly; reconnect (short pause).
+                    logger.warning(
+                        "OANDA price stream closed by server — reconnecting",
+                    )
+                    await asyncio.sleep(self._STREAM_BACKOFF_START)
+            except asyncio.CancelledError:
+                raise  # shutdown — never swallow
+            except httpx.HTTPStatusError:
+                # A 4xx we deliberately surfaced above (bad creds/request) is
+                # PERMANENT — must escape the reconnect loop, not retry
+                # forever. Listed before the transport-error catch below
+                # (HTTPStatusError is itself an httpx.HTTPError).
+                raise
+            except (httpx.HTTPError, OSError) as exc:
+                logger.warning(
+                    "OANDA price stream error (%s: %s) — reconnecting in "
+                    "%.0fs", type(exc).__name__, str(exc)[:120], backoff,
+                )
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, self._STREAM_BACKOFF_MAX)
 
     @staticmethod
     def _to_oanda(sym: str) -> str:
