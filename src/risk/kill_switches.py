@@ -91,6 +91,15 @@ _CVIX_ZSCORE_LIMIT: float = 3.0
 # is blind to market reality; the broker stream is likely dead.
 _PRICE_STREAM_STALE_SEC: float = 600.0
 
+# CL-nxjx — DATA-AVAILABILITY gates: switches that halt because the engine
+# temporarily can't SEE the market, not because a RISK event occurred. When
+# their condition clears (data returns) they AUTO-LIFT the halt, unlike risk
+# switches (drawdown/VIX/reconciliation) which stay sticky for human review.
+# stale_prices is the canonical case: a laptop wake / network blip halts on
+# stale prices; the stream reconnects; trading should resume on its own
+# instead of needing a manual /api/system/resume.
+_DATA_GATE_SWITCHES: frozenset[str] = frozenset({"stale_prices"})
+
 # Below this net quantity a broker position is dust — flatten/reduce
 # intents are not worth a market order.
 _MIN_ACTIONABLE_QTY: float = 1e-6
@@ -375,6 +384,13 @@ class KillSwitchManager:
         # Exposed for the live engine's RiskContextBuilder wiring (CL-i4tx).
         self.data_provider = data_provider
         self._triggered_today: set[str] = set()
+        # CL-nxjx: switches currently responsible for a halt. A DATA-gate
+        # cause is removed (and re-armed) by attempt_auto_resume when its
+        # condition clears; a RISK cause stays until a manual resume. When
+        # this becomes empty via data-gate clearing, the OMS auto-resumes.
+        # Empty while the OMS is halted ⇒ a NON-switch halt (manual
+        # /api/system/halt) — never auto-resumed.
+        self._active_halt_causes: set[str] = set()
         # CL-i4tx fail-closed accounting: consecutive evaluation failures
         # per switch. Reset to 0 on any successful evaluation.
         self._consecutive_failures: dict[str, int] = {}
@@ -582,6 +598,9 @@ class KillSwitchManager:
                     )
                 if effective:
                     self._triggered_today.add(sw.name)
+                    # Track the halt cause (CL-nxjx) so a data-gate can
+                    # later auto-lift while risk causes stay sticky.
+                    self._active_halt_causes.add(sw.name)
                 else:
                     logger.warning(
                         "Kill switch %s: action ineffective — trigger NOT "
@@ -763,11 +782,66 @@ class KillSwitchManager:
 
     def reset_daily(self) -> None:
         """Re-arm the once-per-day trigger dedup. Called by the live engine
-        health tick at UTC-day rollover (CL-i4tx) — before that, nothing
-        called this and a fired switch stayed deduped until restart."""
+        health tick at UTC-day rollover (CL-i4tx) and by /api/system/resume
+        — before that, nothing called this and a fired switch stayed deduped
+        until restart. Also clears the halt-cause set (CL-nxjx): a manual
+        resume is the operator declaring the halt reviewed, so any sticky
+        risk cause is released too."""
         if self._triggered_today:
             logger.info(
                 "Kill switches re-armed for the new UTC day (had fired: %s)",
                 sorted(self._triggered_today),
             )
         self._triggered_today.clear()
+        self._active_halt_causes.clear()
+
+    def attempt_auto_resume(self, context: dict[str, Any]) -> bool:
+        """Auto-lift a halt caused ONLY by data-availability gates whose
+        condition has cleared (CL-nxjx). Called each health tick AFTER
+        check(). Returns True when it resumed the OMS.
+
+        A DATA-gate cause (stale_prices) is re-evaluated against the CURRENT
+        context; if its condition is no longer true (data returned), it is
+        removed from the active causes AND re-armed (dropped from
+        ``_triggered_today`` so it can fire again if data goes stale later).
+        RISK causes (drawdown/VIX/reconciliation/…) are NEVER auto-removed —
+        they hold the halt sticky until a manual resume, so a human reviews.
+        Resume fires only when the cause set drains to empty via data-gate
+        clearing; an already-empty cause set means a non-switch (manual)
+        halt, which is left untouched.
+        """
+        if not self._active_halt_causes:
+            return False  # nothing WE halted for — don't touch a manual halt
+        by_name = {sw.name: sw for sw in self.switches}
+        for name in list(self._active_halt_causes):
+            if name not in _DATA_GATE_SWITCHES:
+                continue  # risk cause — stays sticky
+            sw = by_name.get(name)
+            if sw is None:
+                continue
+            try:
+                still_bad = bool(sw.condition(context))
+            except Exception:
+                # Can't confirm the gate cleared — leave the halt in place.
+                logger.debug("auto-resume: %s re-eval failed", name,
+                             exc_info=True)
+                continue
+            if not still_bad:
+                self._active_halt_causes.discard(name)
+                self._triggered_today.discard(name)  # re-arm
+                logger.info(
+                    "Data-gate %s cleared — condition no longer true", name,
+                )
+        if not self._active_halt_causes:
+            try:
+                self.oms.resume_trades()
+            except Exception:
+                logger.exception("auto-resume: oms.resume_trades() failed")
+                return False
+            logger.critical(
+                "AUTO-RESUMED new trades — the only halt cause(s) were "
+                "data-availability gates that have cleared (e.g. price "
+                "stream recovered). Risk switches were NOT involved.",
+            )
+            return True
+        return False

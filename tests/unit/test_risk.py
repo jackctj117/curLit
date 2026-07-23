@@ -187,6 +187,72 @@ class TestKillSwitchManager:
         assert "stale_prices" in names
         assert oms.halts == ["all"]
 
+
+class _ResumableOMS(_FakeOMS):
+    def __init__(self) -> None:
+        super().__init__()
+        self.resumes = 0
+
+    def resume_trades(self) -> None:
+        self.resumes += 1
+
+
+class TestStalePricesAutoResume:
+    """CL-nxjx: stale_prices (a data-availability gate) auto-lifts when the
+    stream recovers; risk switches stay sticky for human review."""
+
+    def _mgr(self):  # noqa: ANN202
+        oms = _ResumableOMS()
+        return KillSwitchManager(_FakeBroker(), oms, {},
+                                 trailing_state_path=None), oms
+
+    def test_auto_resumes_when_stream_recovers(self) -> None:
+        mgr, oms = self._mgr()
+        stale = _baseline_ctx(); stale["price_stream_age_sec"] = 700
+        mgr.check(stale)                       # fires stale_prices -> halt
+        assert oms.halts == ["all"]
+        fresh = _baseline_ctx()                # price_stream_age_sec = 5
+        assert mgr.attempt_auto_resume(fresh) is True
+        assert oms.resumes == 1
+        # re-armed: can fire again if it goes stale later
+        assert "stale_prices" not in mgr._triggered_today
+        mgr.check(stale)
+        assert oms.halts == ["all", "all"]
+
+    def test_risk_switch_stays_sticky(self) -> None:
+        mgr, oms = self._mgr()
+        bad = _baseline_ctx(); bad["daily_pnl_pct"] = -0.50  # daily_loss_limit
+        mgr.check(bad)
+        assert oms.halts == ["all"]
+        recovered = _baseline_ctx()  # pnl back to +1%
+        assert mgr.attempt_auto_resume(recovered) is False
+        assert oms.resumes == 0  # risk halt NEVER auto-lifts
+
+    def test_stale_plus_risk_no_resume(self) -> None:
+        mgr, oms = self._mgr()
+        both = _baseline_ctx()
+        both["price_stream_age_sec"] = 700
+        both["daily_pnl_pct"] = -0.50
+        mgr.check(both)
+        fresh = _baseline_ctx()  # stale cleared, but the risk cause remains
+        assert mgr.attempt_auto_resume(fresh) is False
+        assert oms.resumes == 0
+
+    def test_manual_halt_not_auto_resumed(self) -> None:
+        # No switch fired → no active causes → auto-resume must not touch a
+        # (hypothetical) manual halt.
+        mgr, oms = self._mgr()
+        assert mgr.attempt_auto_resume(_baseline_ctx()) is False
+        assert oms.resumes == 0
+
+    def test_reset_daily_clears_causes(self) -> None:
+        mgr, _oms = self._mgr()
+        stale = _baseline_ctx(); stale["price_stream_age_sec"] = 700
+        mgr.check(stale)
+        assert mgr._active_halt_causes
+        mgr.reset_daily()
+        assert not mgr._active_halt_causes
+
     def test_reconciliation_failure_triggers(self) -> None:
         mgr = KillSwitchManager(_FakeBroker(), _FakeOMS(), {},
                                 trailing_state_path=None)

@@ -367,6 +367,12 @@ class LiveEngine:
         else:
             context = {"equity": account.equity}
         self.kill_switch_manager.check(context)
+        # CL-nxjx: after evaluating, auto-lift a halt whose ONLY cause was a
+        # data-availability gate (stale_prices) that has since cleared — so
+        # a network blip / laptop-wake recovers on its own instead of
+        # staying halted until a manual restart. Risk halts stay sticky.
+        if hasattr(self.kill_switch_manager, "attempt_auto_resume"):
+            self.kill_switch_manager.attempt_auto_resume(context)
 
     @staticmethod
     def _in_trading_window(ts: datetime) -> bool:
