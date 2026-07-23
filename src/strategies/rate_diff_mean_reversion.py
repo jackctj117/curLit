@@ -503,6 +503,29 @@ class RateDiffMRStrategy:
 
         return allowed, diag
 
+    def _persist_position(self, reason: str = "") -> None:
+        """CL-bccy (P0): mirror the current position to the durable state store
+        so the COLD-START reconciler sees it after a restart and does NOT
+        flatten the live broker leg as an orphan (rate-diff previously kept its
+        position in memory only). Driven off EVERY _position_size change —
+        including the per-tick broker sync (CL-0h30) — so the store tracks
+        broker truth rather than optimistic emits, which self-heals the
+        rejected-order edge (a rejected entry/exit is corrected on the next
+        tick's sync, and the store follows). Best-effort."""
+        if self.state is None or not hasattr(self.state, "record_entry"):
+            return
+        now = datetime.now(UTC)
+        try:
+            if abs(self._position_size) > 1e-9:
+                self.state.record_entry(
+                    self.id, now,
+                    {"symbol": self.config.pair}, self._position_size,
+                )
+            else:
+                self.state.record_exit(self.id, now, reason or "flat")
+        except Exception:
+            logger.warning("%s: position persist failed", self.id, exc_info=True)
+
     def _sync_position_from_broker(self, broker: Any) -> None:
         """CL-0h30 (P0): reconcile the strategy's belief with the broker at the
         START of each tick. _position_size was updated optimistically at
@@ -548,6 +571,7 @@ class RateDiffMRStrategy:
                 self._entry_z = 0.0
             if self._entry_ts is None:
                 self._entry_ts = datetime.now(UTC)
+        self._persist_position("broker_sync")
 
     async def generate_intents(
         self, prices: dict[str, Any], broker: Any,
@@ -561,6 +585,7 @@ class RateDiffMRStrategy:
             if self._position_size != 0:
                 logger.info("Flattening — model quality degraded below gate")
                 self._position_size = 0
+                self._persist_position("model_quality_degraded")
                 meta = self._emit_snapshot({
                     "trigger": "model_quality_degraded",
                     "r_squared": float(r2),
@@ -670,6 +695,7 @@ class RateDiffMRStrategy:
                 self._position_size = 0.0
                 self._entry_z = None
                 self._entry_ts = None
+                self._persist_position(exit_reason)
                 signals_generated.labels(strategy_id=self.id, action="exit").inc()
                 return [OrderIntent(
                     strategy_id=self.id, symbol=self.config.pair,
@@ -753,6 +779,7 @@ class RateDiffMRStrategy:
             self._position_size = size
             self._entry_z = z
             self._entry_ts = datetime.now(UTC)
+            self._persist_position("entry")
             logger.info("Entry: z=%.2f dir=%d size=%.0f", z, direction, size)
             signals_generated.labels(strategy_id=self.id, action="entry").inc()
             meta = self._emit_snapshot({

@@ -47,6 +47,55 @@ class _PosBroker:
         return SimpleNamespace(equity=100_000.0)
 
 
+class _LogStore:
+    """Mirrors StrategyStateStore's append-log semantics: last row wins,
+    'entry' = open, 'exit' = flat."""
+
+    def __init__(self) -> None:
+        self._rows: list[tuple[str, dict[str, Any]]] = []
+
+    def record_entry(self, sid: str, ts: Any, signal: dict[str, Any], size: float) -> None:
+        self._rows.append(("entry", {**signal, "size": size}))
+
+    def record_exit(self, sid: str, ts: Any, reason: str) -> None:
+        self._rows.append(("exit", {"reason": reason}))
+
+    def get_current_position(self, sid: str) -> dict[str, Any] | None:
+        if not self._rows or self._rows[-1][0] == "exit":
+            return None
+        return self._rows[-1][1]
+
+
+class TestPositionPersistence:
+    """CL-bccy (P0): rate-diff persists its position to the durable store so
+    the cold-start reconciler sees it after a restart and doesn't flatten the
+    live broker leg as an orphan."""
+
+    def test_position_persisted_for_cold_start(self) -> None:
+        store = _LogStore()
+        s = RateDiffMRStrategy(_config(), state_store=store)
+        s._position_size = -1000.0
+        s._persist_position("entry")
+        pos = store.get_current_position(s.id)
+        assert pos is not None
+        assert pos["symbol"] == "EURUSD"
+        assert pos["size"] == -1000.0  # reconciler reads symbol + size
+
+    def test_flat_persisted_as_exit(self) -> None:
+        store = _LogStore()
+        s = RateDiffMRStrategy(_config(), state_store=store)
+        s._position_size = 1000.0
+        s._persist_position("entry")
+        s._position_size = 0.0
+        s._persist_position("mean_reversion")
+        assert store.get_current_position(s.id) is None  # reconciler sees flat
+
+    def test_persist_is_best_effort_without_store(self) -> None:
+        s = RateDiffMRStrategy(_config(), state_store=None)
+        s._position_size = 1000.0
+        s._persist_position("entry")  # must not raise
+
+
 class TestBrokerPositionSync:
     """CL-0h30 (P0): the strategy's belief is reconciled with the broker at the
     start of each tick, so a rejected entry/exit self-heals instead of leaving
