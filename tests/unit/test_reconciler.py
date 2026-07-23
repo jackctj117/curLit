@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -88,6 +89,54 @@ class TestReconciliationOutcomes:
         statuses = [e.status for e in report.entries]
         assert ReconciliationStatus.MATCHED in statuses
         assert not report.has_mismatches
+
+    def test_filled_pending_event_leg_not_flattened_on_cold_start(
+        self, tmp_path: Any,
+    ) -> None:
+        # CL-ngs3 (P0): a leg filled at the broker but not yet promoted out of
+        # pending_entries (crash after fill, before confirm_entries ran) must
+        # be MATCHED, not flattened. The reconciler confirms pending entries
+        # against the broker snapshot before classifying.
+        from src.strategies.event_book import EventBook, EventPosition
+        book = EventBook(
+            state_path=str(tmp_path / "book.json"), max_loss_pct=0.5,
+            per_instrument_max_pct=1.0, haven_max_pct=1.0,
+            max_holding_hours=48, reconcile_grace_sec=300,
+        )
+        now = datetime.now(UTC)
+        book.record_entry(
+            EventPosition(
+                symbol="USD_CAD", event_id=1, entry_ts=now, entry_price=1.36,
+                quantity=-500.0, direction=-1, stop_price=1.40, headline="x",
+            ),
+            [],   # broker flat at submit time → baseline 0
+            now,
+        )
+        # Pending entry contributes 0 until confirmed — which is exactly why a
+        # cold-start reconcile would see the real -500 broker fill as an orphan.
+        assert book.held_positions()["USD_CAD"].quantity == 0.0
+
+        class _EventStrat:
+            id = "event_driven"
+            state = None
+
+            def __init__(self, b: Any) -> None:
+                self.book = b
+
+            @property
+            def open_positions(self) -> Any:
+                return self.book.held_positions()
+
+        strat = _EventStrat(book)
+        broker = _make_broker_with([Position("USD_CAD", -500.0, 1.36)])  # filled
+        oms = _RecordingOMS()
+        recon = PositionReconciler(
+            broker, oms, None, strategies=[strat],  # type: ignore[arg-type]
+        )
+        report = recon.reconcile()
+        statuses = [e.status for e in report.entries]
+        assert ReconciliationStatus.ORPHANED_BROKER not in statuses
+        assert oms.submitted == []  # the real fill is NOT flattened
 
     def test_underscore_broker_symbol_matches_canonical_internal(self) -> None:
         # CL-n5xk (P0): a paper broker holds an event leg in OANDA-underscore

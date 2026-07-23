@@ -183,7 +183,13 @@ class PositionReconciler:
         """
         report = ReconciliationReport()
 
-        for entry in self._build_entries():
+        # confirm_pending=True ONLY on the cold-start reconcile (CL-ngs3): a
+        # filled-but-unpromoted pending event leg must be promoted before this
+        # flatten-capable pass so it is not mistaken for an orphan. The
+        # periodic check_alignment() stays a pure read (it must not mutate the
+        # book, and it should still SURFACE a real submit/confirm-window
+        # mismatch rather than auto-promoting it away).
+        for entry in self._build_entries(confirm_pending=True):
             report.entries.append(entry)
             self._apply_policy(entry, report)
 
@@ -250,10 +256,39 @@ class PositionReconciler:
     def _build_entries(
         self,
         broker_positions: dict[str, Position] | None = None,
+        *,
+        confirm_pending: bool = False,
     ) -> list[ReconciliationEntry]:
-        """Classify every symbol either side knows about (no actions)."""
+        """Classify every symbol either side knows about (no actions).
+
+        ``confirm_pending`` (CL-ngs3): only the cold-start ``reconcile()`` sets
+        this. It promotes filled-but-unpromoted pending event entries against
+        the freshly-fetched broker snapshot BEFORE classifying — a crash after
+        the broker fill but before confirm_entries ran on a tick leaves the leg
+        in pending_entries at confirmed_qty=0, so held_positions reports it
+        absent and this flatten-capable pass would close the REAL fill as an
+        orphan. Genuinely unfilled pending legs stay at 0 (or REJECT past
+        grace) — correctly not counted. The periodic ``check_alignment()``
+        leaves this False so it stays a pure read.
+        """
         if broker_positions is None:
             broker_positions = self._fetch_broker_positions()
+
+        if confirm_pending:
+            now = datetime.now(UTC)
+            for strategy in self.strategies:
+                book = getattr(strategy, "book", None)
+                if book is not None and hasattr(book, "confirm_entries"):
+                    try:
+                        book.confirm_entries(
+                            list(broker_positions.values()), now,
+                        )
+                    except Exception:
+                        logger.exception(
+                            "confirm_entries during reconcile failed for %s",
+                            getattr(strategy, "id", "?"),
+                        )
+
         internal_positions = self._fetch_internal_positions_per_symbol()
 
         all_symbols = set(broker_positions.keys()) | set(internal_positions.keys())
