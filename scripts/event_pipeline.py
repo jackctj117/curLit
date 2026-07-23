@@ -174,6 +174,31 @@ def _resolve_niche_min_urgency() -> int:
         return DEFAULT_MIN_URGENCY
 
 
+#: Niche discovery fan-out width (CL-818b). Each qualifying event's niche pass
+#: is independent, blocking I/O (Kimi tool loop + yfinance + red-team critic),
+#: so running them concurrently collapses the cycle to ~the slowest single
+#: event instead of their sum. Bounded to stay under the Moonshot/tool rate
+#: limits. Token SPEND is unchanged (same calls) — this is latency-only.
+_DEFAULT_NICHE_CONCURRENCY = 4
+_MAX_NICHE_CONCURRENCY = 8
+
+
+def _niche_max_concurrency() -> int:
+    """$NICHE_MAX_CONCURRENCY (int) bounding the niche discovery fan-out;
+    default 4, clamped to [1, 8]. 1 = the old serial behavior."""
+    raw = os.environ.get("NICHE_MAX_CONCURRENCY", "")
+    try:
+        value = int(raw) if raw.strip() else _DEFAULT_NICHE_CONCURRENCY
+    except ValueError:
+        logger.warning(
+            "NICHE_MAX_CONCURRENCY=%r is not an int; using %d",
+            raw,
+            _DEFAULT_NICHE_CONCURRENCY,
+        )
+        value = _DEFAULT_NICHE_CONCURRENCY
+    return max(1, min(_MAX_NICHE_CONCURRENCY, value))
+
+
 def _niche_step(engine: object, results: list, min_urgency: int) -> int:
     """CL-u2ph: multi-hop niche/asymmetry pass on high-urgency ASSESSED
     events only (quota discipline — one extra LLM call per qualifying
@@ -187,6 +212,7 @@ def _niche_step(engine: object, results: list, min_urgency: int) -> int:
     failure (symbol universe unavailable, LLM transport, DB blip) logs
     and returns, never kills the cycle."""
     import json as _json  # noqa: PLC0415
+    from concurrent.futures import ThreadPoolExecutor  # noqa: PLC0415
 
     from sqlalchemy import text  # noqa: PLC0415
 
@@ -210,8 +236,21 @@ def _niche_step(engine: object, results: list, min_urgency: int) -> int:
     universe = SymbolUniverse(engine)  # type: ignore[arg-type]
     playbooks = load_playbooks("configs/event_playbooks.yaml")
     agent = NicheAgent(universe=universe)
-    surfaced = 0
-    for r in qualifying:
+
+    # Warm the SymbolUniverse in-memory cache ONCE up front, so the concurrent
+    # verify_ideas reads below are pure in-memory (no N cold DB loads / no
+    # first-load race across workers). Best-effort — a stub/oddball universe
+    # just skips it and each worker self-loads as before.
+    try:
+        universe.exists("SPY")
+    except Exception:
+        logger.debug("symbol-universe cache warm-up skipped", exc_info=True)
+
+    def _discover(r: Any) -> tuple[Any, list[Any]]:
+        """Thread body — DISCOVERY ONLY (thread-safe: verify reads the warmed
+        in-memory universe; the Kimi/yfinance/critic calls are independent
+        blocking I/O). Merge + DB persist stay on the caller thread. Fail-soft
+        per event so one bad event never sinks the batch."""
         try:
             row = {
                 "id": r.event_id,
@@ -219,32 +258,43 @@ def _niche_step(engine: object, results: list, min_urgency: int) -> int:
                 "theme": r.theme,
                 "assessment": r.assessment,
             }
-            playbook = playbooks.get(r.theme or "")
-            ideas = agent.run(row, playbook)
-            if not ideas:
-                continue
-            added = agent.merge_into_assessment(r.assessment, ideas)
-            surfaced += added
-            if added:
-                # Re-persist the enriched assessment so the merged niche
-                # ideas survive into the ledger/digest and the DB row.
-                with engine.begin() as conn:  # type: ignore[attr-defined]
-                    conn.execute(
-                        text(
-                            "UPDATE geo_events SET assessment = :a "
-                            "WHERE id = :id AND status = 'ASSESSED'",
-                        ),
-                        {"a": _json.dumps(r.assessment), "id": r.event_id},
-                    )
+            return r, agent.run(row, playbooks.get(r.theme or ""))
         except Exception:
-            logger.exception(
-                "niche pass failed for event id=%s; continuing",
-                r.event_id,
-            )
+            logger.exception("niche discovery failed for event id=%s; continuing", r.event_id)
+            return r, []
+
+    # DISCOVER concurrently (bounded), then MERGE + PERSIST serially on THIS
+    # thread so the DB writes never race (CL-818b). pool.map preserves input
+    # order → deterministic merges + logs. workers==1 is the old serial path.
+    workers = max(1, min(_niche_max_concurrency(), len(qualifying)))
+    if workers == 1:
+        discovered = [_discover(r) for r in qualifying]
+    else:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            discovered = list(pool.map(_discover, qualifying))
+
+    surfaced = 0
+    for r, ideas in discovered:
+        if not ideas:
+            continue
+        added = agent.merge_into_assessment(r.assessment, ideas)
+        surfaced += added
+        if added:
+            # Re-persist the enriched assessment so the merged niche ideas
+            # survive into the ledger/digest and the DB row.
+            with engine.begin() as conn:  # type: ignore[attr-defined]
+                conn.execute(
+                    text(
+                        "UPDATE geo_events SET assessment = :a "
+                        "WHERE id = :id AND status = 'ASSESSED'",
+                    ),
+                    {"a": _json.dumps(r.assessment), "id": r.event_id},
+                )
     logger.info(
-        "niche: %d qualifying event(s), %d niche idea(s) surfaced+merged",
+        "niche: %d qualifying event(s), %d niche idea(s) surfaced+merged (concurrency=%d)",
         len(qualifying),
         surfaced,
+        workers,
     )
     return surfaced
 

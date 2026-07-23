@@ -10,6 +10,7 @@ tokens, per-event age, Ideas:/Fade: sections, token line wrapping).
 
 from __future__ import annotations
 
+import threading
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -1292,6 +1293,134 @@ class TestPipelineNicheWiring:
         args.digest_min_urgency = 5
         args.niche_min_urgency = 7
         pipeline_mod._cycle(args)  # must not raise
+
+
+# --------------------------------------------------------------------- #
+# Niche discovery fan-out (CL-818b)
+# --------------------------------------------------------------------- #
+
+
+class _FakeUniverse:
+    def __init__(self, _engine: Any) -> None:
+        pass
+
+    def exists(self, _ticker: str) -> bool:  # warmed by _niche_step up front
+        return True
+
+
+class _RecordingEngine:
+    """Captures the event ids persisted via begin()/execute() UPDATE."""
+
+    def __init__(self) -> None:
+        self.persisted: list[int] = []
+        self._lock = threading.Lock()
+
+    def begin(self) -> Any:
+        engine = self
+
+        class _Ctx:
+            def __enter__(self) -> Any:
+                return self
+
+            def __exit__(self, *_a: Any) -> bool:
+                return False
+
+            def execute(self, _stmt: Any, params: dict[str, Any]) -> None:
+                with engine._lock:
+                    engine.persisted.append(int(params["id"]))
+
+        return _Ctx()
+
+
+class TestNicheStepConcurrency:
+    """CL-818b: the niche loop DISCOVERS across events concurrently (bounded)
+    then MERGES + PERSISTS serially. Correctness must match the old serial
+    loop: every qualifying event discovered exactly once, all ideas merged,
+    the count summed, and one event's failure is fail-soft."""
+
+    def _patch(self, monkeypatch: pytest.MonkeyPatch, agent_cls: Any) -> None:
+        monkeypatch.setattr("src.data.symbols.SymbolUniverse", _FakeUniverse)
+        monkeypatch.setattr("src.events.niche_agent.NicheAgent", agent_cls)
+
+    def _agent_cls(self, ran: list[int], lock: threading.Lock, fail_on: int | None = None) -> Any:
+        class _Agent:
+            def __init__(self, **_kw: Any) -> None:
+                pass
+
+            def run(self, row: dict[str, Any], playbook: Any = None) -> list[Any]:
+                with lock:
+                    ran.append(int(row["id"]))
+                if fail_on is not None and int(row["id"]) == fail_on:
+                    raise RuntimeError(f"boom on event {fail_on}")
+                return [f"idea-{row['id']}"]
+
+            def merge_into_assessment(
+                self, assessment: dict[str, Any], ideas: list[Any], **_kw: Any
+            ) -> int:
+                assessment.setdefault("trade_ideas", []).extend(ideas)
+                return len(ideas)
+
+        return _Agent
+
+    def test_all_events_discovered_once_and_merged(
+        self, pipeline_mod: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("NICHE_MAX_CONCURRENCY", "4")
+        ran: list[int] = []
+        self._patch(monkeypatch, self._agent_cls(ran, threading.Lock()))
+        engine = _RecordingEngine()
+        results = [_res(event_id=i, urgency=8) for i in (1, 2, 3, 4, 5)]
+
+        surfaced = pipeline_mod._real_niche_step(engine, results, 7)
+
+        assert surfaced == 5
+        assert sorted(ran) == [1, 2, 3, 4, 5]  # each discovered exactly once
+        assert sorted(engine.persisted) == [1, 2, 3, 4, 5]  # each persisted once
+        for r in results:  # merges landed on the right assessment
+            assert r.assessment["trade_ideas"] == [f"idea-{r.event_id}"]
+
+    def test_one_event_failure_is_fail_soft(
+        self, pipeline_mod: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("NICHE_MAX_CONCURRENCY", "4")
+        ran: list[int] = []
+        self._patch(monkeypatch, self._agent_cls(ran, threading.Lock(), fail_on=2))
+        engine = _RecordingEngine()
+        results = [_res(event_id=i, urgency=8) for i in (1, 2, 3)]
+
+        surfaced = pipeline_mod._real_niche_step(engine, results, 7)
+
+        assert surfaced == 2  # 1 and 3 survived; 2 failed soft
+        assert sorted(ran) == [1, 2, 3]  # all three were attempted
+        assert sorted(engine.persisted) == [1, 3]
+
+    def test_serial_path_when_concurrency_one(
+        self, pipeline_mod: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("NICHE_MAX_CONCURRENCY", "1")
+        ran: list[int] = []
+        self._patch(monkeypatch, self._agent_cls(ran, threading.Lock()))
+        engine = _RecordingEngine()
+        results = [_res(event_id=i, urgency=8) for i in (1, 2, 3)]
+
+        surfaced = pipeline_mod._real_niche_step(engine, results, 7)
+
+        assert surfaced == 3
+        assert ran == [1, 2, 3]  # serial → deterministic call order
+
+    def test_max_concurrency_env_parse_and_clamp(self, pipeline_mod: Any) -> None:
+        import os
+
+        prev = os.environ.get("NICHE_MAX_CONCURRENCY")
+        try:
+            for raw, expected in [("4", 4), ("1", 1), ("999", 8), ("0", 1), ("junk", 4), ("", 4)]:
+                os.environ["NICHE_MAX_CONCURRENCY"] = raw
+                assert pipeline_mod._niche_max_concurrency() == expected
+        finally:
+            if prev is None:
+                os.environ.pop("NICHE_MAX_CONCURRENCY", None)
+            else:
+                os.environ["NICHE_MAX_CONCURRENCY"] = prev
 
 
 # --------------------------------------------------------------------- #
