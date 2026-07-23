@@ -21,6 +21,7 @@ import sqlalchemy as sa
 from sqlalchemy import text
 
 from src.execution.oms import OrderIntent, Urgency
+from src.risk.liquidity_window import LiquidityProfile
 from src.strategies.event_driven import (
     EventDrivenConfig,
     EventDrivenStrategy,
@@ -755,6 +756,48 @@ class TestCaps:
         insert_event(db)
         strat = make_strategy(tmp_path, db=db, provider=confirming_provider())
         assert len(run(strat, CONFIRM_PRICES, FakeBroker(equity=100_000))) == 1
+
+
+# =============================================================================
+# CL-y412: liquidity-window gate on confirmed event entries
+# =============================================================================
+
+
+# Same mid (1.0) as CONFIRM_PRICES so Gate B still confirms the move, but a
+# 200 bps bid/ask spread — a dead, illiquid window.
+_WIDE_CONFIRM_PRICES = {"USD_CAD": {"bid": 0.99, "ask": 1.01}}
+
+
+class TestLiquidityWindowGate:
+    def test_dead_window_blocks_confirmed_entry(self, tmp_path: Any) -> None:
+        db = make_db()
+        eid = insert_event(db)
+        strat = make_strategy(tmp_path, db=db, provider=confirming_provider())
+        # Empty profile → pair-median 1.0 bps; 200 bps spread → ratio 200
+        # ≥ 2.0 block. The event still CONFIRMS but the leg is not opened.
+        strat._liquidity_profile = LiquidityProfile()
+        intents = run(strat, _WIDE_CONFIRM_PRICES, FakeBroker(equity=100_000))
+        assert intents == []
+        assert get_status(db, eid) == "CONFIRMED"  # confirmed, never traded
+
+    def test_tight_spread_still_enters_with_active_profile(
+        self, tmp_path: Any,
+    ) -> None:
+        db = make_db()
+        insert_event(db)
+        strat = make_strategy(tmp_path, db=db, provider=confirming_provider())
+        # Active profile but a zero-spread quote → multiplier 1.0. Proves the
+        # gate does not spuriously block a well-quoted entry.
+        strat._liquidity_profile = LiquidityProfile()
+        assert len(run(strat, CONFIRM_PRICES, FakeBroker(equity=100_000))) == 1
+
+    def test_no_profile_is_inert(self, tmp_path: Any) -> None:
+        db = make_db()
+        insert_event(db)
+        strat = make_strategy(tmp_path, db=db, provider=confirming_provider())
+        # Default: no profile wired → even the 200 bps window opens the leg.
+        assert strat._liquidity_profile is None
+        assert len(run(strat, _WIDE_CONFIRM_PRICES, FakeBroker(equity=100_000))) == 1
 
 
 # =============================================================================

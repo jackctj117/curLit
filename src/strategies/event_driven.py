@@ -60,6 +60,8 @@ from src.models.feature_versioning import (
     FeatureSnapshotStore,
     attach_snapshot_payload,
 )
+from src.risk.liquidity_window import LiquidityProfile, spread_bps_from_tick
+from src.risk.sizing import PositionSizer
 from src.strategies.event_book import (
     HAVEN_INSTRUMENTS,
     EventBook,
@@ -99,12 +101,19 @@ class EventDrivenStrategy:
         snapshot_store: FeatureSnapshotStore | None = None,
         db_engine: Any = None,
         notifier: EventNotifier | None = None,
+        liquidity_profile: LiquidityProfile | None = None,
     ) -> None:
         self.config = config or EventDrivenConfig()
         self.data = data_provider
         self.state = state_store
         self.snapshot_store = snapshot_store
         self.db = db_engine
+        # CL-y412: hour-of-week liquidity gate for NEW event entries. Event
+        # news breaks at all hours — including dead-liquidity windows where a
+        # blown-out spread eats the edge — so entries are trimmed (or blocked)
+        # by the window multiplier. None = inert (no refresh has run yet):
+        # every entry passes at full size. Exits are NEVER gated (below).
+        self._liquidity_profile = liquidity_profile
         # Operator alerting lives in the events layer (CL-ikz2) — the
         # notifier owns alert formatting + notify_operator dispatch.
         self.notifier = notifier or EventNotifier(
@@ -618,6 +627,33 @@ class EventDrivenStrategy:
                 skipped.append((symbol, "concentration_cap"))
                 continue
             size = capped
+
+            # CL-y412: liquidity-window gate (NEW entries only — the exit
+            # manager above runs unconditionally). A wide spread in a dead
+            # window trims the entry (0.5×) or blocks it (0.0×). Skipped when
+            # the tick has no two-sided quote — we never widen an entry on a
+            # guessed spread, only shrink it on a measured one.
+            if self._liquidity_profile is not None:
+                spread_bps = spread_bps_from_tick(tick)
+                if spread_bps is not None:
+                    liq_size = PositionSizer.adjust_for_liquidity(
+                        size, symbol, now, spread_bps, self._liquidity_profile,
+                    )
+                    if liq_size == 0.0:
+                        logger.info(
+                            "Event entry %s skipped — dead liquidity window "
+                            "(spread=%.1fbps, event id=%s)",
+                            symbol, spread_bps, event_id,
+                        )
+                        skipped.append((symbol, "liquidity_window"))
+                        continue
+                    if liq_size != size:
+                        logger.info(
+                            "Event entry %s trimmed for thin liquidity "
+                            "(spread=%.1fbps): %.0f -> %.0f",
+                            symbol, spread_bps, size, liq_size,
+                        )
+                    size = liq_size
 
             # Park the leg in pending_entries at its INTENDED size and
             # capture the submit-time broker baseline (ENTRY half of

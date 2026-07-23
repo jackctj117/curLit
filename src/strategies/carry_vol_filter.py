@@ -26,6 +26,8 @@ from src.models.feature_versioning import (
     FeatureSnapshotStore,
     attach_snapshot_payload,
 )
+from src.risk.liquidity_window import LiquidityProfile, spread_bps_from_tick
+from src.risk.sizing import PositionSizer
 from src.strategies.vol_regime import compute_vol_z_score
 
 _FEATURE_SET_NAME = "carry_vol_filter"
@@ -123,11 +125,16 @@ class CarryVolFilterStrategy:
         data_provider: Any | None = None,
         state_store: Any | None = None,
         snapshot_store: FeatureSnapshotStore | None = None,
+        liquidity_profile: LiquidityProfile | None = None,
     ) -> None:
         self.config = config or CarryVolFilterConfig()
         self.data = data_provider
         self.state = state_store
         self.snapshot_store = snapshot_store
+        # CL-y412: liquidity-window gate applied to NEW basket legs only at
+        # rebalance (dropped/retained legs pass through so an exit or trim is
+        # never blocked). None = inert until the monthly refresh writes one.
+        self._liquidity_profile = liquidity_profile
         self.current_positions: dict[str, CarryPosition] = {}
         self._last_rebalance: date | None = None
         self._current_exposure: float = 1.0
@@ -390,6 +397,7 @@ class CarryVolFilterStrategy:
             )
 
         all_ccys = set(self.current_positions.keys()) | set(new_positions.keys())
+        blocked_new: list[str] = []
         for ccy in all_ccys:
             if ccy == "USD":
                 continue
@@ -407,6 +415,28 @@ class CarryVolFilterStrategy:
                 if price <= 0:
                     continue
                 target_qty = pos.side * broker_side * notional / price
+                # CL-y412: gate GENUINELY NEW legs only — a leg carried over
+                # from the prior basket (retained) or being dropped (target 0)
+                # is a rebalance/exit and must run at any spread. A new leg in
+                # a dead window is blocked (skip open, drop from state so no
+                # phantom hold) or trimmed (0.5×).
+                is_new_leg = ccy not in self.current_positions
+                if is_new_leg and self._liquidity_profile is not None:
+                    spread_bps = spread_bps_from_tick(prices.get(pair))
+                    if spread_bps is not None:
+                        liq_qty = PositionSizer.adjust_for_liquidity(
+                            target_qty, pair, now, spread_bps,
+                            self._liquidity_profile,
+                        )
+                        if liq_qty == 0.0:
+                            logger.info(
+                                "Carry leg %s (%s) not opened — dead liquidity "
+                                "window (spread=%.1fbps)",
+                                ccy, pair, spread_bps,
+                            )
+                            blocked_new.append(ccy)
+                            continue
+                        target_qty = liq_qty
             else:
                 target_qty = 0.0
             intents.append(
@@ -417,6 +447,11 @@ class CarryVolFilterStrategy:
                     urgency="normal",
                 ),
             )
+
+        # Blocked new legs never opened — drop them so state stays truthful
+        # (the reconciler and next rebalance must not believe we hold them).
+        for ccy in blocked_new:
+            new_positions.pop(ccy, None)
 
         self.current_positions = new_positions
         self._current_exposure = new_exposure

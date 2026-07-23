@@ -32,6 +32,15 @@ from datetime import datetime
 logger = logging.getLogger(__name__)
 
 
+def _canon(symbol: str) -> str:
+    """Matching key: strip separators, upper-case (mirror of
+    ``execution.broker.canonical_symbol`` — inlined to keep this module
+    dependency-light). Lets a profile built from OANDA-underscore ids
+    (``EUR_USD``) answer lookups from compact strategy symbols (``EURUSD``).
+    """
+    return symbol.replace("_", "").replace("/", "").replace("-", "").upper()
+
+
 # 2.0 × median = "dead window" entry block. Above this multiple, expected
 # round-trip cost dominates strategy edge for typical FX strategies
 # (Sharpe < 1 net of costs at 2× spread).
@@ -61,12 +70,13 @@ class LiquidityProfile:
     thin_threshold: float = _DEFAULT_THIN_THRESHOLD
 
     def median_for(self, symbol: str, ts: datetime) -> float:
+        key = _canon(symbol)
         bucket = self.median_spread_bps.get(
-            (symbol, ts.weekday(), ts.hour),
+            (key, ts.weekday(), ts.hour),
         )
         if bucket is not None:
             return bucket
-        return self.pair_median_bps.get(symbol, 1.0)
+        return self.pair_median_bps.get(key, 1.0)
 
     def size_multiplier(
         self, symbol: str, ts: datetime, observed_spread_bps: float,
@@ -101,6 +111,33 @@ def size_multiplier_for_window(
     return profile.size_multiplier(symbol, ts, observed_spread_bps)
 
 
+def spread_bps_from_tick(tick: object) -> float | None:
+    """Derive the current bid/ask spread in bps from a live tick dict.
+
+    Returns ``None`` when the tick has no usable two-sided quote (missing
+    side, non-numeric, crossed, or non-positive mid). Callers treat a
+    ``None`` spread as "cannot measure liquidity" and skip the window gate
+    rather than fabricate a spread — the strategy still enters at full size,
+    matching the None-profile passthrough posture. Entries are only ever
+    *reduced* by a measured wide spread, never opened wider on a guess.
+    """
+    if not isinstance(tick, dict):
+        return None
+    bid = tick.get("bid")
+    ask = tick.get("ask")
+    if bid is None or ask is None:
+        return None
+    try:
+        b = float(bid)
+        a = float(ask)
+    except (TypeError, ValueError):
+        return None
+    mid = (a + b) / 2.0
+    if mid <= 0 or a < b:
+        return None
+    return (a - b) / mid * 10_000.0
+
+
 # --------------------------------------------------------------------- #
 # Profile construction from observed spreads
 # --------------------------------------------------------------------- #
@@ -130,8 +167,9 @@ def build_profile_from_spreads(
     for ts, symbol, spread in spreads:
         if spread <= 0:
             continue
-        bucketed[(symbol, ts.weekday(), ts.hour)].append(spread)
-        pair_all[symbol].append(spread)
+        csym = _canon(symbol)
+        bucketed[(csym, ts.weekday(), ts.hour)].append(spread)
+        pair_all[csym].append(spread)
 
     median_spread_bps: dict[tuple[str, int, int], float] = {}
     for key, samples in bucketed.items():
@@ -149,4 +187,108 @@ def build_profile_from_spreads(
         pair_median_bps=pair_median_bps,
         block_threshold=block_threshold,
         thin_threshold=thin_threshold,
+    )
+
+
+def merge_profiles(
+    old: LiquidityProfile | None, new: LiquidityProfile,
+) -> LiquidityProfile:
+    """Overlay ``new`` onto ``old`` — fresh buckets win, stale buckets fill
+    gaps. ``intraday_quotes`` only retains ~24h, so a single refresh sees at
+    most one day's hours; merging successive daily runs accumulates the full
+    168-hour week while always preferring the most recent sample for any
+    bucket it just re-measured. Thresholds come from ``new``.
+    """
+    if old is None:
+        return new
+    median = {**old.median_spread_bps, **new.median_spread_bps}
+    pair = {**old.pair_median_bps, **new.pair_median_bps}
+    return LiquidityProfile(
+        median_spread_bps=median,
+        pair_median_bps=pair,
+        block_threshold=new.block_threshold,
+        thin_threshold=new.thin_threshold,
+    )
+
+
+# --------------------------------------------------------------------- #
+# Persistence (monthly refresh writes; engine boot reads)
+# --------------------------------------------------------------------- #
+#
+# The profile's bucket keys are ``(symbol, dow, hour)`` tuples, which JSON
+# cannot encode as object keys — so we flatten them to "symbol|dow|hour"
+# strings on write and re-split on read. Writes are atomic (tmp + replace)
+# per the project's state-file convention.
+
+
+def _bucket_key_to_str(key: tuple[str, int, int]) -> str:
+    symbol, dow, hour = key
+    return f"{symbol}|{dow}|{hour}"
+
+
+def _bucket_key_from_str(s: str) -> tuple[str, int, int]:
+    symbol, dow, hour = s.rsplit("|", 2)
+    return (symbol, int(dow), int(hour))
+
+
+def save_profile(profile: LiquidityProfile, path: str) -> None:
+    """Atomically persist ``profile`` to ``path`` as JSON."""
+    import contextlib
+    import json
+    import os
+    import tempfile
+
+    payload = {
+        "median_spread_bps": {
+            _bucket_key_to_str(k): v
+            for k, v in profile.median_spread_bps.items()
+        },
+        "pair_median_bps": dict(profile.pair_median_bps),
+        "block_threshold": profile.block_threshold,
+        "thin_threshold": profile.thin_threshold,
+    }
+    directory = os.path.dirname(os.path.abspath(path))
+    os.makedirs(directory, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=directory, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as fh:
+            json.dump(payload, fh, indent=2, sort_keys=True)
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
+
+
+def load_profile(path: str) -> LiquidityProfile | None:
+    """Load a persisted profile, or ``None`` if the file is absent.
+
+    A missing file is the normal cold-start state: no refresh has run yet,
+    so the engine wires ``None`` and liquidity gating is inert (every entry
+    passes at full size). A *corrupt* file raises — fail loud, per the
+    project convention, rather than silently trading with a mangled gate.
+    """
+    import json
+    import os
+
+    if not os.path.exists(path):
+        return None
+    with open(path) as fh:
+        payload = json.load(fh)
+    median = {
+        _bucket_key_from_str(k): float(v)
+        for k, v in payload["median_spread_bps"].items()
+    }
+    pair_median = {
+        str(k): float(v) for k, v in payload["pair_median_bps"].items()
+    }
+    return LiquidityProfile(
+        median_spread_bps=median,
+        pair_median_bps=pair_median,
+        block_threshold=float(
+            payload.get("block_threshold", _DEFAULT_BLOCK_THRESHOLD),
+        ),
+        thin_threshold=float(
+            payload.get("thin_threshold", _DEFAULT_THIN_THRESHOLD),
+        ),
     )

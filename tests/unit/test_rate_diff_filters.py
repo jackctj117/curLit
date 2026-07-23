@@ -26,6 +26,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from src.risk.liquidity_window import LiquidityProfile
 from src.strategies.rate_diff_mean_reversion import (
     RateDiffMRConfig,
     RateDiffMRStrategy,
@@ -509,3 +510,62 @@ class TestLivePathFilters:
         for name in ("carry", "momentum", "regime"):
             assert values["filters"][name]["enabled"] is False
             assert values["filters"][name]["passed"] is True
+
+
+class TestLivePathLiquidity:
+    """CL-y412: liquidity-window gate on the live entry path.
+
+    _PRICES spread = 0.0002 / 1.1 * 1e4 ≈ 1.818 bps; a pair_median steers the
+    ratio across the thin (1.5×) and block (2.0×) thresholds.
+    """
+
+    def _strat(self, profile: LiquidityProfile | None) -> tuple[
+        RateDiffMRStrategy, _CapturingStore,
+    ]:
+        store = _CapturingStore()
+        s = RateDiffMRStrategy(
+            _config(), data_provider=_FakeProvider(), snapshot_store=store,
+            liquidity_profile=profile,
+        )
+        s._model = {
+            "alpha": 1.0, "beta": 0.0, "r_squared": 0.9, "residual_std": 0.01,
+        }
+        s._last_fit = datetime.now(UTC)
+        return s, store
+
+    def test_dead_window_blocks_entry(self) -> None:
+        # median 0.5 → ratio 3.6 ≥ 2.0 → block; entry suppressed, snapshot
+        # records the liquidity spread.
+        s, store = self._strat(LiquidityProfile(pair_median_bps={"EURUSD": 0.5}))
+        intents = asyncio.run(s.generate_intents(_PRICES, _FakeBroker()))
+        assert intents == []
+        assert s._position_size == 0.0
+        assert store.snapshots[-1].values["trigger"] == "entry_blocked"
+        assert "liquidity_spread_bps" in store.snapshots[-1].values
+
+    def test_no_profile_enters_full(self) -> None:
+        s, _ = self._strat(None)
+        intents = asyncio.run(s.generate_intents(_PRICES, _FakeBroker()))
+        assert len(intents) == 1
+
+    def test_normal_window_enters_full(self) -> None:
+        # median 2.0 → ratio 0.91 < 1.5 → multiplier 1.0 → full size.
+        s_full, _ = self._strat(None)
+        full = asyncio.run(s_full.generate_intents(_PRICES, _FakeBroker()))
+        s, _ = self._strat(LiquidityProfile(pair_median_bps={"EURUSD": 2.0}))
+        intents = asyncio.run(s.generate_intents(_PRICES, _FakeBroker()))
+        assert len(intents) == 1
+        assert intents[0].target_position == pytest.approx(
+            full[0].target_position,
+        )
+
+    def test_thin_window_halves_entry(self) -> None:
+        # median 1.0 → ratio 1.818 in [1.5, 2.0) → 0.5× — enters at half size.
+        s_full, _ = self._strat(None)
+        full = asyncio.run(s_full.generate_intents(_PRICES, _FakeBroker()))
+        s, _ = self._strat(LiquidityProfile(pair_median_bps={"EURUSD": 1.0}))
+        intents = asyncio.run(s.generate_intents(_PRICES, _FakeBroker()))
+        assert len(intents) == 1
+        assert intents[0].target_position == pytest.approx(
+            full[0].target_position * 0.5,
+        )

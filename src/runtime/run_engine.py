@@ -275,6 +275,28 @@ def build_strategies(
         )
         state_store = None
 
+    # CL-y412: hour-of-week liquidity profile for entry-window gating.
+    # Absent file = cold start (no monthly refresh has run) => None => the
+    # gate is inert and every entry passes at full size. A corrupt file
+    # fails loud rather than trading with a mangled gate.
+    from src.risk.liquidity_window import load_profile as _load_liq_profile
+
+    _liq_path = os.environ.get(
+        "CURLIT_LIQUIDITY_PROFILE", "data/liquidity_profile.json",
+    )
+    try:
+        liquidity_profile: Any | None = _load_liq_profile(_liq_path)
+    except Exception:
+        logger.exception(
+            "Failed to load liquidity profile %s; entries un-gated", _liq_path,
+        )
+        liquidity_profile = None
+    if liquidity_profile is not None:
+        logger.info(
+            "Liquidity-window gating ACTIVE from %s (%d buckets)",
+            _liq_path, len(liquidity_profile.median_spread_bps),
+        )
+
     strategies: list[Any] = []
     for sconf in config.get("strategies", []):
         sid = sconf.get("id", "")
@@ -291,6 +313,7 @@ def build_strategies(
                     data_provider=data_provider,
                     state_store=state_store,
                     snapshot_store=snapshot_store,
+                    liquidity_profile=liquidity_profile,
                 )
             )
         elif "sentiment" in sid or "cb" in sid:
@@ -310,6 +333,7 @@ def build_strategies(
                     data_provider=data_provider,
                     state_store=state_store,
                     snapshot_store=snapshot_store,
+                    liquidity_profile=liquidity_profile,
                 )
             )
         elif "event" in sid:
@@ -324,6 +348,7 @@ def build_strategies(
                     state_store=state_store,
                     snapshot_store=snapshot_store,
                     db_engine=engine,
+                    liquidity_profile=liquidity_profile,
                 )
             )
     if not strategies:

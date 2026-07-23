@@ -21,6 +21,8 @@ from src.models.feature_versioning import (
     FeatureSnapshotStore,
     attach_snapshot_payload,
 )
+from src.risk.liquidity_window import LiquidityProfile, spread_bps_from_tick
+from src.risk.sizing import PositionSizer
 from src.strategies.vol_regime import compute_vol_z_score, rolling_vol_z
 
 logger = logging.getLogger(__name__)
@@ -110,11 +112,15 @@ class RateDiffMRStrategy:
         data_provider: Any = None,
         state_store: Any = None,
         snapshot_store: FeatureSnapshotStore | None = None,
+        liquidity_profile: LiquidityProfile | None = None,
     ) -> None:
         self.config = config or RateDiffMRConfig()
         self.data = data_provider
         self.state = state_store
         self.snapshot_store = snapshot_store
+        # CL-y412: hour-of-week liquidity gate for NEW entries only. None =
+        # inert passthrough until the monthly refresh writes a profile.
+        self._liquidity_profile = liquidity_profile
         self._model: dict[str, Any] | None = None
         self._last_fit: datetime | None = None
         self._position_size: float = 0.0
@@ -638,6 +644,38 @@ class RateDiffMRStrategy:
             notional = equity * self.config.volatility_target / max(vol, 0.01)
             notional = min(notional, equity * self.config.max_position_pct)
             size = direction * notional / current_price
+
+            # CL-y412: liquidity-window gate — NEW entries only (the exit
+            # branch above returns before reaching here). A wide spread in a
+            # dead window blocks the entry (0.0×) or halves it (0.5×). The
+            # sign is preserved because adjust_for_liquidity scales magnitude.
+            if self._liquidity_profile is not None:
+                spread_bps = spread_bps_from_tick(tick)
+                if spread_bps is not None:
+                    liq_size = PositionSizer.adjust_for_liquidity(
+                        size, self.config.pair, datetime.now(UTC),
+                        spread_bps, self._liquidity_profile,
+                    )
+                    if liq_size == 0.0:
+                        logger.info(
+                            "Entry blocked by dead liquidity window: "
+                            "z=%.2f dir=%d spread=%.1fbps",
+                            z, direction, spread_bps,
+                        )
+                        signals_generated.labels(
+                            strategy_id=self.id, action="entry_blocked",
+                        ).inc()
+                        self._emit_snapshot({
+                            "trigger": "entry_blocked",
+                            "z": float(z),
+                            "direction": int(direction),
+                            "price": float(current_price),
+                            "spread": float(current_spread),
+                            "liquidity_spread_bps": float(spread_bps),
+                        })
+                        return []
+                    size = liq_size
+
             self._position_size = size
             self._entry_z = z
             self._entry_ts = datetime.now(UTC)

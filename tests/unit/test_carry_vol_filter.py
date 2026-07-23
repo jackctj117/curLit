@@ -12,9 +12,11 @@ from datetime import UTC, date, datetime
 from typing import Any
 
 from src.execution.broker import Account
+from src.risk.liquidity_window import LiquidityProfile
 from src.strategies.carry_vol_filter import (
     _RATE_SERIES_MAP,
     _USD_BASE_PAIRS,
+    CarryPosition,
     CarryVolFilterConfig,
     CarryVolFilterStrategy,
 )
@@ -358,3 +360,74 @@ class TestInterface:
         strat = CarryVolFilterStrategy()
         assert not hasattr(strat, "fit")
         assert not hasattr(strat, "generate_signals")
+
+
+# =============================================================================
+# CL-y412: liquidity-window gate — NEW basket legs only
+# =============================================================================
+
+
+# Every pair quoted with a ~200 bps relative spread (bid=p*0.99, ask=p*1.01),
+# so with the default pair-median of 1.0 bps the ratio blows past the 2.0×
+# block threshold for EVERY pair regardless of price magnitude.
+_WIDE_PRICES = {
+    pair: {"bid": p * 0.99, "ask": p * 1.01}
+    for pair, p in {
+        "EURUSD": 1.1000, "USDJPY": 150.00, "GBPUSD": 1.2500,
+        "USDCHF": 0.9000, "USDCAD": 1.3500, "AUDUSD": 0.6700,
+        "NZDUSD": 0.6100, "USDNOK": 10.50, "USDSEK": 10.80,
+    }.items()
+}
+
+_RATES = {
+    "EUR": 0.04, "JPY": 0.005, "GBP": 0.045, "AUD": 0.045,
+    "NZD": 0.05, "CHF": 0.01, "CAD": 0.04, "NOK": 0.04, "SEK": 0.03,
+    "USD": 0.045,
+}
+# Baskets from _RATES: long = NZD, GBP, AUD; short = JPY, CHF, SEK.
+_BASKET_CCYS = ("NZD", "GBP", "AUD", "JPY", "CHF", "SEK")
+
+
+class TestLiquidityGate:
+    def _strategy(self, profile: LiquidityProfile | None) -> CarryVolFilterStrategy:
+        return CarryVolFilterStrategy(
+            CarryVolFilterConfig(top_k=3, bottom_k=3),
+            data_provider=_FakeDataProvider(rates=_RATES),
+            state_store=None,
+            liquidity_profile=profile,
+        )
+
+    def test_dead_window_blocks_all_new_legs_and_state_truthful(self) -> None:
+        # Fresh strategy → every basket leg is a NEW entry. A dead window
+        # blocks them all: no entry intents, and NONE recorded as held (the
+        # blocked_new pop keeps the book truthful for the reconciler).
+        strat = self._strategy(LiquidityProfile())  # empty → pair-median 1.0
+        intents = asyncio.run(strat.generate_intents(_WIDE_PRICES, _FakeBroker()))
+        assert all(i.target_position == 0 for i in intents)
+        assert strat.current_positions == {}
+
+    def test_no_profile_opens_full_book(self) -> None:
+        strat = self._strategy(None)
+        intents = asyncio.run(strat.generate_intents(_WIDE_PRICES, _FakeBroker()))
+        # None profile is inert even at a 200 bps spread — all 6 legs open.
+        assert len([i for i in intents if i.target_position != 0]) == 6
+        assert len(strat.current_positions) == 6
+
+    def test_retained_legs_never_gated_even_in_dead_window(self) -> None:
+        # Pre-seed the book with the exact basket currencies, so at the next
+        # rebalance every leg is RETAINED (not new). Retained legs are a
+        # rebalance/exit adjustment and must run at ANY spread — the dead
+        # window must not block them.
+        strat = self._strategy(LiquidityProfile())
+        strat.current_positions = {
+            ccy: CarryPosition(
+                currency=ccy, side=1, weight=1 / 3,
+                entry_ts=datetime(2026, 3, 1, tzinfo=UTC), reference_rate=0.04,
+            )
+            for ccy in _BASKET_CCYS
+        }
+        strat._last_rebalance = date(2026, 3, 1)  # force a new-month rebalance
+        intents = asyncio.run(strat.generate_intents(_WIDE_PRICES, _FakeBroker()))
+        nonzero = [i for i in intents if i.target_position != 0]
+        assert len(nonzero) == 6  # all retained legs still traded
+        assert len(strat.current_positions) == 6
