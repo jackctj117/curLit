@@ -123,6 +123,91 @@ class TestAlertExpired:
 
 
 # =============================================================================
+# Ticker → company-name enrichment (CL-ikz2)
+# =============================================================================
+
+
+def _row_with_ideas(**extra: Any) -> dict[str, Any]:
+    row = _row()
+    row["assessment"] = {
+        "urgency": 8,
+        "confidence": 0.9,
+        "trade_ideas": [
+            {"ticker": "VG", "action": "buy_calls", "confidence": 0.78,
+             "rationale": "US LNG export tailwind"},
+        ],
+    }
+    row.update(extra)
+    return row
+
+
+class TestTickerNameEnrichment:
+    def test_confirmed_ideas_show_company_name(
+        self, sent: list[tuple[str, str, int]],
+    ) -> None:
+        assessment = {
+            "urgency": 8, "confidence": 0.9,
+            "trade_ideas": [
+                {"ticker": "VG", "action": "buy_calls", "confidence": 0.78,
+                 "rationale": "US LNG export tailwind"},
+            ],
+        }
+        make_notifier().alert_confirmed(
+            _row(), assessment, entered=[], skipped=[],
+            names={"VG": "Venture Global, Inc."},
+        )
+        assert "- VG (Venture Global, Inc.) buy_calls" in sent[0][1]
+
+    def test_confirmed_ideas_degrade_to_bare_ticker(
+        self, sent: list[tuple[str, str, int]],
+    ) -> None:
+        assessment = {
+            "urgency": 8, "confidence": 0.9,
+            "trade_ideas": [
+                {"ticker": "VG", "action": "buy_calls", "confidence": 0.78},
+            ],
+        }
+        # No names map at all — must render exactly as before (bare ticker).
+        make_notifier().alert_confirmed(
+            _row(), assessment, entered=[], skipped=[],
+        )
+        assert "- VG buy_calls" in sent[0][1]
+        assert "(" not in sent[0][1].split("- VG")[1].split("\n")[0]
+
+    def test_long_name_truncated(
+        self, sent: list[tuple[str, str, int]],
+    ) -> None:
+        assessment = {
+            "urgency": 8, "confidence": 0.9,
+            "trade_ideas": [{"ticker": "VG", "action": "buy_calls"}],
+        }
+        make_notifier().alert_confirmed(
+            _row(), assessment, entered=[], skipped=[],
+            names={"VG": "A" * 60},
+        )
+        line = next(li for li in sent[0][1].splitlines() if li.startswith("- VG"))
+        assert "…" in line
+        assert len(line) < 60  # bounded, not the full 60-char name
+
+    def test_expired_top_idea_shows_company_name(
+        self, sent: list[tuple[str, str, int]],
+    ) -> None:
+        make_notifier().alert_expired(
+            _row_with_ideas(minutes_ago=300), urgency=9, confidence=0.9,
+            names={"VG": "Venture Global, Inc."},
+        )
+        assert "Top idea: VG (Venture Global, Inc.) buy_calls" in sent[0][1]
+
+    def test_expired_top_idea_degrades_without_names(
+        self, sent: list[tuple[str, str, int]],
+    ) -> None:
+        make_notifier().alert_expired(
+            _row_with_ideas(minutes_ago=300), urgency=9, confidence=0.9,
+        )
+        assert "Top idea: VG buy_calls" in sent[0][1]
+
+
+# =============================================================================
 # Idea-ledger cross-asset stamp (events-domain DB write)
 # =============================================================================
 

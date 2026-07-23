@@ -220,6 +220,25 @@ def _fetch_bullish_ideas(engine) -> list[dict]:  # noqa: ANN001
         return []
 
 
+def _resolve_idea_names(engine, ideas: list[dict]) -> dict[str, str]:  # noqa: ANN001
+    """Ticker→company-name map for the LONG-ideas tickers (CL-ikz2) so the
+    digest shows "VG (Venture Global, Inc.)". Fail-soft: any problem
+    (universe unavailable, DB blip) logs and returns ``{}`` — the digest
+    then renders bare tickers, exactly as before."""
+    tickers = {str(i.get("ticker") or "").upper() for i in ideas}
+    tickers.discard("")
+    if not tickers:
+        return {}
+    try:
+        from src.data.symbols import SymbolUniverse  # noqa: PLC0415
+
+        return SymbolUniverse(engine).company_names(tickers)
+    except Exception:
+        logger.warning("morning digest: ticker-name enrichment unavailable",
+                       exc_info=True)
+        return {}
+
+
 def run_once(now: datetime | None = None, *, force: bool = False) -> bool:
     """Send both digests if due; True when they went out."""
     from sqlalchemy import create_engine  # noqa: PLC0415
@@ -256,7 +275,10 @@ def run_once(now: datetime | None = None, *, force: bool = False) -> bool:
         balances=balances or None,
         now=now,
     )
-    ideas_body = build_long_ideas_digest(_fetch_bullish_ideas(engine), now)
+    bullish_ideas = _fetch_bullish_ideas(engine)
+    ideas_body = build_long_ideas_digest(
+        bullish_ideas, now, names=_resolve_idea_names(engine, bullish_ideas),
+    )
 
     r1 = notify_operator("☀️ Morning positions", positions_body, html=True)
     r2 = notify_operator("📈 LONG ideas (event-driven)", ideas_body, html=True)

@@ -39,6 +39,27 @@ logger = logging.getLogger(__name__)
 #: data-provider fallback) so price resolution stays defined in ONE place.
 PriceResolver = Callable[[str, dict[str, Any], datetime], "float | None"]
 
+#: Max company-name length in an alert line before truncation (CL-ikz2) —
+#: keeps "TICKER (Company Name)" phone-readable in one line.
+_MAX_NAME_LEN = 28
+
+
+def _ticker_label(
+    ticker: str, names: dict[str, str] | None,
+) -> str:
+    """``TICKER (Company Name)`` when a name resolves, bare ``TICKER``
+    otherwise (CL-ikz2). Fail-soft: a missing/empty name degrades to the
+    bare ticker exactly as before. Long names are truncated with an ellipsis
+    so the line stays readable; FX/CFD tickers (no name resolved) stay bare."""
+    if not ticker:
+        return ticker
+    name = (names or {}).get(ticker)
+    if not name:
+        return ticker
+    if len(name) > _MAX_NAME_LEN:
+        name = name[: _MAX_NAME_LEN - 1].rstrip() + "…"
+    return f"{ticker} ({name})"
+
 
 class EventNotifier:
     """Formats and dispatches event-pipeline operator alerts.
@@ -98,6 +119,7 @@ class EventNotifier:
         limit: int = 5,
         prices: dict[str, Any] | None = None,
         now: datetime | None = None,
+        names: dict[str, str] | None = None,
     ) -> list[str]:
         """Advisory trade-ideas lines (CL-mgcp) — clearly separated
         from the machine trades above them: the system never trades
@@ -122,8 +144,9 @@ class EventNotifier:
         for idea in ideas[:limit]:
             if not isinstance(idea, dict):
                 continue
+            ticker = str(idea.get("ticker") or "?")
             parts = [
-                str(idea.get("ticker") or "?"),
+                _ticker_label(ticker, names),
                 str(idea.get("action") or "?"),
             ]
             horizon = str(idea.get("time_horizon") or "").strip()
@@ -291,6 +314,7 @@ class EventNotifier:
         prices: dict[str, Any] | None = None,
         now: datetime | None = None,
         cross_asset: Any = None,
+        names: dict[str, str] | None = None,
     ) -> None:
         now = now or datetime.now(UTC)
         lines = [f"Headline: {str(row.get('headline') or '')[:140]}"]
@@ -321,7 +345,9 @@ class EventNotifier:
         watch = self._watch_list(assessment)
         if watch:
             lines.append("Watch: " + ", ".join(watch))
-        ideas = self._ideas_block(assessment, prices=prices, now=now)
+        ideas = self._ideas_block(
+            assessment, prices=prices, now=now, names=names,
+        )
         if ideas:
             lines.append("")
             lines.extend(ideas)
@@ -330,7 +356,13 @@ class EventNotifier:
         except Exception:
             logger.exception("Confirmed-event alert dispatch failed")
 
-    def alert_expired(self, row: dict[str, Any], urgency: int, confidence: float) -> None:
+    def alert_expired(
+        self,
+        row: dict[str, Any],
+        urgency: int,
+        confidence: float,
+        names: dict[str, str] | None = None,
+    ) -> None:
         lines = [f"Headline: {str(row.get('headline') or '')[:140]}"]
         age = self._event_age(row)
         if age:
@@ -354,7 +386,8 @@ class EventNotifier:
                 ideas, key=lambda i: float(i.get("confidence") or 0.0),
             )
             line = (
-                f"Top idea: {top.get('ticker')} {top.get('action') or '?'}"
+                f"Top idea: {_ticker_label(str(top.get('ticker') or ''), names)} "
+                f"{top.get('action') or '?'}"
             )
             if top.get("time_stop_days") is not None:
                 line += f" (stop {top.get('time_stop_days')}d)"

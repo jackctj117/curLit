@@ -340,6 +340,87 @@ def test_refresh_both_files_down_returns_zero(engine):
 
 
 # --------------------------------------------------------------------------- #
+# company-name enrichment for operator notifications (CL-ikz2)
+# --------------------------------------------------------------------------- #
+
+
+# A verbose "- Class A Common Stock" tail to prove the suffix trim, plus a
+# bare-ticker FX-style underscore symbol that must never resolve to a name.
+VG_BODY = "\n".join([
+    "ACT Symbol|Security Name|Exchange|CQS Symbol|ETF|Round Lot Size|"
+    "Test Issue|NASDAQ Symbol",
+    "VG|Venture Global, Inc. Class A Common Stock|N|VG|N|100|N|VG",  # verbose
+    "File Creation Time: 0720202601:23||||||||",
+])
+VG_ONLY = {NASDAQ_LISTED_URL: "", OTHER_LISTED_URL: VG_BODY}
+
+
+def test_company_name_prefers_clean_sec_name(engine):
+    """SEC name ("Venture Global, Inc.") wins over the verbose NASDAQ name."""
+    sec = json.dumps({
+        "0": {"cik_str": 42, "ticker": "VG", "title": "Venture Global, Inc."},
+    })
+    uni = SymbolUniverse(
+        engine, http_get=_fake_http(VG_ONLY), sec_http_get=_fake_sec(sec),
+    )
+    uni.refresh()
+    uni.refresh_sec_names()
+    assert uni.company_name("VG") == "Venture Global, Inc."
+    assert uni.company_name("vg") == "Venture Global, Inc."  # case-insensitive
+
+
+def test_company_name_trims_verbose_suffix_without_sec(engine):
+    """No SEC name → the verbose class-share suffix is trimmed off."""
+    uni = SymbolUniverse(engine, http_get=_fake_http(VG_ONLY))
+    uni.refresh()  # no refresh_sec_names → sec_name stays NULL
+    assert uni.company_name("VG") == "Venture Global, Inc."
+
+
+def test_company_name_trims_common_stock_suffix(engine):
+    uni = SymbolUniverse(engine, http_get=_fake_http(BOTH_OK))
+    uni.refresh()
+    # "Apple Inc. - Common Stock" → "Apple Inc." (", Inc." kept).
+    assert uni.company_name("AAPL") == "Apple Inc."
+    # "DHT Holdings, Inc. Common Stock" → "DHT Holdings, Inc." (no separator).
+    assert uni.company_name("DHT") == "DHT Holdings, Inc."
+
+
+def test_company_name_names_etf(engine):
+    """ETFs still get a (fund) name — helpful colour, not skipped."""
+    uni = SymbolUniverse(engine, http_get=_fake_http(BOTH_OK))
+    uni.refresh()
+    assert uni.company_name("GLD") == "SPDR Gold Trust"
+
+
+def test_company_name_none_for_fx_underscore_and_unknown(engine):
+    uni = SymbolUniverse(engine, http_get=_fake_http(BOTH_OK))
+    uni.refresh()
+    assert uni.company_name("BCO_USD") is None  # FX/CFD — underscore skip
+    assert uni.company_name("USD_JPY") is None
+    assert uni.company_name("ZZZZFAKE") is None  # unknown ticker
+    assert uni.company_name("") is None
+    assert uni.company_name("TSTQ") is None  # test issue never ingested
+
+
+def test_company_names_batch_only_resolvable(engine):
+    uni = SymbolUniverse(engine, http_get=_fake_http(BOTH_OK))
+    uni.refresh()
+    got = uni.company_names(["AAPL", "GLD", "BCO_USD", "ZZZZFAKE", "DHT"])
+    assert got == {
+        "AAPL": "Apple Inc.",
+        "GLD": "SPDR Gold Trust",
+        "DHT": "DHT Holdings, Inc.",
+    }  # underscore-FX + unknown absent → caller renders those bare
+
+
+def test_company_names_preserves_input_key_case(engine):
+    uni = SymbolUniverse(engine, http_get=_fake_http(BOTH_OK))
+    uni.refresh()
+    got = uni.company_names(["aapl"])
+    assert got == {"aapl": "Apple Inc."}  # keyed by the string passed in
+
+
+# --------------------------------------------------------------------------- #
 # SEC EDGAR name enrichment (CL-9xha)
 # --------------------------------------------------------------------------- #
 

@@ -146,10 +146,16 @@ def build_position_digest(
     return "\n".join(lines)
 
 
+#: Max company-name length before truncation in the LONG-ideas digest
+#: (CL-ikz2) — keeps "<b>VG</b> (Venture Global, Inc.)" phone-readable.
+_MAX_NAME_LEN = 28
+
+
 def build_long_ideas_digest(
     ideas: list[Mapping[str, Any]],
     now: datetime | None = None,
     limit: int = 12,
+    names: dict[str, str] | None = None,
 ) -> str:
     """Telegram-HTML body for "what the desk wants to be LONG".
 
@@ -159,6 +165,14 @@ def build_long_ideas_digest(
     ticker keeping the highest-confidence row, sorted by confidence,
     capped at ``limit`` with an honest "of N" so a cap never reads as the
     whole pool.
+
+    ``names``: optional ticker→company-name map (CL-ikz2). When a ticker
+    resolves, its line reads ``<b>VG</b> (Venture Global, Inc.) …`` so the
+    operator doesn't have to look the ticker up; the name is html-escaped
+    and truncated. A missing/empty name degrades to the bare ticker
+    exactly as before (fail-soft) — FX/CFD tickers never resolve and stay
+    bare. The map is keyed by the UPPER-cased ticker (matching the dedup
+    key) so the caller can resolve once for the whole pool.
     """
     now = now or datetime.now(UTC)
     best: dict[str, Mapping[str, Any]] = {}
@@ -187,8 +201,13 @@ def build_long_ideas_digest(
             rat = rat[:87] + "…"
         via = f" via {pref}" if pref else ""
         tail = f" — {rat}" if rat else ""
+        ticker = str(idea.get("ticker") or "")
+        name = (names or {}).get(ticker.upper())
+        if name and len(name) > _MAX_NAME_LEN:
+            name = name[: _MAX_NAME_LEN - 1].rstrip() + "…"
+        name_part = f" ({html_escape(name)})" if name else ""
         lines.append(
-            f"  <b>{html_escape(str(idea.get('ticker')))}</b> "
+            f"  <b>{html_escape(ticker)}</b>{name_part} "
             f"{conf:.2f}{html_escape(via)}{html_escape(tail)}"
         )
     lines.append("")

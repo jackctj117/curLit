@@ -148,6 +148,11 @@ class EventDrivenStrategy:
         # geo_events missing (producer migration not applied) is logged
         # ONCE, not every poll — engine boot must never break or spam.
         self._table_missing_logged = False
+        # Lazily-built symbol universe for ticker→company-name enrichment in
+        # operator alerts (CL-ikz2). Built once on first use from self.db;
+        # None when there's no engine (the alerts just show bare tickers).
+        self._symbol_universe: Any = None
+        self._symbol_universe_tried = False
 
     def _load_cross_asset_config(self) -> Any:
         """Load the cross-asset checks config (CL-6mzn), or None on any
@@ -165,6 +170,42 @@ class EventDrivenStrategy:
                 exc_info=True,
             )
             return None
+
+    def _resolve_names(self, assessment: dict[str, Any]) -> dict[str, str]:
+        """Ticker→company-name map for an assessment's advisory idea tickers
+        (CL-ikz2), so the operator sees "VG (Venture Global, Inc.)" instead of
+        a bare ticker. Reads the cached symbol universe (no per-alert SQL).
+
+        Fail-soft BY DESIGN: no engine, no universe, or any lookup error
+        returns ``{}`` — the alert then renders bare tickers exactly as
+        before. Never allowed to break an alert."""
+        if self.db is None:
+            return {}
+        if not self._symbol_universe_tried:
+            self._symbol_universe_tried = True
+            try:
+                from src.data.symbols import SymbolUniverse  # noqa: PLC0415
+
+                self._symbol_universe = SymbolUniverse(self.db)
+            except Exception:
+                logger.debug("symbol universe unavailable for name enrichment",
+                             exc_info=True)
+                self._symbol_universe = None
+        if self._symbol_universe is None:
+            return {}
+        tickers = {
+            str(i.get("ticker"))
+            for i in (assessment.get("trade_ideas") or [])
+            if isinstance(i, dict) and i.get("ticker")
+        }
+        if not tickers:
+            return {}
+        try:
+            names: dict[str, str] = self._symbol_universe.company_names(tickers)
+        except Exception:
+            logger.debug("company-name enrichment failed", exc_info=True)
+            return {}
+        return names
 
     # ------------------------------------------------------------------
     # Strategy protocol
@@ -685,7 +726,14 @@ class EventDrivenStrategy:
                     and result.urgency >= self.config.expired_alert_min_urgency
                     and expired_alerts_sent < 1
                 ):
-                    self.notifier.alert_expired(row, result.urgency, result.confidence)
+                    exp_assessment = (
+                        EventConfluence.parse_assessment(row.get("assessment"))
+                        or {}
+                    )
+                    self.notifier.alert_expired(
+                        row, result.urgency, result.confidence,
+                        names=self._resolve_names(exp_assessment),
+                    )
                     expired_alerts_sent += 1
                 continue
 
@@ -707,6 +755,7 @@ class EventDrivenStrategy:
             self.notifier.alert_confirmed(
                 row, assessment, entered, skipped, prices=prices, now=now,
                 cross_asset=result.cross_asset,
+                names=self._resolve_names(assessment),
             )
             if entry_intents:
                 intents.extend(entry_intents)

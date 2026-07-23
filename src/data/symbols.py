@@ -48,7 +48,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from datetime import UTC, datetime
 from typing import Any
 
@@ -89,6 +89,27 @@ _EXCHANGE_CODE_MAP = {
 
 #: Injectable HTTP shim so unit tests feed canned file bodies (no live network).
 HttpGet = Callable[[str], str]
+
+#: Verbose NASDAQ Security-Name tails to trim for a short operator-facing
+#: display name (CL-ikz2 ticker-name enrichment). Longest/most-specific first
+#: so e.g. "- Class A Common Stock" wins over a bare "Common Stock". These are
+#: security *class* boilerplate, not part of the company identity; the corporate
+#: suffixes (", Inc." / "Corp" / "Ltd") are kept — they're short and useful.
+#: Matched case-insensitively against a stripped trailing segment.
+_NAME_SUFFIX_STRIP = (
+    " - Class A Common Stock",
+    " - Class B Common Stock",
+    " - Ordinary Shares",
+    " - Common Stock",
+    " - Common Shares",
+    " - American Depositary Shares",
+    " Class A Common Stock",
+    " Class B Common Stock",
+    " Ordinary Shares",
+    " Common Stock",
+    " Common Shares",
+    " American Depositary Shares",
+)
 
 
 def _default_http_get(url: str) -> str:
@@ -587,3 +608,69 @@ class SymbolUniverse:
             ))
         scored.sort(key=lambda t: (t[0], t[1], t[2]))
         return [item[3] for item in scored[:limit]]
+
+    # -- company-name enrichment (CL-ikz2) ------------------------------- #
+
+    @staticmethod
+    def _clean_display_name(row: dict[str, Any]) -> str | None:
+        """Short operator-facing company name for a cached row, or None.
+
+        Prefers the clean SEC name (``sec_name``, e.g. "Venture Global,
+        Inc."); falls back to the verbose NASDAQ ``security_name`` with the
+        security-class boilerplate suffix trimmed (e.g. "Apple Inc. -
+        Common Stock" → "Apple Inc."). Returns None when neither name is
+        present."""
+        sec_name = (row.get("sec_name") or "").strip()
+        if sec_name:
+            return sec_name
+        name = (row.get("security_name") or "").strip()
+        if not name:
+            return None
+        lname = name.lower()
+        for suffix in _NAME_SUFFIX_STRIP:
+            if lname.endswith(suffix.lower()):
+                trimmed = name[: len(name) - len(suffix)].strip()
+                if trimmed:  # never strip the whole name away
+                    return trimmed
+                break
+        return name
+
+    def company_name(self, ticker: str) -> str | None:
+        """Clean, short company name for a ticker, or None (CL-ikz2).
+
+        Surfaces the human name behind a bare ticker in operator
+        notifications ("VG" → "Venture Global, Inc."). Cheap — reads the
+        existing in-memory cache, no SQL.
+
+        Returns None (leave the ticker bare) for anything without a real
+        company name to show: FX/CFD instruments (any symbol containing an
+        underscore, e.g. ``BCO_USD`` / ``USD_JPY``), unknown / test-issue
+        symbols, and rows carrying no usable name. ETFs DO get their name
+        (a fund name is still helpful colour)."""
+        if not ticker or "_" in ticker:
+            return None
+        row = self._ensure_cache().get(ticker.strip().upper())
+        if row is None or row["is_test_issue"]:
+            return None
+        return self._clean_display_name(row)
+
+    def company_names(self, tickers: Iterable[str]) -> dict[str, str]:
+        """Batch ``{ticker: company_name}`` for tickers that resolve (CL-ikz2).
+
+        One pass over the cache, no per-ticker SQL. Only tickers with a
+        resolvable name appear in the result — callers treat a missing key
+        as "render the bare ticker" (fail-soft). The key is the ticker as
+        passed in (original case), so callers can look up by the same string
+        they render."""
+        cache = self._ensure_cache()
+        out: dict[str, str] = {}
+        for ticker in tickers:
+            if not ticker or "_" in ticker:
+                continue
+            row = cache.get(ticker.strip().upper())
+            if row is None or row["is_test_issue"]:
+                continue
+            name = self._clean_display_name(row)
+            if name:
+                out[ticker] = name
+        return out

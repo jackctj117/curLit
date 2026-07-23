@@ -105,6 +105,43 @@ def test_ideas_empty_state():
 
 
 # --------------------------------------------------------------------------- #
+# ticker → company-name enrichment (CL-ikz2)
+# --------------------------------------------------------------------------- #
+
+
+def test_ideas_render_company_name_when_provided():
+    body = build_long_ideas_digest(
+        [_idea(ticker="VG", conf=0.78)], now=NOW,
+        names={"VG": "Venture Global, Inc."},
+    )
+    assert "<b>VG</b> (Venture Global, Inc.) 0.78 via calls" in body
+
+
+def test_ideas_degrade_to_bare_ticker_without_names():
+    body = build_long_ideas_digest([_idea(ticker="VG", conf=0.78)], now=NOW)
+    assert "<b>VG</b> 0.78" in body  # no parenthetical, exactly as before
+
+
+def test_ideas_name_is_html_escaped_and_truncated():
+    body = build_long_ideas_digest(
+        [_idea(ticker="VG")], now=NOW,
+        names={"VG": "Evil & Co <b>" + "x" * 40},
+    )
+    assert "<b>x" not in body.split("<b>VG</b>")[1]  # injected tag escaped
+    assert "&amp;" in body  # ampersand escaped
+    assert "…" in body  # long name truncated
+
+
+def test_ideas_names_looked_up_by_upper_key():
+    # Idea ticker is lower-case; the map is keyed UPPER (the dedup key).
+    body = build_long_ideas_digest(
+        [_idea(ticker="vg", conf=0.78)], now=NOW,
+        names={"VG": "Venture Global, Inc."},
+    )
+    assert "(Venture Global, Inc.)" in body
+
+
+# --------------------------------------------------------------------------- #
 # clock gate
 # --------------------------------------------------------------------------- #
 
