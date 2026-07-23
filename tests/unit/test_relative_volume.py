@@ -371,6 +371,150 @@ class TestPersistence:
 
 
 # --------------------------------------------------------------------- #
+# Cadence guard — CL-7vn9 (skip redundant yfinance re-download)
+# --------------------------------------------------------------------- #
+
+
+class TestRescanCadenceGuard:
+    def _counting_downloader(
+        self, frames: dict[str, pd.DataFrame],
+    ) -> Any:
+        base = _downloader(frames)
+        calls: list[int] = []
+
+        def download(tickers: Any, s: Any, e: Any) -> pd.DataFrame:
+            calls.append(1)
+            return base(tickers, s, e)
+
+        download.calls = calls  # type: ignore[attr-defined]
+        return download
+
+    def test_fresh_cache_skips_download_reuses_rows(
+        self, playbooks_yaml: Path, sqlite_db_url: str,
+    ) -> None:
+        # First scan persists rows; second (guarded) scan must NOT hit
+        # the downloader and must return the same tickers.
+        frames = {"FRO": _SPIKE, "XOM": _QUIET}
+        RelativeVolumeScanner(
+            sqlite_db_url, playbooks_path=playbooks_yaml,
+            downloader=_downloader(frames),
+        ).scan()
+
+        dl = self._counting_downloader(frames)
+        guarded = RelativeVolumeScanner(
+            sqlite_db_url, playbooks_path=playbooks_yaml, downloader=dl,
+            min_rescan_interval=timedelta(hours=6),
+        )
+        rows = guarded.scan()
+        assert dl.calls == []  # type: ignore[attr-defined]  # no re-download
+        by_ticker = {r.ticker: r for r in rows}
+        assert by_ticker["FRO"].rvol == pytest.approx(3.0)
+        assert by_ticker["FRO"].is_unusual is True
+        assert by_ticker["XOM"].is_unusual is False
+
+    def test_fresh_cache_does_not_double_persist(
+        self, playbooks_yaml: Path, sqlite_db_url: str,
+    ) -> None:
+        frames = {"FRO": _SPIKE, "XOM": _QUIET}
+        RelativeVolumeScanner(
+            sqlite_db_url, playbooks_path=playbooks_yaml,
+            downloader=_downloader(frames),
+        ).scan()
+        RelativeVolumeScanner(
+            sqlite_db_url, playbooks_path=playbooks_yaml,
+            downloader=_downloader(frames),
+            min_rescan_interval=timedelta(hours=6),
+        ).scan()
+        engine = create_engine(sqlite_db_url)
+        with engine.connect() as conn:
+            n = conn.execute(text("SELECT COUNT(*) FROM volume_spikes")).scalar()
+        assert n == 2  # cached reuse wrote nothing new
+
+    def test_stale_cache_triggers_real_scan(
+        self, playbooks_yaml: Path, sqlite_db_url: str,
+    ) -> None:
+        # Seed an OLD scan directly, then a guard with a tiny window must
+        # fall through to a real download.
+        engine = create_engine(sqlite_db_url)
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO volume_spikes "
+                    "(ticker, scanned_at, rvol, is_unusual) "
+                    "VALUES ('FRO', :at, 1.0, 0)"
+                ),
+                {"at": datetime.now(UTC) - timedelta(hours=48)},
+            )
+        dl = self._counting_downloader({"FRO": _SPIKE, "XOM": _QUIET})
+        rows = RelativeVolumeScanner(
+            sqlite_db_url, playbooks_path=playbooks_yaml, downloader=dl,
+            min_rescan_interval=timedelta(hours=6),
+        ).scan()
+        assert dl.calls != []  # type: ignore[attr-defined]  # stale → real scan
+        assert {r.ticker for r in rows} == {"FRO", "XOM"}
+
+    def test_no_guard_always_downloads(
+        self, playbooks_yaml: Path, sqlite_db_url: str,
+    ) -> None:
+        frames = {"FRO": _SPIKE}
+        RelativeVolumeScanner(
+            sqlite_db_url, playbooks_path=playbooks_yaml,
+            downloader=_downloader(frames),
+        ).scan()
+        dl = self._counting_downloader(frames)
+        RelativeVolumeScanner(  # no min_rescan_interval → old behavior
+            sqlite_db_url, playbooks_path=playbooks_yaml, downloader=dl,
+        ).scan()
+        assert dl.calls != []  # type: ignore[attr-defined]
+
+    def test_persist_false_ignores_guard(
+        self, playbooks_yaml: Path, sqlite_db_url: str,
+    ) -> None:
+        # A non-persisting scan (ad-hoc / dry run) must always compute,
+        # never short-circuit on the cache.
+        frames = {"FRO": _SPIKE}
+        RelativeVolumeScanner(
+            sqlite_db_url, playbooks_path=playbooks_yaml,
+            downloader=_downloader(frames),
+        ).scan()
+        dl = self._counting_downloader(frames)
+        RelativeVolumeScanner(
+            sqlite_db_url, playbooks_path=playbooks_yaml, downloader=dl,
+            min_rescan_interval=timedelta(hours=6),
+        ).scan(persist=False)
+        assert dl.calls != []  # type: ignore[attr-defined]
+
+    def test_env_opt_in_enables_guard(
+        self, playbooks_yaml: Path, sqlite_db_url: str,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("RVOL_RESCAN_HOURS", "6")
+        frames = {"FRO": _SPIKE}
+        RelativeVolumeScanner(
+            sqlite_db_url, playbooks_path=playbooks_yaml,
+            downloader=_downloader(frames),
+        ).scan()
+        dl = self._counting_downloader(frames)
+        scanner = RelativeVolumeScanner(
+            sqlite_db_url, playbooks_path=playbooks_yaml, downloader=dl,
+        )
+        assert scanner.min_rescan_interval == timedelta(hours=6)
+        scanner.scan()
+        assert dl.calls == []  # type: ignore[attr-defined]  # env enabled the skip
+
+    def test_env_zero_keeps_old_behavior(
+        self, playbooks_yaml: Path, sqlite_db_url: str,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("RVOL_RESCAN_HOURS", "0")
+        scanner = RelativeVolumeScanner(
+            sqlite_db_url, playbooks_path=playbooks_yaml,
+            downloader=_downloader({"FRO": _SPIKE}),
+        )
+        assert scanner.min_rescan_interval is None
+
+
+# --------------------------------------------------------------------- #
 # Digest annotation
 # --------------------------------------------------------------------- #
 

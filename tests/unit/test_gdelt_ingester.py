@@ -263,6 +263,68 @@ class TestFetch:
         with pytest.raises(RuntimeError, match="429"):
             provider.fetch_articles("(q)", START, END)
 
+    def test_adaptive_pause_credits_fetch_time(
+        self, monkeypatch: pytest.MonkeyPatch,
+        playbooks_yaml: Path, sqlite_db_url: str,
+    ) -> None:
+        """CL-7vn9: the inter-theme pause is a cadence, not a blind sleep.
+        A fetch that already burned >= pause_sec of wall-clock must sleep
+        ~nothing before the next theme; request spacing stays >= pause_sec.
+        """
+        clock = [0.0]
+        sleeps: list[float] = []
+
+        def fake_monotonic() -> float:
+            return clock[0]
+
+        def fake_sleep(sec: float) -> None:
+            sleeps.append(sec)
+            clock[0] += sec
+
+        def fake_get(url: str, params: dict, timeout: float) -> _FakeResponse:
+            clock[0] += 10.0  # each fetch "takes" 10s — longer than pause
+            return _FakeResponse({"articles": [
+                _article("https://n.test/x", "h"),
+            ]})
+
+        monkeypatch.setattr(gdelt_mod.time, "monotonic", fake_monotonic)
+        monkeypatch.setattr(gdelt_mod.time, "sleep", fake_sleep)
+        monkeypatch.setattr(gdelt_mod.httpx, "get", fake_get)
+
+        ing = GdeltIngester(sqlite_db_url, playbooks_yaml, pause_sec=6.0)
+        ing.fetch(START, END)
+        # Two themes, each fetch 10s > 6s cadence → no top-up sleep at all.
+        assert sleeps == []
+
+    def test_adaptive_pause_tops_up_when_fetch_fast(
+        self, monkeypatch: pytest.MonkeyPatch,
+        playbooks_yaml: Path, sqlite_db_url: str,
+    ) -> None:
+        """A fast (near-instant) fetch still sleeps the full cadence to
+        stay polite — spacing between request starts stays >= pause_sec."""
+        clock = [0.0]
+        sleeps: list[float] = []
+
+        def fake_sleep(sec: float) -> None:
+            sleeps.append(sec)
+            clock[0] += sec
+
+        def fake_get(url: str, params: dict, timeout: float) -> _FakeResponse:
+            clock[0] += 0.01  # near-instant fetch
+            return _FakeResponse({"articles": [
+                _article("https://n.test/x", "h"),
+            ]})
+
+        monkeypatch.setattr(gdelt_mod.time, "monotonic", lambda: clock[0])
+        monkeypatch.setattr(gdelt_mod.time, "sleep", fake_sleep)
+        monkeypatch.setattr(gdelt_mod.httpx, "get", fake_get)
+
+        ing = GdeltIngester(sqlite_db_url, playbooks_yaml, pause_sec=6.0)
+        ing.fetch(START, END)
+        # One inter-theme gap, fetch was ~instant → nearly the full 6s.
+        assert len(sleeps) == 1
+        assert sleeps[0] == pytest.approx(6.0 - 0.01, abs=0.02)
+
     def test_non_json_body_treated_as_empty(
         self, monkeypatch: pytest.MonkeyPatch,
         playbooks_yaml: Path, sqlite_db_url: str,

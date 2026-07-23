@@ -15,10 +15,21 @@ is that a disciplined, always-on reaction to the *second* 15 minutes is
 still worth having.
 
 Rate-limit posture: one request per theme per run (6 themes → 6
-requests), a multi-second pause between requests (GDELT 429s
-aggressively — observed even at ~12s spacing under load), one cool-off
-retry per theme on 429, 30s timeout, and per-theme failure tolerance
-(one flaky query never kills the run).
+requests), an ADAPTIVE inter-request pause targeting a fixed cadence
+(GDELT 429s aggressively — observed even at ~12s spacing under load),
+one cool-off retry per theme on 429, 30s timeout, and per-theme failure
+tolerance (one flaky query never kills the run).
+
+Cadence, not blind sleep (CL-7vn9): the politeness constraint is the
+SPACING between request *starts*, not the sleep itself. We aim for one
+request every ``pause_sec`` seconds; the wall-clock a fetch already
+consumed counts toward that interval, so a 4s fetch under a 6s cadence
+sleeps only ~2s, and a fetch slower than the cadence sleeps nothing.
+Request timing to GDELT is byte-for-byte unchanged from the old fixed
+pause when fetches are instantaneous (unit tests); against the live,
+often-slow endpoint it strips the redundant sleep that used to stack
+on top of already-slow responses — ~90s/cycle of pure sleep at 16
+themes collapses toward the fetch time itself, with no tighter spacing.
 """
 
 from __future__ import annotations
@@ -138,10 +149,22 @@ class GdeltIngester(BaseIngester):
 
     def fetch(self, start: datetime, end: datetime) -> pd.DataFrame:
         rows: list[dict[str, Any]] = []
-        for i, (theme, playbook) in enumerate(self.playbooks.items()):
-            if i > 0 and self.pause_sec > 0:
-                time.sleep(self.pause_sec)  # be a polite free-tier citizen
+        # Adaptive cadence (CL-7vn9): sleep only enough to keep request
+        # STARTS ``pause_sec`` apart, crediting the time the previous
+        # fetch already spent. ``last_start`` is the monotonic clock at
+        # the previous request's launch; ``None`` before the first.
+        last_start: float | None = None
+        for theme, playbook in self.playbooks.items():
+            if last_start is not None and self.pause_sec > 0:
+                # Time already elapsed since the last request began counts
+                # toward the cadence — a slow fetch shortens (or zeroes)
+                # the wait, a fast one still pauses to stay polite.
+                elapsed = time.monotonic() - last_start
+                remaining = self.pause_sec - elapsed
+                if remaining > 0:
+                    time.sleep(remaining)
             query = build_theme_query(playbook)
+            last_start = time.monotonic()
             try:
                 articles = self.provider.fetch_articles(query, start, end)
             except Exception:

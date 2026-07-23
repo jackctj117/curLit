@@ -35,6 +35,19 @@ HONESTY NOTES — read before trusting a number:
 Failure posture: one broken ticker (delisted, renamed, no Yahoo data)
 never kills the scan — it is logged and skipped. A failed batch
 download degrades to per-ticker downloads before giving up.
+
+Cadence guard (CL-7vn9): daily yfinance bars only change once per US
+session, but the event-pipeline daemon calls :meth:`scan` every 900s
+(~96×/day), re-downloading ~30 days × the whole watch universe each
+time for numbers that barely move mid-session (and are explicitly
+advisory-only, understated intraday — see the honesty note above). When
+constructed with ``min_rescan_interval``, :meth:`scan` first checks the
+freshest ``scanned_at`` already in ``volume_spikes``; if it is younger
+than that interval, it REUSES the persisted rows (no yfinance call, no
+re-persist) and returns them so the digest still gets its marks. WHAT
+is produced is unchanged — the same rows the last real scan wrote —
+only the redundant re-fetch is skipped. Default (``None``) keeps the
+old every-call behavior for the Airflow DAG and ad-hoc runs.
 """
 
 from __future__ import annotations
@@ -74,6 +87,15 @@ WINDOW_DAYS = 30
 #: Minimum prior sessions with usable volume before RVOL is computed —
 #: a 3-day-old listing dividing by a 2-sample mean is noise, not signal.
 MIN_BASELINE_SESSIONS = 5
+
+#: CL-7vn9 — default re-scan cadence (hours) when a caller doesn't pass
+#: ``min_rescan_interval`` explicitly. The event-pipeline daemon loops
+#: every 900s but daily bars only move once per US session, so reusing a
+#: scan younger than this skips the redundant ~30d × universe yfinance
+#: pull. ``0`` (or unset) preserves the old every-call behavior. The
+#: Airflow DAG and ad-hoc runs pass ``min_rescan_interval`` explicitly
+#: (or leave the env unset) and are unaffected.
+RVOL_RESCAN_HOURS_ENV = "RVOL_RESCAN_HOURS"
 
 #: Exchange-listed ticker shape. Playbook validation already forces
 #: equity_watch entries through the loader, but the universe filter is
@@ -181,9 +203,13 @@ class RelativeVolumeScanner:
         rvol_threshold: float | None = None,
         min_avg_volume: float | None = None,
         downloader: Downloader | None = None,
+        min_rescan_interval: timedelta | None = None,
     ) -> None:
         self.engine = create_engine(db_url)
         self.playbooks_path = playbooks_path
+        #: CL-7vn9 — when set, skip the yfinance re-download if a scan
+        #: newer than this already sits in volume_spikes (see scan()).
+        self.min_rescan_interval = min_rescan_interval
         self.rvol_threshold = (
             rvol_threshold
             if rvol_threshold is not None
@@ -195,6 +221,13 @@ class RelativeVolumeScanner:
             else _env_float("RVOL_MIN_AVG_VOLUME", DEFAULT_MIN_AVG_VOLUME)
         )
         self.downloader = downloader or _yf_download
+        if self.min_rescan_interval is None:
+            # CL-7vn9: let the deployment opt in via env without any
+            # caller change (RVOL_RESCAN_HOURS=6 → skip re-download for
+            # 6h). Garbage / 0 / unset → disabled (old behavior).
+            hours = _env_float(RVOL_RESCAN_HOURS_ENV, 0.0)
+            if hours > 0:
+                self.min_rescan_interval = timedelta(hours=hours)
 
     # ------------------------------------------------------------- #
     # universe
@@ -266,7 +299,21 @@ class RelativeVolumeScanner:
         """Scan the whole watch universe; persist every computed row.
 
         Per-ticker failures are logged and skipped. Returns the rows
-        actually computed (persisted when ``persist=True``)."""
+        actually computed (persisted when ``persist=True``).
+
+        CL-7vn9: with ``min_rescan_interval`` set and a fresh-enough scan
+        already in ``volume_spikes``, the yfinance re-download is skipped
+        and the persisted rows are returned as-is."""
+        if persist and self.min_rescan_interval is not None:
+            cached = self._recent_cached_rows(self.min_rescan_interval)
+            if cached is not None:
+                logger.info(
+                    "rvol scan: reusing %d cached rows (< %s old); "
+                    "skipping yfinance re-download",
+                    len(cached), self.min_rescan_interval,
+                )
+                return cached
+
         tickers = self.universe()
         if not tickers:
             logger.warning("rvol scan: empty equity watch universe; nothing to do")
@@ -309,6 +356,64 @@ class RelativeVolumeScanner:
             "rvol scan: %d/%d tickers scanned, %d unusual (threshold %.2f, floor %.0f)",
             len(rows), len(tickers), unusual, self.rvol_threshold, self.min_avg_volume,
         )
+        return rows
+
+    def _recent_cached_rows(
+        self, max_age: timedelta,
+    ) -> list[VolumeScanRow] | None:
+        """Return the most-recent scan's rows if it is younger than
+        ``max_age``, else ``None`` (caller then does a real scan).
+
+        The freshness gate is the newest ``scanned_at`` in the table;
+        the returned rows are exactly that scan's batch (same
+        ``scanned_at``), rehydrated into :class:`VolumeScanRow`. Any DB
+        error (missing table on a bare DB, etc.) fails OPEN → ``None`` so
+        a real scan runs, never a crash."""
+        cutoff = datetime.now(UTC) - max_age
+        try:
+            with self.engine.connect() as conn:
+                latest = conn.execute(text(
+                    "SELECT MAX(scanned_at) FROM volume_spikes",
+                )).scalar()
+                if latest is None:
+                    return None
+                latest_ts = pd.Timestamp(latest)
+                if latest_ts.tzinfo is None:
+                    latest_ts = latest_ts.tz_localize("UTC")
+                if latest_ts < pd.Timestamp(cutoff):
+                    return None
+                result = conn.execute(text(
+                    "SELECT ticker, scanned_at, rvol, volume, "
+                    "avg_volume_20d, price_change_pct, is_unusual, source "
+                    "FROM volume_spikes WHERE scanned_at = :ts",
+                ), {"ts": latest}).all()
+        except Exception:
+            logger.debug(
+                "rvol scan: cache-freshness check failed; running real scan",
+                exc_info=True,
+            )
+            return None
+
+        rows: list[VolumeScanRow] = []
+        for r in result:
+            scanned = pd.Timestamp(r[1])
+            scanned_dt = (
+                scanned.tz_localize("UTC") if scanned.tzinfo is None else scanned
+            ).to_pydatetime()
+            rows.append(VolumeScanRow(
+                ticker=str(r[0]),
+                scanned_at=scanned_dt,
+                rvol=float(r[2]),
+                volume=int(r[3]) if r[3] is not None else None,
+                avg_volume_20d=(
+                    float(r[4]) if r[4] is not None else None
+                ),
+                price_change_pct=(
+                    float(r[5]) if r[5] is not None else None
+                ),
+                is_unusual=bool(r[6]),
+                source=str(r[7]) if r[7] is not None else "yfinance",
+            ))
         return rows
 
     def _persist(self, rows: list[VolumeScanRow]) -> None:
