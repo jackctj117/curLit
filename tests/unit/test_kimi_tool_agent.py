@@ -25,8 +25,7 @@ class _FakeUniverse:
 
     def resolve_name(self, q: str, limit: int = 5) -> list[dict[str, Any]]:
         if "materials" in (q or "").lower():
-            return [{"symbol": "MP", "security_name": "MP Materials",
-                     "exchange": "NYSE"}]
+            return [{"symbol": "MP", "security_name": "MP Materials", "exchange": "NYSE"}]
         return []
 
     def get_cik(self, t: str) -> int | None:
@@ -35,8 +34,11 @@ class _FakeUniverse:
 
 class _FakeTools:
     def __init__(self) -> None:
-        self._profile_fn = lambda t: {"sector": "Materials", "industry": "Mining",
-                                      "summary": "Rare-earth producer."}
+        self._profile_fn = lambda t: {
+            "sector": "Materials",
+            "industry": "Mining",
+            "summary": "Rare-earth producer.",
+        }
 
     def sec_excerpt(self, cik: int) -> str | None:
         return f"[10-K] cik {cik}: depends on a single customer, Acme Corp."
@@ -69,8 +71,11 @@ class _FakeCreate:
 
 def _agent(create_fn: Any, **kw: Any) -> KimiToolAgent:
     return KimiToolAgent(
-        universe=_FakeUniverse(), tools=_FakeTools(), api_key="sk-test",
-        create_fn=create_fn, **kw,
+        universe=_FakeUniverse(),
+        tools=_FakeTools(),
+        api_key="sk-test",
+        create_fn=create_fn,
+        **kw,
     )
 
 
@@ -82,7 +87,9 @@ def _agent(create_fn: Any, **kw: Any) -> KimiToolAgent:
 def test_dispatch_check_ticker():
     a = _agent(create_fn=lambda **k: _resp("{}"))
     assert a._dispatch("check_ticker", {"ticker": "MP"}) == {
-        "ticker": "MP", "exists": True, "exchange": "NYSE",
+        "ticker": "MP",
+        "exists": True,
+        "exchange": "NYSE",
         "robinhood_tradeable": True,
     }
     miss = a._dispatch("check_ticker", {"ticker": "ZZZZ"})
@@ -113,20 +120,23 @@ def test_dispatch_unknown_tool():
 
 
 def test_loop_runs_tool_then_returns_json():
-    final = '{"niche_ideas": [{"ticker": "MP", "company_name": "MP Materials", ' \
-            '"action": "long", "hop_count": 3, "torque_reason": "single-asset", ' \
-            '"rationale": "chain", "confidence": 0.6}]}'
-    create = _FakeCreate([
-        _resp(tool_calls=[_tc("c1", "get_sec_filing", '{"ticker": "MP"}')]),
-        _resp(content=final),
-    ])
+    final = (
+        '{"niche_ideas": [{"ticker": "MP", "company_name": "MP Materials", '
+        '"action": "long", "hop_count": 3, "torque_reason": "single-asset", '
+        '"rationale": "chain", "confidence": 0.6}]}'
+    )
+    create = _FakeCreate(
+        [
+            _resp(tool_calls=[_tc("c1", "get_sec_filing", '{"ticker": "MP"}')]),
+            _resp(content=final),
+        ]
+    )
     out = _agent(create).discover({"id": 1, "headline": "rare-earth ban"})
     assert "niche_ideas" in out
     assert create.calls and len(create.calls) == 2
     # The 2nd call carried the tool result back to the model.
     second_msgs = create.calls[1]["messages"]
-    assert any(m.get("role") == "tool" and "Acme Corp" in m.get("content", "")
-               for m in second_msgs)
+    assert any(m.get("role") == "tool" and "Acme Corp" in m.get("content", "") for m in second_msgs)
 
 
 def test_loop_no_toolcalls_returns_immediately():
@@ -137,8 +147,9 @@ def test_loop_no_toolcalls_returns_immediately():
 
 
 def test_no_key_returns_empty():
-    a = KimiToolAgent(universe=_FakeUniverse(), tools=_FakeTools(),
-                      api_key="", create_fn=lambda **k: _resp("{}"))
+    a = KimiToolAgent(
+        universe=_FakeUniverse(), tools=_FakeTools(), api_key="", create_fn=lambda **k: _resp("{}")
+    )
     assert a.discover({"id": 1, "headline": "x"}) == ""
     assert a.configured is False
 
@@ -146,23 +157,28 @@ def test_no_key_returns_empty():
 def test_create_failure_is_fail_soft():
     def boom(**kwargs):
         raise RuntimeError("kimi 500")
+
     assert _agent(boom).discover({"id": 1, "headline": "x"}) == ""
 
 
 def test_max_iterations_exhausted_returns_empty():
     # Always asks for a tool → never finishes → budget exhausted → "".
-    always_tool = _FakeCreate([
-        _resp(tool_calls=[_tc("c1", "check_ticker", '{"ticker": "MP"}')]),
-    ])
+    always_tool = _FakeCreate(
+        [
+            _resp(tool_calls=[_tc("c1", "check_ticker", '{"ticker": "MP"}')]),
+        ]
+    )
     out = _agent(always_tool, max_iterations=3).discover({"id": 1, "headline": "x"})
     assert out == ""
     assert len(always_tool.calls) == 3  # capped at the budget
 
 
 def test_bad_tool_arguments_are_tolerated():
-    create = _FakeCreate([
-        _resp(tool_calls=[_tc("c1", "check_ticker", "not-json")]),
-        _resp(content='{"niche_ideas": []}'),
-    ])
+    create = _FakeCreate(
+        [
+            _resp(tool_calls=[_tc("c1", "check_ticker", "not-json")]),
+            _resp(content='{"niche_ideas": []}'),
+        ]
+    )
     out = _agent(create).discover({"id": 1, "headline": "x"})
     assert out == '{"niche_ideas": []}'  # bad args → {} → tool runs, loop continues

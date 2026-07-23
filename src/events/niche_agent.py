@@ -245,7 +245,11 @@ def yfinance_market_data(tickers: list[str]) -> dict[str, dict[str, Any]]:
                     entry["avg_dollar_volume"] = float(dollar.mean())
                 if mcap is None:
                     shares = info.get("sharesOutstanding")
-                    last = float(hist["Close"].dropna().iloc[-1]) if not hist["Close"].dropna().empty else None
+                    last = (
+                        float(hist["Close"].dropna().iloc[-1])
+                        if not hist["Close"].dropna().empty
+                        else None
+                    )
                     if shares and last:
                         mcap = float(shares) * last
             if mcap is not None:
@@ -325,9 +329,12 @@ class NicheAgent:
             self.tools_max_entities = tools_max_entities
         else:
             try:
-                self.tools_max_entities = int(os.environ.get(
-                    "NICHE_TOOLS_MAX_ENTITIES", DEFAULT_TOOLS_MAX_ENTITIES,
-                ))
+                self.tools_max_entities = int(
+                    os.environ.get(
+                        "NICHE_TOOLS_MAX_ENTITIES",
+                        DEFAULT_TOOLS_MAX_ENTITIES,
+                    )
+                )
             except ValueError:
                 self.tools_max_entities = DEFAULT_TOOLS_MAX_ENTITIES
         # Agentic Kimi tool-loop (CL-ddzt) — an ALTERNATIVE discovery source
@@ -357,6 +364,7 @@ class NicheAgent:
             self.critic = critic
         elif critic_enabled:
             from src.events.adversarial_critic import AdversarialCritic  # noqa: PLC0415
+
             self.critic = AdversarialCritic(client=self.client)
         else:
             self.critic = None
@@ -376,7 +384,9 @@ class NicheAgent:
         return "\n".join(lines)
 
     def _user_prompt(
-        self, event_row: Mapping[str, Any], playbook: Playbook | None,
+        self,
+        event_row: Mapping[str, Any],
+        playbook: Playbook | None,
     ) -> str:
         assessment = event_row.get("assessment") or {}
         core = ""
@@ -452,7 +462,9 @@ class NicheAgent:
     # -- run ------------------------------------------------------------
 
     def run(
-        self, event_row: Mapping[str, Any], playbook: Playbook | None = None,
+        self,
+        event_row: Mapping[str, Any],
+        playbook: Playbook | None = None,
     ) -> list[NicheIdea]:
         """Full niche pass for one event: DISCOVER raw ideas → verify →
         score/gate. Returns ONLY the surviving (verified, liquidity-cleared,
@@ -473,8 +485,9 @@ class NicheAgent:
         verified = verify_ideas(raw_accum, self.universe)
         if not verified:
             logger.info(
-                "niche agent: all %d proposed ideas failed verification "
-                "for event id=%s", len(raw_accum), event_row.get("id"),
+                "niche agent: all %d proposed ideas failed verification for event id=%s",
+                len(raw_accum),
+                event_row.get("id"),
             )
             return []
         market_data = {}
@@ -489,29 +502,32 @@ class NicheAgent:
         # Adversarial red-team pass (CL-3v56): attack the survivors; drop the
         # refuted, annotate the rest with the surviving bear case. Fail-open.
         gated = len(surviving)
-        if (
-            self.critic is not None
-            and getattr(self.critic, "enabled", True)
-            and surviving
-        ):
+        if self.critic is not None and getattr(self.critic, "enabled", True) and surviving:
             surviving = self.critic.apply(surviving, event_row)
         logger.info(
             "niche agent: event id=%s [%s] — %d proposed, %d verified, "
             "%d gated, %d surfaced after red-team, %d logged",
-            event_row.get("id"), source, len(raw_accum), len(verified),
-            gated, len(surviving), len(logged),
+            event_row.get("id"),
+            source,
+            len(raw_accum),
+            len(verified),
+            gated,
+            len(surviving),
+            len(logged),
         )
         return surviving
 
     def _discover_via_tool_agent(
-        self, event_row: Mapping[str, Any], playbook: Playbook | None,
+        self,
+        event_row: Mapping[str, Any],
+        playbook: Playbook | None,
     ) -> list[NicheIdea]:
         """Agentic Kimi tool-loop discovery (CL-ddzt): the model drives the
         SEC/ticker tools, then we parse + dedup its final JSON. Fail-soft []."""
         text = self.tool_agent.discover(event_row, playbook)
         seen: set[str] = set()
         out: list[NicheIdea] = []
-        for idea in (parse_niche_ideas(text) if text else []):
+        for idea in parse_niche_ideas(text) if text else []:
             key = _idea_key(idea)
             if key not in seen:
                 seen.add(key)
@@ -519,7 +535,9 @@ class NicheAgent:
         return out
 
     def _discover_via_cycles(
-        self, event_row: Mapping[str, Any], playbook: Playbook | None,
+        self,
+        event_row: Mapping[str, Any],
+        playbook: Playbook | None,
     ) -> list[NicheIdea]:
         """Iterative claude-code multi-hop cycles (CL-2dnf) with optional
         between-cycle SEC grounding (CL-2czc) → raw deduped ideas. Fail-soft:
@@ -531,9 +549,13 @@ class NicheAgent:
         for cycle in range(1, self.max_cycles + 1):
             cycles_run = cycle
             user = (
-                self._user_prompt(event_row, playbook) if cycle == 1
+                self._user_prompt(event_row, playbook)
+                if cycle == 1
                 else self._followup_prompt(
-                    event_row, playbook, raw_accum, grounding,
+                    event_row,
+                    playbook,
+                    raw_accum,
+                    grounding,
                 )
             )
             try:
@@ -548,7 +570,9 @@ class NicheAgent:
             except Exception as exc:
                 logger.warning(
                     "niche agent transport failure (cycle %d) for event id=%s: %s",
-                    cycle, event_row.get("id"), str(exc)[:200],
+                    cycle,
+                    event_row.get("id"),
+                    str(exc)[:200],
                 )
                 if cycle == 1:
                     return []
@@ -562,30 +586,33 @@ class NicheAgent:
                 break  # nothing to deepen
             if cycle > 1 and not fresh:
                 logger.info(
-                    "niche agent: cycle %d added no new names — stopping "
-                    "(event id=%s)", cycle, event_row.get("id"),
+                    "niche agent: cycle %d added no new names — stopping (event id=%s)",
+                    cycle,
+                    event_row.get("id"),
                 )
                 break
             # Tool-augment for the NEXT cycle (CL-2czc): ground the top few
             # fresh names with a REAL ticker in SEC-filing / profile data.
             if self.tools is not None and cycle < self.max_cycles and fresh:
-                candidates = [
-                    i for i in fresh
-                    if i.ticker and self.universe.exists(i.ticker)
-                ][: self.tools_max_entities]
+                candidates = [i for i in fresh if i.ticker and self.universe.exists(i.ticker)][
+                    : self.tools_max_entities
+                ]
                 if candidates:
                     try:
                         grounding.extend(self.tools.enrich(candidates, self.universe))
                     except Exception:
                         logger.warning(
                             "niche tools: enrichment failed for event id=%s; "
-                            "continuing without grounding", event_row.get("id"),
+                            "continuing without grounding",
+                            event_row.get("id"),
                             exc_info=True,
                         )
 
         logger.debug(
             "niche cycles: event id=%s — %d cycle(s), %d raw ideas",
-            event_row.get("id"), cycles_run, len(raw_accum),
+            event_row.get("id"),
+            cycles_run,
+            len(raw_accum),
         )
         return raw_accum
 
@@ -606,7 +633,8 @@ class NicheAgent:
             assessment["trade_ideas"] = existing
         seen = {
             (str(i.get("ticker") or "").upper(), str(i.get("action") or "").lower())
-            for i in existing if isinstance(i, dict)
+            for i in existing
+            if isinstance(i, dict)
         }
         added = 0
         for idea in niche_ideas:

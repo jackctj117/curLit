@@ -72,9 +72,7 @@ def parse_position(text: str) -> Position:
         matches = list(pattern.finditer(text))
         if matches:
             return Position(matches[-1].group(1).upper())
-    logger.warning(
-        "No final-position keyword found in reviewer output — defaulting to ABSTAIN"
-    )
+    logger.warning("No final-position keyword found in reviewer output — defaulting to ABSTAIN")
     return Position.ABSTAIN
 
 

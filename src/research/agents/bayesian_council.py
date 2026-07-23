@@ -41,9 +41,9 @@ _DEFAULT_MAX_ITERATIONS: int = 3
 
 @dataclass
 class BayesianCouncilOutcome:
-    verdict: str                              # "ship" | "iterate" | "reject"
-    final_spec: dict[str, Any]                # the spec that produced the final fit
-    final_diagnostics: dict[str, Any]         # bayesian_rate_diff.diagnose() output
+    verdict: str  # "ship" | "iterate" | "reject"
+    final_spec: dict[str, Any]  # the spec that produced the final fit
+    final_diagnostics: dict[str, Any]  # bayesian_rate_diff.diagnose() output
     final_evaluator_response: dict[str, Any]  # fit_evaluator's parsed JSON
     iterations: int
     transcript: list[dict[str, Any]] = field(default_factory=list)
@@ -100,11 +100,13 @@ def run_bayesian_council(
 
         # --- Modeler produces a spec --------------------------------
         modeler_resp = modeler.run(spec_iteration_input)
-        transcript.append({
-            "iteration": iteration,
-            "agent": "modeler",
-            "response": _agent_resp_dict(modeler_resp),
-        })
+        transcript.append(
+            {
+                "iteration": iteration,
+                "agent": "modeler",
+                "response": _agent_resp_dict(modeler_resp),
+            }
+        )
         try:
             spec = _try_parse_json(modeler_resp.text)
         except json.JSONDecodeError as exc:
@@ -112,11 +114,13 @@ def run_bayesian_council(
                 "Modeler iteration %d returned non-JSON; aborting council",
                 iteration,
             )
-            transcript.append({
-                "iteration": iteration,
-                "agent": "modeler",
-                "error": f"json parse: {exc}",
-            })
+            transcript.append(
+                {
+                    "iteration": iteration,
+                    "agent": "modeler",
+                    "error": f"json parse: {exc}",
+                }
+            )
             return BayesianCouncilOutcome(
                 verdict="reject",
                 final_spec={},
@@ -143,13 +147,17 @@ def run_bayesian_council(
         except Exception as exc:
             logger.warning(
                 "Fit-runner failed on iteration %d: %s: %s",
-                iteration, type(exc).__name__, exc,
+                iteration,
+                type(exc).__name__,
+                exc,
             )
-            transcript.append({
-                "iteration": iteration,
-                "tool": "bayesian_rate_diff_fit",
-                "error": f"{type(exc).__name__}: {exc}",
-            })
+            transcript.append(
+                {
+                    "iteration": iteration,
+                    "tool": "bayesian_rate_diff_fit",
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+            )
             return BayesianCouncilOutcome(
                 verdict="reject",
                 final_spec=spec,
@@ -164,14 +172,16 @@ def run_bayesian_council(
         diagnostics = diagnose(fit_result)
         last_diagnostics = diagnostics
 
-        transcript.append({
-            "iteration": iteration,
-            "tool": "bayesian_rate_diff_fit",
-            "diagnostics": diagnostics,
-            "elapsed_sec": fit_result.elapsed_sec,
-            "n_draws": fit_result.n_draws,
-            "n_chains": fit_result.n_chains,
-        })
+        transcript.append(
+            {
+                "iteration": iteration,
+                "tool": "bayesian_rate_diff_fit",
+                "diagnostics": diagnostics,
+                "elapsed_sec": fit_result.elapsed_sec,
+                "n_draws": fit_result.n_draws,
+                "n_chains": fit_result.n_chains,
+            }
+        )
 
         # --- Fit evaluator ------------------------------------------
         eval_input = (
@@ -183,11 +193,13 @@ def run_bayesian_council(
             f"</posterior_summary>"
         )
         evaluator_resp = fit_evaluator.run(eval_input)
-        transcript.append({
-            "iteration": iteration,
-            "agent": "fit_evaluator",
-            "response": _agent_resp_dict(evaluator_resp),
-        })
+        transcript.append(
+            {
+                "iteration": iteration,
+                "agent": "fit_evaluator",
+                "response": _agent_resp_dict(evaluator_resp),
+            }
+        )
         try:
             ev = _try_parse_json(evaluator_resp.text)
         except json.JSONDecodeError:
@@ -222,8 +234,7 @@ def run_bayesian_council(
             **last_evaluator_response,
             "verdict": "reject",
             "verdict_reason": (
-                f"Exceeded max_iterations={max_iterations} without "
-                f"converging on a shippable spec"
+                f"Exceeded max_iterations={max_iterations} without converging on a shippable spec"
             ),
         }
         last_verdict = "reject"

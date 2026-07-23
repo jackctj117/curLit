@@ -49,7 +49,8 @@ class TestLoading:
 
     def test_malformed_wrong_type_raises(self, tmp_path: Path) -> None:
         bad = tmp_path / "bad.yaml"
-        bad.write_text(dedent("""
+        bad.write_text(
+            dedent("""
             paper_trading:
               min_days_before_live: "ninety"
               required_tests:
@@ -66,15 +67,14 @@ class TestLoading:
             retirement:
               cooldown_days: 180
               requires_new_research: true
-        """))
+        """)
+        )
         with pytest.raises(ValueError, match="wrong type"):
             load_edge_policy(bad)
 
     def test_default_path_exists(self) -> None:
         # Sanity: the file we ship is at the documented path.
-        assert DEFAULT_POLICY_PATH.exists(), (
-            f"shipped policy missing at {DEFAULT_POLICY_PATH}"
-        )
+        assert DEFAULT_POLICY_PATH.exists(), f"shipped policy missing at {DEFAULT_POLICY_PATH}"
 
 
 # =============================================================================
@@ -88,7 +88,9 @@ class TestPromotion:
 
     def test_all_gates_pass_approves(self) -> None:
         metrics = StrategyMetrics(
-            paper_days=120, null_max_p=0.05, reality_check_p=0.10,
+            paper_days=120,
+            null_max_p=0.05,
+            reality_check_p=0.10,
             edge_concentration=0.40,
         )
         decision = self.policy.evaluate_promotion(metrics)
@@ -97,7 +99,9 @@ class TestPromotion:
 
     def test_paper_days_below_minimum_rejects(self) -> None:
         metrics = StrategyMetrics(
-            paper_days=30, null_max_p=0.05, reality_check_p=0.10,
+            paper_days=30,
+            null_max_p=0.05,
+            reality_check_p=0.10,
             edge_concentration=0.40,
         )
         decision = self.policy.evaluate_promotion(metrics)
@@ -106,7 +110,9 @@ class TestPromotion:
 
     def test_null_p_too_high_rejects(self) -> None:
         metrics = StrategyMetrics(
-            paper_days=120, null_max_p=0.20, reality_check_p=0.10,
+            paper_days=120,
+            null_max_p=0.20,
+            reality_check_p=0.10,
             edge_concentration=0.40,
         )
         decision = self.policy.evaluate_promotion(metrics)
@@ -115,7 +121,9 @@ class TestPromotion:
 
     def test_reality_check_p_too_high_rejects(self) -> None:
         metrics = StrategyMetrics(
-            paper_days=120, null_max_p=0.05, reality_check_p=0.30,
+            paper_days=120,
+            null_max_p=0.05,
+            reality_check_p=0.30,
             edge_concentration=0.40,
         )
         decision = self.policy.evaluate_promotion(metrics)
@@ -124,7 +132,9 @@ class TestPromotion:
 
     def test_edge_concentration_too_high_rejects(self) -> None:
         metrics = StrategyMetrics(
-            paper_days=120, null_max_p=0.05, reality_check_p=0.10,
+            paper_days=120,
+            null_max_p=0.05,
+            reality_check_p=0.10,
             edge_concentration=0.85,
         )
         decision = self.policy.evaluate_promotion(metrics)
@@ -133,7 +143,9 @@ class TestPromotion:
 
     def test_multiple_failures_listed(self) -> None:
         metrics = StrategyMetrics(
-            paper_days=10, null_max_p=0.50, reality_check_p=0.50,
+            paper_days=10,
+            null_max_p=0.50,
+            reality_check_p=0.50,
             edge_concentration=0.95,
         )
         decision = self.policy.evaluate_promotion(metrics)
@@ -148,7 +160,9 @@ class TestPromotion:
     def test_invalid_metrics_rejected_at_construction(self) -> None:
         with pytest.raises(AssertionError):
             StrategyMetrics(
-                paper_days=120, null_max_p=1.5, reality_check_p=0.10,
+                paper_days=120,
+                null_max_p=1.5,
+                reality_check_p=0.10,
                 edge_concentration=0.40,
             )
 
@@ -231,7 +245,9 @@ class TestReporting:
     def test_promotion_decision_to_dict(self) -> None:
         policy = load_edge_policy()
         metrics = StrategyMetrics(
-            paper_days=120, null_max_p=0.05, reality_check_p=0.10,
+            paper_days=120,
+            null_max_p=0.05,
+            reality_check_p=0.10,
             edge_concentration=0.40,
         )
         d = policy.evaluate_promotion(metrics).to_dict()

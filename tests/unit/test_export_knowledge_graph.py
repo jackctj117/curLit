@@ -34,20 +34,48 @@ _MINI_PLAYBOOK = {
             "description": "A tradable energy theme.",
             "watch_terms": ["oil shock", "hormuz"],
             "instruments": [
-                {"instrument": "BCO_USD", "kind": "oanda", "direction": "long",
-                 "rationale": "Brent | benchmark"},
-                {"instrument": "WTICO_USD", "kind": "oanda", "direction": "long",
-                 "rationale": "WTI follows"},
-                {"instrument": "XAU_USD", "kind": "oanda", "direction": "long",
-                 "rationale": "safe haven"},
-                {"instrument": "USD_CAD", "kind": "fx", "direction": "short",
-                 "rationale": "petro fx"},
-                {"instrument": "FRO", "kind": "equity_watch", "direction": "watch",
-                 "rationale": "tanker (shared 1)"},
-                {"instrument": "STNG", "kind": "equity_watch", "direction": "watch",
-                 "rationale": "product tanker (shared 2)"},
-                {"instrument": "XOM", "kind": "equity_watch", "direction": "watch",
-                 "rationale": "oil major (shared 3)"},
+                {
+                    "instrument": "BCO_USD",
+                    "kind": "oanda",
+                    "direction": "long",
+                    "rationale": "Brent | benchmark",
+                },
+                {
+                    "instrument": "WTICO_USD",
+                    "kind": "oanda",
+                    "direction": "long",
+                    "rationale": "WTI follows",
+                },
+                {
+                    "instrument": "XAU_USD",
+                    "kind": "oanda",
+                    "direction": "long",
+                    "rationale": "safe haven",
+                },
+                {
+                    "instrument": "USD_CAD",
+                    "kind": "fx",
+                    "direction": "short",
+                    "rationale": "petro fx",
+                },
+                {
+                    "instrument": "FRO",
+                    "kind": "equity_watch",
+                    "direction": "watch",
+                    "rationale": "tanker (shared 1)",
+                },
+                {
+                    "instrument": "STNG",
+                    "kind": "equity_watch",
+                    "direction": "watch",
+                    "rationale": "product tanker (shared 2)",
+                },
+                {
+                    "instrument": "XOM",
+                    "kind": "equity_watch",
+                    "direction": "watch",
+                    "rationale": "oil major (shared 3)",
+                },
             ],
         },
         "beta": {
@@ -55,14 +83,30 @@ _MINI_PLAYBOOK = {
             "description": "An advisory-only equity theme.",
             "watch_terms": ["equities"],
             "instruments": [
-                {"instrument": "FRO", "kind": "equity_watch", "direction": "watch",
-                 "rationale": "shared 1"},
-                {"instrument": "STNG", "kind": "equity_watch", "direction": "watch",
-                 "rationale": "shared 2"},
-                {"instrument": "XOM", "kind": "equity_watch", "direction": "watch",
-                 "rationale": "shared 3"},
-                {"instrument": "OXY", "kind": "equity_watch", "direction": "watch",
-                 "rationale": "oil major"},
+                {
+                    "instrument": "FRO",
+                    "kind": "equity_watch",
+                    "direction": "watch",
+                    "rationale": "shared 1",
+                },
+                {
+                    "instrument": "STNG",
+                    "kind": "equity_watch",
+                    "direction": "watch",
+                    "rationale": "shared 2",
+                },
+                {
+                    "instrument": "XOM",
+                    "kind": "equity_watch",
+                    "direction": "watch",
+                    "rationale": "shared 3",
+                },
+                {
+                    "instrument": "OXY",
+                    "kind": "equity_watch",
+                    "direction": "watch",
+                    "rationale": "oil major",
+                },
             ],
         },
     }
@@ -219,21 +263,41 @@ def test_no_overlap_below_threshold(tmp_path):
     data = {
         "themes": {
             "one": {
-                "name": "One", "description": "d", "watch_terms": ["x"],
+                "name": "One",
+                "description": "d",
+                "watch_terms": ["x"],
                 "instruments": [
-                    {"instrument": "BCO_USD", "kind": "oanda", "direction": "long",
-                     "rationale": "r"},
-                    {"instrument": "WTICO_USD", "kind": "oanda", "direction": "long",
-                     "rationale": "r"},
+                    {
+                        "instrument": "BCO_USD",
+                        "kind": "oanda",
+                        "direction": "long",
+                        "rationale": "r",
+                    },
+                    {
+                        "instrument": "WTICO_USD",
+                        "kind": "oanda",
+                        "direction": "long",
+                        "rationale": "r",
+                    },
                 ],
             },
             "two": {
-                "name": "Two", "description": "d", "watch_terms": ["y"],
+                "name": "Two",
+                "description": "d",
+                "watch_terms": ["y"],
                 "instruments": [
-                    {"instrument": "BCO_USD", "kind": "oanda", "direction": "long",
-                     "rationale": "r"},
-                    {"instrument": "XAU_USD", "kind": "oanda", "direction": "long",
-                     "rationale": "r"},
+                    {
+                        "instrument": "BCO_USD",
+                        "kind": "oanda",
+                        "direction": "long",
+                        "rationale": "r",
+                    },
+                    {
+                        "instrument": "XAU_USD",
+                        "kind": "oanda",
+                        "direction": "long",
+                        "rationale": "r",
+                    },
                 ],
             },
         }
@@ -288,12 +352,17 @@ def test_thin_flag(tmp_path):
     data = {
         "themes": {
             "small": {
-                "name": "Small", "description": "d", "watch_terms": ["x"],
+                "name": "Small",
+                "description": "d",
+                "watch_terms": ["x"],
                 "instruments": [
-                    {"instrument": "BCO_USD", "kind": "oanda", "direction": "long",
-                     "rationale": "r"},
-                    {"instrument": "USD_CAD", "kind": "fx", "direction": "short",
-                     "rationale": "r"},
+                    {
+                        "instrument": "BCO_USD",
+                        "kind": "oanda",
+                        "direction": "long",
+                        "rationale": "r",
+                    },
+                    {"instrument": "USD_CAD", "kind": "fx", "direction": "short", "rationale": "r"},
                 ],
             },
         }
@@ -352,9 +421,7 @@ def test_seed_notes_copied_and_valid(tmp_path, mini_playbook, seed_dir):
 def test_seed_note_with_bad_link_fails_loud(tmp_path, mini_playbook):
     seed = tmp_path / "seed"
     seed.mkdir()
-    (seed / "Broken.md").write_text(
-        "# Broken\nLinks to [[does_not_exist]].\n", encoding="utf-8"
-    )
+    (seed / "Broken.md").write_text("# Broken\nLinks to [[does_not_exist]].\n", encoding="utf-8")
     with pytest.raises(ValueError, match="does_not_exist"):
         _export(tmp_path, mini_playbook, seed=seed)
 
@@ -368,10 +435,16 @@ def test_unknown_kind_fails_loud(tmp_path):
     data = {
         "themes": {
             "bad": {
-                "name": "Bad", "description": "d", "watch_terms": ["x"],
+                "name": "Bad",
+                "description": "d",
+                "watch_terms": ["x"],
                 "instruments": [
-                    {"instrument": "BCO_USD", "kind": "crypto", "direction": "long",
-                     "rationale": "r"},
+                    {
+                        "instrument": "BCO_USD",
+                        "kind": "crypto",
+                        "direction": "long",
+                        "rationale": "r",
+                    },
                 ],
             }
         }
@@ -385,7 +458,9 @@ def test_theme_missing_instruments_fails_loud(tmp_path):
     data = {
         "themes": {
             "bad": {
-                "name": "Bad", "description": "d", "watch_terms": ["x"],
+                "name": "Bad",
+                "description": "d",
+                "watch_terms": ["x"],
                 # no 'instruments'
             }
         }
@@ -399,10 +474,15 @@ def test_theme_missing_name_fails_loud(tmp_path):
     data = {
         "themes": {
             "bad": {
-                "description": "d", "watch_terms": ["x"],
+                "description": "d",
+                "watch_terms": ["x"],
                 "instruments": [
-                    {"instrument": "BCO_USD", "kind": "oanda", "direction": "long",
-                     "rationale": "r"},
+                    {
+                        "instrument": "BCO_USD",
+                        "kind": "oanda",
+                        "direction": "long",
+                        "rationale": "r",
+                    },
                 ],
             }
         }
@@ -417,17 +497,29 @@ def test_conflicting_instrument_kind_fails_loud(tmp_path):
     data = {
         "themes": {
             "a": {
-                "name": "A", "description": "d", "watch_terms": ["x"],
+                "name": "A",
+                "description": "d",
+                "watch_terms": ["x"],
                 "instruments": [
-                    {"instrument": "BCO_USD", "kind": "oanda", "direction": "long",
-                     "rationale": "r"},
+                    {
+                        "instrument": "BCO_USD",
+                        "kind": "oanda",
+                        "direction": "long",
+                        "rationale": "r",
+                    },
                 ],
             },
             "b": {
-                "name": "B", "description": "d", "watch_terms": ["y"],
+                "name": "B",
+                "description": "d",
+                "watch_terms": ["y"],
                 "instruments": [
-                    {"instrument": "BCO_USD", "kind": "equity_watch",
-                     "direction": "watch", "rationale": "r"},
+                    {
+                        "instrument": "BCO_USD",
+                        "kind": "equity_watch",
+                        "direction": "watch",
+                        "rationale": "r",
+                    },
                 ],
             },
         }
@@ -484,9 +576,7 @@ def test_theme_frontmatter_flags_match_coverage(tmp_path, mini_playbook):
     cov = (out / "Coverage.md").read_text()
     for key in ("alpha", "beta"):
         fm = _frontmatter_block((out / "Themes" / f"{key}.md").read_text())
-        flags_line = next(
-            ln for ln in fm.splitlines() if ln.startswith("coverage_flags:")
-        )
+        flags_line = next(ln for ln in fm.splitlines() if ln.startswith("coverage_flags:"))
         # parse "coverage_flags: [A, B]" -> {"A", "B"}
         inside = flags_line.split("[", 1)[1].rsplit("]", 1)[0]
         fm_flags = {f.strip() for f in inside.split(",") if f.strip()}
@@ -626,10 +716,7 @@ def _make_fake_engine():
     engine = create_engine("sqlite://")  # shared in-memory for this connection
     with engine.begin() as conn:
         conn.execute(
-            text(
-                "CREATE TABLE geo_events (id INTEGER PRIMARY KEY, theme TEXT, "
-                "headline TEXT)"
-            )
+            text("CREATE TABLE geo_events (id INTEGER PRIMARY KEY, theme TEXT, headline TEXT)")
         )
         conn.execute(
             text(
@@ -638,12 +725,7 @@ def _make_fake_engine():
                 "rationale TEXT, notes TEXT, created_at TEXT)"
             )
         )
-        conn.execute(
-            text(
-                "CREATE TABLE symbols (symbol TEXT, sec_name TEXT, "
-                "security_name TEXT)"
-            )
-        )
+        conn.execute(text("CREATE TABLE symbols (symbol TEXT, sec_name TEXT, security_name TEXT)"))
         conn.execute(
             text(
                 "INSERT INTO geo_events (id, theme, headline) VALUES "
@@ -708,15 +790,11 @@ def _export_discovered(tmp_path, playbook, engine):
 
 def test_clean_company_name_prefers_sec_name_and_trims_boilerplate():
     # sec_name wins verbatim
-    assert (
-        ekg._clean_company_name("Venture Global, Inc.", "anything")
-        == "Venture Global, Inc."
-    )
+    assert ekg._clean_company_name("Venture Global, Inc.", "anything") == "Venture Global, Inc."
     # falls back to security_name with the class boilerplate trimmed, keeping
     # the corporate designator
     assert (
-        ekg._clean_company_name(None, "Tanker Co. Ltd. - Class A Common Stock")
-        == "Tanker Co. Ltd."
+        ekg._clean_company_name(None, "Tanker Co. Ltd. - Class A Common Stock") == "Tanker Co. Ltd."
     )
     assert ekg._clean_company_name(None, "Foo Corp Common Stock") == "Foo Corp"
     assert ekg._clean_company_name(None, "Bar Ordinary Shares") == "Bar"
@@ -762,9 +840,7 @@ def test_discovered_banner_and_snapshot_date(tmp_path, mini_playbook):
     assert "not a position" in text.lower()
 
 
-def test_discovered_company_name_falls_back_to_trimmed_security_name(
-    tmp_path, mini_playbook
-):
+def test_discovered_company_name_falls_back_to_trimmed_security_name(tmp_path, mini_playbook):
     out, _ = _export_discovered(tmp_path, mini_playbook, _make_fake_engine())
     tank = out / "Discovered" / "TANK.md"
     assert tank.exists()
@@ -818,9 +894,7 @@ def test_discovered_dashboard_section_and_manifest(tmp_path, mini_playbook):
     assert manifest["discovered"]["snapshot"] == "2026-03-15"
 
 
-def test_db_unreachable_degrades_to_pure_vault_with_warning(
-    tmp_path, mini_playbook, caplog
-):
+def test_db_unreachable_degrades_to_pure_vault_with_warning(tmp_path, mini_playbook, caplog):
     import logging
 
     class _BoomEngine:

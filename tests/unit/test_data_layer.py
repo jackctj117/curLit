@@ -1,12 +1,10 @@
 """Unit tests — data layer: ingesters, vintage data, validation."""
 
-import pytest
 import pandas as pd
-from datetime import datetime
 
 from src.data.fred import FRED_SERIES
-from src.data.validation import validate_price_data, validate_macro_data
 from src.data.stooq import SYMBOL_MAP
+from src.data.validation import validate_macro_data, validate_price_data
 
 
 class TestBaseIngester:
@@ -22,11 +20,15 @@ class TestValidation:
         assert any("null" in f.lower() for f in failures)
 
     def test_validate_macro_data_passes_clean(self) -> None:
-        df = pd.DataFrame({
-            "observation_date": [pd.Timestamp("2024-01-01")],
-            "release_date": [pd.Timestamp("2024-01-01")],
-            "series_id": ["DFF"], "value": [5.25], "revision": [0],
-        })
+        df = pd.DataFrame(
+            {
+                "observation_date": [pd.Timestamp("2024-01-01")],
+                "release_date": [pd.Timestamp("2024-01-01")],
+                "series_id": ["DFF"],
+                "value": [5.25],
+                "revision": [0],
+            }
+        )
         ok, _ = validate_macro_data(df)
         assert ok
 

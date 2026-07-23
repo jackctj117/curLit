@@ -8,8 +8,6 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-import pytest
-
 from src.execution.polymarket_reconciler import (
     OnchainFill,
     ReconcileSummary,
@@ -17,7 +15,6 @@ from src.execution.polymarket_reconciler import (
     _normalize,
     reconcile,
 )
-
 
 # Valid 20-byte hex addresses — eth_utils (present when the [polymarket]
 # extra is installed) checksum-validates these; short strings like

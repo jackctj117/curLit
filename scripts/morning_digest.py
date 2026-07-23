@@ -46,8 +46,11 @@ def _load_last_sent() -> str | None:
     except FileNotFoundError:
         return None
     except Exception:
-        logger.warning("morning digest: unreadable state %s — treating as "
-                       "never sent", STATE_PATH, exc_info=True)
+        logger.warning(
+            "morning digest: unreadable state %s — treating as never sent",
+            STATE_PATH,
+            exc_info=True,
+        )
         return None
 
 
@@ -63,10 +66,10 @@ def _fetch_oanda_positions() -> list | None:
         return None
     try:
         from src.execution.oanda_broker import OandaBroker  # noqa: PLC0415
+
         return OandaBroker(creds[0], creds[1], practice=True).get_positions()
     except Exception:
-        logger.warning("morning digest: OANDA positions unavailable",
-                       exc_info=True)
+        logger.warning("morning digest: OANDA positions unavailable", exc_info=True)
         return None
 
 
@@ -77,6 +80,7 @@ def _fetch_oanda_closed_24h(now: datetime) -> list[dict]:
         return []
     try:
         import httpx  # noqa: PLC0415
+
         resp = httpx.get(
             f"{_OANDA_BASE}/{creds[1]}/trades",
             params={"state": "CLOSED", "count": "50"},
@@ -89,8 +93,7 @@ def _fetch_oanda_closed_24h(now: datetime) -> list[dict]:
         for t in resp.json().get("trades", []):
             close_raw = str(t.get("closeTime") or "")[:26]
             try:
-                closed = datetime.fromisoformat(
-                    close_raw.replace("Z", "")).replace(tzinfo=UTC)
+                closed = datetime.fromisoformat(close_raw.replace("Z", "")).replace(tzinfo=UTC)
             except ValueError:
                 continue
             if closed < cut:
@@ -98,15 +101,16 @@ def _fetch_oanda_closed_24h(now: datetime) -> list[dict]:
             units = float(t.get("initialUnits") or 0)
             side = "short" if units < 0 else "long"
             pl = float(t.get("realizedPL") or 0.0)
-            out.append({
-                "venue": "OANDA",
-                "desc": f"{t.get('instrument')} {side} {abs(units):,.0f}",
-                "pl": f"{pl:+.2f}",
-            })
+            out.append(
+                {
+                    "venue": "OANDA",
+                    "desc": f"{t.get('instrument')} {side} {abs(units):,.0f}",
+                    "pl": f"{pl:+.2f}",
+                }
+            )
         return out
     except Exception:
-        logger.warning("morning digest: OANDA closed-trades unavailable",
-                       exc_info=True)
+        logger.warning("morning digest: OANDA closed-trades unavailable", exc_info=True)
         return []
 
 
@@ -116,6 +120,7 @@ def _fetch_oanda_balance() -> str | None:
         return None
     try:
         import httpx  # noqa: PLC0415
+
         resp = httpx.get(
             f"{_OANDA_BASE}/{creds[1]}/summary",
             headers={"Authorization": f"Bearer {creds[0]}"},
@@ -123,11 +128,9 @@ def _fetch_oanda_balance() -> str | None:
         )
         resp.raise_for_status()
         acct = resp.json()["account"]
-        return (f"${float(acct['balance']):,.2f} "
-                f"(uPL {float(acct['unrealizedPL']):+,.2f})")
+        return f"${float(acct['balance']):,.2f} (uPL {float(acct['unrealizedPL']):+,.2f})"
     except Exception:
-        logger.warning("morning digest: OANDA balance unavailable",
-                       exc_info=True)
+        logger.warning("morning digest: OANDA balance unavailable", exc_info=True)
         return None
 
 
@@ -137,6 +140,7 @@ def _alpaca_client():  # noqa: ANN202
     if not key or not secret:
         return None
     from src.execution.alpaca_options import AlpacaOptionsClient  # noqa: PLC0415
+
     return AlpacaOptionsClient(key, secret)
 
 
@@ -147,8 +151,7 @@ def _fetch_alpaca_positions() -> list | None:
     try:
         return client.list_option_positions()
     except Exception:
-        logger.warning("morning digest: Alpaca positions unavailable",
-                       exc_info=True)
+        logger.warning("morning digest: Alpaca positions unavailable", exc_info=True)
         return None
 
 
@@ -160,8 +163,7 @@ def _fetch_alpaca_equity() -> str | None:
         acct = client.get_account()
         return f"${float(acct['equity']):,.2f}"
     except Exception:
-        logger.warning("morning digest: Alpaca account unavailable",
-                       exc_info=True)
+        logger.warning("morning digest: Alpaca account unavailable", exc_info=True)
         return None
 
 
@@ -169,16 +171,20 @@ def _fetch_alpaca_closed_24h(engine, now: datetime) -> list[dict]:  # noqa: ANN0
     from sqlalchemy import text  # noqa: PLC0415
 
     from src.monitoring.morning_digest import _describe_occ  # noqa: PLC0415
+
     try:
         with engine.connect() as conn:
-            rows = conn.execute(text("""
+            rows = conn.execute(
+                text("""
                 SELECT occ_symbol, exit_reason, premium_est, exit_premium,
                        pnl_pct
                 FROM alpaca_option_orders
                 WHERE exited_at >= :cut
                   AND exit_status IN ('submitted', 'closed')
                 ORDER BY exited_at
-            """), {"cut": now - timedelta(hours=24)}).fetchall()
+            """),
+                {"cut": now - timedelta(hours=24)},
+            ).fetchall()
         out: list[dict] = []
         for r in rows:
             pnl_usd = (
@@ -189,34 +195,39 @@ def _fetch_alpaca_closed_24h(engine, now: datetime) -> list[dict]:  # noqa: ANN0
             pl_txt = f"${pnl_usd:+,.0f}" if pnl_usd is not None else "n/a"
             if r.pnl_pct is not None:
                 pl_txt += f" ({float(r.pnl_pct):+.0%})"
-            out.append({
-                "venue": "Alpaca",
-                "desc": f"{_describe_occ(str(r.occ_symbol))}"
-                        f" [{r.exit_reason or 'closed'}]",
-                "pl": pl_txt,
-            })
+            out.append(
+                {
+                    "venue": "Alpaca",
+                    "desc": f"{_describe_occ(str(r.occ_symbol))} [{r.exit_reason or 'closed'}]",
+                    "pl": pl_txt,
+                }
+            )
         return out
     except Exception:
-        logger.warning("morning digest: Alpaca closed rows unavailable",
-                       exc_info=True)
+        logger.warning("morning digest: Alpaca closed rows unavailable", exc_info=True)
         return []
 
 
 def _fetch_bullish_ideas(engine) -> list[dict]:  # noqa: ANN001
     from sqlalchemy import text  # noqa: PLC0415
+
     try:
         with engine.connect() as conn:
-            return [dict(r._mapping) for r in conn.execute(text("""
+            return [
+                dict(r._mapping)
+                for r in conn.execute(
+                    text("""
                 SELECT ticker, action, confidence, preferred_instrument,
                        rationale
                 FROM trade_ideas
                 WHERE status = 'pending'
                   AND (direction = 'bullish'
                        OR action IN ('buy_calls', 'long'))
-            """))]
+            """)
+                )
+            ]
     except Exception:
-        logger.warning("morning digest: bullish ideas unavailable",
-                       exc_info=True)
+        logger.warning("morning digest: bullish ideas unavailable", exc_info=True)
         return []
 
 
@@ -234,8 +245,7 @@ def _resolve_idea_names(engine, ideas: list[dict]) -> dict[str, str]:  # noqa: A
 
         return SymbolUniverse(engine).company_names(tickers)
     except Exception:
-        logger.warning("morning digest: ticker-name enrichment unavailable",
-                       exc_info=True)
+        logger.warning("morning digest: ticker-name enrichment unavailable", exc_info=True)
         return {}
 
 
@@ -270,14 +280,15 @@ def run_once(now: datetime | None = None, *, force: bool = False) -> bool:
     positions_body = build_position_digest(
         _fetch_oanda_positions(),
         _fetch_alpaca_positions(),
-        closed_24h=(_fetch_oanda_closed_24h(now)
-                    + _fetch_alpaca_closed_24h(engine, now)),
+        closed_24h=(_fetch_oanda_closed_24h(now) + _fetch_alpaca_closed_24h(engine, now)),
         balances=balances or None,
         now=now,
     )
     bullish_ideas = _fetch_bullish_ideas(engine)
     ideas_body = build_long_ideas_digest(
-        bullish_ideas, now, names=_resolve_idea_names(engine, bullish_ideas),
+        bullish_ideas,
+        now,
+        names=_resolve_idea_names(engine, bullish_ideas),
     )
 
     r1 = notify_operator("☀️ Morning positions", positions_body, html=True)
@@ -286,27 +297,30 @@ def run_once(now: datetime | None = None, *, force: bool = False) -> bool:
         # State is only saved on FULL success — a partial failure retries
         # next cycle (possible duplicate of the half that went through;
         # preferable to silently losing a morning).
-        logger.warning("morning digest: send failed (positions=%s ideas=%s) "
-                       "— will retry next cycle",
-                       r1.any_succeeded, r2.any_succeeded)
+        logger.warning(
+            "morning digest: send failed (positions=%s ideas=%s) — will retry next cycle",
+            r1.any_succeeded,
+            r2.any_succeeded,
+        )
         return False
     atomic_write_json(
         STATE_PATH,
         {"last_sent_ny_date": now.astimezone(_NY).date().isoformat()},
     )
-    logger.info("morning digest: sent both for %s",
-                now.astimezone(_NY).date().isoformat())
+    logger.info("morning digest: sent both for %s", now.astimezone(_NY).date().isoformat())
     return True
 
 
 def main(argv: list[str] | None = None) -> int:
     from src.dotenv_bootstrap import load_project_env  # noqa: PLC0415
+
     load_project_env()
 
     parser = argparse.ArgumentParser(description="Morning Telegram digests.")
     parser.add_argument("--once", action="store_true")
-    parser.add_argument("--force", action="store_true",
-                        help="send immediately, ignore time/dedup gates")
+    parser.add_argument(
+        "--force", action="store_true", help="send immediately, ignore time/dedup gates"
+    )
     parser.add_argument("--loop", type=int, metavar="SECONDS", default=None)
     args = parser.parse_args(argv)
 
@@ -316,9 +330,11 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     if args.loop:
-        logger.info("morning digest: looping every %ds (send at %s ET)",
-                    args.loop,
-                    os.environ.get("MORNING_DIGEST_TIME_ET", "09:15"))
+        logger.info(
+            "morning digest: looping every %ds (send at %s ET)",
+            args.loop,
+            os.environ.get("MORNING_DIGEST_TIME_ET", "09:15"),
+        )
         try:
             while True:
                 try:

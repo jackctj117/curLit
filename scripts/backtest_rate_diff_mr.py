@@ -65,12 +65,11 @@ def _load_data(start: datetime, end: datetime) -> pd.DataFrame:
     walk-forward sees continuous coverage.
     """
     from src.data.provider import DataProvider
+
     dp = DataProvider(_build_db_engine())
     df = dp.get_aligned_series(["EURUSD", "US_10Y", "DE_10Y"], start, end)
     if df is None or df.empty:
-        raise RuntimeError(
-            "No data returned from DataProvider — has the seed script run? CL-4bu"
-        )
+        raise RuntimeError("No data returned from DataProvider — has the seed script run? CL-4bu")
     df = df.copy()
     df["DE_10Y"] = df["DE_10Y"].ffill()
     df = df.dropna(subset=["EURUSD", "US_10Y", "DE_10Y"])
@@ -114,13 +113,19 @@ def _build_report(
         "folds": fold_metrics_df.to_dict(orient="records"),
         "architecture_comparison": {
             "sharpe_in_expected_range": _flag(
-                metrics.get("sharpe", 0.0), _EXPECT_SHARPE_LO, _EXPECT_SHARPE_HI,
+                metrics.get("sharpe", 0.0),
+                _EXPECT_SHARPE_LO,
+                _EXPECT_SHARPE_HI,
             ),
             "max_drawdown_in_expected_range": _flag(
-                metrics.get("max_drawdown", 0.0), _EXPECT_DD_LO, _EXPECT_DD_HI,
+                metrics.get("max_drawdown", 0.0),
+                _EXPECT_DD_LO,
+                _EXPECT_DD_HI,
             ),
             "hit_rate_in_expected_range": _flag(
-                metrics.get("hit_rate", 0.0), _EXPECT_HIT_LO, _EXPECT_HIT_HI,
+                metrics.get("hit_rate", 0.0),
+                _EXPECT_HIT_LO,
+                _EXPECT_HIT_HI,
             ),
             "expected_sharpe_range": [_EXPECT_SHARPE_LO, _EXPECT_SHARPE_HI],
             "expected_max_drawdown_range": [_EXPECT_DD_LO, _EXPECT_DD_HI],
@@ -136,14 +141,22 @@ def _print_summary(report: dict[str, Any]) -> None:
     cmp_ = report["architecture_comparison"]
     print()
     print("=" * 60)
-    print(f"Rate-diff MR walk-forward — {report['data_window']['start']} → {report['data_window']['end']}")
+    print(
+        f"Rate-diff MR walk-forward — {report['data_window']['start']} → {report['data_window']['end']}"
+    )
     print(f"n_obs aligned: {report['data_window']['n_obs_aligned']}, n_folds: {report['n_folds']}")
     print("=" * 60)
-    print(f"  Sharpe:        {m['sharpe']:>7.3f}    95% CI: [{ci['low']:.3f}, {ci['high']:.3f}]   {cmp_['sharpe_in_expected_range']} (expect {cmp_['expected_sharpe_range']})")
+    print(
+        f"  Sharpe:        {m['sharpe']:>7.3f}    95% CI: [{ci['low']:.3f}, {ci['high']:.3f}]   {cmp_['sharpe_in_expected_range']} (expect {cmp_['expected_sharpe_range']})"
+    )
     print(f"  Sortino:       {m['sortino']:>7.3f}")
-    print(f"  Max drawdown:  {m['max_drawdown']:>7.1%}                                {cmp_['max_drawdown_in_expected_range']} (expect {cmp_['expected_max_drawdown_range']})")
+    print(
+        f"  Max drawdown:  {m['max_drawdown']:>7.1%}                                {cmp_['max_drawdown_in_expected_range']} (expect {cmp_['expected_max_drawdown_range']})"
+    )
     print(f"  Calmar:        {m['calmar']:>7.3f}")
-    print(f"  Hit rate:      {m['hit_rate']:>7.1%}                                {cmp_['hit_rate_in_expected_range']} (expect {cmp_['expected_hit_rate_range']})")
+    print(
+        f"  Hit rate:      {m['hit_rate']:>7.1%}                                {cmp_['hit_rate_in_expected_range']} (expect {cmp_['expected_hit_rate_range']})"
+    )
     print(f"  Profit factor: {m['profit_factor']:>7.3f}")
     print(f"  CAGR:          {m['cagr']:>7.1%}")
     print(f"  Vol (ann):     {m['volatility']:>7.1%}")
@@ -159,13 +172,15 @@ def main() -> int:
     parser.add_argument("--start", type=str, default="2015-01-01")
     parser.add_argument("--end", type=str, default=datetime.now(UTC).strftime("%Y-%m-%d"))
     parser.add_argument(
-        "--out", type=Path,
+        "--out",
+        type=Path,
         default=Path("reports/backtest_rate_diff.json"),
     )
     parser.add_argument(
-        "--bootstrap-n", type=int, default=5000,
-        help="Bootstrap iterations for Sharpe CI (default 5000; 10k is more "
-             "stable but slower).",
+        "--bootstrap-n",
+        type=int,
+        default=5000,
+        help="Bootstrap iterations for Sharpe CI (default 5000; 10k is more stable but slower).",
     )
     args = parser.parse_args()
 
@@ -195,12 +210,20 @@ def main() -> int:
         # Each fold gets a fresh strategy (no state leaks across folds).
         return RateDiffMRStrategy(RateDiffMRConfig())
 
-    logger.info("Running walk-forward (is=%dd, oos=%dd, step=%dd, min_history=%dd)",
-                cfg.is_window_days, cfg.oos_window_days, cfg.step_days, cfg.min_history)
+    logger.info(
+        "Running walk-forward (is=%dd, oos=%dd, step=%dd, min_history=%dd)",
+        cfg.is_window_days,
+        cfg.oos_window_days,
+        cfg.step_days,
+        cfg.min_history,
+    )
     result = runner.run(data, _strategy_factory, cost_model)
 
     if result.oos_returns.empty:
-        logger.error("No OOS returns produced — data window may be too short for is_window_days=%d", cfg.is_window_days)
+        logger.error(
+            "No OOS returns produced — data window may be too short for is_window_days=%d",
+            cfg.is_window_days,
+        )
         return 1
 
     oos_returns = result.oos_returns
@@ -208,13 +231,20 @@ def main() -> int:
 
     logger.info("Bootstrapping Sharpe 95%% CI (n=%d)", args.bootstrap_n)
     ci_low, ci_high = stationary_bootstrap_sharpe_ci(
-        oos_returns, block_mean_len=20, n_bootstrap=args.bootstrap_n,
+        oos_returns,
+        block_mean_len=20,
+        n_bootstrap=args.bootstrap_n,
         confidence=0.95,
     )
 
     report = _build_report(
-        metrics, ci_low, ci_high, result.fold_metrics,
-        len(data), start, end,
+        metrics,
+        ci_low,
+        ci_high,
+        result.fold_metrics,
+        len(data),
+        start,
+        end,
     )
 
     args.out.parent.mkdir(parents=True, exist_ok=True)

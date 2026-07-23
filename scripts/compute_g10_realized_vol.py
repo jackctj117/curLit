@@ -33,8 +33,15 @@ logger = logging.getLogger(__name__)
 # ingested today; the script silently skips pairs with no data so adding
 # more here is safe.
 G10_PAIRS: tuple[str, ...] = (
-    "EURUSD", "USDJPY", "GBPUSD", "USDCHF",
-    "USDCAD", "AUDUSD", "NZDUSD", "USDNOK", "USDSEK",
+    "EURUSD",
+    "USDJPY",
+    "GBPUSD",
+    "USDCHF",
+    "USDCAD",
+    "AUDUSD",
+    "NZDUSD",
+    "USDNOK",
+    "USDSEK",
 )
 
 WINDOW: int = 20  # 20 trading days ≈ 1 month
@@ -104,11 +111,14 @@ def upsert_volatility(engine: Any, index_name: str, series: pd.Series) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     from src.dotenv_bootstrap import load_project_env  # noqa: PLC0415
+
     load_project_env()
 
     p = argparse.ArgumentParser(description="Compute G10 RV20 → fx_volatility.")
     p.add_argument(
-        "--lookback-days", type=int, default=365,
+        "--lookback-days",
+        type=int,
+        default=365,
         help="How far back to recompute (idempotent, so safe to overlap)",
     )
     p.add_argument("-v", "--verbose", action="store_true")
@@ -120,6 +130,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     from src.runtime.run_engine import _build_db_engine  # noqa: PLC0415
+
     engine = _build_db_engine()
 
     end = datetime.utcnow()

@@ -72,7 +72,8 @@ def spreads_from_rows(
 
 
 def build_from_engine(
-    engine: Any, lookback_hours: int = _DEFAULT_LOOKBACK_HOURS,
+    engine: Any,
+    lookback_hours: int = _DEFAULT_LOOKBACK_HOURS,
 ) -> LiquidityProfile:
     """Query ``intraday_quotes`` over the lookback window → a fresh profile."""
     sql = text(
@@ -82,13 +83,14 @@ def build_from_engine(
     )
     with engine.connect() as conn:
         rows = [
-            (r[0], r[1], r[2], r[3])
-            for r in conn.execute(sql, {"h": lookback_hours}).fetchall()
+            (r[0], r[1], r[2], r[3]) for r in conn.execute(sql, {"h": lookback_hours}).fetchall()
         ]
     triples = spreads_from_rows(rows)
     logger.info(
         "liquidity refresh: %d quotes -> %d usable spreads over %dh",
-        len(rows), len(triples), lookback_hours,
+        len(rows),
+        len(triples),
+        lookback_hours,
     )
     return build_profile_from_spreads(triples)
 
@@ -115,6 +117,7 @@ def refresh(
 
 def main(argv: list[str] | None = None) -> int:
     from src.dotenv_bootstrap import load_project_env  # noqa: PLC0415
+
     load_project_env()
 
     from sqlalchemy import create_engine  # noqa: PLC0415
@@ -123,13 +126,22 @@ def main(argv: list[str] | None = None) -> int:
         description="Refresh the liquidity-window spread profile.",
     )
     parser.add_argument("--once", action="store_true", help="Refresh once, exit.")
-    parser.add_argument("--loop", type=int, metavar="SECONDS", default=None,
-                        help="Refresh every SECONDS (daemon mode).")
-    parser.add_argument("--path", default=_DEFAULT_PATH,
-                        help=f"Profile output path (default {_DEFAULT_PATH}).")
-    parser.add_argument("--lookback-hours", type=int,
-                        default=_DEFAULT_LOOKBACK_HOURS,
-                        help="Quote history window to read.")
+    parser.add_argument(
+        "--loop",
+        type=int,
+        metavar="SECONDS",
+        default=None,
+        help="Refresh every SECONDS (daemon mode).",
+    )
+    parser.add_argument(
+        "--path", default=_DEFAULT_PATH, help=f"Profile output path (default {_DEFAULT_PATH})."
+    )
+    parser.add_argument(
+        "--lookback-hours",
+        type=int,
+        default=_DEFAULT_LOOKBACK_HOURS,
+        help="Quote history window to read.",
+    )
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args(argv)
 

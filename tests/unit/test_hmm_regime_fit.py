@@ -16,7 +16,9 @@ pytest.importorskip("hmmlearn")
 from src.models.hmm_regime import fit_hmm_regime  # noqa: E402
 
 
-def _build_three_regime_panel(n_per_regime: int = 200, seed: int = 42) -> tuple[pd.DataFrame, pd.Series]:
+def _build_three_regime_panel(
+    n_per_regime: int = 200, seed: int = 42
+) -> tuple[pd.DataFrame, pd.Series]:
     """Stitch 3 different-vol regimes into one time series.
 
     Regime 0 (trending):  low-vol, drifting.
@@ -37,9 +39,16 @@ def _build_three_regime_panel(n_per_regime: int = 200, seed: int = 42) -> tuple[
         move = scale * 1.2 + rng.normal(0, scale * 0.1, n)
         dxy_ret = rng.normal(0, scale * 0.001, n)
         yc = 0.5 + rng.normal(0, 0.1, n)
-        parts.append(pd.DataFrame({
-            "vix": vix, "move": move, "dxy_ret": dxy_ret, "yc": yc,
-        }))
+        parts.append(
+            pd.DataFrame(
+                {
+                    "vix": vix,
+                    "move": move,
+                    "dxy_ret": dxy_ret,
+                    "yc": yc,
+                }
+            )
+        )
         labels.extend([regime] * n)
 
     df = pd.concat(parts, ignore_index=True)
@@ -85,9 +94,11 @@ class TestHMMFit:
 
     def test_too_short_history_raises(self) -> None:
         # Below the 504-day floor the HMM rejects.
-        df = pd.DataFrame({
-            "vix": np.random.normal(0, 1, 100),
-            "move": np.random.normal(0, 1, 100),
-        })
+        df = pd.DataFrame(
+            {
+                "vix": np.random.normal(0, 1, 100),
+                "move": np.random.normal(0, 1, 100),
+            }
+        )
         with pytest.raises(ValueError, match="needs at least"):
             fit_hmm_regime(df)

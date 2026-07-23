@@ -69,7 +69,7 @@ CONTRACTS: dict[str, EnvContracts] = {
 # CLOB REST hosts — same table as polymarket_broker.py.
 _HOSTS: dict[str, str] = {
     "mainnet": "https://clob.polymarket.com",
-    "amoy":    "https://clob-amoy.polymarket.com",
+    "amoy": "https://clob-amoy.polymarket.com",
 }
 
 # Minimal ERC-20 ABI — just the two functions the revoke path needs.
@@ -79,7 +79,7 @@ _ERC20_ABI: list[dict[str, Any]] = [
         "type": "function",
         "stateMutability": "view",
         "inputs": [
-            {"name": "owner",   "type": "address"},
+            {"name": "owner", "type": "address"},
             {"name": "spender", "type": "address"},
         ],
         "outputs": [{"name": "", "type": "uint256"}],
@@ -90,7 +90,7 @@ _ERC20_ABI: list[dict[str, Any]] = [
         "stateMutability": "nonpayable",
         "inputs": [
             {"name": "spender", "type": "address"},
-            {"name": "amount",  "type": "uint256"},
+            {"name": "amount", "type": "uint256"},
         ],
         "outputs": [{"name": "", "type": "bool"}],
     },
@@ -152,25 +152,32 @@ def run_kill_switch(
 
     report = KillSwitchReport(env=env, dry_run=dry_run)
     logger.warning(
-        "polymarket KILL SWITCH engaged: env=%s dry_run=%s", env, dry_run,
+        "polymarket KILL SWITCH engaged: env=%s dry_run=%s",
+        env,
+        dry_run,
     )
 
     _step_cancel_all(report, client=client)
     _step_revoke_allowance(
-        report, w3=w3, acct=acct, funder_address=funder_address,
+        report,
+        w3=w3,
+        acct=acct,
+        funder_address=funder_address,
     )
 
     if report.ok:
         logger.warning(
-            "polymarket kill switch COMPLETE: env=%s dry_run=%s "
-            "cancelled=%s revoke_tx=%s",
-            env, dry_run,
-            report.open_order_ids, report.revoke_tx_hash,
+            "polymarket kill switch COMPLETE: env=%s dry_run=%s cancelled=%s revoke_tx=%s",
+            env,
+            dry_run,
+            report.open_order_ids,
+            report.revoke_tx_hash,
         )
     else:
         logger.error(
             "polymarket kill switch FINISHED WITH ERRORS: env=%s %s",
-            env, report.errors,
+            env,
+            report.errors,
         )
     return report
 
@@ -196,24 +203,28 @@ def _step_cancel_all(report: KillSwitchReport, *, client: Any | None) -> None:
             for oid in report.open_order_ids:
                 logger.info(
                     "polymarket kill switch: open order %s%s",
-                    oid, " (would cancel)" if report.dry_run else "",
+                    oid,
+                    " (would cancel)" if report.dry_run else "",
                 )
             logger.warning(
                 "polymarket kill switch: %d open order(s) on %s",
-                len(report.open_order_ids), report.env,
+                len(report.open_order_ids),
+                report.env,
             )
         except Exception as exc:
             if report.dry_run:
                 raise
             logger.warning(
                 "polymarket kill switch: open-order listing failed (%s) — "
-                "proceeding to cancel_all anyway", exc, exc_info=True,
+                "proceeding to cancel_all anyway",
+                exc,
+                exc_info=True,
             )
 
         if report.dry_run:
             logger.warning(
-                "polymarket kill switch DRY RUN: would call cancel_all() "
-                "on %s", report.env,
+                "polymarket kill switch DRY RUN: would call cancel_all() on %s",
+                report.env,
             )
             return
 
@@ -274,31 +285,33 @@ def _step_revoke_allowance(
                 funder_address = load_polymarket_creds(report.env).funder_address
 
         usdc = w3.eth.contract(
-            address=contracts.usdc_collateral, abi=_ERC20_ABI,
+            address=contracts.usdc_collateral,
+            abi=_ERC20_ABI,
         )
         current = int(
             usdc.functions.allowance(
-                acct.address, contracts.ctf_exchange,
+                acct.address,
+                contracts.ctf_exchange,
             ).call(),
         )
         report.allowance_before = current
         logger.warning(
             "polymarket kill switch: allowance(owner=%s, spender=%s) = %d",
-            acct.address, contracts.ctf_exchange, current,
+            acct.address,
+            contracts.ctf_exchange,
+            current,
         )
 
         # approve() only zeroes the SENDER's allowance. If the funder is
         # a different wallet (proxy custody), its allowance needs the
         # cold funder key — flag it loudly but don't fail the hot-path
         # revoke over it.
-        if (
-            funder_address is not None
-            and funder_address.lower() != str(acct.address).lower()
-        ):
+        if funder_address is not None and funder_address.lower() != str(acct.address).lower():
             try:
                 funder_allowance = int(
                     usdc.functions.allowance(
-                        funder_address, contracts.ctf_exchange,
+                        funder_address,
+                        contracts.ctf_exchange,
                     ).call(),
                 )
                 if funder_allowance > 0:
@@ -306,7 +319,9 @@ def _step_revoke_allowance(
                         "polymarket kill switch: funder %s still has "
                         "allowance %d for CTFExchange — the hot signer "
                         "key CANNOT revoke it. Revoke manually with the "
-                        "cold funder key.", funder_address, funder_allowance,
+                        "cold funder key.",
+                        funder_address,
+                        funder_allowance,
                     )
             except Exception:
                 logger.warning(
@@ -316,17 +331,19 @@ def _step_revoke_allowance(
 
         if report.dry_run:
             logger.warning(
-                "polymarket kill switch DRY RUN: would send "
-                "approve(%s, 0) on USDC %s from %s",
-                contracts.ctf_exchange, contracts.usdc_collateral,
+                "polymarket kill switch DRY RUN: would send approve(%s, 0) on USDC %s from %s",
+                contracts.ctf_exchange,
+                contracts.usdc_collateral,
                 acct.address,
             )
             return
 
-        tx = usdc.functions.approve(contracts.ctf_exchange, 0).build_transaction({
-            "from": acct.address,
-            "nonce": w3.eth.get_transaction_count(acct.address),
-        })
+        tx = usdc.functions.approve(contracts.ctf_exchange, 0).build_transaction(
+            {
+                "from": acct.address,
+                "nonce": w3.eth.get_transaction_count(acct.address),
+            }
+        )
         signed = acct.sign_transaction(tx)
         # web3 v7 / eth-account >= 0.11 use snake_case; keep the camelCase
         # fallback so an older pinned eth-account doesn't break the tool.
@@ -336,12 +353,14 @@ def _step_revoke_allowance(
         tx_hash = w3.eth.send_raw_transaction(raw)
         tx_hash_hex = tx_hash.hex() if hasattr(tx_hash, "hex") else str(tx_hash)
         logger.warning(
-            "polymarket kill switch: revoke tx sent: %s — waiting for "
-            "receipt (timeout %ds)", tx_hash_hex, _RECEIPT_TIMEOUT_SEC,
+            "polymarket kill switch: revoke tx sent: %s — waiting for receipt (timeout %ds)",
+            tx_hash_hex,
+            _RECEIPT_TIMEOUT_SEC,
         )
 
         receipt = w3.eth.wait_for_transaction_receipt(
-            tx_hash, timeout=_RECEIPT_TIMEOUT_SEC,
+            tx_hash,
+            timeout=_RECEIPT_TIMEOUT_SEC,
         )
         if int(receipt["status"]) != 1:
             msg = f"revoke tx {tx_hash_hex} REVERTED (status=0)"
@@ -349,7 +368,8 @@ def _step_revoke_allowance(
 
         report.revoke_tx_hash = tx_hash_hex
         logger.warning(
-            "polymarket kill switch: allowance revoked: tx=%s", tx_hash_hex,
+            "polymarket kill switch: allowance revoked: tx=%s",
+            tx_hash_hex,
         )
     except Exception as exc:
         detail = f"revoke-allowance step FAILED: {type(exc).__name__}: {exc}"
@@ -371,19 +391,26 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     p.add_argument(
-        "--env", required=True, choices=sorted(CONTRACTS),
+        "--env",
+        required=True,
+        choices=sorted(CONTRACTS),
         help="Target environment (explicit — no default).",
     )
     p.add_argument(
-        "--dry-run", action="store_true",
+        "--dry-run",
+        action="store_true",
         help="Read-only: list open orders + current allowance, send nothing.",
     )
     p.add_argument(
-        "--yes-i-mean-it", action="store_true",
+        "--yes-i-mean-it",
+        action="store_true",
         help="Required to run against mainnet (not needed for --dry-run).",
     )
     p.add_argument(
-        "-v", "--verbose", action="store_true", help="Enable DEBUG logging.",
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Enable DEBUG logging.",
     )
     args = p.parse_args(argv)
 

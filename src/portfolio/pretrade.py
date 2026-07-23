@@ -102,8 +102,7 @@ class RejectionEvent:
 class TradabilityChecker(Protocol):
     """Optional broker-side check for instrument halt / tradability state."""
 
-    def is_tradable(self, symbol: str) -> bool:
-        ...
+    def is_tradable(self, symbol: str) -> bool: ...
 
 
 class PreTradeValidator:
@@ -177,7 +176,9 @@ class PreTradeValidator:
         if rejection is not None:
             return self._record(rejection)
 
-        positions = current_positions if current_positions is not None else self.broker.get_positions()
+        positions = (
+            current_positions if current_positions is not None else self.broker.get_positions()
+        )
         position_map = {p.symbol: p for p in positions}
 
         rejection = self._check_blackout(intent, position_map)
@@ -187,9 +188,7 @@ class PreTradeValidator:
         price = self._price(intent.symbol, price_map)
         new_pair_qty = intent.target_position
         existing_pair_qty = (
-            position_map[intent.symbol].quantity
-            if intent.symbol in position_map
-            else 0.0
+            position_map[intent.symbol].quantity if intent.symbol in position_map else 0.0
         )
         # Trade delta — this is what will actually be sent to the broker.
         # If new_pair_qty == existing, no order; treat as valid (no-op).
@@ -200,13 +199,20 @@ class PreTradeValidator:
         account_equity = self._equity(account)
 
         rejection = self._check_per_pair_concentration(
-            intent, new_pair_qty, price, account_equity,
+            intent,
+            new_pair_qty,
+            price,
+            account_equity,
         )
         if rejection is not None:
             return self._record(rejection)
 
         rejection = self._check_margin(
-            intent, delta_qty, price, account_equity, account,
+            intent,
+            delta_qty,
+            price,
+            account_equity,
+            account,
         )
         if rejection is not None:
             return self._record(rejection)
@@ -217,13 +223,22 @@ class PreTradeValidator:
         # caller should pass an updated current_positions reflecting prior
         # accepted intents.
         rejection = self._check_post_trade_leverage(
-            intent, position_map, new_pair_qty, price, account_equity, price_map,
+            intent,
+            position_map,
+            new_pair_qty,
+            price,
+            account_equity,
+            price_map,
         )
         if rejection is not None:
             return self._record(rejection)
 
         rejection = self._check_currency_exposure(
-            intent, position_map, new_pair_qty, account_equity, price_map,
+            intent,
+            position_map,
+            new_pair_qty,
+            account_equity,
+            price_map,
         )
         if rejection is not None:
             return self._record(rejection)
@@ -267,15 +282,14 @@ class PreTradeValidator:
         # (currency=None) events when no per-CCY filter is set on the calendar.
         currency = self._currency_from_symbol(intent.symbol)
         decision = self.blackout_evaluator.evaluate(
-            now=datetime.now(UTC), currency=currency,
+            now=datetime.now(UTC),
+            currency=currency,
         )
         if decision.action in (BlackoutAction.FULL_SIZE, BlackoutAction.SIZE_DOWN_50PCT):
             return None
 
         existing_qty = (
-            position_map[intent.symbol].quantity
-            if intent.symbol in position_map
-            else 0.0
+            position_map[intent.symbol].quantity if intent.symbol in position_map else 0.0
         )
         # Allow reductions and flattens — abs(target) <= abs(existing) is OK.
         # Block strict increases in magnitude (entries OR scale-ups).
@@ -370,9 +384,7 @@ class PreTradeValidator:
             return RejectionEvent(
                 intent=intent,
                 reason=RejectionReason.INSUFFICIENT_MARGIN,
-                detail=(
-                    f"required margin {required:.2f} exceeds available {available:.2f}"
-                ),
+                detail=(f"required margin {required:.2f} exceeds available {available:.2f}"),
             )
         return None
 
@@ -446,8 +458,7 @@ class PreTradeValidator:
         if intent_pair is not None:
             base, quote = intent_pair
             old_notional = (
-                position_map[intent.symbol].quantity
-                * self._price(intent.symbol, price_map)
+                position_map[intent.symbol].quantity * self._price(intent.symbol, price_map)
                 if intent.symbol in position_map
                 else 0.0
             )
@@ -462,9 +473,7 @@ class PreTradeValidator:
                 return RejectionEvent(
                     intent=intent,
                     reason=RejectionReason.PER_CURRENCY_EXPOSURE,
-                    detail=(
-                        f"{ccy} post-trade exposure {exp:.2f} exceeds cap {max_exposure:.2f}"
-                    ),
+                    detail=(f"{ccy} post-trade exposure {exp:.2f} exceeds cap {max_exposure:.2f}"),
                 )
         return None
 
@@ -502,7 +511,9 @@ class PreTradeValidator:
             return 1.0
 
     def _price(
-        self, symbol: str, price_map: dict[str, float] | None,
+        self,
+        symbol: str,
+        price_map: dict[str, float] | None,
     ) -> float:
         """Mid for ``symbol`` from the shared snapshot, else a live fetch.
 

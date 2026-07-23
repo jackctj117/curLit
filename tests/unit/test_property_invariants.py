@@ -27,7 +27,6 @@ from src.backtest.bootstrap import stationary_bootstrap_sharpe_ci
 from src.portfolio.attribution import PnLAttributor
 from src.risk.sizing import PositionSizer
 
-
 # Time budget per property: hypothesis defaults are too tight for some of
 # our numeric tests; lift to 200ms so the noise floor doesn't flake.
 _PROPERTY_DEADLINE_MS: int = 1_000
@@ -71,7 +70,10 @@ def test_kelly_monotonic_in_edge(edge: float, odds: float, delta: float) -> None
     price=st.floats(min_value=0.5, max_value=200.0),
 )
 def test_fixed_fractional_proportional_to_equity(
-    equity: float, risk_pct: float, stop_distance: float, price: float,
+    equity: float,
+    risk_pct: float,
+    stop_distance: float,
+    price: float,
 ) -> None:
     """2x equity ⇒ 2x position (linearity). Same stop distance and
     risk %; only equity scales."""
@@ -87,7 +89,8 @@ def test_fixed_fractional_proportional_to_equity(
 # Bootstrap CI invariants. The bootstrap returns (low, high); over all
 # valid inputs the order must hold.
 @settings(
-    deadline=_PROPERTY_DEADLINE_MS, max_examples=20,
+    deadline=_PROPERTY_DEADLINE_MS,
+    max_examples=20,
     suppress_health_check=[HealthCheck.too_slow],
 )
 @given(
@@ -101,7 +104,9 @@ def test_bootstrap_ci_low_le_high(seed: int, n: int) -> None:
     rng = np.random.default_rng(seed)
     returns = pd.Series(rng.normal(0, 0.01, n))
     low, high = stationary_bootstrap_sharpe_ci(
-        returns, block_mean_len=10, n_bootstrap=200,
+        returns,
+        block_mean_len=10,
+        n_bootstrap=200,
     )
     assert math.isfinite(low) and math.isfinite(high)
     assert low <= high
@@ -143,7 +148,9 @@ def test_zscore_window_zero_mean(seed: int, window: int) -> None:
     exit_delta=st.floats(min_value=-0.05, max_value=0.05),
 )
 def test_attribution_long_short_symmetry(
-    qty: float, entry: float, exit_delta: float,
+    qty: float,
+    entry: float,
+    exit_delta: float,
 ) -> None:
     """Long(qty)@entry then sell@(entry+δ) must produce same |realized|
     as Short(qty)@entry then cover@(entry-δ)."""
@@ -157,16 +164,12 @@ def test_attribution_long_short_symmetry(
     t0 = datetime(2026, 1, 1, tzinfo=UTC)
     t1 = t0 + timedelta(hours=1)
 
-    a_long.attribute_fill("EURUSD", qty, entry, ts=t0,
-                          strategy_id="x", fill_id="o1")
-    a_long.attribute_fill("EURUSD", -qty, entry + exit_delta, ts=t1,
-                          strategy_id="x", fill_id="o2")
+    a_long.attribute_fill("EURUSD", qty, entry, ts=t0, strategy_id="x", fill_id="o1")
+    a_long.attribute_fill("EURUSD", -qty, entry + exit_delta, ts=t1, strategy_id="x", fill_id="o2")
     long_pnl = a_long.compute_strategy_pnl("x").realized
 
-    a_short.attribute_fill("EURUSD", -qty, entry, ts=t0,
-                           strategy_id="x", fill_id="o1")
-    a_short.attribute_fill("EURUSD", qty, entry - exit_delta, ts=t1,
-                           strategy_id="x", fill_id="o2")
+    a_short.attribute_fill("EURUSD", -qty, entry, ts=t0, strategy_id="x", fill_id="o1")
+    a_short.attribute_fill("EURUSD", qty, entry - exit_delta, ts=t1, strategy_id="x", fill_id="o2")
     short_pnl = a_short.compute_strategy_pnl("x").realized
 
     assert math.isclose(long_pnl, short_pnl, rel_tol=1e-9, abs_tol=1e-9), (

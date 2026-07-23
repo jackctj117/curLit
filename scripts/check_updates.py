@@ -12,8 +12,12 @@ logger = logging.getLogger(__name__)
 def check_pypi() -> list[dict]:
     """Run pip list --outdated and parse."""
     try:
-        result = subprocess.run([sys.executable, "-m", "pip", "list", "--outdated", "--format=json"],
-                                capture_output=True, text=True, check=True)
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "list", "--outdated", "--format=json"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
         return json.loads(result.stdout)
     except Exception:
         logger.warning("PyPI check failed")
@@ -22,6 +26,7 @@ def check_pypi() -> list[dict]:
 
 def check_github(repo: str) -> dict | None:
     import httpx
+
     try:
         resp = httpx.get(f"https://api.github.com/repos/{repo}/releases/latest", timeout=10)
         resp.raise_for_status()

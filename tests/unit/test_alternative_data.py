@@ -136,24 +136,28 @@ class TestBaseValidate:
             _PassthroughSource().validate(df)
 
     def test_drops_nulls_and_dupes(self) -> None:
-        df = pd.DataFrame({
-            "ts": [START, START, START, None],
-            "symbol": ["A", "A", None, "B"],
-            "value": [1.0, 2.0, 3.0, 4.0],
-            "source": ["s"] * 4,
-        })
+        df = pd.DataFrame(
+            {
+                "ts": [START, START, START, None],
+                "symbol": ["A", "A", None, "B"],
+                "value": [1.0, 2.0, 3.0, 4.0],
+                "source": ["s"] * 4,
+            }
+        )
         out = _PassthroughSource().validate(df)
         # Dup (ts, symbol) keeps last; null symbol + null ts rows dropped.
         assert len(out) == 1
         assert out.loc[0, "value"] == 2.0
 
     def test_drops_non_numeric_values(self) -> None:
-        df = pd.DataFrame({
-            "ts": [START, END],
-            "symbol": ["A", "B"],
-            "value": [1.0, "garbage"],
-            "source": ["s", "s"],
-        })
+        df = pd.DataFrame(
+            {
+                "ts": [START, END],
+                "symbol": ["A", "B"],
+                "value": [1.0, "garbage"],
+                "source": ["s", "s"],
+            }
+        )
         out = _PassthroughSource().validate(df)
         assert list(out["symbol"]) == ["A"]
 
@@ -195,7 +199,8 @@ class _FakeTrendReq:
         if self._geo in self.empty_geos:
             return pd.DataFrame()
         idx = pd.DatetimeIndex(
-            [datetime(2026, 6, 7), datetime(2026, 6, 14)], name="date",
+            [datetime(2026, 6, 7), datetime(2026, 6, 14)],
+            name="date",
         )
         data: dict[str, Any] = {t: [40, 60] for t in self._terms}
         data["isPartial"] = [False, True]
@@ -204,7 +209,9 @@ class _FakeTrendReq:
 
 def _trends_source(client: _FakeTrendReq, **kwargs: Any) -> GoogleTrendsSource:
     return GoogleTrendsSource(
-        client_factory=lambda: client, request_delay_sec=0.0, **kwargs,
+        client_factory=lambda: client,
+        request_delay_sec=0.0,
+        **kwargs,
     )
 
 
@@ -245,12 +252,14 @@ class TestGoogleTrends:
 
     def test_validate_drops_out_of_range(self) -> None:
         src = _trends_source(_FakeTrendReq(), currencies=["USD"])
-        df = pd.DataFrame({
-            "ts": [START, START, START],
-            "symbol": ["GT:US:a", "GT:US:b", "GT:US:c"],
-            "value": [50.0, -1.0, 101.0],
-            "source": ["google_trends"] * 3,
-        })
+        df = pd.DataFrame(
+            {
+                "ts": [START, START, START],
+                "symbol": ["GT:US:a", "GT:US:b", "GT:US:c"],
+                "value": [50.0, -1.0, 101.0],
+                "source": ["google_trends"] * 3,
+            }
+        )
         out = src.validate(df)
         assert list(out["symbol"]) == ["GT:US:a"]
 
@@ -259,9 +268,7 @@ class TestGoogleTrends:
             _trends_source(_FakeTrendReq(), currencies=["XXX"])
 
     def test_trends_symbol_caps_and_underscores(self) -> None:
-        assert trends_symbol("US", "unemployment benefits") == (
-            "GT:US:unemployment_benefits"
-        )
+        assert trends_symbol("US", "unemployment benefits") == ("GT:US:unemployment_benefits")
         assert len(trends_symbol("US", "x" * 100)) == 64
 
 
@@ -313,7 +320,8 @@ _ACK_XML = """<?xml version="1.0" encoding="UTF-8"?>
 
 class TestEntsoe:
     def test_missing_token_not_configured(
-        self, monkeypatch: pytest.MonkeyPatch,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.delenv("ENTSOE_API_TOKEN", raising=False)
         src = EntsoeSource(areas=["DE"])
@@ -363,7 +371,9 @@ class TestEntsoe:
             return _LOAD_XML
 
         src = EntsoeSource(
-            areas=["DE", "FR"], api_token="tok", http_get_text=fake_get,
+            areas=["DE", "FR"],
+            api_token="tok",
+            http_get_text=fake_get,
         )
         raw = src.fetch(START, END)
         assert set(raw["area"]) == {"FR"}
@@ -374,7 +384,9 @@ class TestEntsoe:
 
     def test_transform_daily_mean(self) -> None:
         src = EntsoeSource(
-            areas=["DE"], api_token="tok", http_get_text=lambda u, p: _LOAD_XML,
+            areas=["DE"],
+            api_token="tok",
+            http_get_text=lambda u, p: _LOAD_XML,
         )
         out = src.run(START, END)
         assert list(out.columns) == CANONICAL_COLUMNS
@@ -387,12 +399,14 @@ class TestEntsoe:
 
     def test_validate_drops_non_positive_load(self) -> None:
         src = EntsoeSource(areas=["DE"], api_token="tok")
-        df = pd.DataFrame({
-            "ts": [START, END],
-            "symbol": ["ENTSOE:DE:load"] * 2,
-            "value": [42000.0, -5.0],
-            "source": ["entsoe"] * 2,
-        })
+        df = pd.DataFrame(
+            {
+                "ts": [START, END],
+                "symbol": ["ENTSOE:DE:load"] * 2,
+                "value": [42000.0, -5.0],
+                "source": ["entsoe"] * 2,
+            }
+        )
         out = src.validate(df)
         assert list(out["value"]) == [42000.0]
 
@@ -409,7 +423,8 @@ class TestEntsoe:
 
 class TestStubs:
     @pytest.mark.parametrize(
-        "cls", [SatelliteShippingSource, ConsumerSpendingSource],
+        "cls",
+        [SatelliteShippingSource, ConsumerSpendingSource],
     )
     def test_stub_fetch_raises(self, cls: type[AlternativeDataSource]) -> None:
         src = cls()

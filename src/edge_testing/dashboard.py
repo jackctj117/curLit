@@ -123,7 +123,7 @@ class EdgeLayerInputs:
 
     # G4: avg_abs_price_diff_bps from DivergenceReport. Lower = better quality.
     paper_live_avg_abs_diff_bps: float | None = None
-    paper_live_threshold_bps: float = 5.0   # passes if avg < this
+    paper_live_threshold_bps: float = 5.0  # passes if avg < this
     paper_live_detail: str = ""
 
     # G5 (TBD): feature edge attribution result. True iff features carry signal.
@@ -173,9 +173,7 @@ class StrategyVerdict:
 
     @property
     def n_reporting(self) -> int:
-        return sum(
-            1 for s in self.signals if s.status != LayerStatus.NOT_REPORTED
-        )
+        return sum(1 for s in self.signals if s.status != LayerStatus.NOT_REPORTED)
 
 
 # =============================================================================
@@ -198,9 +196,7 @@ class EdgeDashboard:
     ) -> StrategyVerdict:
         ts = ts or datetime.now(UTC)
         signals = self._collect_signals(inputs)
-        n_reporting = sum(
-            1 for s in signals if s.status != LayerStatus.NOT_REPORTED
-        )
+        n_reporting = sum(1 for s in signals if s.status != LayerStatus.NOT_REPORTED)
 
         if n_reporting < _MIN_LAYERS_FOR_VERDICT:
             verdict = EdgeVerdict.INSUFFICIENT_DATA
@@ -218,7 +214,9 @@ class EdgeDashboard:
         self._publish_metric(strategy_id, verdict)
         logger.info(
             "Edge verdict %s: %s (%s)",
-            strategy_id, verdict.value, summary,
+            strategy_id,
+            verdict.value,
+            summary,
         )
         return result
 
@@ -234,30 +232,42 @@ class EdgeDashboard:
         if inputs.null_hypothesis_passed is None:
             signals.append(LayerSignal("G1_null_hypothesis", LayerStatus.NOT_REPORTED))
         elif inputs.null_hypothesis_passed:
-            signals.append(LayerSignal(
-                "G1_null_hypothesis", LayerStatus.PASS,
-                detail=inputs.null_hypothesis_detail or "beats all evaluated nulls",
-            ))
+            signals.append(
+                LayerSignal(
+                    "G1_null_hypothesis",
+                    LayerStatus.PASS,
+                    detail=inputs.null_hypothesis_detail or "beats all evaluated nulls",
+                )
+            )
         else:
-            signals.append(LayerSignal(
-                "G1_null_hypothesis", LayerStatus.FAIL,
-                detail=inputs.null_hypothesis_detail or "fails one or more nulls",
-            ))
+            signals.append(
+                LayerSignal(
+                    "G1_null_hypothesis",
+                    LayerStatus.FAIL,
+                    detail=inputs.null_hypothesis_detail or "fails one or more nulls",
+                )
+            )
 
         # G2 multiple testing.
         if inputs.multiple_testing_passed is None:
             signals.append(LayerSignal("G2_multiple_testing", LayerStatus.NOT_REPORTED))
         elif inputs.multiple_testing_passed:
-            signals.append(LayerSignal(
-                "G2_multiple_testing", LayerStatus.PASS,
-                detail=inputs.multiple_testing_detail or "survives correction",
-            ))
+            signals.append(
+                LayerSignal(
+                    "G2_multiple_testing",
+                    LayerStatus.PASS,
+                    detail=inputs.multiple_testing_detail or "survives correction",
+                )
+            )
         else:
-            signals.append(LayerSignal(
-                "G2_multiple_testing", LayerStatus.FAIL,
-                detail=inputs.multiple_testing_detail
-                or "rejected after multiple-testing correction",
-            ))
+            signals.append(
+                LayerSignal(
+                    "G2_multiple_testing",
+                    LayerStatus.FAIL,
+                    detail=inputs.multiple_testing_detail
+                    or "rejected after multiple-testing correction",
+                )
+            )
 
         # G3 live tracker — translate severity to pass/warn/fail.
         if inputs.live_tracker_severity is None:
@@ -271,10 +281,13 @@ class EdgeDashboard:
             else:
                 # significantly_/severely_underperforming
                 status = LayerStatus.FAIL
-            signals.append(LayerSignal(
-                "G3_live_tracker", status,
-                detail=inputs.live_tracker_detail or f"severity={sev}",
-            ))
+            signals.append(
+                LayerSignal(
+                    "G3_live_tracker",
+                    status,
+                    detail=inputs.live_tracker_detail or f"severity={sev}",
+                )
+            )
 
         # G4 paper-live divergence — compare avg |bps| to threshold.
         if inputs.paper_live_avg_abs_diff_bps is None:
@@ -288,59 +301,82 @@ class EdgeDashboard:
                 status = LayerStatus.WARN
             else:
                 status = LayerStatus.FAIL
-            signals.append(LayerSignal(
-                "G4_paper_live", status,
-                detail=(
-                    inputs.paper_live_detail
-                    or f"avg |diff|={diff:.2f}bps vs threshold {threshold}bps"
-                ),
-            ))
+            signals.append(
+                LayerSignal(
+                    "G4_paper_live",
+                    status,
+                    detail=(
+                        inputs.paper_live_detail
+                        or f"avg |diff|={diff:.2f}bps vs threshold {threshold}bps"
+                    ),
+                )
+            )
 
         # G5 feature attribution.
         if inputs.feature_attribution_passed is None:
-            signals.append(LayerSignal(
-                "G5_feature_attribution", LayerStatus.NOT_REPORTED,
-            ))
+            signals.append(
+                LayerSignal(
+                    "G5_feature_attribution",
+                    LayerStatus.NOT_REPORTED,
+                )
+            )
         elif inputs.feature_attribution_passed:
-            signals.append(LayerSignal(
-                "G5_feature_attribution", LayerStatus.PASS,
-                detail=inputs.feature_attribution_detail or "features carry signal",
-            ))
+            signals.append(
+                LayerSignal(
+                    "G5_feature_attribution",
+                    LayerStatus.PASS,
+                    detail=inputs.feature_attribution_detail or "features carry signal",
+                )
+            )
         else:
-            signals.append(LayerSignal(
-                "G5_feature_attribution", LayerStatus.FAIL,
-                detail=inputs.feature_attribution_detail
-                or "features not significant after ablation",
-            ))
+            signals.append(
+                LayerSignal(
+                    "G5_feature_attribution",
+                    LayerStatus.FAIL,
+                    detail=inputs.feature_attribution_detail
+                    or "features not significant after ablation",
+                )
+            )
 
         # G6 regime decomposition.
         if inputs.regime_edge_diversified is None:
             signals.append(LayerSignal("G6_regime_decomposition", LayerStatus.NOT_REPORTED))
         elif inputs.regime_edge_diversified:
-            signals.append(LayerSignal(
-                "G6_regime_decomposition", LayerStatus.PASS,
-                detail=inputs.regime_edge_detail or "edge spread across regimes",
-            ))
+            signals.append(
+                LayerSignal(
+                    "G6_regime_decomposition",
+                    LayerStatus.PASS,
+                    detail=inputs.regime_edge_detail or "edge spread across regimes",
+                )
+            )
         else:
-            signals.append(LayerSignal(
-                "G6_regime_decomposition", LayerStatus.FAIL,
-                detail=inputs.regime_edge_detail
-                or "edge concentrated in a single regime",
-            ))
+            signals.append(
+                LayerSignal(
+                    "G6_regime_decomposition",
+                    LayerStatus.FAIL,
+                    detail=inputs.regime_edge_detail or "edge concentrated in a single regime",
+                )
+            )
 
         # G7 decay monitor — special-cased upstream as a hard verdict override.
         if inputs.edge_decayed is None:
             signals.append(LayerSignal("G7_decay_monitor", LayerStatus.NOT_REPORTED))
         elif inputs.edge_decayed:
-            signals.append(LayerSignal(
-                "G7_decay_monitor", LayerStatus.FAIL,
-                detail=inputs.edge_decay_detail or "decay signal fired",
-            ))
+            signals.append(
+                LayerSignal(
+                    "G7_decay_monitor",
+                    LayerStatus.FAIL,
+                    detail=inputs.edge_decay_detail or "decay signal fired",
+                )
+            )
         else:
-            signals.append(LayerSignal(
-                "G7_decay_monitor", LayerStatus.PASS,
-                detail=inputs.edge_decay_detail or "no decay detected",
-            ))
+            signals.append(
+                LayerSignal(
+                    "G7_decay_monitor",
+                    LayerStatus.PASS,
+                    detail=inputs.edge_decay_detail or "no decay detected",
+                )
+            )
 
         return signals
 

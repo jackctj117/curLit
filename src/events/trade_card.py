@@ -201,10 +201,7 @@ def build_trade_card(
         "suggested_strike_note": (
             "suggested level — pick nearest listed strike" if is_option else ""
         ),
-        "dte_note": (
-            f"choose the listed expiry nearest {dte_mid} days out"
-            if is_option else ""
-        ),
+        "dte_note": (f"choose the listed expiry nearest {dte_mid} days out" if is_option else ""),
     }
 
     # No live price → honest %-only card. Entry zone stays the trigger
@@ -232,8 +229,7 @@ def build_trade_card(
 
     # Targets: up for bullish, down for bearish.
     target_prices = [
-        _round_price(price * (1.0 + t) if bullish else price * (1.0 - t))
-        for t in targets_pct
+        _round_price(price * (1.0 + t) if bullish else price * (1.0 - t)) for t in targets_pct
     ]
     card["target_prices"] = target_prices
 

@@ -67,7 +67,9 @@ def load_config(path: Path) -> dict[str, Any]:
 #   "oanda-live"     — OandaBroker against api-fxtrade.oanda.com.
 #                       REAL MONEY. Requires --confirm-live.
 BROKER_MODES = (
-    "paper", "oanda-practice", "oanda-live",
+    "paper",
+    "oanda-practice",
+    "oanda-live",
     # CL-poly-2: paper broker against live Polymarket order books.
     "polymarket-paper",
     # CL-poly-3: testnet (Amoy) — full sign + submit chain, no real money.
@@ -88,19 +90,18 @@ def build_broker(mode: str) -> Any:
     if mode == "polymarket-paper":
         # Paper-only — no wallet, no chain, no signer. CL-poly-2.
         from src.execution.polymarket_paper_broker import PolymarketPaperBroker
+
         return PolymarketPaperBroker()
     if mode == "polymarket-amoy":
         # Testnet — full chain wiring, no real money. CL-poly-3 scaffold.
         from src.execution.polymarket_broker import PolymarketBroker
         from src.execution.polymarket_preflight import run as preflight_run
+
         # Testnet preflight is permissive about the vault path (env
         # vars are fine for dev smoke).
         failures = preflight_run("amoy", require_vault=False)
         if failures:
-            msg = (
-                "polymarket-amoy preflight failed:\n  - "
-                + "\n  - ".join(failures)
-            )
+            msg = "polymarket-amoy preflight failed:\n  - " + "\n  - ".join(failures)
             raise RuntimeError(msg)
         return PolymarketBroker(env="amoy")
     if mode == "polymarket-mainnet":
@@ -125,13 +126,11 @@ def build_broker(mode: str) -> Any:
         )
         from src.execution.polymarket_broker import PolymarketBroker
         from src.execution.polymarket_preflight import run as preflight_run
+
         # Mainnet preflight is strict — vault path required.
         failures = preflight_run("mainnet", require_vault=True)
         if failures:
-            msg = (
-                "polymarket-mainnet preflight failed:\n  - "
-                + "\n  - ".join(failures)
-            )
+            msg = "polymarket-mainnet preflight failed:\n  - " + "\n  - ".join(failures)
             raise RuntimeError(msg)
         return PolymarketBroker(env="mainnet")
     msg = f"unknown broker mode: {mode!r} (must be one of {BROKER_MODES})"
@@ -142,6 +141,7 @@ def _build_db_engine() -> Any:
     # Shared helper (CL-8lv6): warns once per process when the well-known
     # default Postgres password is in effect instead of silently connecting.
     from src.data.db_env import build_db_url
+
     return create_engine(build_db_url())
 
 
@@ -186,9 +186,7 @@ def build_trade_journal(engine: Any | None = None) -> TradeJournal | None:
     try:
         return TradeJournal(engine if engine is not None else _build_db_engine())
     except Exception:
-        logger.exception(
-            "Failed to construct TradeJournal; engine will run without audit log"
-        )
+        logger.exception("Failed to construct TradeJournal; engine will run without audit log")
         return None
 
 
@@ -207,8 +205,7 @@ def build_feature_snapshot_store(
         return FeatureSnapshotStore(store_engine)
     except Exception:
         logger.exception(
-            "Failed to construct FeatureSnapshotStore; intents will not "
-            "carry feature-snapshot ids"
+            "Failed to construct FeatureSnapshotStore; intents will not carry feature-snapshot ids"
         )
         return None
 
@@ -282,19 +279,22 @@ def build_strategies(
     from src.risk.liquidity_window import load_profile as _load_liq_profile
 
     _liq_path = os.environ.get(
-        "CURLIT_LIQUIDITY_PROFILE", "data/liquidity_profile.json",
+        "CURLIT_LIQUIDITY_PROFILE",
+        "data/liquidity_profile.json",
     )
     try:
         liquidity_profile: Any | None = _load_liq_profile(_liq_path)
     except Exception:
         logger.exception(
-            "Failed to load liquidity profile %s; entries un-gated", _liq_path,
+            "Failed to load liquidity profile %s; entries un-gated",
+            _liq_path,
         )
         liquidity_profile = None
     if liquidity_profile is not None:
         logger.info(
             "Liquidity-window gating ACTIVE from %s (%d buckets)",
-            _liq_path, len(liquidity_profile.median_spread_bps),
+            _liq_path,
+            len(liquidity_profile.median_spread_bps),
         )
 
     strategies: list[Any] = []
@@ -333,9 +333,7 @@ def build_strategies(
                 )
             )
         elif "carry" in sid or "vol_filter" in sid:
-            carry_cfg = (
-                CarryVolFilterConfig(**scfg) if scfg else CarryVolFilterConfig()
-            )
+            carry_cfg = CarryVolFilterConfig(**scfg) if scfg else CarryVolFilterConfig()
             # CL-885p: durable basket path for the live strategy (config
             # default None keeps unit tests isolated).
             if carry_cfg.state_path is None:
@@ -427,9 +425,7 @@ def build_coordinator(
             engine if engine is not None else _build_db_engine(),
         )
     except Exception:
-        logger.exception(
-            "Failed to construct PortfolioStateStore; engine will run in legacy mode"
-        )
+        logger.exception("Failed to construct PortfolioStateStore; engine will run in legacy mode")
         return None
 
     # Pre-trade gate: validates margin / leverage / per-pair / per-currency /
@@ -468,7 +464,9 @@ def build_coordinator(
 
 
 def build_kill_switch_manager(
-    broker: Any, oms: OrderManager, engine: Any | None = None,
+    broker: Any,
+    oms: OrderManager,
+    engine: Any | None = None,
 ) -> Any:
     """CL-ep0c: construct the KillSwitchManager for the live engine.
 
@@ -501,7 +499,8 @@ def build_kill_switch_manager(
         )
     try:
         return KillSwitchManager(
-            broker, oms,
+            broker,
+            oms,
             config=asdict(load_active_profile().kill_switches),
             data_provider=data_provider,
         )
@@ -534,15 +533,18 @@ def build_cold_start_reconciler(
             break
 
     if state_store is None:
-        logger.info(
-            "No strategy state store available — cold-start reconciliation skipped"
-        )
+        logger.info("No strategy state store available — cold-start reconciliation skipped")
         return None
 
     policy_cfg = config.get("reconciliation", {}).get("policy", {})
     policy = ReconciliationPolicy(**policy_cfg) if policy_cfg else ReconciliationPolicy()
     return PositionReconciler(
-        broker, oms, state_store, strategies, policy, journal=journal,
+        broker,
+        oms,
+        state_store,
+        strategies,
+        policy,
+        journal=journal,
     )
 
 
@@ -560,7 +562,8 @@ async def run_engine(broker_mode: str = "paper") -> None:
         logger.critical(
             "Requested broker mode %r but running %r — ALLOW_PAPER_FALLBACK "
             "downgrade is active; NOT connected to OANDA",
-            broker_mode, effective_mode,
+            broker_mode,
+            effective_mode,
         )
     # ONE shared SQLAlchemy engine for every DB-backed builder (CL-7vn9 /
     # CL-8s2a): journal, snapshot store, strategy providers, coordinator
@@ -573,18 +576,32 @@ async def run_engine(broker_mode: str = "paper") -> None:
     rejection_handler = RejectionHandler(journal=journal)
     oms = OrderManager(broker, rejection_handler=rejection_handler, journal=journal)
     strategies = build_strategies(
-        config, broker, oms, snapshot_store=snapshot_store, engine=db_engine,
+        config,
+        broker,
+        oms,
+        snapshot_store=snapshot_store,
+        engine=db_engine,
     )
     coordinator = build_coordinator(
-        config, strategies, oms, broker,
-        blackout_evaluator=blackout_evaluator, engine=db_engine,
+        config,
+        strategies,
+        oms,
+        broker,
+        blackout_evaluator=blackout_evaluator,
+        engine=db_engine,
     )
     reconciler = build_cold_start_reconciler(
-        config, strategies, oms, broker, journal=journal,
+        config,
+        strategies,
+        oms,
+        broker,
+        journal=journal,
     )
     kill_switch_manager = build_kill_switch_manager(broker, oms, engine=db_engine)
     engine = LiveEngine(
-        strategies, oms, broker,
+        strategies,
+        oms,
+        broker,
         coordinator=coordinator,
         cold_start_reconciler=reconciler,
         kill_switch_manager=kill_switch_manager,
@@ -595,11 +612,11 @@ async def run_engine(broker_mode: str = "paper") -> None:
     # so loudly instead of silently continuing (CL-b0ws).
     try:
         from src.web.api import set_runtime
+
         # kill_switch_manager: lets /api/system/resume re-arm the
         # once-per-day trigger dedup (CL-8lv6). set_runtime preserves it
         # if a later call omits the param.
-        set_runtime(broker, oms, strategies,
-                    kill_switch_manager=kill_switch_manager)
+        set_runtime(broker, oms, strategies, kill_switch_manager=kill_switch_manager)
         logger.info("Web API runtime wired")
     except Exception:
         logger.exception(
@@ -635,12 +652,14 @@ async def run_engine(broker_mode: str = "paper") -> None:
     drift_task: asyncio.Task[Any] | None = None
     try:
         from src.runtime.source_drift import SourceDriftWatcher
+
         watcher = SourceDriftWatcher()
         # Retain + observe (CL-8lv6): a bare create_task can be GC'd and
         # its exceptions vanish — the watcher would die silently and the
         # stale-code canary it exists to provide would be gone.
         drift_task = loop.create_task(
-            watcher.run_forever(), name="source_drift_watcher",
+            watcher.run_forever(),
+            name="source_drift_watcher",
         )
 
         def _drift_done(t: asyncio.Task[Any]) -> None:
@@ -649,8 +668,8 @@ async def run_engine(broker_mode: str = "paper") -> None:
             exc = t.exception()
             if exc is not None:
                 logger.error(
-                    "SourceDriftWatcher DIED — stale-code canary is gone "
-                    "until restart", exc_info=exc,
+                    "SourceDriftWatcher DIED — stale-code canary is gone until restart",
+                    exc_info=exc,
                 )
 
         drift_task.add_done_callback(_drift_done)
@@ -665,6 +684,7 @@ def main() -> None:
     # Auto-load .env so OANDA / Postgres / Telegram creds are available
     # without first sourcing the file. Explicit env vars still win.
     from src.dotenv_bootstrap import load_project_env  # noqa: PLC0415
+
     load_project_env()
     parser = argparse.ArgumentParser(description="curLit live trading engine")
     parser.add_argument(
@@ -679,16 +699,19 @@ def main() -> None:
         ),
     )
     parser.add_argument(
-        "--confirm-live", action="store_true",
+        "--confirm-live",
+        action="store_true",
         help="Required when --broker=oanda-live (REAL MONEY guard).",
     )
     # Legacy flags — kept for backwards compatibility; map to --broker.
     parser.add_argument(
-        "--practice", action="store_true",
+        "--practice",
+        action="store_true",
         help="Deprecated alias: --broker=paper.",
     )
     parser.add_argument(
-        "--live", action="store_true",
+        "--live",
+        action="store_true",
         help="Deprecated alias: --broker=oanda-live (still requires --confirm-live).",
     )
     args = parser.parse_args()

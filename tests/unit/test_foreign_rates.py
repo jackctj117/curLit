@@ -35,82 +35,102 @@ from src.data.foreign_rates import (
 # canned payloads (shapes captured from the live probes on 2026-07-21)
 # --------------------------------------------------------------------------- #
 
-BBK_BODY = "\ufeff" + "\n".join([
-    '"",BBSIS.D.I.ZAR.ZI.EUR.S1311.B.A604.R02XX.R.A.A._Z._Z.A,'
-    "BBSIS.D.I.ZAR.ZI.EUR.S1311.B.A604.R02XX.R.A.A._Z._Z.A_FLAGS",
-    '"","Yields, derived from the term structure of interest rates, on '
-    'listed Federal securities / residual maturity of 2.0 years / daily data",',
-    "Decimals,2,",
-    "Time format code,P1D,",
-    "unit,PROZENT,",
-    "last update,2026-07-21 12:59:57,",
-    "2026-07-10,2.70,",
-    "2026-07-11,.,No value available",  # weekend gap -> dropped
-    "2026-07-12,.,No value available",
-    "2026-07-13,2.72,",
-    "2026-07-14,2.74,",
-    "2026-07-15,2.76,",
-])
+BBK_BODY = "\ufeff" + "\n".join(
+    [
+        '"",BBSIS.D.I.ZAR.ZI.EUR.S1311.B.A604.R02XX.R.A.A._Z._Z.A,'
+        "BBSIS.D.I.ZAR.ZI.EUR.S1311.B.A604.R02XX.R.A.A._Z._Z.A_FLAGS",
+        '"","Yields, derived from the term structure of interest rates, on '
+        'listed Federal securities / residual maturity of 2.0 years / daily data",',
+        "Decimals,2,",
+        "Time format code,P1D,",
+        "unit,PROZENT,",
+        "last update,2026-07-21 12:59:57,",
+        "2026-07-10,2.70,",
+        "2026-07-11,.,No value available",  # weekend gap -> dropped
+        "2026-07-12,.,No value available",
+        "2026-07-13,2.72,",
+        "2026-07-14,2.74,",
+        "2026-07-15,2.76,",
+    ]
+)
 
 
 def _fred_body(series_values: dict[str, str]) -> str:
-    return json.dumps({
-        "observations": [
-            {"realtime_start": "2026-07-21", "realtime_end": "2026-07-21",
-             "date": d, "value": v}
-            for d, v in series_values.items()
-        ],
-    })
+    return json.dumps(
+        {
+            "observations": [
+                {
+                    "realtime_start": "2026-07-21",
+                    "realtime_end": "2026-07-21",
+                    "date": d,
+                    "value": v,
+                }
+                for d, v in series_values.items()
+            ],
+        }
+    )
 
 
-DGS2_BODY = _fred_body({
-    "2026-07-10": "4.20",
-    "2026-07-13": "4.22",
-    "2026-07-14": "4.21",
-    "2026-07-15": ".",       # missing -> dropped -> no spread that day
-})
+DGS2_BODY = _fred_body(
+    {
+        "2026-07-10": "4.20",
+        "2026-07-13": "4.22",
+        "2026-07-14": "4.21",
+        "2026-07-15": ".",  # missing -> dropped -> no spread that day
+    }
+)
 
-SOFR_BODY = _fred_body({
-    "2026-07-13": "3.62",
-    "2026-07-14": "3.63",
-    "2026-07-15": "3.62675",
-})
+SOFR_BODY = _fred_body(
+    {
+        "2026-07-13": "3.62",
+        "2026-07-14": "3.63",
+        "2026-07-15": "3.62675",
+    }
+)
 
 
 def _ecb_body(dates_values: dict[str, float]) -> str:
     dates = list(dates_values)
-    return json.dumps({
-        "dataSets": [{
-            "series": {
-                "0:0:0": {
-                    "observations": {
-                        str(i): [v] for i, v in enumerate(dates_values.values())
+    return json.dumps(
+        {
+            "dataSets": [
+                {
+                    "series": {
+                        "0:0:0": {
+                            "observations": {
+                                str(i): [v] for i, v in enumerate(dates_values.values())
+                            },
+                        },
                     },
+                }
+            ],
+            "structure": {
+                "dimensions": {
+                    "observation": [{"values": [{"id": d} for d in dates]}],
                 },
             },
-        }],
-        "structure": {
-            "dimensions": {
-                "observation": [{"values": [{"id": d} for d in dates]}],
-            },
-        },
-    })
+        }
+    )
 
 
-ESTR_BODY = _ecb_body({
-    "2026-07-13": 2.031,
-    "2026-07-14": 2.030,
-    "2026-07-15": 2.02997,
-})
+ESTR_BODY = _ecb_body(
+    {
+        "2026-07-13": 2.031,
+        "2026-07-14": 2.030,
+        "2026-07-15": 2.02997,
+    }
+)
 
 
 def _fake_http(bodies: dict[str, str]):
     """URL-prefix → body shim; unmapped URLs raise (simulated outage)."""
+
     def _get(url: str) -> str:
         for prefix, body in bodies.items():
             if url.startswith(prefix):
                 return body
         raise RuntimeError(f"simulated fetch failure for {url}")
+
     return _get
 
 
@@ -133,20 +153,25 @@ END = datetime(2026, 7, 21)
 # fixtures
 # --------------------------------------------------------------------------- #
 
+
 @pytest.fixture
 def db(tmp_path):  # type: ignore[no-untyped-def]
     """sqlite engine with macro_data + prices shaped like migration 001."""
     url = f"sqlite:///{tmp_path / 'rates.db'}"
     eng = create_engine(url)
     with eng.begin() as conn:
-        conn.execute(text(
-            "CREATE TABLE macro_data (observation_date DATE, "
-            "release_date TEXT, series_id TEXT, value FLOAT, "
-            "revision INT, source TEXT)",
-        ))
-        conn.execute(text(
-            "CREATE TABLE prices (ts TEXT, symbol TEXT, close FLOAT)",
-        ))
+        conn.execute(
+            text(
+                "CREATE TABLE macro_data (observation_date DATE, "
+                "release_date TEXT, series_id TEXT, value FLOAT, "
+                "revision INT, source TEXT)",
+            )
+        )
+        conn.execute(
+            text(
+                "CREATE TABLE prices (ts TEXT, symbol TEXT, close FLOAT)",
+            )
+        )
         # 40 business days of closes for two pairs -> CVIX has data after
         # the 20-day warmup. Deterministic wiggle so std > 0.
         days = pd.bdate_range("2026-05-25", periods=40)
@@ -162,16 +187,19 @@ def db(tmp_path):  # type: ignore[no-untyped-def]
 
 def _counts(eng):  # type: ignore[no-untyped-def]
     with eng.connect() as conn:
-        rows = conn.execute(text(
-            "SELECT series_id, COUNT(*), MAX(observation_date), MAX(source) "
-            "FROM macro_data GROUP BY series_id",
-        )).fetchall()
+        rows = conn.execute(
+            text(
+                "SELECT series_id, COUNT(*), MAX(observation_date), MAX(source) "
+                "FROM macro_data GROUP BY series_id",
+            )
+        ).fetchall()
     return {r[0]: (r[1], r[2], r[3]) for r in rows}
 
 
 # --------------------------------------------------------------------------- #
 # parsers
 # --------------------------------------------------------------------------- #
+
 
 def test_parse_bundesbank_csv_skips_metadata_and_gaps():
     ser = parse_bundesbank_csv(BBK_BODY)
@@ -213,20 +241,22 @@ def test_parse_ecb_sdmx_series_malformed():
 # CVIX proxy math
 # --------------------------------------------------------------------------- #
 
+
 def test_compute_cvix_proxy_matches_manual_math():
     idx = pd.bdate_range("2026-01-01", periods=30)
     rng = np.random.default_rng(7)
-    closes = pd.DataFrame({
-        "EURUSD": 1.08 * np.exp(np.cumsum(rng.normal(0, 0.005, 30))),
-        "USDJPY": 155.0 * np.exp(np.cumsum(rng.normal(0, 0.006, 30))),
-    }, index=idx)
+    closes = pd.DataFrame(
+        {
+            "EURUSD": 1.08 * np.exp(np.cumsum(rng.normal(0, 0.005, 30))),
+            "USDJPY": 155.0 * np.exp(np.cumsum(rng.normal(0, 0.006, 30))),
+        },
+        index=idx,
+    )
     out = compute_cvix_proxy(closes)
     # First 20 rows lack a full window -> 30 - 20 obs.
     assert len(out) == 10
     log_ret = np.log(closes / closes.shift(1))
-    expected = (
-        log_ret.rolling(20).std(ddof=1) * np.sqrt(252.0)
-    ).mean(axis=1).dropna() * 100.0
+    expected = (log_ret.rolling(20).std(ddof=1) * np.sqrt(252.0)).mean(axis=1).dropna() * 100.0
     pd.testing.assert_series_equal(out, expected)
     assert (out > 0).all()
     assert (out < 100).all()  # sane vol-point levels
@@ -240,11 +270,13 @@ def test_compute_cvix_proxy_decimal_closes():
     """Postgres NUMERIC arrives as decimal.Decimal (object dtype) — the
     proxy must coerce instead of blowing up in np.log (live-run regression)."""
     from decimal import Decimal
+
     idx = pd.bdate_range("2026-01-01", periods=25)
     rng = np.random.default_rng(3)
     floats = 1.08 * np.exp(np.cumsum(rng.normal(0, 0.005, 25)))
     closes = pd.DataFrame(
-        {"EURUSD": [Decimal(str(round(v, 6))) for v in floats]}, index=idx,
+        {"EURUSD": [Decimal(str(round(v, 6))) for v in floats]},
+        index=idx,
     )
     assert closes.dtypes["EURUSD"] == np.dtype(object)
     out = compute_cvix_proxy(closes)
@@ -255,6 +287,7 @@ def test_compute_cvix_proxy_decimal_closes():
 # --------------------------------------------------------------------------- #
 # pipeline
 # --------------------------------------------------------------------------- #
+
 
 def test_full_pipeline_writes_all_series_with_provenance(db):
     url, eng = db
@@ -273,10 +306,12 @@ def test_full_pipeline_writes_all_series_with_provenance(db):
 
     # Spread value = DGS2 - DE2Y on a matched date.
     with eng.connect() as conn:
-        v = conn.execute(text(
-            "SELECT value FROM macro_data WHERE series_id='US2Y_MINUS_DE2Y' "
-            "AND observation_date LIKE '2026-07-13%'",
-        )).scalar()
+        v = conn.execute(
+            text(
+                "SELECT value FROM macro_data WHERE series_id='US2Y_MINUS_DE2Y' "
+                "AND observation_date LIKE '2026-07-13%'",
+            )
+        ).scalar()
     assert v == pytest.approx(4.22 - 2.72)
 
     # Per-series source provenance.
@@ -290,7 +325,8 @@ def test_fetch_clips_to_window(db):
     raw = ing.fetch(datetime(2026, 7, 13), datetime(2026, 7, 14))
     de2y = raw[raw["series_id"] == "DE2Y"]
     assert set(de2y["observation_date"].dt.strftime("%Y-%m-%d")) == {
-        "2026-07-13", "2026-07-14",
+        "2026-07-13",
+        "2026-07-14",
     }
 
 
@@ -323,7 +359,9 @@ def test_dead_source_fails_soft(db):
 def test_missing_fred_key_skips_fred_legs(db):
     url, eng = db
     ing = ForeignRatesIngester(
-        url, http_get=_fake_http(ALL_OK), fred_api_key="",
+        url,
+        http_get=_fake_http(ALL_OK),
+        fred_api_key="",
     )
     ing.fred_api_key = ""  # belt-and-braces: ignore any env fallback
     written = ing.run(START, END)

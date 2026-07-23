@@ -27,7 +27,8 @@ def _build_returns(n: int, mean: float, vol: float, seed: int) -> pd.Series:
 
 
 def _build_signal_aligned_strat(
-    asset: pd.Series, hit_rate: float = 0.7,
+    asset: pd.Series,
+    hit_rate: float = 0.7,
 ) -> tuple[pd.Series, pd.Series]:
     rng = np.random.default_rng(7)
     informed = np.sign(asset.values)
@@ -41,11 +42,19 @@ def _build_signal_aligned_strat(
 
 
 def _build_fill(
-    side: str, price: float, ts: datetime, oid: str = "o1",
+    side: str,
+    price: float,
+    ts: datetime,
+    oid: str = "o1",
 ) -> Fill:
     return Fill(
-        order_id=oid, fill_id=f"{oid}-fill", symbol="EURUSD",
-        side=side, quantity=1000, price=price, timestamp=ts,
+        order_id=oid,
+        fill_id=f"{oid}-fill",
+        symbol="EURUSD",
+        side=side,
+        quantity=1000,
+        price=price,
+        timestamp=ts,
     )
 
 
@@ -93,7 +102,10 @@ class TestRunStrategy:
         runner = EdgeRunner(seed=20)
         live = _build_returns(n=120, mean=0.0006, vol=0.006, seed=21)
         expected = BacktestExpectations(
-            sharpe=1.5, hit_rate=0.55, mean_return=0.0006, vol=0.006,
+            sharpe=1.5,
+            hit_rate=0.55,
+            mean_return=0.0006,
+            vol=0.006,
         )
         result = runner.run_strategy(
             StrategyEdgeInputs(
@@ -111,12 +123,19 @@ class TestRunStrategy:
     def test_g4_runs_with_paper_and_live_fills(self) -> None:
         runner = EdgeRunner(seed=30)
         paper = [_build_fill("buy", 1.10, T0, oid="o1")]
-        live = [_build_fill(
-            "buy", 1.10011, T0 + timedelta(milliseconds=200), oid="o1",
-        )]
+        live = [
+            _build_fill(
+                "buy",
+                1.10011,
+                T0 + timedelta(milliseconds=200),
+                oid="o1",
+            )
+        ]
         result = runner.run_strategy(
             StrategyEdgeInputs(
-                strategy_id="s1", paper_fills=paper, live_fills=live,
+                strategy_id="s1",
+                paper_fills=paper,
+                live_fills=live,
             ),
         )
         assert result.g4_n_matched == 1
@@ -126,7 +145,10 @@ class TestRunStrategy:
         runner = EdgeRunner(seed=40)
         live = _build_returns(n=120, mean=0.0006, vol=0.006, seed=41)
         expected = BacktestExpectations(
-            sharpe=1.5, hit_rate=0.55, mean_return=0.0006, vol=0.006,
+            sharpe=1.5,
+            hit_rate=0.55,
+            mean_return=0.0006,
+            vol=0.006,
         )
         result = runner.run_strategy(
             StrategyEdgeInputs(
@@ -151,7 +173,10 @@ class TestRunStrategy:
             index=pd.date_range("2025-01-01", periods=500, freq="B"),
         )
         expected = BacktestExpectations(
-            sharpe=1.5, hit_rate=0.55, mean_return=0.0006, vol=0.006,
+            sharpe=1.5,
+            hit_rate=0.55,
+            mean_return=0.0006,
+            vol=0.006,
         )
         result = runner.run_strategy(
             StrategyEdgeInputs(
@@ -163,7 +188,8 @@ class TestRunStrategy:
         )
         # Either CONTINUE or REVIEW depending on z-score noise; never HALT.
         assert result.g9_action in {
-            LiveAction.CONTINUE, LiveAction.REVIEW,
+            LiveAction.CONTINUE,
+            LiveAction.REVIEW,
         }
 
 
@@ -175,10 +201,7 @@ class TestRunStrategy:
 class TestRunAll:
     def test_run_all_returns_one_result_per_strategy(self) -> None:
         runner = EdgeRunner(seed=60)
-        inputs = [
-            StrategyEdgeInputs(strategy_id=f"s{i}")
-            for i in range(3)
-        ]
+        inputs = [StrategyEdgeInputs(strategy_id=f"s{i}") for i in range(3)]
         report = runner.run_all(inputs)
         assert len(report.results) == 3
         assert set(report.results.keys()) == {"s0", "s1", "s2"}
@@ -197,10 +220,13 @@ class TestRunAll:
 
     def test_report_to_dict_serializable(self) -> None:
         import json
+
         runner = EdgeRunner(seed=80)
-        report = runner.run_all([
-            StrategyEdgeInputs(strategy_id="s1"),
-        ])
+        report = runner.run_all(
+            [
+                StrategyEdgeInputs(strategy_id="s1"),
+            ]
+        )
         # Round-trip through JSON to ensure no non-serializable types leak in.
         text = json.dumps(report.to_dict(), default=str)
         parsed = json.loads(text)
@@ -219,7 +245,17 @@ class TestResultStructure:
         runner = EdgeRunner(seed=90)
         result = runner.run_strategy(StrategyEdgeInputs(strategy_id="s1"))
         d = result.to_dict()
-        for key in ("strategy_id", "ts", "g1", "g2", "g3", "g4", "g8_verdict", "g9_action", "notes"):
+        for key in (
+            "strategy_id",
+            "ts",
+            "g1",
+            "g2",
+            "g3",
+            "g4",
+            "g8_verdict",
+            "g9_action",
+            "notes",
+        ):
             assert key in d
 
     def test_g1_p_values_dict_in_result(self) -> None:

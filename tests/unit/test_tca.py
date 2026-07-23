@@ -24,8 +24,13 @@ def _fill(
     fill_id: str = "f1",
 ) -> Fill:
     return Fill(
-        order_id="o1", fill_id=fill_id, symbol=symbol, side=side,
-        quantity=1000, price=price, timestamp=T0,
+        order_id="o1",
+        fill_id=fill_id,
+        symbol=symbol,
+        side=side,
+        quantity=1000,
+        price=price,
+        timestamp=T0,
     )
 
 
@@ -106,7 +111,8 @@ class TestBuyDecomposition:
         c = compute_tca(f, ctx)
         # total_bps must equal implementation_shortfall_bps within float noise.
         assert c.total_bps == pytest.approx(
-            c.implementation_shortfall_bps, abs=1e-6,
+            c.implementation_shortfall_bps,
+            abs=1e-6,
         )
 
 
@@ -173,9 +179,15 @@ class TestSummarize:
     def test_summary_averages_correctly(self) -> None:
         records = [
             TCAComponents(
-                queue_bps=1.0, impact_bps=0.5, broker_bps=0.5,
-                total_bps=2.0, implementation_shortfall_bps=2.0,
-                pair="EURUSD", side="buy", fill_id=f"f{i}", ts=T0,
+                queue_bps=1.0,
+                impact_bps=0.5,
+                broker_bps=0.5,
+                total_bps=2.0,
+                implementation_shortfall_bps=2.0,
+                pair="EURUSD",
+                side="buy",
+                fill_id=f"f{i}",
+                ts=T0,
             )
             for i in range(10)
         ]
@@ -190,9 +202,15 @@ class TestSummarize:
     def test_p95_picks_high_tail(self) -> None:
         records = [
             TCAComponents(
-                queue_bps=0.0, impact_bps=0.0, broker_bps=0.0,
-                total_bps=float(i), implementation_shortfall_bps=float(i),
-                pair="EURUSD", side="buy", fill_id=f"f{i}", ts=T0,
+                queue_bps=0.0,
+                impact_bps=0.0,
+                broker_bps=0.0,
+                total_bps=float(i),
+                implementation_shortfall_bps=float(i),
+                pair="EURUSD",
+                side="buy",
+                fill_id=f"f{i}",
+                ts=T0,
             )
             for i in range(100)
         ]
@@ -214,8 +232,15 @@ class TestReporting:
         f = _fill()
         d = compute_tca(f, ctx).to_dict()
         for key in (
-            "queue_bps", "impact_bps", "broker_bps", "total_bps",
-            "implementation_shortfall_bps", "pair", "side", "fill_id", "ts",
+            "queue_bps",
+            "impact_bps",
+            "broker_bps",
+            "total_bps",
+            "implementation_shortfall_bps",
+            "pair",
+            "side",
+            "fill_id",
+            "ts",
         ):
             assert key in d
 

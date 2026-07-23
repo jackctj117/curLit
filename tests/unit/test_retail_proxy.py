@@ -55,14 +55,24 @@ class TestConfigLoads:
     def test_fx_pairs_flagged_not_tradable(self) -> None:
         table = load_retail_proxies()
         for pair in (
-            "USD_JPY", "USD_CAD", "USD_NOK", "USD_ZAR", "EUR_USD",
-            "GBP_USD", "AUD_USD", "NZD_USD", "USD_CHF", "USD_CNH",
+            "USD_JPY",
+            "USD_CAD",
+            "USD_NOK",
+            "USD_ZAR",
+            "EUR_USD",
+            "GBP_USD",
+            "AUD_USD",
+            "NZD_USD",
+            "USD_CHF",
+            "USD_CNH",
         ):
             assert pair in table, pair
             assert table[pair].tradable is False, pair
             assert table[pair].proxies == (), pair
-            assert "not available on Robinhood" in table[pair].note.lower() \
+            assert (
+                "not available on Robinhood" in table[pair].note.lower()
                 or "not available on robinhood" in table[pair].note.lower()
+            )
 
     def test_every_etf_is_valid_ticker(self) -> None:
         import re  # noqa: PLC0415
@@ -283,5 +293,6 @@ def _patch_table(monkeypatch, table) -> None:
     """Point the module cache at a test table (no disk / no real config
     dependency for the render tests)."""
     monkeypatch.setattr(
-        "src.events.retail_proxy._cached_proxies", lambda: table,
+        "src.events.retail_proxy._cached_proxies",
+        lambda: table,
     )

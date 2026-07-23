@@ -55,14 +55,19 @@ def sample_entry() -> CorpusEntry:
 
 class TestCorpusEntry:
     def test_source_id_stable_across_construction(
-        self, sample_entry: CorpusEntry,
+        self,
+        sample_entry: CorpusEntry,
     ) -> None:
         """source_id must be deterministic so reruns are idempotent —
         recomputing it on an identical entry must yield the same hash."""
         again = CorpusEntry(
-            title="Test Title", author="A. Author", year=2024,
-            source_type="book", importance="P1",
-            topic_tags=["t1", "t2"], rationale="…",
+            title="Test Title",
+            author="A. Author",
+            year=2024,
+            source_type="book",
+            importance="P1",
+            topic_tags=["t1", "t2"],
+            rationale="…",
             extract_strategy="chapter-summary",
             extract_source="llm-prior-knowledge",
             chunks_per_source=10,
@@ -71,14 +76,19 @@ class TestCorpusEntry:
         assert len(sample_entry.source_id) == 64  # sha256 hex
 
     def test_source_id_changes_with_year(
-        self, sample_entry: CorpusEntry,
+        self,
+        sample_entry: CorpusEntry,
     ) -> None:
         """A later edition with a different year must get a different
         source_id — different work, different chunks."""
         new_edition = CorpusEntry(
-            title="Test Title", author="A. Author", year=2025,
-            source_type="book", importance="P1",
-            topic_tags=["t1", "t2"], rationale="…",
+            title="Test Title",
+            author="A. Author",
+            year=2025,
+            source_type="book",
+            importance="P1",
+            topic_tags=["t1", "t2"],
+            rationale="…",
             extract_strategy="chapter-summary",
             extract_source="llm-prior-knowledge",
             chunks_per_source=10,
@@ -121,7 +131,9 @@ class TestLoadCorpus:
 
 class TestNotesExtraction:
     def test_three_sections_produce_three_chunks(
-        self, tmp_path: Path, sample_entry: CorpusEntry,
+        self,
+        tmp_path: Path,
+        sample_entry: CorpusEntry,
     ) -> None:
         notes = tmp_path / "notes.md"
         notes.write_text(
@@ -144,14 +156,13 @@ class TestNotesExtraction:
         assert chunks[2].page_ref == "Section C"
 
     def test_empty_sections_skipped(
-        self, tmp_path: Path, sample_entry: CorpusEntry,
+        self,
+        tmp_path: Path,
+        sample_entry: CorpusEntry,
     ) -> None:
         notes = tmp_path / "notes.md"
         notes.write_text(
-            "## Empty section\n"
-            "\n"
-            "## Real section\n"
-            "Real content here.\n",
+            "## Empty section\n\n## Real section\nReal content here.\n",
         )
         chunks = _extract_notes_file(sample_entry, notes)
         # Empty section dropped; only real section remains
@@ -159,13 +170,17 @@ class TestNotesExtraction:
         assert chunks[0].page_ref == "Real section"
 
     def test_missing_file_raises(
-        self, tmp_path: Path, sample_entry: CorpusEntry,
+        self,
+        tmp_path: Path,
+        sample_entry: CorpusEntry,
     ) -> None:
         with pytest.raises(FileNotFoundError, match="notes file not found"):
             _extract_notes_file(sample_entry, tmp_path / "nope.md")
 
     def test_chunk_idx_zero_indexed_and_contiguous(
-        self, tmp_path: Path, sample_entry: CorpusEntry,
+        self,
+        tmp_path: Path,
+        sample_entry: CorpusEntry,
     ) -> None:
         notes = tmp_path / "notes.md"
         notes.write_text(
@@ -196,5 +211,5 @@ class TestCodeFenceStripping:
 
     def test_fence_only_at_start_and_end(self) -> None:
         # Mid-string ``` should be preserved
-        text = "[\"line1\", \"line2 with ``` mid\", \"line3\"]"
+        text = '["line1", "line2 with ``` mid", "line3"]'
         assert _strip_code_fence(text) == text

@@ -91,10 +91,14 @@ def _run(provider: Any, theme: str, cfg: CrossAssetConfig, **kw: Any) -> CrossAs
 
 class TestVoteMath:
     def test_all_agree_high_score_confirmed(self) -> None:
-        cfg = _cfg({"t": [
-            {"instrument": "BCO_USD", "expected_direction": "up"},
-            {"instrument": "WTICO_USD", "expected_direction": "up"},
-        ]})
+        cfg = _cfg(
+            {
+                "t": [
+                    {"instrument": "BCO_USD", "expected_direction": "up"},
+                    {"instrument": "WTICO_USD", "expected_direction": "up"},
+                ]
+            }
+        )
         # Both rose → both agree.
         prov = FakeProvider({"BCO_USD": (100.0, 102.0), "WTICO_USD": (80.0, 81.0)})
         res = _run(prov, "t", cfg)
@@ -104,17 +108,23 @@ class TestVoteMath:
         assert res.n_agree == 2
 
     def test_mixed_score_reflects_fraction(self) -> None:
-        cfg = _cfg({"t": [
-            {"instrument": "A_USD", "expected_direction": "up"},
-            {"instrument": "B_USD", "expected_direction": "up"},
-            {"instrument": "C_USD", "expected_direction": "up"},
-        ]})
+        cfg = _cfg(
+            {
+                "t": [
+                    {"instrument": "A_USD", "expected_direction": "up"},
+                    {"instrument": "B_USD", "expected_direction": "up"},
+                    {"instrument": "C_USD", "expected_direction": "up"},
+                ]
+            }
+        )
         # A up (agree), B down (disagree), C up (agree) → 2/3.
-        prov = FakeProvider({
-            "A_USD": (100.0, 101.0),
-            "B_USD": (100.0, 99.0),
-            "C_USD": (100.0, 105.0),
-        })
+        prov = FakeProvider(
+            {
+                "A_USD": (100.0, 101.0),
+                "B_USD": (100.0, 99.0),
+                "C_USD": (100.0, 105.0),
+            }
+        )
         res = _run(prov, "t", cfg)
         assert res.score == pytest.approx(2.0 / 3.0)
         assert res.confirmed is True  # 0.667 >= 0.5
@@ -122,10 +132,14 @@ class TestVoteMath:
         assert res.n_voting == 3
 
     def test_disagree_not_confirmed(self) -> None:
-        cfg = _cfg({"t": [
-            {"instrument": "A_USD", "expected_direction": "up"},
-            {"instrument": "B_USD", "expected_direction": "up"},
-        ]})
+        cfg = _cfg(
+            {
+                "t": [
+                    {"instrument": "A_USD", "expected_direction": "up"},
+                    {"instrument": "B_USD", "expected_direction": "up"},
+                ]
+            }
+        )
         # Both fell → both disagree with "up".
         prov = FakeProvider({"A_USD": (100.0, 98.0), "B_USD": (100.0, 97.0)})
         res = _run(prov, "t", cfg)
@@ -133,10 +147,14 @@ class TestVoteMath:
         assert res.score == pytest.approx(0.0)
 
     def test_weight_leans_on_primary(self) -> None:
-        cfg = _cfg({"t": [
-            {"instrument": "BIG_USD", "expected_direction": "up", "weight": 3.0},
-            {"instrument": "SMALL_USD", "expected_direction": "up", "weight": 1.0},
-        ]})
+        cfg = _cfg(
+            {
+                "t": [
+                    {"instrument": "BIG_USD", "expected_direction": "up", "weight": 3.0},
+                    {"instrument": "SMALL_USD", "expected_direction": "up", "weight": 1.0},
+                ]
+            }
+        )
         # BIG agrees, SMALL disagrees → weighted 3/4 = 0.75.
         prov = FakeProvider({"BIG_USD": (100.0, 105.0), "SMALL_USD": (100.0, 99.0)})
         res = _run(prov, "t", cfg)
@@ -144,10 +162,14 @@ class TestVoteMath:
         assert res.confirmed is True
 
     def test_missing_data_excluded_from_vote(self) -> None:
-        cfg = _cfg({"t": [
-            {"instrument": "HAS_USD", "expected_direction": "up"},
-            {"instrument": "GONE_USD", "expected_direction": "up"},
-        ]})
+        cfg = _cfg(
+            {
+                "t": [
+                    {"instrument": "HAS_USD", "expected_direction": "up"},
+                    {"instrument": "GONE_USD", "expected_direction": "up"},
+                ]
+            }
+        )
         # GONE has no data — must be excluded, not counted as a fail.
         prov = FakeProvider({"HAS_USD": (100.0, 102.0)})
         res = _run(prov, "t", cfg)
@@ -167,10 +189,14 @@ class TestVoteMath:
         assert res.n_voting == 0
 
     def test_zero_data_is_unknown_never_blocks(self) -> None:
-        cfg = _cfg({"t": [
-            {"instrument": "A_USD", "expected_direction": "up"},
-            {"instrument": "B_USD", "expected_direction": "up"},
-        ]})
+        cfg = _cfg(
+            {
+                "t": [
+                    {"instrument": "A_USD", "expected_direction": "up"},
+                    {"instrument": "B_USD", "expected_direction": "up"},
+                ]
+            }
+        )
         prov = FakeProvider({})  # nothing resolves
         res = _run(prov, "t", cfg)
         assert res.confirmed is None  # UNKNOWN — never blocks
@@ -195,17 +221,23 @@ class TestVoteMath:
         assert move.actual_move_pct == pytest.approx(0.0)
 
     def test_custom_threshold(self) -> None:
-        cfg = _cfg({"t": [
-            {"instrument": "A_USD", "expected_direction": "up"},
-            {"instrument": "B_USD", "expected_direction": "up"},
-            {"instrument": "C_USD", "expected_direction": "up"},
-        ]})
+        cfg = _cfg(
+            {
+                "t": [
+                    {"instrument": "A_USD", "expected_direction": "up"},
+                    {"instrument": "B_USD", "expected_direction": "up"},
+                    {"instrument": "C_USD", "expected_direction": "up"},
+                ]
+            }
+        )
         # 2/3 agree. threshold 0.7 → NOT confirmed; 0.6 → confirmed.
-        prov = FakeProvider({
-            "A_USD": (100.0, 101.0),
-            "B_USD": (100.0, 101.0),
-            "C_USD": (100.0, 99.0),
-        })
+        prov = FakeProvider(
+            {
+                "A_USD": (100.0, 101.0),
+                "B_USD": (100.0, 101.0),
+                "C_USD": (100.0, 99.0),
+            }
+        )
         assert _run(prov, "t", cfg, threshold=0.7).confirmed is False
         assert _run(prov, "t", cfg, threshold=0.6).confirmed is True
 
@@ -222,16 +254,18 @@ class TestRiskOffSigns:
         falling USD_JPY must AGREE."""
         cfg = load_cross_asset_config()
         # USD_JPY 150 → 148 (yen stronger), XAU up (haven), SPX down (risk-off).
-        prov = FakeProvider({
-            "USD_JPY": (150.0, 148.0),   # yen strengthened → pair DOWN
-            "XAU_USD": (2000.0, 2020.0),  # haven bid UP
-            "SPX500_USD": (5000.0, 4950.0),  # risk-off DOWN
-        })
+        prov = FakeProvider(
+            {
+                "USD_JPY": (150.0, 148.0),  # yen strengthened → pair DOWN
+                "XAU_USD": (2000.0, 2020.0),  # haven bid UP
+                "SPX500_USD": (5000.0, 4950.0),  # risk-off DOWN
+            }
+        )
         res = _run(prov, "taiwan_semiconductor", cfg)
         jpy = next(d for d in res.details if d.instrument == "USD_JPY")
         assert jpy.expected == "down"
         assert jpy.actual_move_pct < 0  # pair fell
-        assert jpy.agrees is True       # falling pair matches "down"
+        assert jpy.agrees is True  # falling pair matches "down"
         assert res.confirmed is True
         assert res.score == pytest.approx(1.0)
 
@@ -239,11 +273,13 @@ class TestRiskOffSigns:
         """Inverse: if USD_JPY RISES (yen weakens), that is NOT the
         risk-off read and must DISAGREE."""
         cfg = load_cross_asset_config()
-        prov = FakeProvider({
-            "USD_JPY": (150.0, 152.0),  # yen weakened → pair UP → disagrees "down"
-            "XAU_USD": (2000.0, 1990.0),  # gold fell → disagrees "up"
-            "SPX500_USD": (5000.0, 5050.0),  # equities rose → disagrees "down"
-        })
+        prov = FakeProvider(
+            {
+                "USD_JPY": (150.0, 152.0),  # yen weakened → pair UP → disagrees "down"
+                "XAU_USD": (2000.0, 1990.0),  # gold fell → disagrees "up"
+                "SPX500_USD": (5000.0, 5050.0),  # equities rose → disagrees "down"
+            }
+        )
         res = _run(prov, "taiwan_semiconductor", cfg)
         jpy = next(d for d in res.details if d.instrument == "USD_JPY")
         assert jpy.agrees is False
@@ -254,12 +290,14 @@ class TestRiskOffSigns:
         """Energy chokepoint: crude spikes, CAD strengthens → USD_CAD
         DOWN, which the config expects and must AGREE."""
         cfg = load_cross_asset_config()
-        prov = FakeProvider({
-            "BCO_USD": (80.0, 84.0),     # brent up
-            "WTICO_USD": (76.0, 79.0),   # wti up
-            "USD_CAD": (1.36, 1.35),     # CAD stronger → pair DOWN
-            "USD_NOK": (10.5, 10.3),     # NOK stronger → pair DOWN
-        })
+        prov = FakeProvider(
+            {
+                "BCO_USD": (80.0, 84.0),  # brent up
+                "WTICO_USD": (76.0, 79.0),  # wti up
+                "USD_CAD": (1.36, 1.35),  # CAD stronger → pair DOWN
+                "USD_NOK": (10.5, 10.3),  # NOK stronger → pair DOWN
+            }
+        )
         res = _run(prov, "energy_chokepoint", cfg)
         cad = next(d for d in res.details if d.instrument == "USD_CAD")
         assert cad.expected == "down"
@@ -291,18 +329,20 @@ class TestConfigLoad:
         """Lock the risk-off sign in the shipped config: taiwan USD_JPY
         MUST be down (yen-strengthening), never up."""
         cfg = load_cross_asset_config()
-        jpy = next(
-            c for c in cfg.checks_for("taiwan_semiconductor")
-            if c.instrument == "USD_JPY"
-        )
+        jpy = next(c for c in cfg.checks_for("taiwan_semiconductor") if c.instrument == "USD_JPY")
         assert jpy.expected_direction == "down"
 
     def test_real_config_covers_required_themes(self) -> None:
         cfg = load_cross_asset_config()
         for theme in (
-            "energy_chokepoint", "oil_supply_shock", "red_sea_shipping",
-            "taiwan_semiconductor", "russia_ukraine", "drc_copper_cobalt",
-            "black_sea_grain", "guinea_iron_bauxite",
+            "energy_chokepoint",
+            "oil_supply_shock",
+            "red_sea_shipping",
+            "taiwan_semiconductor",
+            "russia_ukraine",
+            "drc_copper_cobalt",
+            "black_sea_grain",
+            "guinea_iron_bauxite",
         ):
             assert cfg.checks_for(theme), f"missing theme {theme}"
 
@@ -366,11 +406,14 @@ def _result(
 
 class TestDigestLine:
     def test_confirms_format(self) -> None:
-        res = _result(True, [
-            ("BCO_USD", "up", 1.8, True),
-            ("USD_CAD", "down", -0.2, True),
-            ("WTICO_USD", "up", -0.1, False),
-        ])
+        res = _result(
+            True,
+            [
+                ("BCO_USD", "up", 1.8, True),
+                ("USD_CAD", "down", -0.2, True),
+                ("WTICO_USD", "up", -0.1, False),
+            ],
+        )
         line = build_cross_asset_line(res)
         assert line is not None
         assert "BCO_USD +1.8% ✓" in line
@@ -381,10 +424,13 @@ class TestDigestLine:
         assert line.startswith("<b>Cross-asset:</b>")
 
     def test_low_score_fade_warning(self) -> None:
-        res = _result(False, [
-            ("BCO_USD", "up", -1.0, False),
-            ("USD_CAD", "down", 0.5, False),
-        ])
+        res = _result(
+            False,
+            [
+                ("BCO_USD", "up", -1.0, False),
+                ("USD_CAD", "down", 0.5, False),
+            ],
+        )
         line = build_cross_asset_line(res)
         assert line is not None
         assert "NOT confirming — fade risk" in line
@@ -408,10 +454,13 @@ class TestDigestLine:
 
 class TestStrategyPlainLine:
     def test_plain_confirms(self) -> None:
-        res = _result(True, [
-            ("BCO_USD", "up", 1.8, True),
-            ("USD_CAD", "down", -0.2, True),
-        ])
+        res = _result(
+            True,
+            [
+                ("BCO_USD", "up", 1.8, True),
+                ("USD_CAD", "down", -0.2, True),
+            ],
+        )
         line = EventNotifier._cross_asset_line(res)
         assert line == "Cross-asset: BCO_USD +1.8% ✓ · USD_CAD -0.2% ✓ · confirms (2/2)"
         assert "<b>" not in line  # plain text, no markup
@@ -422,16 +471,22 @@ class TestStrategyPlainLine:
         assert "NOT confirming — fade risk (0/1)" in line
 
     def test_plain_unknown_omitted(self) -> None:
-        assert EventNotifier._cross_asset_line(
-            _result(None, [("BCO_USD", "up", None, None)]),
-        ) is None
+        assert (
+            EventNotifier._cross_asset_line(
+                _result(None, [("BCO_USD", "up", None, None)]),
+            )
+            is None
+        )
         assert EventNotifier._cross_asset_line(None) is None
 
     def test_notes_summary(self) -> None:
-        res = _result(True, [
-            ("BCO_USD", "up", 1.8, True),
-            ("USD_CAD", "down", -0.2, True),
-        ])
+        res = _result(
+            True,
+            [
+                ("BCO_USD", "up", 1.8, True),
+                ("USD_CAD", "down", -0.2, True),
+            ],
+        )
         note = EventNotifier._cross_asset_summary(res)
         assert note == "cross-asset: confirms 2/2 (BCO_USD +1.8%, USD_CAD -0.2%)"
 
@@ -441,6 +496,9 @@ class TestStrategyPlainLine:
         assert "NOT confirming (fade risk) 0/1" in note
 
     def test_notes_summary_unknown(self) -> None:
-        assert EventNotifier._cross_asset_summary(
-            _result(None, [("BCO_USD", "up", None, None)]),
-        ) is None
+        assert (
+            EventNotifier._cross_asset_summary(
+                _result(None, [("BCO_USD", "up", None, None)]),
+            )
+            is None
+        )

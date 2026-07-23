@@ -81,19 +81,19 @@ def _as_date(value: Any) -> date | None:
 
 
 def _check_one(
-    engine: Any, req: SeriesRequirement, today: date,
+    engine: Any,
+    req: SeriesRequirement,
+    today: date,
 ) -> SeriesHealth:
     if req.kind == "price":
         sql = "SELECT COUNT(*), MAX(ts) FROM prices WHERE symbol = :s"
     else:
-        sql = ("SELECT COUNT(*), MAX(observation_date) FROM macro_data "
-               "WHERE series_id = :s")
+        sql = "SELECT COUNT(*), MAX(observation_date) FROM macro_data WHERE series_id = :s"
     try:
         with engine.connect() as conn:
             rows, last_raw = conn.execute(text(sql), {"s": req.series_id}).one()
     except Exception:
-        logger.debug("data health: query failed for %s", req.series_id,
-                     exc_info=True)
+        logger.debug("data health: query failed for %s", req.series_id, exc_info=True)
         rows, last_raw = 0, None
     rows = int(rows or 0)
     last = _as_date(last_raw)
@@ -107,8 +107,7 @@ def _check_one(
         detail = f"last {last} ({(today - last).days}d old > {req.max_staleness_days}d)"
     else:
         status, detail = OK, f"{rows} rows, last {last}"
-    return SeriesHealth(req.series_id, req.kind, req.needed_by, rows, last,
-                        status, detail)
+    return SeriesHealth(req.series_id, req.kind, req.needed_by, rows, last, status, detail)
 
 
 def check_series(

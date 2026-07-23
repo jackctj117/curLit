@@ -7,7 +7,9 @@ import sys
 from pathlib import Path
 
 
-def derive_ssh_key_from_mnemonic(mnemonic: str, purpose: str = "ssh-fx-server") -> tuple[bytes, bytes]:
+def derive_ssh_key_from_mnemonic(
+    mnemonic: str, purpose: str = "ssh-fx-server"
+) -> tuple[bytes, bytes]:
     """Derive Ed25519 SSH key deterministically from a BIP39 mnemonic."""
     prefix = "ssh-key-v1:"
     seed = hashlib.pbkdf2_hmac("sha512", f"{prefix}{mnemonic}".encode(), b"mnemonic", 2048, 64)
@@ -15,6 +17,7 @@ def derive_ssh_key_from_mnemonic(mnemonic: str, purpose: str = "ssh-fx-server") 
     try:
         from cryptography.hazmat.primitives import serialization
         from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
         private_key = Ed25519PrivateKey.from_private_bytes(key_bytes)
         priv = private_key.private_bytes(
             encoding=serialization.Encoding.PEM,

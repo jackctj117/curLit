@@ -81,14 +81,16 @@ MAX_REBUTTAL_ROUNDS: int = 3
 # fold detail not used in verdict), _metrics_provenance (PROXY notes,
 # meta-info), generated_at, hypothesis_path, provenance.
 
-_REPORT_DROP_KEYS: frozenset[str] = frozenset({
-    "backtest_metrics",
-    "fold_metrics",
-    "_metrics_provenance",
-    "generated_at",
-    "hypothesis_path",
-    "provenance",
-})
+_REPORT_DROP_KEYS: frozenset[str] = frozenset(
+    {
+        "backtest_metrics",
+        "fold_metrics",
+        "_metrics_provenance",
+        "generated_at",
+        "hypothesis_path",
+        "provenance",
+    }
+)
 
 
 def _slim_candidate_report(report_text: str) -> str:
@@ -130,8 +132,10 @@ def _slim_transcript(transcript: str) -> str:
                 position = line.strip()
         # Body summary: first non-meta paragraph (skip ts= line)
         body_lines = [
-            ln for ln in block.splitlines()
-            if ln and not ln.startswith("## Round:")
+            ln
+            for ln in block.splitlines()
+            if ln
+            and not ln.startswith("## Round:")
             and not ln.startswith("*ts=")
             and not ln.startswith("FINAL_POSITION")
             and not ln.startswith("**FINAL_POSITION")
@@ -226,9 +230,7 @@ class DebateOrchestrator:
         self.debate: DebateConfig = research_config.debates[debate_name]
         self.transcript_root = Path(transcript_root)
         self.resolver = resolver or QuestionResolver()
-        self._agent_factory: AgentFactory = (
-            agent_factory or self._default_agent_factory
-        )
+        self._agent_factory: AgentFactory = agent_factory or self._default_agent_factory
 
     def _default_agent_factory(self, name: str) -> Agent:
         return Agent.from_config(name=name, research_config=self.research_config)
@@ -273,7 +275,8 @@ class DebateOrchestrator:
                 if rebuttal_rounds_seen > MAX_REBUTTAL_ROUNDS:
                     logger.warning(
                         "Skipping extra rebuttal round %r — cap %d already hit",
-                        round_cfg.name, MAX_REBUTTAL_ROUNDS,
+                        round_cfg.name,
+                        MAX_REBUTTAL_ROUNDS,
                     )
                     continue
 
@@ -297,14 +300,12 @@ class DebateOrchestrator:
                     entries=entries,
                 )
             elif round_cfg.type == RoundType.PER_AGENT_ASYNC:
-                round_responses, round_resolved, round_open = (
-                    self._run_per_agent_async(
-                        agents=agents,
-                        round_name=round_cfg.name,
-                        candidate_report_text=candidate_report_text,
-                        review_rules_text=rules_text,
-                        transcript_so_far=transcript_so_far,
-                    )
+                round_responses, round_resolved, round_open = self._run_per_agent_async(
+                    agents=agents,
+                    round_name=round_cfg.name,
+                    candidate_report_text=candidate_report_text,
+                    review_rules_text=rules_text,
+                    transcript_so_far=transcript_so_far,
                 )
                 resolved_questions.extend(round_resolved)
                 open_questions.extend(round_open)
@@ -316,7 +317,9 @@ class DebateOrchestrator:
                 entry = self._make_entry(round_cfg.name, resp)
                 entries.append(entry)
                 self._persist_entry(
-                    transcript_md_path, transcript_jsonl_path, entry,
+                    transcript_md_path,
+                    transcript_jsonl_path,
+                    entry,
                 )
             last_round_responses = round_responses
 
@@ -441,8 +444,8 @@ class DebateOrchestrator:
         # Wire resolver to dispatch other_agent questions back into the
         # agent registry the orchestrator owns.
         original_dispatch = self.resolver.agent_dispatch
-        self.resolver.agent_dispatch = lambda target, qtext: (
-            self._dispatch_to_agent(agents, target, qtext)
+        self.resolver.agent_dispatch = lambda target, qtext: self._dispatch_to_agent(
+            agents, target, qtext
         )
 
         try:
@@ -473,16 +476,13 @@ class DebateOrchestrator:
                     # the agent self-labeled. Prevents one agent borrowing
                     # another's quota.
                     q.asker = name
-                    other_participants = [
-                        a for a in self.debate.participants if a != name
-                    ]
-                    target_agent = (
-                        other_participants[0] if other_participants else None
-                    )
+                    other_participants = [a for a in self.debate.participants if a != name]
+                    target_agent = other_participants[0] if other_participants else None
                     result = self._dispatch_one_question(q, target_agent)
                     resolved.append(ResolvedQuestion(question=q, result=result))
                     if result.status in (
-                        ResolutionStatus.ESCALATE, ResolutionStatus.FAILED,
+                        ResolutionStatus.ESCALATE,
+                        ResolutionStatus.FAILED,
                     ):
                         open_q.append(
                             f"{q.question_id} (asker={q.asker}, "
@@ -608,7 +608,9 @@ class DebateOrchestrator:
     # ------------------------------------------------------------------
 
     def _make_entry(
-        self, round_name: str, resp: AgentResponse,
+        self,
+        round_name: str,
+        resp: AgentResponse,
     ) -> TranscriptEntry:
         return TranscriptEntry(
             timestamp=datetime.now(UTC).isoformat(timespec="seconds"),

@@ -46,10 +46,10 @@ logger = logging.getLogger(__name__)
 # Shape returned by the API; the dashboard JS renders this.
 @dataclass
 class PendingEntry:
-    gate: int                # 1 or 2
+    gate: int  # 1 or 2
     slug: str
-    pending_since: str       # ISO timestamp
-    extra: dict[str, Any]    # gate-specific extras (hypothesis_path, etc.)
+    pending_since: str  # ISO timestamp
+    extra: dict[str, Any]  # gate-specific extras (hypothesis_path, etc.)
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -73,33 +73,37 @@ def list_pending_approvals(state: LoopState) -> list[PendingEntry]:
     for extract_hash, entry in state.ideas_processed.items():
         if entry.get("status") != GATE1_PENDING_STATUS:
             continue
-        out.append(PendingEntry(
-            gate=1,
-            slug=str(entry.get("slug") or extract_hash),
-            pending_since=str(entry.get("pending_since") or ""),
-            extra={
-                "extract_hash": extract_hash,
-                "hypothesis_path": entry.get("hypothesis_path"),
-                "title": entry.get("slug") or extract_hash,
-            },
-        ))
+        out.append(
+            PendingEntry(
+                gate=1,
+                slug=str(entry.get("slug") or extract_hash),
+                pending_since=str(entry.get("pending_since") or ""),
+                extra={
+                    "extract_hash": extract_hash,
+                    "hypothesis_path": entry.get("hypothesis_path"),
+                    "title": entry.get("slug") or extract_hash,
+                },
+            )
+        )
     for slug, entry in state.debates_completed.items():
         if entry.get("deploy_status") != GATE2_PENDING_STATUS:
             continue
-        out.append(PendingEntry(
-            gate=2,
-            slug=slug,
-            pending_since=str(entry.get("pending_since") or ""),
-            extra={
-                "verdict": entry.get("verdict"),
-                "verdict_reason": entry.get("reason"),
-                "bull": entry.get("bull"),
-                "bear": entry.get("bear"),
-                "transcript_path": entry.get("transcript_path"),
-                "candidate_report_path": entry.get("candidate_report_path"),
-                "title": slug,
-            },
-        ))
+        out.append(
+            PendingEntry(
+                gate=2,
+                slug=slug,
+                pending_since=str(entry.get("pending_since") or ""),
+                extra={
+                    "verdict": entry.get("verdict"),
+                    "verdict_reason": entry.get("reason"),
+                    "bull": entry.get("bull"),
+                    "bear": entry.get("bear"),
+                    "transcript_path": entry.get("transcript_path"),
+                    "candidate_report_path": entry.get("candidate_report_path"),
+                    "title": slug,
+                },
+            )
+        )
     # Stable sort: gate ascending, then pending_since ascending so
     # oldest-pending floats to the top of each gate.
     out.sort(key=lambda e: (e.gate, e.pending_since))
@@ -150,12 +154,18 @@ def apply_decision(
     save_state(state, Path(state_path))
     _append_decision_log(decisions_log, gate=gate, action=action, slug=slug, reason=reason)
     return {
-        "ok": True, "gate": gate, "slug": slug, "new_status": new_status,
+        "ok": True,
+        "gate": gate,
+        "slug": slug,
+        "new_status": new_status,
     }
 
 
 def _apply_gate1(
-    state: LoopState, slug: str, action: str, reason: str,
+    state: LoopState,
+    slug: str,
+    action: str,
+    reason: str,
 ) -> str:
     target_hash: str | None = None
     for h, e in state.ideas_processed.items():
@@ -185,7 +195,10 @@ def _apply_gate1(
 
 
 def _apply_gate2(
-    state: LoopState, slug: str, action: str, reason: str,
+    state: LoopState,
+    slug: str,
+    action: str,
+    reason: str,
 ) -> str:
     if slug not in state.debates_completed:
         msg = f"no GATE 2 (debate) entry found for slug={slug!r}"
@@ -231,5 +244,4 @@ def _append_decision_log(
         with p.open("a") as f:
             f.write(line)
     except OSError as exc:
-        logger.warning("decisions.log write failed: %s: %s",
-                       type(exc).__name__, exc)
+        logger.warning("decisions.log write failed: %s: %s", type(exc).__name__, exc)

@@ -48,15 +48,22 @@ class _RecordingDriver(Driver):
         self.calls: list[dict[str, Any]] = []
 
     def complete(self, messages, model, max_tokens=4096, temperature=0.0, **kwargs):  # noqa: ANN001
-        self.calls.append({
-            "messages": [Message(role=m.role, content=m.content) for m in messages],
-            "model": model,
-            "max_tokens": max_tokens,
-            "temperature": temperature,
-        })
+        self.calls.append(
+            {
+                "messages": [Message(role=m.role, content=m.content) for m in messages],
+                "model": model,
+                "max_tokens": max_tokens,
+                "temperature": temperature,
+            }
+        )
         return LLMResponse(
-            text=self.canned_text, model=model, provider=self.name,
-            input_tokens=10, output_tokens=20, usd_cost=0.001, elapsed_sec=0.01,
+            text=self.canned_text,
+            model=model,
+            provider=self.name,
+            input_tokens=10,
+            output_tokens=20,
+            usd_cost=0.001,
+            elapsed_sec=0.01,
         )
 
 
@@ -124,12 +131,15 @@ def configured_agent(
 
 class TestAgentConstruction:
     def test_from_config_loads_prompt_from_disk(
-        self, configured_agent: Agent, tmp_prompt: Path,
+        self,
+        configured_agent: Agent,
+        tmp_prompt: Path,
     ) -> None:
         assert configured_agent.system_prompt == tmp_prompt.read_text()
 
     def test_from_config_resolves_model_via_provider_default(
-        self, configured_agent: Agent,
+        self,
+        configured_agent: Agent,
     ) -> None:
         # No explicit model on the agent → falls back to provider default
         assert configured_agent.model == "rec-1"
@@ -141,7 +151,8 @@ class TestAgentConstruction:
             Agent.from_config(name="ghost", research_config=cfg)
 
     def test_missing_prompt_file_raises(
-        self, base_config_dict: dict[str, Any],
+        self,
+        base_config_dict: dict[str, Any],
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setenv("RECORDING_KEY", "fake-key")
@@ -161,7 +172,8 @@ class TestAgentConstruction:
 
 class TestPromptComposition:
     def test_run_passes_system_and_user_to_driver(
-        self, configured_agent: Agent,
+        self,
+        configured_agent: Agent,
     ) -> None:
         configured_agent.run(user_prompt="hello world")
         driver = configured_agent.client.driver
@@ -173,7 +185,8 @@ class TestPromptComposition:
         assert "hello world" in msgs[1].content
 
     def test_context_files_injected_with_xml_delimiters(
-        self, configured_agent: Agent,
+        self,
+        configured_agent: Agent,
     ) -> None:
         configured_agent.run(
             user_prompt="answer below",
@@ -189,7 +202,8 @@ class TestPromptComposition:
         assert user_text.index("answer below") > user_text.index("Rule A.1")
 
     def test_extra_system_appended_to_base(
-        self, configured_agent: Agent,
+        self,
+        configured_agent: Agent,
     ) -> None:
         configured_agent.run(
             user_prompt="x",
@@ -245,7 +259,8 @@ class TestParsePosition:
 
 @pytest.fixture
 def reviewer_config(
-    base_config_dict: dict[str, Any], monkeypatch: pytest.MonkeyPatch,
+    base_config_dict: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> ResearchConfig:
     monkeypatch.setenv("RECORDING_KEY", "fake-key")
     return ResearchConfig(**base_config_dict)
@@ -253,16 +268,17 @@ def reviewer_config(
 
 class TestReviewer:
     def test_bull_returns_promote_when_canned_says_so(
-        self, reviewer_config: ResearchConfig,
+        self,
+        reviewer_config: ResearchConfig,
     ) -> None:
         # Construct the agent with a canned response that ends in PROMOTE.
         agent = BullReviewer.from_config(
-            name="test_agent", research_config=reviewer_config,
+            name="test_agent",
+            research_config=reviewer_config,
         )
         # Swap in a driver with the canned response we want
         agent.client.driver.canned_text = (  # type: ignore[union-attr]
-            "## Section A\nA.1: PASS — Sharpe=0.7 from report.\n\n"
-            "**FINAL_POSITION**: PROMOTE"
+            "## Section A\nA.1: PASS — Sharpe=0.7 from report.\n\n**FINAL_POSITION**: PROMOTE"
         )
         result = agent.review(
             candidate_report="{stub}",
@@ -273,14 +289,15 @@ class TestReviewer:
         assert "Sharpe=0.7" in result.raw_text
 
     def test_bear_returns_reject_when_canned_says_so(
-        self, reviewer_config: ResearchConfig,
+        self,
+        reviewer_config: ResearchConfig,
     ) -> None:
         agent = BearReviewer.from_config(
-            name="test_agent", research_config=reviewer_config,
+            name="test_agent",
+            research_config=reviewer_config,
         )
         agent.client.driver.canned_text = (  # type: ignore[union-attr]
-            "C.1: FAIL — found ts > current_eval_ts at line 142.\n\n"
-            "**FINAL_POSITION**: REJECT"
+            "C.1: FAIL — found ts > current_eval_ts at line 142.\n\n**FINAL_POSITION**: REJECT"
         )
         result = agent.review(
             candidate_report="{stub}",
@@ -290,28 +307,34 @@ class TestReviewer:
         assert result.position == Position.REJECT
 
     def test_review_passes_round_instruction_to_system_prompt(
-        self, reviewer_config: ResearchConfig,
+        self,
+        reviewer_config: ResearchConfig,
     ) -> None:
         agent = BullReviewer.from_config(
-            name="test_agent", research_config=reviewer_config,
+            name="test_agent",
+            research_config=reviewer_config,
         )
         agent.client.driver.canned_text = "**FINAL_POSITION**: ABSTAIN"  # type: ignore[union-attr]
         agent.review(
-            candidate_report="{}", review_rules="# r",
+            candidate_report="{}",
+            review_rules="# r",
             round_name="rebuttal",
         )
         sys_text = agent.client.driver.calls[0]["messages"][0].content  # type: ignore[union-attr]
         assert "Round 3 — rebuttal" in sys_text
 
     def test_review_passes_prior_transcript_when_given(
-        self, reviewer_config: ResearchConfig,
+        self,
+        reviewer_config: ResearchConfig,
     ) -> None:
         agent = BullReviewer.from_config(
-            name="test_agent", research_config=reviewer_config,
+            name="test_agent",
+            research_config=reviewer_config,
         )
         agent.client.driver.canned_text = "**FINAL_POSITION**: PROMOTE"  # type: ignore[union-attr]
         agent.review(
-            candidate_report="{}", review_rules="# r",
+            candidate_report="{}",
+            review_rules="# r",
             round_name="rebuttal",
             prior_transcript="Bear said: C.1 FAIL line 142",
         )
@@ -320,14 +343,17 @@ class TestReviewer:
         assert "<context label='debate_transcript_so_far'>" in user_text
 
     def test_review_returns_agent_response_with_token_counts(
-        self, reviewer_config: ResearchConfig,
+        self,
+        reviewer_config: ResearchConfig,
     ) -> None:
         agent = BullReviewer.from_config(
-            name="test_agent", research_config=reviewer_config,
+            name="test_agent",
+            research_config=reviewer_config,
         )
         agent.client.driver.canned_text = "**FINAL_POSITION**: PROMOTE"  # type: ignore[union-attr]
         result = agent.review(
-            candidate_report="{}", review_rules="# r",
+            candidate_report="{}",
+            review_rules="# r",
             round_name="initial_positions",
         )
         assert isinstance(result.response, AgentResponse)
@@ -383,9 +409,7 @@ class TestRealPromptFiles:
             "configs/research_prompts/bear_reviewer.md",
         ):
             text = Path(prompt_file).read_text()
-            assert "EVIDENCE_FIRST.md" in text, (
-                f"{prompt_file} doesn't reference EVIDENCE_FIRST.md"
-            )
+            assert "EVIDENCE_FIRST.md" in text, f"{prompt_file} doesn't reference EVIDENCE_FIRST.md"
 
     def test_evidence_first_doc_exists_with_principle(self) -> None:
         """The doctrine itself — must contain the operator's standing

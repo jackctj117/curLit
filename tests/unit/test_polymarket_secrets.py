@@ -12,7 +12,6 @@ from src.execution.polymarket_secrets import (
     load_polymarket_creds,
 )
 
-
 _REQUIRED_ENV: tuple[tuple[str, str], ...] = (
     ("SIGNER_PK", "0xabc"),
     ("API_KEY", "uuid-1234"),
@@ -66,15 +65,19 @@ class TestEnvFallback:
         env_vars = _env_for("amoy")
         env_vars.pop("POLYMARKET_AMOY_RPC_URL")
         # Clean up any residual mainnet vars too.
-        with patch.dict(
-            os.environ, {**env_vars}, clear=True,
-        ):
-            with patch(
+        with (
+            patch.dict(
+                os.environ,
+                {**env_vars},
+                clear=True,
+            ),
+            patch(
                 "src.execution.polymarket_secrets._try_vault",
                 return_value=None,
-            ):
-                with pytest.raises(RuntimeError, match="missing from vault AND env"):
-                    load_polymarket_creds("amoy")
+            ),
+            pytest.raises(RuntimeError, match="missing from vault AND env"),
+        ):
+            load_polymarket_creds("amoy")
 
 
 class TestVaultPath:

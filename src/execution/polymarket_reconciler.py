@@ -45,14 +45,14 @@ _ORDER_FILLED_ABI: dict[str, Any] = {
     "name": "OrderFilled",
     "type": "event",
     "inputs": [
-        {"indexed": True,  "name": "orderHash",          "type": "bytes32"},
-        {"indexed": True,  "name": "maker",              "type": "address"},
-        {"indexed": True,  "name": "taker",              "type": "address"},
-        {"indexed": False, "name": "makerAssetId",       "type": "uint256"},
-        {"indexed": False, "name": "takerAssetId",       "type": "uint256"},
-        {"indexed": False, "name": "makerAmountFilled",  "type": "uint256"},
-        {"indexed": False, "name": "takerAmountFilled",  "type": "uint256"},
-        {"indexed": False, "name": "fee",                "type": "uint256"},
+        {"indexed": True, "name": "orderHash", "type": "bytes32"},
+        {"indexed": True, "name": "maker", "type": "address"},
+        {"indexed": True, "name": "taker", "type": "address"},
+        {"indexed": False, "name": "makerAssetId", "type": "uint256"},
+        {"indexed": False, "name": "takerAssetId", "type": "uint256"},
+        {"indexed": False, "name": "makerAmountFilled", "type": "uint256"},
+        {"indexed": False, "name": "takerAmountFilled", "type": "uint256"},
+        {"indexed": False, "name": "fee", "type": "uint256"},
     ],
 }
 
@@ -99,17 +99,17 @@ def fetch_onchain_fills(
         # Import from the canonical submodule — the eth_utils package
         # re-exports to_checksum_address without declaring it for mypy.
         from eth_utils.address import to_checksum_address as _checksum
+
         funder_cs = _checksum(funder_address)
     except ImportError:
         funder_cs = funder_address
 
     contract = w3.eth.contract(
-        address=contract_address, abi=[_ORDER_FILLED_ABI],
+        address=contract_address,
+        abi=[_ORDER_FILLED_ABI],
     )
 
-    to_block_int = (
-        w3.eth.block_number if to_block == "latest" else int(to_block)
-    )
+    to_block_int = w3.eth.block_number if to_block == "latest" else int(to_block)
 
     out: list[OnchainFill] = []
     for arg_filter in [{"maker": funder_cs}, {"taker": funder_cs}]:
@@ -117,13 +117,16 @@ def fetch_onchain_fills(
             end = min(start + chunk_size - 1, to_block_int)
             try:
                 logs = contract.events.OrderFilled.get_logs(
-                    from_block=start, to_block=end,
+                    from_block=start,
+                    to_block=end,
                     argument_filters=arg_filter,
                 )
             except Exception:
                 logger.warning(
-                    "polymarket reconciler: log fetch failed blocks "
-                    "%d-%d filter=%s", start, end, arg_filter,
+                    "polymarket reconciler: log fetch failed blocks %d-%d filter=%s",
+                    start,
+                    end,
+                    arg_filter,
                     exc_info=True,
                 )
                 continue
@@ -198,13 +201,13 @@ def reconcile(
     triage; the summary just carries the counts.
     """
     onchain = fetch_onchain_fills(
-        w3, funder_address, since_block,
+        w3,
+        funder_address,
+        since_block,
         contract_address=contract_address,
     )
     onchain_by_hash = {f.order_hash: f for f in onchain}
-    journal_by_hash = {
-        j["order_hash"]: j for j in journal_fills if "order_hash" in j
-    }
+    journal_by_hash = {j["order_hash"]: j for j in journal_fills if "order_hash" in j}
 
     matched_keys = set(onchain_by_hash) & set(journal_by_hash)
     onchain_only_keys = set(onchain_by_hash) - matched_keys
@@ -213,16 +216,19 @@ def reconcile(
     if onchain_only_keys:
         logger.warning(
             "polymarket reconcile: %d onchain fills NOT in journal: %s",
-            len(onchain_only_keys), sorted(onchain_only_keys)[:20],
+            len(onchain_only_keys),
+            sorted(onchain_only_keys)[:20],
         )
     if journal_only_keys:
         logger.warning(
             "polymarket reconcile: %d journal fills NOT onchain: %s",
-            len(journal_only_keys), sorted(journal_only_keys)[:20],
+            len(journal_only_keys),
+            sorted(journal_only_keys)[:20],
         )
 
     last_block = max(
-        (f.block_number for f in onchain), default=since_block,
+        (f.block_number for f in onchain),
+        default=since_block,
     )
     return ReconcileSummary(
         onchain_count=len(onchain),

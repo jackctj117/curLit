@@ -17,7 +17,9 @@ from src.edge_testing.decay_detection import (
 # =============================================================================
 
 
-def _stable_returns(n_days: int = 500, mean: float = 0.0006, vol: float = 0.006, seed: int = 0) -> pd.Series:
+def _stable_returns(
+    n_days: int = 500, mean: float = 0.0006, vol: float = 0.006, seed: int = 0
+) -> pd.Series:
     """Stationary returns with constant mean — should NOT decay."""
     rng = np.random.default_rng(seed)
     return pd.Series(
@@ -27,7 +29,9 @@ def _stable_returns(n_days: int = 500, mean: float = 0.0006, vol: float = 0.006,
 
 
 def _decaying_returns(
-    n_days: int = 500, vol: float = 0.003, seed: int = 0,
+    n_days: int = 500,
+    vol: float = 0.003,
+    seed: int = 0,
 ) -> pd.Series:
     """Returns whose mean degrades linearly from strongly positive to negative.
 
@@ -45,7 +49,9 @@ def _decaying_returns(
 
 
 def _abrupt_drop_returns(
-    n_days: int = 500, drop_at: int = 400, seed: int = 0,
+    n_days: int = 500,
+    drop_at: int = 400,
+    seed: int = 0,
 ) -> pd.Series:
     """Returns that flip from positive to strongly negative at `drop_at`.
 
@@ -155,17 +161,17 @@ class TestClassification:
         # Per-quarter means: 0.002, 0.001, 0.0, -0.001 (strict monotone decline).
         means_per_quarter = [0.002, 0.001, 0.0, -0.001]
         n_per_q = days // 4
-        arr = np.concatenate([
-            rng.normal(m, 0.005, n_per_q) for m in means_per_quarter
-        ])
+        arr = np.concatenate([rng.normal(m, 0.005, n_per_q) for m in means_per_quarter])
         ret = pd.Series(
-            arr, index=pd.date_range("2024-01-01", periods=len(arr), freq="B"),
+            arr,
+            index=pd.date_range("2024-01-01", periods=len(arr), freq="B"),
         )
         monitor = EdgeDecayMonitor()
         result = monitor.check_decay(ret)
         # Strong decay or moderate (tau very negative).
         assert result.severity in {
-            DecaySeverity.STRONG_DECAY, DecaySeverity.MODERATE_DECAY,
+            DecaySeverity.STRONG_DECAY,
+            DecaySeverity.MODERATE_DECAY,
         }
 
     def test_severity_classifier_is_deterministic(self) -> None:
@@ -178,12 +184,27 @@ class TestClassification:
 
     def test_recommendation_classifier_is_deterministic(self) -> None:
         m = EdgeDecayMonitor
-        assert m._recommend(tau=-0.8, trend_p=0.005, mw_p=0.5, slope=0.0) == DecayRecommendation.RETIRE_STRATEGY
-        assert m._recommend(tau=-0.6, trend_p=0.05, mw_p=0.01, slope=0.0) == DecayRecommendation.REDUCE_SIZE_50PCT_AND_INVESTIGATE
-        assert m._recommend(tau=-0.4, trend_p=0.5, mw_p=0.5, slope=0.0) == DecayRecommendation.MONITOR_CLOSELY_WEEKLY_REVIEW
+        assert (
+            m._recommend(tau=-0.8, trend_p=0.005, mw_p=0.5, slope=0.0)
+            == DecayRecommendation.RETIRE_STRATEGY
+        )
+        assert (
+            m._recommend(tau=-0.6, trend_p=0.05, mw_p=0.01, slope=0.0)
+            == DecayRecommendation.REDUCE_SIZE_50PCT_AND_INVESTIGATE
+        )
+        assert (
+            m._recommend(tau=-0.4, trend_p=0.5, mw_p=0.5, slope=0.0)
+            == DecayRecommendation.MONITOR_CLOSELY_WEEKLY_REVIEW
+        )
         # Slope decay without other signals → check regime.
-        assert m._recommend(tau=-0.1, trend_p=0.5, mw_p=0.5, slope=-0.01) == DecayRecommendation.CHECK_REGIME_HYPOTHESIS
-        assert m._recommend(tau=-0.1, trend_p=0.5, mw_p=0.5, slope=0.0) == DecayRecommendation.NO_ACTION_EDGE_STABLE
+        assert (
+            m._recommend(tau=-0.1, trend_p=0.5, mw_p=0.5, slope=-0.01)
+            == DecayRecommendation.CHECK_REGIME_HYPOTHESIS
+        )
+        assert (
+            m._recommend(tau=-0.1, trend_p=0.5, mw_p=0.5, slope=0.0)
+            == DecayRecommendation.NO_ACTION_EDGE_STABLE
+        )
 
 
 # =============================================================================
@@ -202,6 +223,7 @@ class TestConstruction:
 
     def test_to_dict_serializable(self) -> None:
         import json
+
         monitor = EdgeDecayMonitor()
         ret = _stable_returns(n_days=500)
         result = monitor.check_decay(ret)

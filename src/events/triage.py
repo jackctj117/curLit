@@ -150,7 +150,8 @@ class EventTriage:
     ) -> None:
         self.client = client if client is not None else get_client("claude-code")
         self.model = model or os.environ.get(
-            "EVENT_TRIAGE_MODEL", DEFAULT_TRIAGE_MODEL,
+            "EVENT_TRIAGE_MODEL",
+            DEFAULT_TRIAGE_MODEL,
         )
         if min_relevance is not None:
             self.min_relevance = min_relevance
@@ -158,14 +159,14 @@ class EventTriage:
             try:
                 self.min_relevance = int(
                     os.environ.get(
-                        "EVENT_TRIAGE_MIN_RELEVANCE", str(DEFAULT_MIN_RELEVANCE),
+                        "EVENT_TRIAGE_MIN_RELEVANCE",
+                        str(DEFAULT_MIN_RELEVANCE),
                     ),
                 )
             except ValueError:
                 self.min_relevance = DEFAULT_MIN_RELEVANCE
         self.enabled = (
-            enabled if enabled is not None
-            else env_flag("EVENT_TRIAGE_ENABLED", default=False)
+            enabled if enabled is not None else env_flag("EVENT_TRIAGE_ENABLED", default=False)
         )
         self.max_tokens = max_tokens
 
@@ -178,7 +179,8 @@ class EventTriage:
         return "\n".join(lines)
 
     def score_batch(
-        self, rows: list[dict[str, Any]],
+        self,
+        rows: list[dict[str, Any]],
     ) -> dict[int, TriageVerdict]:
         """Score a batch of NEW-event rows → ``{event_id: TriageVerdict}``.
 
@@ -201,7 +203,8 @@ class EventTriage:
         except Exception as exc:
             logger.warning(
                 "event triage failed — failing OPEN, all %d escalate: %s",
-                len(rows), str(exc)[:200],
+                len(rows),
+                str(exc)[:200],
             )
             return {}
 
@@ -215,7 +218,8 @@ class EventTriage:
                 continue
             try:
                 relevance = max(
-                    0, min(10, int(round(float(item.get("relevance", 0))))),
+                    0,
+                    min(10, int(round(float(item.get("relevance", 0))))),
                 )
             except (TypeError, ValueError):
                 relevance = 10  # unparseable score → escalate (fail safe)

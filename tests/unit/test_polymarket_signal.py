@@ -50,9 +50,11 @@ def engine(tmp_path: Path) -> Engine:
     from migrations.run import _strip_sql_comments
 
     eng = create_engine(f"sqlite:///{tmp_path / 'poly.db'}")
-    sql = _shim(_strip_sql_comments(
-        Path("migrations/009_poly_market_probs.sql").read_text(),
-    ))
+    sql = _shim(
+        _strip_sql_comments(
+            Path("migrations/009_poly_market_probs.sql").read_text(),
+        )
+    )
     with eng.begin() as conn:
         for stmt in [s.strip() for s in sql.split(";") if s.strip()]:
             conn.execute(text(stmt))
@@ -94,8 +96,12 @@ def _gamma_market(prob: float) -> dict[str, Any]:
 
 
 def _insert_obs(
-    eng: Engine, slug: str, prob: float, observed_at: datetime,
-    theme: str = "energy_chokepoint", question: str = MARKET.question,
+    eng: Engine,
+    slug: str,
+    prob: float,
+    observed_at: datetime,
+    theme: str = "energy_chokepoint",
+    question: str = MARKET.question,
     notified: str | None = None,
 ) -> None:
     with eng.begin() as conn:
@@ -107,8 +113,12 @@ def _insert_obs(
                 "VALUES (:slug, :q, :theme, :prob, :ts, 'gamma', :n)"
             ),
             {
-                "slug": slug, "q": question, "theme": theme,
-                "prob": prob, "ts": observed_at.isoformat(), "n": notified,
+                "slug": slug,
+                "q": question,
+                "theme": theme,
+                "prob": prob,
+                "ts": observed_at.isoformat(),
+                "n": notified,
             },
         )
 
@@ -156,10 +166,12 @@ class TestFetchCurrentProb:
 
     def test_midpoint_fallback(self, engine: Engine) -> None:
         # Gamma returns nothing usable → fall through to CLOB midpoint.
-        http = FakeHttp({
-            MARKET.slug: {"outcomePrices": None},
-            MARKET.yes_token_id: {"mid": "0.47"},
-        })
+        http = FakeHttp(
+            {
+                MARKET.slug: {"outcomePrices": None},
+                MARKET.yes_token_id: {"mid": "0.47"},
+            }
+        )
         sig = PolymarketSignal(engine, http_get_json=http)
         assert sig.fetch_current_prob(MARKET) == pytest.approx(0.47)
 
@@ -186,9 +198,9 @@ class TestPollProbabilities:
         observed = sig.poll_probabilities([MARKET])
         assert len(observed) == 1
         with engine.connect() as conn:
-            rows = list(conn.execute(text(
-                "SELECT slug, theme, yes_prob, source FROM poly_market_probs"
-            )))
+            rows = list(
+                conn.execute(text("SELECT slug, theme, yes_prob, source FROM poly_market_probs"))
+            )
         assert len(rows) == 1
         assert rows[0].slug == MARKET.slug
         assert rows[0].theme == "energy_chokepoint"
@@ -204,9 +216,7 @@ class TestPollProbabilities:
         # Only the good market persisted; the bad one didn't kill the poll.
         assert {m.slug for m, _ in observed} == {"good"}
         with engine.connect() as conn:
-            n = conn.execute(text(
-                "SELECT COUNT(*) FROM poly_market_probs"
-            )).scalar()
+            n = conn.execute(text("SELECT COUNT(*) FROM poly_market_probs")).scalar()
         assert n == 1
 
 
@@ -299,9 +309,13 @@ class TestDetectShifts:
 class TestShiftAlert:
     def _shift(self, prob: float, delta: float, question: str) -> ProbShift:
         return ProbShift(
-            slug="hormuz-closure-2026", question=question,
-            theme="energy_chokepoint", latest_prob=prob,
-            earliest_prob=prob - delta, delta=delta, window_hours=24,
+            slug="hormuz-closure-2026",
+            question=question,
+            theme="energy_chokepoint",
+            latest_prob=prob,
+            earliest_prob=prob - delta,
+            delta=delta,
+            window_hours=24,
             anchor_id=1,
         )
 
@@ -330,7 +344,9 @@ class TestShiftAlert:
         assert "<peace>" not in msg
 
     def test_notify_marks_and_sends(
-        self, engine: Engine, monkeypatch: pytest.MonkeyPatch,
+        self,
+        engine: Engine,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         from src.events import polymarket_signal as mod
         from src.research.notifications import DispatchResult
@@ -357,18 +373,17 @@ class TestShiftAlert:
 
 class TestImpliedRead:
     def test_rising_escalation_market(self) -> None:
-        s = ProbShift("s", "Will Taiwan be blockaded?", "taiwan_semiconductor",
-                      0.4, 0.25, 0.15, 24)
+        s = ProbShift("s", "Will Taiwan be blockaded?", "taiwan_semiconductor", 0.4, 0.25, 0.15, 24)
         assert "ESCALATION" in _implied_read(s)
 
     def test_rising_ceasefire_market_is_deescalation(self) -> None:
-        s = ProbShift("s", "Will there be a ceasefire in Ukraine?",
-                      "russia_ukraine", 0.5, 0.3, 0.2, 24)
+        s = ProbShift(
+            "s", "Will there be a ceasefire in Ukraine?", "russia_ukraine", 0.5, 0.3, 0.2, 24
+        )
         assert "DE-ESCALATION" in _implied_read(s)
 
     def test_ambiguous_falls_back(self) -> None:
-        s = ProbShift("s", "Some vague question about a thing", "other",
-                      0.5, 0.3, 0.2, 24)
+        s = ProbShift("s", "Some vague question about a thing", "other", 0.5, 0.3, 0.2, 24)
         read = _implied_read(s)
         assert "rising YES" in read
 
@@ -381,12 +396,17 @@ class TestImpliedRead:
 class TestLatestProbForTheme:
     def test_returns_latest_per_slug(self, engine: Engine) -> None:
         now = datetime(2026, 7, 20, 12, 0, tzinfo=UTC)
-        _insert_obs(engine, "hormuz-closure-2026", 0.10, now - timedelta(hours=2),
-                    theme="energy_chokepoint")
-        _insert_obs(engine, "hormuz-closure-2026", 0.18, now - timedelta(minutes=1),
-                    theme="energy_chokepoint")
-        _insert_obs(engine, "malacca-blocked-2026", 0.05, now,
-                    theme="energy_chokepoint")
+        _insert_obs(
+            engine, "hormuz-closure-2026", 0.10, now - timedelta(hours=2), theme="energy_chokepoint"
+        )
+        _insert_obs(
+            engine,
+            "hormuz-closure-2026",
+            0.18,
+            now - timedelta(minutes=1),
+            theme="energy_chokepoint",
+        )
+        _insert_obs(engine, "malacca-blocked-2026", 0.05, now, theme="energy_chokepoint")
         sig = PolymarketSignal(engine, http_get_json=FakeHttp({}))
         out = sig.latest_prob_for_theme("energy_chokepoint")
         assert set(out) == {"hormuz-closure-2026", "malacca-blocked-2026"}
@@ -407,12 +427,26 @@ class TestLatestProbForTheme:
 class TestLoadTrackedMarkets:
     def test_parses_entries(self, tmp_path: Path) -> None:
         cfg = tmp_path / "geo.yaml"
-        cfg.write_text(yaml.safe_dump({"markets": [
-            {"slug": "a", "question": "Q A?", "yes_token_id": "ta",
-             "theme": "war_escalation"},
-            {"slug": "b", "question": "Q B?", "yes_token_id": "tb",
-             "theme": "taiwan_semiconductor"},
-        ]}))
+        cfg.write_text(
+            yaml.safe_dump(
+                {
+                    "markets": [
+                        {
+                            "slug": "a",
+                            "question": "Q A?",
+                            "yes_token_id": "ta",
+                            "theme": "war_escalation",
+                        },
+                        {
+                            "slug": "b",
+                            "question": "Q B?",
+                            "yes_token_id": "tb",
+                            "theme": "taiwan_semiconductor",
+                        },
+                    ]
+                }
+            )
+        )
         markets = load_tracked_markets(cfg)
         assert [m.slug for m in markets] == ["a", "b"]
         assert markets[0].theme == "war_escalation"
@@ -423,18 +457,30 @@ class TestLoadTrackedMarkets:
 
     def test_skips_incomplete(self, tmp_path: Path) -> None:
         cfg = tmp_path / "geo.yaml"
-        cfg.write_text(yaml.safe_dump({"markets": [
-            {"slug": "ok", "yes_token_id": "t", "theme": "x"},
-            {"slug": "no-token", "theme": "x"},
-            {"yes_token_id": "t2", "theme": "x"},
-        ]}))
+        cfg.write_text(
+            yaml.safe_dump(
+                {
+                    "markets": [
+                        {"slug": "ok", "yes_token_id": "t", "theme": "x"},
+                        {"slug": "no-token", "theme": "x"},
+                        {"yes_token_id": "t2", "theme": "x"},
+                    ]
+                }
+            )
+        )
         markets = load_tracked_markets(cfg)
         assert [m.slug for m in markets] == ["ok"]
 
     def test_legacy_token_id_field(self, tmp_path: Path) -> None:
         cfg = tmp_path / "geo.yaml"
-        cfg.write_text(yaml.safe_dump({"markets": [
-            {"slug": "a", "token_id": "legacy", "theme": "x"},
-        ]}))
+        cfg.write_text(
+            yaml.safe_dump(
+                {
+                    "markets": [
+                        {"slug": "a", "token_id": "legacy", "theme": "x"},
+                    ]
+                }
+            )
+        )
         markets = load_tracked_markets(cfg)
         assert markets[0].yes_token_id == "legacy"

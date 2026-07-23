@@ -44,7 +44,9 @@ _MAX_SYMBOL_LEN: int = 20
 
 
 def set_runtime(
-    broker: Any, oms: Any, strategies: list[Any],
+    broker: Any,
+    oms: Any,
+    strategies: list[Any],
     kill_switch_manager: Any | None = None,
 ) -> None:
     """Wire the live engine's objects into the module-level runtime.
@@ -72,9 +74,13 @@ class TradeRequest(BaseModel):
 
 #: Known-default secrets that must NEVER authenticate (CL-k55b). "curlit-dev"
 #: was the hardcoded fallback; "change-me..." ships in .env.example.
-_FORBIDDEN_SECRETS = frozenset({
-    "", "curlit-dev", "change-me-to-a-random-string",
-})
+_FORBIDDEN_SECRETS = frozenset(
+    {
+        "",
+        "curlit-dev",
+        "change-me-to-a-random-string",
+    }
+)
 
 
 def _secret_is_forbidden(secret: str) -> bool:
@@ -110,8 +116,8 @@ def verify_secret(
         raise HTTPException(
             status_code=503,
             detail="WEB_API_SECRET is unset or a known default — the API "
-                   "refuses to serve control endpoints until a real secret "
-                   "is configured (see .env.example).",
+            "refuses to serve control endpoints until a real secret "
+            "is configured (see .env.example).",
         )
     supplied = x_api_key if x_api_key is not None else ""
     if not hmac.compare_digest(
@@ -130,8 +136,8 @@ def _require_oms() -> Any:
         raise HTTPException(
             status_code=503,
             detail="Engine runtime is not wired (no OMS) — this control "
-                   "endpoint cannot act. Start the API via the live engine "
-                   "(src.runtime.run_engine), not standalone.",
+            "endpoint cannot act. Start the API via the live engine "
+            "(src.runtime.run_engine), not standalone.",
         )
     return oms
 
@@ -154,7 +160,8 @@ def _max_trade_units() -> float:
     if not math.isfinite(cap) or cap <= 0:
         logger.error(
             "WEB_API_MAX_TRADE_UNITS=%r is not a positive finite number — "
-            "using the default cap of %.0f units", raw,
+            "using the default cap of %.0f units",
+            raw,
             _DEFAULT_MAX_TRADE_UNITS,
         )
         return _DEFAULT_MAX_TRADE_UNITS
@@ -175,34 +182,49 @@ def get_positions(_: None = Depends(verify_secret)) -> list[dict[str, Any]]:
     if broker is None:
         return []
     positions = broker.get_positions()
-    return [{"symbol": p.symbol, "quantity": p.quantity, "avg_price": p.avg_price,
-             "pnl": p.unrealized_pnl} for p in positions]
+    return [
+        {
+            "symbol": p.symbol,
+            "quantity": p.quantity,
+            "avg_price": p.avg_price,
+            "pnl": p.unrealized_pnl,
+        }
+        for p in positions
+    ]
 
 
 @app.delete("/api/positions/{symbol}")
 def close_position(symbol: str, _: None = Depends(verify_secret)) -> dict[str, Any]:
     from src.execution.broker import canonical_symbol
+
     oms = _require_oms()
     # Any instrument the broker can hold is closable (FX pairs AND index
     # CFDs like SPX500_USD), so this validates shape, not FX-ness.
     if len(symbol) > _MAX_SYMBOL_LEN or not canonical_symbol(symbol).isalnum():
         raise HTTPException(
-            status_code=400, detail=f"invalid symbol {symbol!r}",
+            status_code=400,
+            detail=f"invalid symbol {symbol!r}",
         )
     from src.execution.oms import OrderIntent
-    intent_id = oms.submit_intent(OrderIntent(
-        strategy_id="manual", symbol=symbol, target_position=0,
-        urgency="urgent",
-    ))
+
+    intent_id = oms.submit_intent(
+        OrderIntent(
+            strategy_id="manual",
+            symbol=symbol,
+            target_position=0,
+            urgency="urgent",
+        )
+    )
     # A close (target 0) is risk-reducing, so it passes the OMS halt gate;
     # the halted flag is still reported so the operator sees engine state.
-    return {"ok": True, "symbol": symbol, "intent_id": intent_id,
-            "oms_halted": _oms_halted(oms)}
+    return {"ok": True, "symbol": symbol, "intent_id": intent_id, "oms_halted": _oms_halted(oms)}
 
 
 @app.get("/api/signals")
 def get_signals(_: None = Depends(verify_secret)) -> dict[str, Any]:
-    return {"strategies": [{"id": s.id, "symbols": s.symbols} for s in _runtime.get("strategies", [])]}
+    return {
+        "strategies": [{"id": s.id, "symbols": s.symbols} for s in _runtime.get("strategies", [])]
+    }
 
 
 @app.get("/api/pnl")
@@ -231,12 +253,13 @@ def manual_trade(req: TradeRequest, _: None = Depends(verify_secret)) -> dict[st
     not this endpoint."""
     from src.execution.broker import currency_pair
     from src.execution.oms import OrderIntent, Urgency
+
     oms = _require_oms()
     if currency_pair(req.symbol) is None:
         raise HTTPException(
             status_code=400,
             detail=f"symbol {req.symbol!r} is not a canonical FX pair "
-                   "(expected e.g. EUR_USD or EURUSD)",
+            "(expected e.g. EUR_USD or EURUSD)",
         )
     valid_urgencies = tuple(u.value for u in Urgency)
     if req.urgency not in valid_urgencies:
@@ -248,24 +271,31 @@ def manual_trade(req: TradeRequest, _: None = Depends(verify_secret)) -> dict[st
         raise HTTPException(
             status_code=400,
             detail="target_position must be a finite, non-zero number of "
-                   "units (to flatten, use DELETE /api/positions/{symbol})",
+            "units (to flatten, use DELETE /api/positions/{symbol})",
         )
     cap = _max_trade_units()
     if abs(req.target_position) > cap:
         raise HTTPException(
             status_code=400,
             detail=f"|target_position| {abs(req.target_position):.0f} "
-                   f"exceeds the manual-trade cap of {cap:.0f} units "
-                   "(override via WEB_API_MAX_TRADE_UNITS)",
+            f"exceeds the manual-trade cap of {cap:.0f} units "
+            "(override via WEB_API_MAX_TRADE_UNITS)",
         )
-    intent_id = oms.submit_intent(OrderIntent(
-        strategy_id="manual", symbol=req.symbol,
-        target_position=req.target_position, urgency=req.urgency,
-    ))
+    intent_id = oms.submit_intent(
+        OrderIntent(
+            strategy_id="manual",
+            symbol=req.symbol,
+            target_position=req.target_position,
+            urgency=req.urgency,
+        )
+    )
     halted = _oms_halted(oms)
     resp: dict[str, Any] = {
-        "ok": True, "intent_id": intent_id, "symbol": req.symbol,
-        "target_position": req.target_position, "oms_halted": halted,
+        "ok": True,
+        "intent_id": intent_id,
+        "symbol": req.symbol,
+        "target_position": req.target_position,
+        "oms_halted": halted,
     }
     if halted:
         resp["note"] = (
@@ -278,8 +308,12 @@ def manual_trade(req: TradeRequest, _: None = Depends(verify_secret)) -> dict[st
 
 @app.get("/api/config")
 def get_config(_: None = Depends(verify_secret)) -> dict[str, Any]:
-    return {"strategies": [{"id": s.id, "config": s.config.__dict__ if hasattr(s, "config") else {}}
-            for s in _runtime.get("strategies", [])]}
+    return {
+        "strategies": [
+            {"id": s.id, "config": s.config.__dict__ if hasattr(s, "config") else {}}
+            for s in _runtime.get("strategies", [])
+        ]
+    }
 
 
 @app.get("/api/system")
@@ -291,9 +325,7 @@ def system_status(_: None = Depends(verify_secret)) -> dict[str, Any]:
         "engine": "running" if oms is not None else "not_wired",
         "oms_wired": oms is not None,
         "oms_halted": _oms_halted(oms) if oms is not None else True,
-        "kill_switch_manager_wired": (
-            _runtime.get("kill_switch_manager") is not None
-        ),
+        "kill_switch_manager_wired": (_runtime.get("kill_switch_manager") is not None),
     }
 
 
@@ -334,7 +366,9 @@ def resume_system(_: None = Depends(verify_secret)) -> dict[str, Any]:
             "already-fired switch cannot re-fire until UTC day rollover",
         )
     resp: dict[str, Any] = {
-        "ok": True, "action": "resume", "oms_halted": _oms_halted(oms),
+        "ok": True,
+        "action": "resume",
+        "oms_halted": _oms_halted(oms),
         "kill_switches_rearmed": rearmed,
     }
     if not rearmed:

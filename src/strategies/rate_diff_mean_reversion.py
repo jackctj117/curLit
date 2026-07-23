@@ -148,7 +148,8 @@ class RateDiffMRStrategy:
         model_version = (
             f"alpha={self._model['alpha']:.6f},beta={self._model['beta']:.6f},"
             f"std={self._model['residual_std']:.6f}"
-            if self._model else "no_model"
+            if self._model
+            else "no_model"
         )
         snapshot = FeatureSnapshot.create(
             feature_set_name=_FEATURE_SET_NAME,
@@ -162,8 +163,7 @@ class RateDiffMRStrategy:
             self.snapshot_store.store(snapshot)
         except Exception:
             logger.exception(
-                "Failed to store feature snapshot for %s — intent will lack "
-                "snapshot reference",
+                "Failed to store feature snapshot for %s — intent will lack snapshot reference",
                 self.id,
             )
             return {}
@@ -198,18 +198,23 @@ class RateDiffMRStrategy:
             # strategy stayed dormant even after the data gap was fixed.
             df = self.data.get_aligned_series(
                 [self.config.pair, self.config.rate_spread_series],
-                now - timedelta(days=self.config.lookback_days * 2), now,
+                now - timedelta(days=self.config.lookback_days * 2),
+                now,
             )
             if df is None or len(df) < 100:
-                logger.warning("Model refit skipped — insufficient data (%d rows)", len(df) if df is not None else 0)
+                logger.warning(
+                    "Model refit skipped — insufficient data (%d rows)",
+                    len(df) if df is not None else 0,
+                )
                 return
             if self.config.rate_spread_series not in df.columns:
                 logger.warning(
-                    "Model refit skipped — spread series %s absent from "
-                    "aligned data", self.config.rate_spread_series,
+                    "Model refit skipped — spread series %s absent from aligned data",
+                    self.config.rate_spread_series,
                 )
                 return
             import statsmodels.api as sm
+
             df = df.dropna().tail(self.config.lookback_days)
             df["spread"] = df[self.config.rate_spread_series]
             X = sm.add_constant(df[["spread"]])
@@ -223,15 +228,20 @@ class RateDiffMRStrategy:
             }
             self._last_fit = now
             assert self._model["residual_std"] > 0, "zero residual std — degenerate model"
-            logger.info("Model refit: R²=%.3f β=%.4f σ=%.5f n=%d",
-                         self._model["r_squared"], self._model["beta"],
-                         self._model["residual_std"], len(df))
+            logger.info(
+                "Model refit: R²=%.3f β=%.4f σ=%.5f n=%d",
+                self._model["r_squared"],
+                self._model["beta"],
+                self._model["residual_std"],
+                len(df),
+            )
         except Exception:
             # Broad by design: a failed refit keeps the previous model; the
             # tick must survive. Logged loudly with strategy context (CL-gmr1).
             logger.exception(
                 "Model refit failed for %s (%s) — keeping previous model",
-                self.id, self.config.pair,
+                self.id,
+                self.config.pair,
             )
 
     def _compute_z_score(self, price: float, spread: float) -> float | None:
@@ -242,6 +252,7 @@ class RateDiffMRStrategy:
 
     def fit(self, train_data: pd.DataFrame) -> None:
         import statsmodels.api as sm
+
         df = train_data.dropna()
         if len(df) < 100:
             return
@@ -249,21 +260,24 @@ class RateDiffMRStrategy:
         X = sm.add_constant(df[["spread"]])
         y = df[self.config.pair]
         ols = sm.OLS(y, X).fit()
-        self._model = {"alpha": float(ols.params.iloc[0]), "beta": float(ols.params.iloc[1]),
-                        "r_squared": float(ols.rsquared), "residual_std": float(ols.resid.std())}
+        self._model = {
+            "alpha": float(ols.params.iloc[0]),
+            "beta": float(ols.params.iloc[1]),
+            "r_squared": float(ols.rsquared),
+            "residual_std": float(ols.resid.std()),
+        }
         self._last_fit = datetime.now(UTC)
 
     def _any_filter_enabled(self) -> bool:
         """CL-x50g: True when at least one entry filter is switched on."""
         c = self.config
         return bool(
-            c.carry_filter_enabled
-            or c.momentum_filter_enabled
-            or c.regime_filter_enabled,
+            c.carry_filter_enabled or c.momentum_filter_enabled or c.regime_filter_enabled,
         )
 
     def _entry_filter_masks(
-        self, df: pd.DataFrame,
+        self,
+        df: pd.DataFrame,
     ) -> tuple[np.ndarray, np.ndarray] | None:
         """CL-x50g: per-row entry-permission masks for the backtest path.
 
@@ -295,20 +309,19 @@ class RateDiffMRStrategy:
                 logger.warning(
                     "Carry filter: OIS series missing from backtest frame "
                     "(%s present=%s, %s present=%s) — filter passes (fail-open)",
-                    c.carry_quote_rate_series, quote is not None,
-                    c.carry_base_rate_series, base is not None,
+                    c.carry_quote_rate_series,
+                    quote is not None,
+                    c.carry_base_rate_series,
+                    base is not None,
                 )
             else:
-                carry = (
-                    pd.to_numeric(quote, errors="coerce")
-                    - pd.to_numeric(base, errors="coerce")
-                )
+                carry = pd.to_numeric(quote, errors="coerce") - pd.to_numeric(base, errors="coerce")
                 known = carry.notna().to_numpy()
                 if not known.all():
                     logger.warning(
-                        "Carry filter: %d/%d rows missing OIS data — those "
-                        "rows pass (fail-open)",
-                        int((~known).sum()), n,
+                        "Carry filter: %d/%d rows missing OIS data — those rows pass (fail-open)",
+                        int((~known).sum()),
+                        n,
                     )
                 vals = carry.to_numpy(dtype=float)
                 # Positive US-minus-EUR spread favors USD strength → pair
@@ -320,12 +333,14 @@ class RateDiffMRStrategy:
             if c.pair not in df.columns:
                 logger.warning(
                     "Momentum filter: close column %s missing from backtest "
-                    "frame — filter passes (fail-open)", c.pair,
+                    "frame — filter passes (fail-open)",
+                    c.pair,
                 )
             else:
                 closes = pd.to_numeric(df[c.pair], errors="coerce")
                 mom = closes.pct_change(
-                    periods=c.momentum_lookback_days, fill_method=None,
+                    periods=c.momentum_lookback_days,
+                    fill_method=None,
                 )
                 known = mom.notna().to_numpy()
                 vals = mom.to_numpy(dtype=float)
@@ -339,11 +354,13 @@ class RateDiffMRStrategy:
             if vol is None:
                 logger.debug(
                     "Regime filter: vol series %s missing from backtest "
-                    "frame — filter passes (fail-open)", c.vol_index_series,
+                    "frame — filter passes (fail-open)",
+                    c.vol_index_series,
                 )
             else:
                 vol_z = rolling_vol_z(
-                    pd.to_numeric(vol, errors="coerce"), c.vol_lookback_days,
+                    pd.to_numeric(vol, errors="coerce"),
+                    c.vol_lookback_days,
                 )
                 known = vol_z.notna().to_numpy()
                 vals = vol_z.to_numpy(dtype=float)
@@ -374,15 +391,17 @@ class RateDiffMRStrategy:
                     if masks is None or masks[0][i]:
                         pos = 1.0
                         entry_i = i
-                elif z > self.config.entry_z_threshold and (
-                    masks is None or masks[1][i]
-                ):
+                elif z > self.config.entry_z_threshold and (masks is None or masks[1][i]):
                     pos = -1.0
                     entry_i = i
             else:
                 days = i - entry_i
-                stop = (pos > 0 and z < -self.config.stop_loss_z) or (pos < 0 and z > self.config.stop_loss_z)
-                exit_ok = (pos > 0 and z >= -self.config.exit_z_threshold) or (pos < 0 and z <= self.config.exit_z_threshold)
+                stop = (pos > 0 and z < -self.config.stop_loss_z) or (
+                    pos < 0 and z > self.config.stop_loss_z
+                )
+                exit_ok = (pos > 0 and z >= -self.config.exit_z_threshold) or (
+                    pos < 0 and z <= self.config.exit_z_threshold
+                )
                 if stop or exit_ok or days > self.config.max_holding_days:
                     pos = 0.0
             positions.append(pos)
@@ -405,7 +424,9 @@ class RateDiffMRStrategy:
         except Exception as exc:
             logger.warning(
                 "Momentum filter: get_aligned_series failed for %s: %s: %s",
-                self.config.pair, type(exc).__name__, exc,
+                self.config.pair,
+                type(exc).__name__,
+                exc,
             )
             return None
         if df is None or self.config.pair not in df.columns:
@@ -416,7 +437,9 @@ class RateDiffMRStrategy:
         return float(closes.iloc[-1] / closes.iloc[-(lookback + 1)] - 1.0)
 
     def _evaluate_entry_filters_live(
-        self, direction: int, now: datetime,
+        self,
+        direction: int,
+        now: datetime,
     ) -> tuple[bool, dict[str, Any]]:
         """CL-x50g: point-in-time entry-filter evaluation for the live path.
 
@@ -448,7 +471,9 @@ class RateDiffMRStrategy:
                     # the underlying error visible for diagnosis (CL-gmr1).
                     logger.debug(
                         "%s: carry rate lookup failed: %s: %s",
-                        self.id, type(exc).__name__, exc,
+                        self.id,
+                        type(exc).__name__,
+                        exc,
                     )
                     quote = base = None  # treated as a data gap below
             carry: float | None = None
@@ -459,8 +484,10 @@ class RateDiffMRStrategy:
                         "Carry filter: OIS data unavailable (%s=%s, %s=%s) — "
                         "filter passes (fail-open); suppressing repeat "
                         "warnings until data returns",
-                        c.carry_quote_rate_series, quote,
-                        c.carry_base_rate_series, base,
+                        c.carry_quote_rate_series,
+                        quote,
+                        c.carry_base_rate_series,
+                        base,
                     )
                     self._carry_gap_active = True
             else:
@@ -491,11 +518,16 @@ class RateDiffMRStrategy:
         # Regime: no fresh mean-reversion entries into a vol blowout.
         if c.regime_filter_enabled:
             vol_z = compute_vol_z_score(
-                self.data, c.vol_index_series, c.vol_lookback_days, now,
+                self.data,
+                c.vol_index_series,
+                c.vol_lookback_days,
+                now,
             )
             passed = vol_z <= c.regime_max_vol_z
             diag["regime"] = {
-                "enabled": True, "passed": passed, "value": float(vol_z),
+                "enabled": True,
+                "passed": passed,
+                "value": float(vol_z),
             }
             allowed = allowed and passed
         else:
@@ -518,8 +550,10 @@ class RateDiffMRStrategy:
         try:
             if abs(self._position_size) > 1e-9:
                 self.state.record_entry(
-                    self.id, now,
-                    {"symbol": self.config.pair}, self._position_size,
+                    self.id,
+                    now,
+                    {"symbol": self.config.pair},
+                    self._position_size,
                 )
             else:
                 self.state.record_exit(self.id, now, reason or "flat")
@@ -544,6 +578,7 @@ class RateDiffMRStrategy:
             logger.warning("%s: broker position sync skipped — read failed", self.id)
             return
         from src.execution.broker import canonical_symbol  # noqa: PLC0415
+
         pair_key = canonical_symbol(self.config.pair)
         broker_qty = 0.0
         for p in positions:
@@ -554,7 +589,9 @@ class RateDiffMRStrategy:
             return
         logger.info(
             "%s: syncing position %.2f -> %.2f from broker (reject/restart)",
-            self.id, self._position_size, broker_qty,
+            self.id,
+            self._position_size,
+            broker_qty,
         )
         self._position_size = broker_qty
         if broker_qty == 0.0:
@@ -574,27 +611,38 @@ class RateDiffMRStrategy:
         self._persist_position("broker_sync")
 
     async def generate_intents(
-        self, prices: dict[str, Any], broker: Any,
+        self,
+        prices: dict[str, Any],
+        broker: Any,
     ) -> list[OrderIntent]:
         self._sync_position_from_broker(broker)
         self._refit_if_stale()
         if self._model is None or self._model["r_squared"] < self.config.min_r_squared:
             r2 = self._model["r_squared"] if self._model else 0
-            logger.debug("Quality gate: R²=%.3f below threshold %.3f, sitting out",
-                          r2, self.config.min_r_squared)
+            logger.debug(
+                "Quality gate: R²=%.3f below threshold %.3f, sitting out",
+                r2,
+                self.config.min_r_squared,
+            )
             if self._position_size != 0:
                 logger.info("Flattening — model quality degraded below gate")
                 self._position_size = 0
                 self._persist_position("model_quality_degraded")
-                meta = self._emit_snapshot({
-                    "trigger": "model_quality_degraded",
-                    "r_squared": float(r2),
-                    "min_r_squared": self.config.min_r_squared,
-                })
-                return [OrderIntent(
-                    strategy_id=self.id, symbol=self.config.pair,
-                    target_position=0, metadata=meta,
-                )]
+                meta = self._emit_snapshot(
+                    {
+                        "trigger": "model_quality_degraded",
+                        "r_squared": float(r2),
+                        "min_r_squared": self.config.min_r_squared,
+                    }
+                )
+                return [
+                    OrderIntent(
+                        strategy_id=self.id,
+                        symbol=self.config.pair,
+                        target_position=0,
+                        metadata=meta,
+                    )
+                ]
             return []
 
         tick = prices.get(self.config.pair)
@@ -617,7 +665,9 @@ class RateDiffMRStrategy:
         if self.data:
             try:
                 spread_df = self.data.get_aligned_series(
-                    [series_id], now - timedelta(days=5), now,
+                    [series_id],
+                    now - timedelta(days=5),
+                    now,
                 )
                 if spread_df is not None and series_id in spread_df.columns:
                     col = spread_df[series_id].dropna()
@@ -628,7 +678,10 @@ class RateDiffMRStrategy:
                 # failure. warning w/o traceback per CL-2yta.
                 logger.warning(
                     "%s: spread query for %s failed (%s: %s)",
-                    self.id, series_id, type(exc).__name__, exc,
+                    self.id,
+                    series_id,
+                    type(exc).__name__,
+                    exc,
                 )
         if current_spread is None:
             # Data gap: reuse the last known-good value rather than fabricate.
@@ -641,7 +694,8 @@ class RateDiffMRStrategy:
             logger.warning(
                 "%s: no live value for %s and no cached spread — skipping "
                 "tick (refusing to fabricate the model's input)",
-                self.id, series_id,
+                self.id,
+                series_id,
             )
             return []
         self._last_spread = current_spread
@@ -656,7 +710,13 @@ class RateDiffMRStrategy:
         signal_z_score.labels(strategy_id=self.id, pair=self.config.pair).set(z)
         signals_generated.labels(strategy_id=self.id, action="evaluate").inc()
 
-        logger.debug("Z=%.2f price=%.5f spread=%.4f pos=%.0f", z, current_price, current_spread, self._position_size)
+        logger.debug(
+            "Z=%.2f price=%.5f spread=%.4f pos=%.0f",
+            z,
+            current_price,
+            current_spread,
+            self._position_size,
+        )
 
         # Exit check
         if abs(self._position_size) > 0.001:
@@ -676,31 +736,46 @@ class RateDiffMRStrategy:
                 elif z > self.config.stop_loss_z:
                     should_exit = True
                     exit_reason = "stop_loss"
-            if not should_exit and self._entry_ts and \
-               (datetime.now(UTC) - self._entry_ts).days > self.config.max_holding_days:
+            if (
+                not should_exit
+                and self._entry_ts
+                and (datetime.now(UTC) - self._entry_ts).days > self.config.max_holding_days
+            ):
                 should_exit = True
                 exit_reason = "timeout"
             if should_exit:
                 assert self._entry_z is not None
-                logger.info("Exit %s: entry_z=%.2f exit_z=%.2f pos=%.0f reason=%s",
-                            self.config.pair, self._entry_z, z, self._position_size, exit_reason)
-                meta = self._emit_snapshot({
-                    "trigger": "exit",
-                    "exit_reason": exit_reason,
-                    "z": float(z),
-                    "entry_z": float(self._entry_z),
-                    "price": float(current_price),
-                    "spread": float(current_spread),
-                })
+                logger.info(
+                    "Exit %s: entry_z=%.2f exit_z=%.2f pos=%.0f reason=%s",
+                    self.config.pair,
+                    self._entry_z,
+                    z,
+                    self._position_size,
+                    exit_reason,
+                )
+                meta = self._emit_snapshot(
+                    {
+                        "trigger": "exit",
+                        "exit_reason": exit_reason,
+                        "z": float(z),
+                        "entry_z": float(self._entry_z),
+                        "price": float(current_price),
+                        "spread": float(current_spread),
+                    }
+                )
                 self._position_size = 0.0
                 self._entry_z = None
                 self._entry_ts = None
                 self._persist_position(exit_reason)
                 signals_generated.labels(strategy_id=self.id, action="exit").inc()
-                return [OrderIntent(
-                    strategy_id=self.id, symbol=self.config.pair,
-                    target_position=0, metadata=meta,
-                )]
+                return [
+                    OrderIntent(
+                        strategy_id=self.id,
+                        symbol=self.config.pair,
+                        target_position=0,
+                        metadata=meta,
+                    )
+                ]
             return []
 
         # Entry check
@@ -711,28 +786,33 @@ class RateDiffMRStrategy:
             # CL-x50g: entry filters gate NEW entries only — exits above are
             # never blocked. Snapshot records which filters blocked/passed.
             filters_ok, filter_diag = self._evaluate_entry_filters_live(
-                direction, datetime.now(UTC),
+                direction,
+                datetime.now(UTC),
             )
             if not filters_ok:
                 blocked = [
-                    name for name, d in filter_diag.items()
-                    if d["enabled"] and not d["passed"]
+                    name for name, d in filter_diag.items() if d["enabled"] and not d["passed"]
                 ]
                 logger.info(
                     "Entry blocked by filters %s: z=%.2f dir=%d",
-                    blocked, z, direction,
+                    blocked,
+                    z,
+                    direction,
                 )
                 signals_generated.labels(
-                    strategy_id=self.id, action="entry_blocked",
+                    strategy_id=self.id,
+                    action="entry_blocked",
                 ).inc()
-                self._emit_snapshot({
-                    "trigger": "entry_blocked",
-                    "z": float(z),
-                    "direction": int(direction),
-                    "price": float(current_price),
-                    "spread": float(current_spread),
-                    "filters": filter_diag,
-                })
+                self._emit_snapshot(
+                    {
+                        "trigger": "entry_blocked",
+                        "z": float(z),
+                        "direction": int(direction),
+                        "price": float(current_price),
+                        "spread": float(current_spread),
+                        "filters": filter_diag,
+                    }
+                )
                 return []
             account = broker.get_account()
             equity = account.equity
@@ -753,26 +833,33 @@ class RateDiffMRStrategy:
                 spread_bps = spread_bps_from_tick(tick)
                 if spread_bps is not None:
                     liq_size = PositionSizer.adjust_for_liquidity(
-                        size, self.config.pair, datetime.now(UTC),
-                        spread_bps, self._liquidity_profile,
+                        size,
+                        self.config.pair,
+                        datetime.now(UTC),
+                        spread_bps,
+                        self._liquidity_profile,
                     )
                     if liq_size == 0.0:
                         logger.info(
-                            "Entry blocked by dead liquidity window: "
-                            "z=%.2f dir=%d spread=%.1fbps",
-                            z, direction, spread_bps,
+                            "Entry blocked by dead liquidity window: z=%.2f dir=%d spread=%.1fbps",
+                            z,
+                            direction,
+                            spread_bps,
                         )
                         signals_generated.labels(
-                            strategy_id=self.id, action="entry_blocked",
+                            strategy_id=self.id,
+                            action="entry_blocked",
                         ).inc()
-                        self._emit_snapshot({
-                            "trigger": "entry_blocked",
-                            "z": float(z),
-                            "direction": int(direction),
-                            "price": float(current_price),
-                            "spread": float(current_spread),
-                            "liquidity_spread_bps": float(spread_bps),
-                        })
+                        self._emit_snapshot(
+                            {
+                                "trigger": "entry_blocked",
+                                "z": float(z),
+                                "direction": int(direction),
+                                "price": float(current_price),
+                                "spread": float(current_spread),
+                                "liquidity_spread_bps": float(spread_bps),
+                            }
+                        )
                         return []
                     size = liq_size
 
@@ -782,21 +869,27 @@ class RateDiffMRStrategy:
             self._persist_position("entry")
             logger.info("Entry: z=%.2f dir=%d size=%.0f", z, direction, size)
             signals_generated.labels(strategy_id=self.id, action="entry").inc()
-            meta = self._emit_snapshot({
-                "trigger": "entry",
-                "z": float(z),
-                "direction": int(direction),
-                "price": float(current_price),
-                "spread": float(current_spread),
-                "vol": float(vol),
-                "size": float(size),
-                "entry_z_threshold": self.config.entry_z_threshold,
-                # CL-x50g: per-filter enabled/passed/value at entry time.
-                "filters": filter_diag,
-            })
-            return [OrderIntent(
-                strategy_id=self.id, symbol=self.config.pair,
-                target_position=size, metadata=meta,
-            )]
+            meta = self._emit_snapshot(
+                {
+                    "trigger": "entry",
+                    "z": float(z),
+                    "direction": int(direction),
+                    "price": float(current_price),
+                    "spread": float(current_spread),
+                    "vol": float(vol),
+                    "size": float(size),
+                    "entry_z_threshold": self.config.entry_z_threshold,
+                    # CL-x50g: per-filter enabled/passed/value at entry time.
+                    "filters": filter_diag,
+                }
+            )
+            return [
+                OrderIntent(
+                    strategy_id=self.id,
+                    symbol=self.config.pair,
+                    target_position=size,
+                    metadata=meta,
+                )
+            ]
 
         return []

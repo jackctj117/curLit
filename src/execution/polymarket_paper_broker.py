@@ -130,7 +130,9 @@ class PolymarketPaperBroker(Broker):
         # the UTC day has burned its cap. Raises LossCapExceededError —
         # handled upstream like any other pre-trade rejection.
         self._loss_caps.check_order_allowed(
-            token_id, side=order.side, quantity=order.quantity,
+            token_id,
+            side=order.side,
+            quantity=order.quantity,
         )
 
         try:
@@ -155,15 +157,20 @@ class PolymarketPaperBroker(Broker):
             self._open_orders[order.order_id] = order
             logger.info(
                 "polymarket-paper: order %s resting (%s %s @ %s)",
-                order.order_id, order.side, order.quantity, order.limit_price,
+                order.order_id,
+                order.side,
+                order.quantity,
+                order.limit_price,
             )
             return order
 
         # Filled (fully or by capping at book depth — partial = fully
         # for v1; we don't track residuals).
         cost = self._cost.estimate(
-            side=order.side, role="taker",
-            price=fill_price, size=fill_qty,
+            side=order.side,
+            role="taker",
+            price=fill_price,
+            size=fill_qty,
             book_depth_at_price=book.depth_at_or_better(
                 fill_price,
                 "BUY" if order.side == "buy" else "SELL",
@@ -202,10 +209,7 @@ class PolymarketPaperBroker(Broker):
 
     def get_account(self) -> Account:
         equity = self._cash + sum(
-            (
-                st.qty * st.avg_price
-                for st in self._loss_caps.open_positions().values()
-            ),
+            (st.qty * st.avg_price for st in self._loss_caps.open_positions().values()),
             start=Decimal("0"),
         )
         # Polymarket is fully collateralized; no margin concept. Currency
@@ -229,7 +233,8 @@ class PolymarketPaperBroker(Broker):
         return float(bid), float(ask)
 
     async def stream_prices(
-        self, symbols: list[str],
+        self,
+        symbols: list[str],
     ) -> AsyncIterator[dict[str, Any]]:
         """Stream midpoint snapshots. v1: REST poll every second.
         v2 (CL-poly-3 follow-up) connects to wss://ws-subscriptions-clob.
@@ -238,6 +243,7 @@ class PolymarketPaperBroker(Broker):
         ``PaperBroker.stream_prices``: ``{symbol, bid, ask, ts}``.
         """
         import asyncio as _asyncio
+
         while True:
             for sym in symbols:
                 token_id = self._data.resolve_symbol(sym)
@@ -246,7 +252,8 @@ class PolymarketPaperBroker(Broker):
                 except Exception:
                     logger.warning(
                         "polymarket-paper: stream poll failed for %s",
-                        sym, exc_info=True,
+                        sym,
+                        exc_info=True,
                     )
                     continue
                 self._observe_book(token_id, book)
@@ -273,7 +280,9 @@ class PolymarketPaperBroker(Broker):
     # --- Internals ---------------------------------------------------
 
     def _observe_book(
-        self, token_id: str, book: OrderBookSnapshot,
+        self,
+        token_id: str,
+        book: OrderBookSnapshot,
     ) -> None:
         """Feed the book midpoint to the loss-cap tracker as a mark.
 
@@ -288,10 +297,7 @@ class PolymarketPaperBroker(Broker):
     @staticmethod
     def _validate_order(order: Order) -> None:
         if order.order_type not in (OrderType.LIMIT, OrderType.MARKET):
-            msg = (
-                f"polymarket-paper supports LIMIT + MARKET; got "
-                f"{order.order_type}"
-            )
+            msg = f"polymarket-paper supports LIMIT + MARKET; got {order.order_type}"
             raise ValueError(msg)
         if order.quantity <= 0:
             msg = f"order quantity must be positive, got {order.quantity}"
@@ -302,21 +308,18 @@ class PolymarketPaperBroker(Broker):
                 raise ValueError(msg)
             price = Decimal(str(order.limit_price))
             if not (_PRICE_FLOOR <= price <= _PRICE_CEIL):
-                msg = (
-                    f"limit price {price} outside "
-                    f"[{_PRICE_FLOOR}, {_PRICE_CEIL}]"
-                )
+                msg = f"limit price {price} outside [{_PRICE_FLOOR}, {_PRICE_CEIL}]"
                 raise ValueError(msg)
             # Tick alignment: must be a multiple of 0.01.
             tick_remainder = (price * 100) % 1
             if tick_remainder != 0:
-                msg = (
-                    f"limit price {price} not on {_TICK_SIZE} tick"
-                )
+                msg = f"limit price {price} not on {_TICK_SIZE} tick"
                 raise ValueError(msg)
 
     def _simulate_fill(
-        self, order: Order, book: OrderBookSnapshot,
+        self,
+        order: Order,
+        book: OrderBookSnapshot,
     ) -> tuple[Decimal, Decimal]:
         """Return (fill_price, fill_qty). fill_qty=0 means rest the order.
 
@@ -373,7 +376,11 @@ class PolymarketPaperBroker(Broker):
         # re-bases at the fill price, fees against the day, mark = fill
         # price. All position bookkeeping happens here.
         self._loss_caps.record_fill(
-            token_id, order.side, qty, price, fee=cost,
+            token_id,
+            order.side,
+            qty,
+            price,
+            fee=cost,
         )
 
         # Cash delta: a buy at p costs p × qty; a sell at p credits p × qty.
@@ -381,18 +388,25 @@ class PolymarketPaperBroker(Broker):
         self._cash -= notional if order.side == "buy" else -notional
         self._cash -= cost  # fees + gas + slippage estimate
 
-        self._fills.append(Fill(
-            order_id=order.order_id,
-            fill_id=str(uuid4()),
-            symbol=order.symbol,
-            side=order.side,
-            quantity=float(qty),
-            price=float(price),
-            timestamp=datetime.now(UTC),
-            commission=float(cost),
-        ))
+        self._fills.append(
+            Fill(
+                order_id=order.order_id,
+                fill_id=str(uuid4()),
+                symbol=order.symbol,
+                side=order.side,
+                quantity=float(qty),
+                price=float(price),
+                timestamp=datetime.now(UTC),
+                commission=float(cost),
+            )
+        )
 
         logger.info(
             "polymarket-paper FILL: %s %s %s @ %s (cost=%s) cash=%s",
-            order.side, qty, order.symbol, price, cost, self._cash,
+            order.side,
+            qty,
+            order.symbol,
+            price,
+            cost,
+            self._cash,
         )

@@ -10,7 +10,10 @@ logger = logging.getLogger(__name__)
 
 
 def cache_features(
-    engine: Any, store: Any, symbols: list[str], lookback_days: int = 756,
+    engine: Any,
+    store: Any,
+    symbols: list[str],
+    lookback_days: int = 756,
 ) -> int:
     """Compute all features from store and write to features table."""
     end = datetime.utcnow()
@@ -24,7 +27,9 @@ def cache_features(
         data = {"price": df["close"]}
         features = store.compute(data)
         for col in features.columns:
-            fdf = pd.DataFrame({"ts": features.index, "symbol": sym, "feature_name": col, "value": features[col]})
+            fdf = pd.DataFrame(
+                {"ts": features.index, "symbol": sym, "feature_name": col, "value": features[col]}
+            )
             fdf.to_sql("features", engine, if_exists="append", index=False)
             total += len(fdf)
     logger.info("Cached %d feature rows for %d symbols", total, len(symbols))
@@ -32,7 +37,12 @@ def cache_features(
 
 
 def _load_prices(
-    engine: Any, symbol: str, start: datetime, end: datetime,
+    engine: Any,
+    symbol: str,
+    start: datetime,
+    end: datetime,
 ) -> pd.DataFrame:
     query = "SELECT ts, close FROM prices WHERE symbol = :sym AND ts >= :start AND ts <= :end ORDER BY ts"
-    return pd.read_sql(query, engine, params={"sym": symbol, "start": start, "end": end}, index_col="ts")
+    return pd.read_sql(
+        query, engine, params={"sym": symbol, "start": start, "end": end}, index_col="ts"
+    )

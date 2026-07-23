@@ -34,6 +34,7 @@ class TestPaperBroker:
         # service. Returns the right type.
         broker = build_broker("polymarket-paper")
         from src.execution.polymarket_paper_broker import PolymarketPaperBroker
+
         assert isinstance(broker, PolymarketPaperBroker)
 
 
@@ -56,9 +57,9 @@ class TestMainnetHardGate:
                 "src.execution.polymarket_preflight.run",
                 return_value=["fake failure: vault not provisioned"],
             ),
+            pytest.raises(RuntimeError, match="preflight failed"),
         ):
-            with pytest.raises(RuntimeError, match="preflight failed"):
-                build_broker("polymarket-mainnet")
+            build_broker("polymarket-mainnet")
 
 
 class TestAmoyTestnet:
@@ -72,12 +73,14 @@ class TestAmoyTestnet:
             captured["require_vault"] = require_vault
             return ["amoy stub failure"]  # abort before py-clob-client
 
-        with patch(
-            "src.execution.polymarket_preflight.run",
-            side_effect=fake_preflight,
+        with (
+            patch(
+                "src.execution.polymarket_preflight.run",
+                side_effect=fake_preflight,
+            ),
+            pytest.raises(RuntimeError, match="amoy preflight failed"),
         ):
-            with pytest.raises(RuntimeError, match="amoy preflight failed"):
-                build_broker("polymarket-amoy")
+            build_broker("polymarket-amoy")
 
         assert captured["env"] == "amoy"
         assert captured["require_vault"] is False

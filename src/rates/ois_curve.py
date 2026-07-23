@@ -32,7 +32,10 @@ class OISCurve:
 
     @classmethod
     def from_quotes(
-        cls, currency: str, valuation_date: date, raw_quotes: dict[str, float],
+        cls,
+        currency: str,
+        valuation_date: date,
+        raw_quotes: dict[str, float],
     ) -> "OISCurve":
         calendar = CALENDARS[currency]
         dc = OIS_CONVENTIONS[currency]
@@ -40,12 +43,14 @@ class OISCurve:
         quotes: list[OISQuote] = []
         for label, rate in raw_quotes.items():
             maturity = cls._tenor_to_date(valuation_date, label, calendar)
-            quotes.append(OISQuote(
-                tenor_label=label,
-                tenor_days=(maturity - valuation_date).days,
-                maturity_date=maturity,
-                par_rate=rate,
-            ))
+            quotes.append(
+                OISQuote(
+                    tenor_label=label,
+                    tenor_days=(maturity - valuation_date).days,
+                    maturity_date=maturity,
+                    par_rate=rate,
+                )
+            )
         quotes.sort(key=lambda q: q.tenor_days)
 
         curve = cls(currency, valuation_date, quotes, dc)
@@ -109,7 +114,11 @@ class OISCurve:
         else:
             kind = "linear"
         self._interpolator = interp1d(
-            tenors, log_dfs, kind=kind, bounds_error=False, fill_value="extrapolate",
+            tenors,
+            log_dfs,
+            kind=kind,
+            bounds_error=False,
+            fill_value="extrapolate",
         )
 
     def _solve_df_for_quote(self, quote: OISQuote) -> float:
@@ -195,14 +204,19 @@ class OISCurve:
     def implied_rate_at_meeting(self, meeting_date: date, meeting_gap_days: int = 42) -> float:
         calendar = CALENDARS[self.currency]
         start = calendar.adjust(meeting_date - timedelta(days=1), BusinessDayConvention.PRECEDING)
-        end = calendar.adjust(meeting_date + timedelta(days=meeting_gap_days), BusinessDayConvention.FOLLOWING)
+        end = calendar.adjust(
+            meeting_date + timedelta(days=meeting_gap_days), BusinessDayConvention.FOLLOWING
+        )
         return self.forward_rate(start, end)
 
     def policy_path(self, meeting_dates: list[date]) -> dict[date, float]:
         return {mtg: self.implied_rate_at_meeting(mtg) for mtg in meeting_dates}
 
     def meeting_probability(
-        self, meeting_date: date, current_rate: float, move_size: float = 0.0025,
+        self,
+        meeting_date: date,
+        current_rate: float,
+        move_size: float = 0.0025,
     ) -> dict[str, float]:
         implied = self.implied_rate_at_meeting(meeting_date)
         delta = implied - current_rate
@@ -218,8 +232,16 @@ class OISCurve:
 
         if delta >= 0:
             hike_prob = min(max(delta / move_size, 0.0), 1.0)
-            return {"hike_prob": hike_prob, "hold_prob": 1.0 - hike_prob,
-                    "cut_prob": 0.0, "moves_implied": num_moves}
+            return {
+                "hike_prob": hike_prob,
+                "hold_prob": 1.0 - hike_prob,
+                "cut_prob": 0.0,
+                "moves_implied": num_moves,
+            }
         cut_prob = min(max(-delta / move_size, 0.0), 1.0)
-        return {"hike_prob": 0.0, "hold_prob": 1.0 - cut_prob,
-                "cut_prob": cut_prob, "moves_implied": num_moves}
+        return {
+            "hike_prob": 0.0,
+            "hold_prob": 1.0 - cut_prob,
+            "cut_prob": cut_prob,
+            "moves_implied": num_moves,
+        }

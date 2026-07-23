@@ -109,8 +109,7 @@ class PortfolioStateProtocol(Protocol):
         ts: datetime,
         weights: dict[str, float],
         regime: dict[str, Any],
-    ) -> None:
-        ...
+    ) -> None: ...
 
     def record_portfolio_order(
         self,
@@ -118,18 +117,15 @@ class PortfolioStateProtocol(Protocol):
         symbol: str,
         target_position: float,
         strategy_contributions: dict[str, float],
-    ) -> None:
-        ...
+    ) -> None: ...
 
-    def get_positions_by_strategy(self, strategy_id: str) -> list[Any]:
-        ...
+    def get_positions_by_strategy(self, strategy_id: str) -> list[Any]: ...
 
     def load_strategy_returns_history(
         self,
         strategy_ids: list[str],
         lookback_days: int,
-    ) -> pd.DataFrame:
-        ...
+    ) -> pd.DataFrame: ...
 
 
 # =============================================================================
@@ -170,11 +166,7 @@ class StrategyAllocation:
     @property
     def effective_scale(self) -> float:
         """Composite scale applied to a strategy's intents in process_intents."""
-        scale = (
-            self.target_weight
-            * self.current_exposure_mult
-            * self.performance_override
-        )
+        scale = self.target_weight * self.current_exposure_mult * self.performance_override
         assert 0.0 <= scale <= 1.0, "effective_scale invariant violated"
         return scale
 
@@ -223,9 +215,7 @@ class PortfolioConstraints:
         assert self.max_net_leverage <= self.max_gross_leverage, (
             "max_net_leverage cannot exceed max_gross_leverage"
         )
-        assert self.max_notional_per_pair_pct > 0, (
-            "max_notional_per_pair_pct must be positive"
-        )
+        assert self.max_notional_per_pair_pct > 0, "max_notional_per_pair_pct must be positive"
         assert self.max_directional_exposure_per_currency > 0, (
             "max_directional_exposure_per_currency must be positive"
         )
@@ -234,9 +224,7 @@ class PortfolioConstraints:
             "max_portfolio_vol must be >= portfolio_vol_target"
         )
         assert self.max_total_positions >= 1, "max_total_positions must be >= 1"
-        assert self.max_concurrent_same_direction >= 1, (
-            "max_concurrent_same_direction must be >= 1"
-        )
+        assert self.max_concurrent_same_direction >= 1, "max_concurrent_same_direction must be >= 1"
 
 
 @dataclass
@@ -353,14 +341,16 @@ class PortfolioCoordinator:
             n = len(self.strategies)
             for sid in self.strategies:
                 self.allocations[sid] = StrategyAllocation(
-                    strategy_id=sid, target_weight=1.0 / n,
+                    strategy_id=sid,
+                    target_weight=1.0 / n,
                 )
             logger.warning("No positive initial weights; defaulting to equal weight")
             return
 
         for sid, weight in recognized.items():
             self.allocations[sid] = StrategyAllocation(
-                strategy_id=sid, target_weight=weight / total,
+                strategy_id=sid,
+                target_weight=weight / total,
             )
 
         for sid in self.strategies:
@@ -421,7 +411,9 @@ class PortfolioCoordinator:
                 )
 
             snapshot = await asyncio.to_thread(
-                self._build_shared_snapshot, aggregated, current_positions,
+                self._build_shared_snapshot,
+                aggregated,
+                current_positions,
             )
             price_map = snapshot.price_map
             account = snapshot.account
@@ -430,8 +422,10 @@ class PortfolioCoordinator:
             # now consults the pre-built price_map / account snapshot instead
             # of re-hitting the broker per check (CL-qsue).
             feasible = await asyncio.to_thread(
-                self._apply_portfolio_constraints, aggregated,
-                price_map, account,
+                self._apply_portfolio_constraints,
+                aggregated,
+                price_map,
+                account,
             )
 
             ts = datetime.now(UTC)
@@ -495,7 +489,8 @@ class PortfolioCoordinator:
                     # delta-accurate across the batch.
                     if current_positions is not None:
                         await asyncio.to_thread(
-                            self.oms.submit_intent, final,
+                            self.oms.submit_intent,
+                            final,
                             positions=current_positions,
                         )
                     else:
@@ -597,7 +592,9 @@ class PortfolioCoordinator:
         return _SharedSnapshot(price_map=price_map, account=account)
 
     def _apply_blackout_size_down(
-        self, symbol: str, target_position: float,
+        self,
+        symbol: str,
+        target_position: float,
     ) -> float:
         """Halve target_position when the calendar is in SIZE_DOWN_50PCT.
 
@@ -613,7 +610,8 @@ class PortfolioCoordinator:
         pair = currency_pair(symbol)
         currency = pair[0] if pair else None
         decision = self.blackout_evaluator.evaluate(
-            now=datetime.now(UTC), currency=currency,
+            now=datetime.now(UTC),
+            currency=currency,
         )
         if decision.action != BlackoutAction.SIZE_DOWN_50PCT:
             return target_position
@@ -621,7 +619,10 @@ class PortfolioCoordinator:
         new_target = target_position * 0.5
         logger.info(
             "Blackout SIZE_DOWN_50PCT for %s — halving target %.4f → %.4f (%s)",
-            symbol, target_position, new_target, decision.reason,
+            symbol,
+            target_position,
+            new_target,
+            decision.reason,
         )
         try:
             blackout_size_down.labels(pair=symbol).inc()
@@ -654,13 +655,10 @@ class PortfolioCoordinator:
                 continue
             for sym, pos in book.items():
                 qty = (
-                    pos.get("quantity") if isinstance(pos, dict)
-                    else getattr(pos, "quantity", None)
+                    pos.get("quantity") if isinstance(pos, dict) else getattr(pos, "quantity", None)
                 )
                 if qty:
-                    self._strategy_targets.setdefault(sid, {})[
-                        canonical_symbol(sym)
-                    ] = float(qty)
+                    self._strategy_targets.setdefault(sid, {})[canonical_symbol(sym)] = float(qty)
         if self._strategy_targets:
             logger.info(
                 "Seeded cross-tick targets from books: %s",
@@ -763,8 +761,10 @@ class PortfolioCoordinator:
                     agg["target_position"] += held
                     agg["strategy_contributions"][sid] = held
                     logger.debug(
-                        "Aggregation on %s includes %s's remembered "
-                        "target %.4f", canon, sid, held,
+                        "Aggregation on %s includes %s's remembered target %.4f",
+                        canon,
+                        sid,
+                        held,
                     )
 
         for symbol, agg in by_symbol.items():
@@ -826,10 +826,10 @@ class PortfolioCoordinator:
         # ACT: delete the symbol from the aggregate entirely so no intent —
         # entry OR fabricated exit — reaches the OMS this cycle.
         unpriceable = [
-            symbol for symbol, agg in aggregated.items()
+            symbol
+            for symbol, agg in aggregated.items()
             if agg.get("target_position")
-            and self._resolve_price(str(agg.get("symbol") or symbol), price_map)
-            is None
+            and self._resolve_price(str(agg.get("symbol") or symbol), price_map) is None
         ]
         for symbol in unpriceable:
             logger.error(
@@ -845,9 +845,7 @@ class PortfolioCoordinator:
         if account is None:
             account = self.broker.get_account()
         equity = account.equity
-        assert equity > 0, (
-            f"broker reported non-positive equity {equity}; cannot compute leverage"
-        )
+        assert equity > 0, f"broker reported non-positive equity {equity}; cannot compute leverage"
 
         # 1) Gross leverage cap.
         gross_notional = sum(
@@ -869,9 +867,13 @@ class PortfolioCoordinator:
         # 2) Per-pair cap.
         max_pair_notional = equity * self.constraints.max_notional_per_pair_pct
         for symbol, agg in aggregated.items():
-            price = self._resolve_price(
-                str(agg.get("symbol") or symbol), price_map,
-            ) or 0.0
+            price = (
+                self._resolve_price(
+                    str(agg.get("symbol") or symbol),
+                    price_map,
+                )
+                or 0.0
+            )
             notional = abs(agg["target_position"]) * price
             if notional > max_pair_notional:
                 scale = max_pair_notional / notional
@@ -927,20 +929,22 @@ class PortfolioCoordinator:
                 # Not an FX pair (index CFD, malformed) — skipping is honest;
                 # slicing raw fabricated legs like '_US' / 'X50' (CL-rybp).
                 logger.debug(
-                    "currency exposure: %r is not an FX pair — skipped", symbol,
+                    "currency exposure: %r is not an FX pair — skipped",
+                    symbol,
                 )
                 continue
             base, quote = pair
             notional = agg["target_position"] * (
-                self._resolve_price(str(agg.get("symbol") or symbol), price_map)
-                or 0.0
+                self._resolve_price(str(agg.get("symbol") or symbol), price_map) or 0.0
             )
             exposures[base] += notional
             exposures[quote] -= notional
         return dict(exposures)
 
     def _resolve_price(
-        self, symbol: str, price_map: dict[str, float] | None,
+        self,
+        symbol: str,
+        price_map: dict[str, float] | None,
     ) -> float | None:
         """Price for ``symbol`` from the shared snapshot, else a live fetch.
 
@@ -976,15 +980,13 @@ class PortfolioCoordinator:
             try:
                 bid, ask = self.broker.get_price(candidate)
                 mid = (bid + ask) / 2
-                assert mid > 0, (
-                    f"non-positive mid for {candidate}: bid={bid} ask={ask}"
-                )
+                assert mid > 0, f"non-positive mid for {candidate}: bid={bid} ask={ask}"
                 return mid
             except Exception:  # noqa: PERF203 — try next dialect (CL-8cw1)
                 continue
         logger.error(
-            "Could not fetch price for %s (either dialect) — treating as "
-            "UNPRICEABLE", symbol,
+            "Could not fetch price for %s (either dialect) — treating as UNPRICEABLE",
+            symbol,
         )
         return None
 
@@ -1019,7 +1021,8 @@ class PortfolioCoordinator:
         # the rebalance tick never stalls the engine (CL-xdnh).
         returns_df = await asyncio.to_thread(
             self.state.load_strategy_returns_history,
-            live_ids, _RISK_PARITY_LOOKBACK_DAYS,
+            live_ids,
+            _RISK_PARITY_LOOKBACK_DAYS,
         )
 
         if len(returns_df) < _RISK_PARITY_MIN_HISTORY_DAYS:
@@ -1057,7 +1060,10 @@ class PortfolioCoordinator:
 
         self._last_rebalance = now
         await asyncio.to_thread(
-            self.state.record_reallocation, now, dict(new_weights), corr_regime,
+            self.state.record_reallocation,
+            now,
+            dict(new_weights),
+            corr_regime,
         )
 
     @staticmethod
@@ -1206,7 +1212,9 @@ class PortfolioCoordinator:
         exc = task.exception()
         if exc is not None:
             logger.error(
-                "Background task %s failed", task.get_name(), exc_info=exc,
+                "Background task %s failed",
+                task.get_name(),
+                exc_info=exc,
             )
 
     # ------------------------------------------------------------------
@@ -1253,14 +1261,11 @@ class PortfolioCoordinator:
         # strategies' remembered shares instead, and clear this strategy's
         # memory so aggregation stops counting it.
         removed_targets = self._strategy_targets.pop(strategy_id, {})
-        symbols = {pos.symbol for pos in positions} | {
-            sym for sym in removed_targets
-        }
+        symbols = {pos.symbol for pos in positions} | {sym for sym in removed_targets}
         for symbol in symbols:
             canon = canonical_symbol(symbol)
             others_total = sum(
-                remembered.get(canon, 0.0)
-                for sid, remembered in self._strategy_targets.items()
+                remembered.get(canon, 0.0) for sid, remembered in self._strategy_targets.items()
             )
             self.oms.submit_intent(
                 OrderIntent(
@@ -1312,14 +1317,11 @@ class PortfolioCoordinator:
             )
             return
 
-        assert 0 < initial_weight <= 1, (
-            f"initial_weight must be in (0, 1], got {initial_weight}"
-        )
+        assert 0 < initial_weight <= 1, f"initial_weight must be in (0, 1], got {initial_weight}"
 
         # Scale existing live weights down to make room for the new strategy.
         live_ids = [
-            sid for sid, a in self.allocations.items()
-            if not a.paper_mode and sid != strategy_id
+            sid for sid, a in self.allocations.items() if not a.paper_mode and sid != strategy_id
         ]
         if live_ids:
             existing_total = sum(self.allocations[s].target_weight for s in live_ids)
@@ -1332,7 +1334,9 @@ class PortfolioCoordinator:
         alloc.target_weight = initial_weight
         logger.info(
             "Promoted %s to live at %.1f%% — %d existing strategies rescaled",
-            strategy_id, initial_weight * 100, len(live_ids),
+            strategy_id,
+            initial_weight * 100,
+            len(live_ids),
         )
 
         if self._spawn_forced_rebalance(f"promote-{strategy_id}") is None:

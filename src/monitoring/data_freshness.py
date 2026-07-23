@@ -50,8 +50,8 @@ class Criticality(Enum):
     """How urgent it is to act on staleness for this feed."""
 
     CRITICAL = "critical"  # halt new trades when stale (e.g., live price stream)
-    WARN = "warn"          # alert + log; strategies decide whether to skip
-    INFO = "info"          # log only
+    WARN = "warn"  # alert + log; strategies decide whether to skip
+    INFO = "info"  # log only
 
 
 @dataclass
@@ -132,11 +132,13 @@ class DataFreshnessMonitor:
         """Register a feed for monitoring. Idempotent."""
         self._descriptors[descriptor.name] = descriptor
         self._states.setdefault(
-            descriptor.name, FeedState(name=descriptor.name),
+            descriptor.name,
+            FeedState(name=descriptor.name),
         )
         logger.info(
             "Registered feed %s (max_age=%ds, criticality=%s)",
-            descriptor.name, descriptor.max_age_seconds,
+            descriptor.name,
+            descriptor.max_age_seconds,
             descriptor.criticality.value,
         )
 
@@ -216,10 +218,12 @@ class DataFreshnessMonitor:
             # heartbeats without pre-declaring (logged for visibility).
             logger.warning(
                 "Feed %s not pre-registered; auto-registering with default %ds max-age",
-                name, _DEFAULT_MAX_AGE_SECONDS,
+                name,
+                _DEFAULT_MAX_AGE_SECONDS,
             )
             self._descriptors[name] = FeedDescriptor(
-                name=name, max_age_seconds=_DEFAULT_MAX_AGE_SECONDS,
+                name=name,
+                max_age_seconds=_DEFAULT_MAX_AGE_SECONDS,
             )
 
     def _publish_metric(self, name: str, age_seconds: float) -> None:
@@ -259,7 +263,9 @@ class FreshnessGate:
         return self.monitor.is_fresh(name, now=now)
 
     def preferred_fresh_feed(
-        self, primary: str, now: datetime | None = None,
+        self,
+        primary: str,
+        now: datetime | None = None,
     ) -> str | None:
         """Return primary if fresh; otherwise its registered fallback if fresh.
 
@@ -274,7 +280,8 @@ class FreshnessGate:
         if self.monitor.is_fresh(descriptor.fallback_feed, now=now):
             logger.warning(
                 "Primary feed %s stale; using fallback %s",
-                primary, descriptor.fallback_feed,
+                primary,
+                descriptor.fallback_feed,
             )
             return descriptor.fallback_feed
         return None

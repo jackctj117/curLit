@@ -45,7 +45,8 @@ _MAX_NAME_LEN = 28
 
 
 def _ticker_label(
-    ticker: str, names: dict[str, str] | None,
+    ticker: str,
+    names: dict[str, str] | None,
 ) -> str:
     """``TICKER (Company Name)`` when a name resolves, bare ``TICKER``
     otherwise (CL-ikz2). Fail-soft: a missing/empty name degrades to the
@@ -89,7 +90,10 @@ class EventNotifier:
         self._price_resolver = price_resolver
 
     def _resolve_price(
-        self, symbol: str, prices: dict[str, Any], now: datetime,
+        self,
+        symbol: str,
+        prices: dict[str, Any],
+        now: datetime,
     ) -> float | None:
         if self._price_resolver is not None:
             return self._price_resolver(symbol, prices, now)
@@ -177,7 +181,9 @@ class EventNotifier:
 
         ticker = str(idea.get("ticker") or "")
         current = self._resolve_price(
-            ticker, prices or {}, now or datetime.now(UTC),
+            ticker,
+            prices or {},
+            now or datetime.now(UTC),
         )
         card = build_trade_card(dict(idea), current)
         detail: list[str] = []
@@ -229,9 +235,7 @@ class EventNotifier:
         n_agree = sum(1 for d in voting if d.agrees)
         n_voting = len(voting)
         verb = "confirms" if confirmed else "NOT confirming (fade risk)"
-        moves = ", ".join(
-            f"{d.instrument} {(d.actual_move_pct or 0.0):+.1f}%" for d in voting
-        )
+        moves = ", ".join(f"{d.instrument} {(d.actual_move_pct or 0.0):+.1f}%" for d in voting)
         return f"cross-asset: {verb} {n_agree}/{n_voting} ({moves})"
 
     @staticmethod
@@ -255,8 +259,7 @@ class EventNotifier:
         n_agree = sum(1 for d in voting if d.agrees)
         n_voting = len(voting)
         parts = [
-            f"{d.instrument} {(d.actual_move_pct or 0.0):+.1f}% "
-            f"{'✓' if d.agrees else '✗'}"
+            f"{d.instrument} {(d.actual_move_pct or 0.0):+.1f}% {'✓' if d.agrees else '✗'}"
             for d in voting
         ]
         body = " · ".join(parts)
@@ -298,7 +301,8 @@ class EventNotifier:
         except Exception:
             logger.debug(
                 "cross-asset idea-notes stamp failed for geo_event_id=%s",
-                geo_event_id, exc_info=True,
+                geo_event_id,
+                exc_info=True,
             )
 
     # ------------------------------------------------------------------
@@ -346,7 +350,10 @@ class EventNotifier:
         if watch:
             lines.append("Watch: " + ", ".join(watch))
         ideas = self._ideas_block(
-            assessment, prices=prices, now=now, names=names,
+            assessment,
+            prices=prices,
+            now=now,
+            names=names,
         )
         if ideas:
             lines.append("")
@@ -378,12 +385,14 @@ class EventNotifier:
         # when the machine passes (CL-mgcp).
         assessment = EventConfluence.parse_assessment(row.get("assessment")) or {}
         ideas = [
-            i for i in (assessment.get("trade_ideas") or [])
+            i
+            for i in (assessment.get("trade_ideas") or [])
             if isinstance(i, dict) and i.get("ticker")
         ]
         if ideas:
             top = max(
-                ideas, key=lambda i: float(i.get("confidence") or 0.0),
+                ideas,
+                key=lambda i: float(i.get("confidence") or 0.0),
             )
             line = (
                 f"Top idea: {_ticker_label(str(top.get('ticker') or ''), names)} "

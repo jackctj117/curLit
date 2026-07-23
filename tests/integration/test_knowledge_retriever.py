@@ -83,53 +83,75 @@ def fixture_data() -> Iterator[tuple[Any, list[str]]]:
 
     with engine.begin() as conn:
         # Source A — behavioral-finance topic
-        conn.execute(text("""
+        conn.execute(
+            text("""
             INSERT INTO knowledge_sources (source_id, title, author, year, source_type, citation, topic_tags)
             VALUES (:sid, 'Test Behavioral', 'A. Author', 2020, 'book',
                     'A. Author (2020). Test Behavioral.',
                     ARRAY['behavioral-finance', 'cognitive-biases'])
-        """), {"sid": src_a})
-        for i, (txt, page) in enumerate([
-            ("Overconfidence makes traders overestimate their edge.", "ch.1"),
-            ("Anchoring biases pull estimates toward salient values.", "ch.2"),
-        ]):
+        """),
+            {"sid": src_a},
+        )
+        for i, (txt, page) in enumerate(
+            [
+                ("Overconfidence makes traders overestimate their edge.", "ch.1"),
+                ("Anchoring biases pull estimates toward salient values.", "ch.2"),
+            ]
+        ):
             vec = _stub_vec(seed=10 + i)
             emb = "[" + ",".join(f"{x:.7f}" for x in vec) + "]"
-            conn.execute(text("""
+            conn.execute(
+                text("""
                 INSERT INTO knowledge_chunks (source_id, chunk_idx, chunk_text, embedding, page_ref)
                 VALUES (:sid, :idx, :t, CAST(:emb AS vector), :p)
-            """), {"sid": src_a, "idx": i, "t": txt, "emb": emb, "p": page})
+            """),
+                {"sid": src_a, "idx": i, "t": txt, "emb": emb, "p": page},
+            )
 
         # Source B — crisis-history topic
-        conn.execute(text("""
+        conn.execute(
+            text("""
             INSERT INTO knowledge_sources (source_id, title, author, year, source_type, citation, topic_tags)
             VALUES (:sid, 'Test Crises', 'B. Author', 1955, 'book',
                     'B. Author (1955). Test Crises.',
                     ARRAY['crisis-history', '1929-crash'])
-        """), {"sid": src_b})
-        for i, (txt, page) in enumerate([
-            ("Bank panics propagate through the deposit system.", "ch.4"),
-            ("Margin debt amplifies every crash.", "ch.5"),
-        ]):
+        """),
+            {"sid": src_b},
+        )
+        for i, (txt, page) in enumerate(
+            [
+                ("Bank panics propagate through the deposit system.", "ch.4"),
+                ("Margin debt amplifies every crash.", "ch.5"),
+            ]
+        ):
             vec = _stub_vec(seed=50 + i)
             emb = "[" + ",".join(f"{x:.7f}" for x in vec) + "]"
-            conn.execute(text("""
+            conn.execute(
+                text("""
                 INSERT INTO knowledge_chunks (source_id, chunk_idx, chunk_text, embedding, page_ref)
                 VALUES (:sid, :idx, :t, CAST(:emb AS vector), :p)
-            """), {"sid": src_b, "idx": i, "t": txt, "emb": emb, "p": page})
+            """),
+                {"sid": src_b, "idx": i, "t": txt, "emb": emb, "p": page},
+            )
 
         # Source C — overlapping behavioral-finance + adds reflexivity tag
-        conn.execute(text("""
+        conn.execute(
+            text("""
             INSERT INTO knowledge_sources (source_id, title, author, year, source_type, citation, topic_tags)
             VALUES (:sid, 'Test Reflexivity', 'C. Author', 1987, 'book',
                     'C. Author (1987). Test Reflexivity.',
                     ARRAY['reflexivity', 'behavioral-finance'])
-        """), {"sid": src_c})
+        """),
+            {"sid": src_c},
+        )
         # No embedding here — tests the IS NOT NULL filter
-        conn.execute(text("""
+        conn.execute(
+            text("""
             INSERT INTO knowledge_chunks (source_id, chunk_idx, chunk_text, page_ref)
             VALUES (:sid, 0, 'Reflexive feedback distorts fundamentals.', 'ch.1')
-        """), {"sid": src_c})
+        """),
+            {"sid": src_c},
+        )
 
     yield engine, [src_a, src_b, src_c]
 
@@ -148,7 +170,8 @@ def fixture_data() -> Iterator[tuple[Any, list[str]]]:
 
 class TestTopicSearch:
     def test_topic_filter_returns_matching_chunks(
-        self, fixture_data: tuple[Any, list[str]],
+        self,
+        fixture_data: tuple[Any, list[str]],
     ) -> None:
         engine, sids = fixture_data
         retriever = KnowledgeRetriever(engine=engine, embedder=None)
@@ -161,7 +184,8 @@ class TestTopicSearch:
             assert "crisis-history" in c.topic_tags
 
     def test_topic_overlap_array_matches_any(
-        self, fixture_data: tuple[Any, list[str]],
+        self,
+        fixture_data: tuple[Any, list[str]],
     ) -> None:
         """Sources A and C both have 'behavioral-finance' tag — both
         should match a behavioral-finance topic filter."""
@@ -173,7 +197,8 @@ class TestTopicSearch:
         assert sids[2] in sources_returned
 
     def test_empty_topic_list_returns_empty(
-        self, fixture_data: tuple[Any, list[str]],
+        self,
+        fixture_data: tuple[Any, list[str]],
     ) -> None:
         engine, _ = fixture_data
         retriever = KnowledgeRetriever(engine=engine, embedder=None)
@@ -187,19 +212,23 @@ class TestTopicSearch:
 
 class TestSearchWithEmbedder:
     def test_search_with_topics_filter_excludes_non_matching(
-        self, fixture_data: tuple[Any, list[str]],
+        self,
+        fixture_data: tuple[Any, list[str]],
     ) -> None:
         engine, sids = fixture_data
         retriever = KnowledgeRetriever(engine=engine, embedder=_StubEmbedder())  # type: ignore[arg-type]
         # Filter to behavioral-finance only — src_b crisis chunks excluded
         chunks = retriever.search(
-            query="cognitive biases", top_k=5, topics=["behavioral-finance"],
+            query="cognitive biases",
+            top_k=5,
+            topics=["behavioral-finance"],
         )
         for c in chunks:
             assert "behavioral-finance" in c.topic_tags
 
     def test_search_skips_chunks_with_null_embedding(
-        self, fixture_data: tuple[Any, list[str]],
+        self,
+        fixture_data: tuple[Any, list[str]],
     ) -> None:
         """Source C's chunk has NULL embedding — must NOT appear in
         embedding-based search results."""
@@ -210,7 +239,8 @@ class TestSearchWithEmbedder:
         assert sids[2] not in sources_returned  # src_c has NULL embedding
 
     def test_search_returns_distance_when_embedder_present(
-        self, fixture_data: tuple[Any, list[str]],
+        self,
+        fixture_data: tuple[Any, list[str]],
     ) -> None:
         engine, _ = fixture_data
         retriever = KnowledgeRetriever(engine=engine, embedder=_StubEmbedder())  # type: ignore[arg-type]
@@ -222,19 +252,23 @@ class TestSearchWithEmbedder:
 
 class TestSearchWithoutEmbedder:
     def test_no_embedder_falls_back_to_topic_filter(
-        self, fixture_data: tuple[Any, list[str]],
+        self,
+        fixture_data: tuple[Any, list[str]],
     ) -> None:
         engine, sids = fixture_data
         retriever = KnowledgeRetriever(engine=engine, embedder=None)
         chunks = retriever.search(
-            query="anything", top_k=5, topics=["crisis-history"],
+            query="anything",
+            top_k=5,
+            topics=["crisis-history"],
         )
         for c in chunks:
             assert "crisis-history" in c.topic_tags
             assert c.distance is None  # no similarity computed
 
     def test_no_embedder_no_topics_returns_recent(
-        self, fixture_data: tuple[Any, list[str]],
+        self,
+        fixture_data: tuple[Any, list[str]],
     ) -> None:
         """Without embedder or topics, fallback returns most-recently-
         added chunks (degraded mode)."""
@@ -252,16 +286,26 @@ class TestSearchWithoutEmbedder:
 class TestCitation:
     def test_citation_includes_year_and_page(self) -> None:
         c = KnowledgeChunk(
-            chunk_id=1, source_id="x", chunk_text="…",
-            page_ref="ch.3", title="My Book", author="A. Author", year=2020,
+            chunk_id=1,
+            source_id="x",
+            chunk_text="…",
+            page_ref="ch.3",
+            title="My Book",
+            author="A. Author",
+            year=2020,
             topic_tags=[],
         )
         assert c.citation == "A. Author (2020). My Book, ch.3"
 
     def test_citation_handles_missing_year(self) -> None:
         c = KnowledgeChunk(
-            chunk_id=1, source_id="x", chunk_text="…",
-            page_ref="ch.3", title="My Book", author="A. Author", year=None,
+            chunk_id=1,
+            source_id="x",
+            chunk_text="…",
+            page_ref="ch.3",
+            title="My Book",
+            author="A. Author",
+            year=None,
             topic_tags=[],
         )
         assert c.citation == "A. Author. My Book, ch.3"
@@ -292,12 +336,14 @@ class TestToolSpec:
 
 class TestToolDispatch:
     def test_dispatch_search_returns_chunk_dicts(
-        self, fixture_data: tuple[Any, list[str]],
+        self,
+        fixture_data: tuple[Any, list[str]],
     ) -> None:
         engine, _ = fixture_data
         retriever = KnowledgeRetriever(engine=engine, embedder=None)
         out = dispatch_tool_call(
-            retriever, "knowledge_search_by_topics",
+            retriever,
+            "knowledge_search_by_topics",
             {"topics": ["behavioral-finance"], "top_k": 10},
         )
         assert isinstance(out, list)
@@ -307,7 +353,8 @@ class TestToolDispatch:
             assert "topic_tags" in o
 
     def test_dispatch_unknown_tool_raises(
-        self, fixture_data: tuple[Any, list[str]],
+        self,
+        fixture_data: tuple[Any, list[str]],
     ) -> None:
         engine, _ = fixture_data
         retriever = KnowledgeRetriever(engine=engine, embedder=None)

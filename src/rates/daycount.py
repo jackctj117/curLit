@@ -27,11 +27,7 @@ def year_fraction(d1: date, d2: date, convention: DayCountConvention) -> float:
     if convention == DayCountConvention.THIRTY_360:
         d1_day = min(d1.day, 30)
         d2_day = min(d2.day, 30) if d1_day < 30 else d2.day
-        return (
-            (d2.year - d1.year) * 360
-            + (d2.month - d1.month) * 30
-            + (d2_day - d1_day)
-        ) / 360.0
+        return ((d2.year - d1.year) * 360 + (d2.month - d1.month) * 30 + (d2_day - d1_day)) / 360.0
 
     raise ValueError(f"Unknown convention: {convention}")
 

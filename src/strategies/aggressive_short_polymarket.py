@@ -115,8 +115,12 @@ class AggressiveShortPolymarketStrategy:
         logger.info(
             "AggressiveShortPolymarketStrategy init: profile=%s kf=%s "
             "max_market=%s min_edge=%s prefer_no=%s n_markets=%d",
-            self.risk.name, self._kelly_fraction, self._max_market_frac,
-            self._min_edge, self._prefer_no, len(self.config.markets),
+            self.risk.name,
+            self._kelly_fraction,
+            self._max_market_frac,
+            self._min_edge,
+            self._prefer_no,
+            len(self.config.markets),
         )
 
     @property
@@ -172,7 +176,8 @@ class AggressiveShortPolymarketStrategy:
                 # Unknown resolution → can't enforce time gate or
                 # pre-resolution exit. Skip — operator should curate.
                 logger.debug(
-                    "skipping %s: no resolution_ts in market metadata", sym,
+                    "skipping %s: no resolution_ts in market metadata",
+                    sym,
                 )
                 continue
 
@@ -187,14 +192,9 @@ class AggressiveShortPolymarketStrategy:
             prices = data[sym].astype(float)
             for i, ts in enumerate(idx):
                 bar_ts = self._parse_ts(ts) or now
-                hours_to_resolution = (
-                    resolution_ts - bar_ts
-                ).total_seconds() / 3600
+                hours_to_resolution = (resolution_ts - bar_ts).total_seconds() / 3600
                 # Exit (or refuse entry) within the pre-resolution window.
-                if (
-                    hours_to_resolution
-                    <= self.config.exit_before_resolution_hours
-                ):
+                if hours_to_resolution <= self.config.exit_before_resolution_hours:
                     out.iat[i, out.columns.get_loc(sym)] = 0.0
                     continue
                 price = prices.iat[i]
@@ -208,29 +208,37 @@ class AggressiveShortPolymarketStrategy:
                 if self.config.model_prob_fn is None:
                     continue
                 try:
-                    q = Decimal(str(
-                        self.config.model_prob_fn(sym, bar_ts, market),
-                    ))
+                    q = Decimal(
+                        str(
+                            self.config.model_prob_fn(sym, bar_ts, market),
+                        )
+                    )
                 except Exception:
                     logger.debug(
                         "model_prob_fn failed for %s at %s",
-                        sym, bar_ts, exc_info=True,
+                        sym,
+                        bar_ts,
+                        exc_info=True,
                     )
                     continue
                 p = Decimal(str(price))
 
                 # Probe both sides; pick per NO-bias if both pass.
                 yes_dec = size_polymarket_order(
-                    bankroll=Decimal("10000"),   # placeholder; sizer
-                                                 # only uses fraction
-                    market_price=p, model_prob=q, side="YES",
+                    bankroll=Decimal("10000"),  # placeholder; sizer
+                    # only uses fraction
+                    market_price=p,
+                    model_prob=q,
+                    side="YES",
                     kelly_fraction=self._kelly_fraction,
                     max_market_fraction=self._max_market_frac,
                     min_edge=self._min_edge,
                 )
                 no_dec = size_polymarket_order(
                     bankroll=Decimal("10000"),
-                    market_price=p, model_prob=q, side="NO",
+                    market_price=p,
+                    model_prob=q,
+                    side="NO",
                     kelly_fraction=self._kelly_fraction,
                     max_market_fraction=self._max_market_frac,
                     min_edge=self._min_edge,

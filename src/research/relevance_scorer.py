@@ -45,61 +45,72 @@ logger = logging.getLogger(__name__)
 # --------------------------------------------------------------------- #
 _DEFAULT_POSITIVE_KEYWORDS: dict[str, float] = {
     # FX-specific factor literature (highest signal)
-    "carry trade":             3.5,
-    "fx momentum":             3.0,
-    "currency carry":          3.5,
-    "exchange rate":           2.0,
-    "currency factor":         2.5,
-    "interest rate parity":    2.5,
-    "uncovered interest":      2.5,
+    "carry trade": 3.5,
+    "fx momentum": 3.0,
+    "currency carry": 3.5,
+    "exchange rate": 2.0,
+    "currency factor": 2.5,
+    "interest rate parity": 2.5,
+    "uncovered interest": 2.5,
     # Volatility-conditioned strategies (Menkhoff 2012 family)
     "volatility risk premium": 3.0,
-    "fx volatility":           2.5,
-    "global volatility":       2.0,
+    "fx volatility": 2.5,
+    "global volatility": 2.0,
     # Microstructure / liquidity
-    "order flow":              2.0,
-    "fx microstructure":       2.5,
-    "limit order book":        1.5,
+    "order flow": 2.0,
+    "fx microstructure": 2.5,
+    "limit order book": 1.5,
     # Macro plumbing
-    "central bank":            1.5,
-    "monetary policy":         1.5,
-    "real exchange rate":      1.5,
-    "purchasing power":        1.5,
+    "central bank": 1.5,
+    "monetary policy": 1.5,
+    "real exchange rate": 1.5,
+    "purchasing power": 1.5,
     # Methodologies that travel well to FX
-    "regime switching":        2.0,
-    "out-of-sample":           1.5,
-    "walk-forward":            1.5,
-    "transaction cost":        1.5,
+    "regime switching": 2.0,
+    "out-of-sample": 1.5,
+    "walk-forward": 1.5,
+    "transaction cost": 1.5,
 }
 
 _DEFAULT_NEGATIVE_KEYWORDS: dict[str, float] = {
     # Pure-theory papers that don't backtest
-    "theoretical model":     1.0,
-    "stylized model":        1.0,
-    "general equilibrium":   1.0,
+    "theoretical model": 1.0,
+    "stylized model": 1.0,
+    "general equilibrium": 1.0,
     # Single-stock or non-FX topics that get flagged as macro
     "earnings announcement": 2.0,
-    "options pricing":       2.0,
-    "merger arbitrage":      2.0,
+    "options pricing": 2.0,
+    "merger arbitrage": 2.0,
     # ML papers that tend to overfit small samples
-    "deep learning":         1.0,
-    "transformer":           1.5,
-    "neural network":        1.0,
+    "deep learning": 1.0,
+    "transformer": 1.5,
+    "neural network": 1.0,
 }
 
 _DEFAULT_PREFERRED_AUTHORS: tuple[str, ...] = (
     # FX factor / carry literature
-    "sarno", "lustig", "menkhoff", "verdelhan", "schmeling",
+    "sarno",
+    "lustig",
+    "menkhoff",
+    "verdelhan",
+    "schmeling",
     # Asset pricing + alpha
-    "kelly", "asness", "moskowitz", "cochrane",
+    "kelly",
+    "asness",
+    "moskowitz",
+    "cochrane",
     # Microstructure
-    "hasbrouck", "easley",
+    "hasbrouck",
+    "easley",
     # Macro + monetary
-    "gourinchas", "rey",
+    "gourinchas",
+    "rey",
 )
 
 _DEFAULT_PREFERRED_CATEGORIES: tuple[str, ...] = (
-    "q-fin.PM", "q-fin.TR", "q-fin.ST",
+    "q-fin.PM",
+    "q-fin.TR",
+    "q-fin.ST",
     "NBER",
     "BIS Working Papers",
     "FRBSF Economic Letter",
@@ -202,18 +213,24 @@ class RelevanceScorer:
         )
 
     def score_and_update(
-        self, engine: Any, paper_id: str, paper: Any,
+        self,
+        engine: Any,
+        paper_id: str,
+        paper: Any,
     ) -> float:
         """Score and persist to research_papers.relevance_score. Returns the
         total."""
         breakdown = self.score_paper(paper)
         try:
             with engine.begin() as conn:
-                conn.execute(text("""
+                conn.execute(
+                    text("""
                     UPDATE research_papers
                     SET relevance_score = :s
                     WHERE paper_id = :pid
-                """), {"s": breakdown.total, "pid": paper_id})
+                """),
+                    {"s": breakdown.total, "pid": paper_id},
+                )
         except Exception:
             logger.exception("score_and_update DB write failed for %s", paper_id)
         return breakdown.total

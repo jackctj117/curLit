@@ -59,7 +59,7 @@ class IdeaResult:
     response: AgentResponse
     raw_text: str
     hypothesis_path: Path | None = None
-    reason: str = ""              # non-empty when DECLINED or validation failed
+    reason: str = ""  # non-empty when DECLINED or validation failed
     validation_issues: list[str] = field(default_factory=list)
 
 
@@ -136,7 +136,8 @@ def validate_brief(text: str, extract_path: Path) -> list[str]:
     # Extract the Prediction section content for sub-field checking.
     pred_match = re.search(
         r"##\s+Prediction\s*\n(.+?)(?=\n##\s|\Z)",
-        text, re.DOTALL | re.IGNORECASE,
+        text,
+        re.DOTALL | re.IGNORECASE,
     )
     if pred_match:
         pred_block = pred_match.group(1)
@@ -150,17 +151,14 @@ def validate_brief(text: str, extract_path: Path) -> list[str]:
     # either the full path or the bare filename (hash.md).
     ref_match = re.search(
         r"##\s+References\s*\n(.+?)(?=\n##\s|\Z)",
-        text, re.DOTALL | re.IGNORECASE,
+        text,
+        re.DOTALL | re.IGNORECASE,
     )
     if ref_match:
         ref_block = ref_match.group(1)
-        if (
-            str(extract_path) not in ref_block
-            and extract_path.name not in ref_block
-        ):
+        if str(extract_path) not in ref_block and extract_path.name not in ref_block:
             issues.append(
-                "References section does not cite the source extract path "
-                f"({extract_path})",
+                f"References section does not cite the source extract path ({extract_path})",
             )
 
     return issues
@@ -199,7 +197,8 @@ def _extract_decline_reason(text: str) -> str:
     """Pull the rationale paragraph that follows DECLINED. Best-effort."""
     m = re.search(
         r"\*\*FINAL_POSITION\*\*\s*:\s*DECLINED\s*\n+(.+?)(?:\n\n|\Z)",
-        text, re.DOTALL | re.IGNORECASE,
+        text,
+        re.DOTALL | re.IGNORECASE,
     )
     if m:
         return m.group(1).strip()

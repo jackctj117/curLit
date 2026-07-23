@@ -23,6 +23,7 @@ from src.execution.polymarket_data_source import (
 
 def _fake_http(responses: dict[str, dict[str, Any]]):  # type: ignore[no-untyped-def]
     """Build a fake http_get_json that returns a canned response per URL."""
+
     def _shim(url: str, params: dict[str, str]) -> dict[str, Any]:
         if url in responses:
             return responses[url]
@@ -30,6 +31,7 @@ def _fake_http(responses: dict[str, dict[str, Any]]):  # type: ignore[no-untyped
             if url.startswith(prefix):
                 return body
         raise KeyError(f"no fake response for {url}")
+
     return _shim
 
 

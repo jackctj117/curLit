@@ -69,10 +69,16 @@ def _run_source(
     t0 = time.time()
     if dry_run:
         logger.info(
-            "[%s] DRY-RUN — would seed [%s … %s]", name, start.date(), end.date(),
+            "[%s] DRY-RUN — would seed [%s … %s]",
+            name,
+            start.date(),
+            end.date(),
         )
         return SourceResult(
-            name=name, rows=0, elapsed_sec=0.0, status="dry-run",
+            name=name,
+            rows=0,
+            elapsed_sec=0.0,
+            status="dry-run",
         )
     try:
         ingester = factory()
@@ -81,17 +87,26 @@ def _run_source(
         # Missing env var (e.g. FRED_API_KEY) — fail loud but isolate to
         # this source.
         return SourceResult(
-            name=name, rows=0, elapsed_sec=time.time() - t0,
-            status="env-missing", error=f"missing env var: {exc}",
+            name=name,
+            rows=0,
+            elapsed_sec=time.time() - t0,
+            status="env-missing",
+            error=f"missing env var: {exc}",
         )
     except Exception as exc:
         logger.exception("[%s] ingest failed", name)
         return SourceResult(
-            name=name, rows=0, elapsed_sec=time.time() - t0,
-            status="error", error=f"{type(exc).__name__}: {exc}",
+            name=name,
+            rows=0,
+            elapsed_sec=time.time() - t0,
+            status="error",
+            error=f"{type(exc).__name__}: {exc}",
         )
     return SourceResult(
-        name=name, rows=int(rows), elapsed_sec=time.time() - t0, status="ok",
+        name=name,
+        rows=int(rows),
+        elapsed_sec=time.time() - t0,
+        status="ok",
     )
 
 
@@ -109,19 +124,13 @@ def _print_summary(results: list[SourceResult]) -> None:
     """Pretty-print a one-line-per-source summary."""
     width_name = max(len(r.name) for r in results)
     print()
-    print(
-        f"{'source':<{width_name}}  {'status':<11}  {'rows':>10}  "
-        f"{'elapsed':>10}  detail"
-    )
+    print(f"{'source':<{width_name}}  {'status':<11}  {'rows':>10}  {'elapsed':>10}  detail")
     print("-" * (width_name + 60))
     total_rows = 0
     for r in results:
         elapsed = f"{r.elapsed_sec:.1f}s"
         detail = r.error if r.error else ""
-        print(
-            f"{r.name:<{width_name}}  {r.status:<11}  {r.rows:>10}  "
-            f"{elapsed:>10}  {detail}"
-        )
+        print(f"{r.name:<{width_name}}  {r.status:<11}  {r.rows:>10}  {elapsed:>10}  {detail}")
         total_rows += r.rows
     print("-" * (width_name + 60))
     print(f"{'TOTAL':<{width_name}}  {'':<11}  {total_rows:>10}")
@@ -132,20 +141,27 @@ def main() -> int:
         description="Seed historical market data into Postgres.",
     )
     parser.add_argument(
-        "--start", type=str, default=DEFAULT_START.strftime("%Y-%m-%d"),
+        "--start",
+        type=str,
+        default=DEFAULT_START.strftime("%Y-%m-%d"),
         help=f"Start date YYYY-MM-DD (default {DEFAULT_START.date()})",
     )
     parser.add_argument(
-        "--end", type=str, default=datetime.now(UTC).strftime("%Y-%m-%d"),
+        "--end",
+        type=str,
+        default=datetime.now(UTC).strftime("%Y-%m-%d"),
         help="End date YYYY-MM-DD (default: today)",
     )
     parser.add_argument(
-        "--source", type=str, default="all",
+        "--source",
+        type=str,
+        default="all",
         help="Comma-separated source names, or 'all' (default). "
-             "Available: fred, yfinance, cftc, cme_sofr.",
+        "Available: fred, yfinance, cftc, cme_sofr.",
     )
     parser.add_argument(
-        "--dry-run", action="store_true",
+        "--dry-run",
+        action="store_true",
         help="Show what would run without fetching or writing.",
     )
     args = parser.parse_args()
@@ -170,13 +186,14 @@ def main() -> int:
         sources = [s.strip() for s in args.source.split(",") if s.strip()]
         unknown = set(sources) - set(factories)
         if unknown:
-            logger.error("unknown sources: %s. Available: %s",
-                         sorted(unknown), sorted(factories))
+            logger.error("unknown sources: %s. Available: %s", sorted(unknown), sorted(factories))
             return 2
 
     logger.info(
         "Seeding %s from %s to %s%s",
-        ",".join(sources), start.date(), end.date(),
+        ",".join(sources),
+        start.date(),
+        end.date(),
         " (dry-run)" if args.dry_run else "",
     )
 

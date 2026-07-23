@@ -76,10 +76,7 @@ def load_polymarket_creds(env: str) -> PolymarketCreds:
         msg = f"unknown polymarket env: {env}"
         raise ValueError(msg)
 
-    chain_id = (
-        _POLYGON_MAINNET_CHAIN_ID if env == "mainnet"
-        else _AMOY_TESTNET_CHAIN_ID
-    )
+    chain_id = _POLYGON_MAINNET_CHAIN_ID if env == "mainnet" else _AMOY_TESTNET_CHAIN_ID
 
     # Try vault first. Lazy import so a development install without
     # the vault agent module still loads this file.
@@ -108,8 +105,7 @@ def _try_vault(env: str) -> dict[str, str] | None:
         from src.security.vault_client import VaultClient
     except ImportError:
         logger.debug(
-            "polymarket secrets: vault client not importable — "
-            "trying env-var fallback",
+            "polymarket secrets: vault client not importable — trying env-var fallback",
         )
         return None
 
@@ -117,12 +113,12 @@ def _try_vault(env: str) -> dict[str, str] | None:
         v = VaultClient()
         base = f"trading/polymarket/{env}"
         return {
-            "signer_pk":       v.get(f"{base}/signer_pk"),
-            "api_key":         v.get(f"{base}/api_key"),
-            "api_secret":      v.get(f"{base}/api_secret"),
-            "api_passphrase":  v.get(f"{base}/api_passphrase"),
-            "funder_address":  v.get(f"{base}/funder_address"),
-            "rpc_url":         v.get(f"{base}/rpc_url"),
+            "signer_pk": v.get(f"{base}/signer_pk"),
+            "api_key": v.get(f"{base}/api_key"),
+            "api_secret": v.get(f"{base}/api_secret"),
+            "api_passphrase": v.get(f"{base}/api_passphrase"),
+            "funder_address": v.get(f"{base}/funder_address"),
+            "rpc_url": v.get(f"{base}/rpc_url"),
         }
     except Exception:
         logger.warning(
@@ -138,8 +134,12 @@ def _fallback_env(env: str) -> dict[str, str]:
     NOT used on mainnet."""
     prefix = f"POLYMARKET_{env.upper()}_"
     keys = [
-        "SIGNER_PK", "API_KEY", "API_SECRET",
-        "API_PASSPHRASE", "FUNDER_ADDRESS", "RPC_URL",
+        "SIGNER_PK",
+        "API_KEY",
+        "API_SECRET",
+        "API_PASSPHRASE",
+        "FUNDER_ADDRESS",
+        "RPC_URL",
     ]
     out: dict[str, str] = {}
     missing: list[str] = []
@@ -151,14 +151,11 @@ def _fallback_env(env: str) -> dict[str, str]:
         else:
             out[k.lower()] = v
     if missing:
-        msg = (
-            f"polymarket {env} creds missing from vault AND env vars: "
-            f"{missing}"
-        )
+        msg = f"polymarket {env} creds missing from vault AND env vars: {missing}"
         raise RuntimeError(msg)
     logger.warning(
-        "polymarket %s creds loaded from env vars (DEV path) — "
-        "production must use vault", env,
+        "polymarket %s creds loaded from env vars (DEV path) — production must use vault",
+        env,
     )
     return out
 

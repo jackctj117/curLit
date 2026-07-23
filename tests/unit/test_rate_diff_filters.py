@@ -103,7 +103,7 @@ class TestBrokerPositionSync:
 
     def test_rejected_entry_self_heals_to_flat(self) -> None:
         s = RateDiffMRStrategy(_config())
-        s._position_size = 1000.0   # thinks it's long (entry was rejected)
+        s._position_size = 1000.0  # thinks it's long (entry was rejected)
         s._entry_z = 5.0
         s._entry_ts = datetime.now(UTC)
         s._sync_position_from_broker(_PosBroker([]))  # broker actually flat
@@ -112,12 +112,12 @@ class TestBrokerPositionSync:
 
     def test_rejected_exit_adopts_live_broker_position(self) -> None:
         s = RateDiffMRStrategy(_config())
-        s._position_size = 0.0      # thinks it's flat (exit was rejected)
+        s._position_size = 0.0  # thinks it's flat (exit was rejected)
         s._sync_position_from_broker(
             _PosBroker([Position("EURUSD", -500.0, 1.10)]),
         )
-        assert s._position_size == -500.0     # adopts the live leg
-        assert s._entry_ts is not None        # stamped so the time stop works
+        assert s._position_size == -500.0  # adopts the live leg
+        assert s._entry_ts is not None  # stamped so the time stop works
         assert s._entry_z == 0.0
 
     def test_sync_noop_when_in_agreement(self) -> None:
@@ -134,10 +134,12 @@ class TestBrokerPositionSync:
         # Best-effort: a broker read failure must not crash the tick.
         class _NoPos:
             pass
+
         s = RateDiffMRStrategy(_config())
         s._position_size = 1000.0
         s._sync_position_from_broker(_NoPos())  # AttributeError → swallowed
         assert s._position_size == 1000.0  # belief unchanged
+
 
 PAIR = "EURUSD"
 SPREAD = "US10Y_MINUS_DE10Y"
@@ -186,10 +188,11 @@ def _frame(
 
 
 def _legacy_reference_signals(
-    df: pd.DataFrame, cfg: RateDiffMRConfig,
+    df: pd.DataFrame,
+    cfg: RateDiffMRConfig,
 ) -> pd.Series:
     """Reimplementation of the pre-CL-x50g signal loop (fixture oracle)."""
-    z_series = (df[PAIR] - (_MODEL["alpha"] + _MODEL["beta"] * df[SPREAD]))
+    z_series = df[PAIR] - (_MODEL["alpha"] + _MODEL["beta"] * df[SPREAD])
     positions = []
     pos, entry_i = 0.0, 0
     for i, z in enumerate(z_series / _MODEL["residual_std"]):
@@ -200,9 +203,7 @@ def _legacy_reference_signals(
                 pos, entry_i = -1.0, i
         else:
             days = i - entry_i
-            stop = (pos > 0 and z < -cfg.stop_loss_z) or (
-                pos < 0 and z > cfg.stop_loss_z
-            )
+            stop = (pos > 0 and z < -cfg.stop_loss_z) or (pos < 0 and z > cfg.stop_loss_z)
             exit_ok = (pos > 0 and z >= -cfg.exit_z_threshold) or (
                 pos < 0 and z <= cfg.exit_z_threshold
             )
@@ -227,7 +228,9 @@ class TestDisabledFiltersBaseline:
         df = _frame(_Z_MIXED)
         out = _strategy(cfg).generate_signals(df)
         pd.testing.assert_series_equal(
-            out, _legacy_reference_signals(df, cfg), check_exact=True,
+            out,
+            _legacy_reference_signals(df, cfg),
+            check_exact=True,
         )
 
     def test_disabled_ignores_filter_columns(self) -> None:
@@ -237,9 +240,9 @@ class TestDisabledFiltersBaseline:
         hostile = _frame(
             _Z_MIXED,
             **{
-                USD_OIS: [0.01] * len(_Z_MIXED),   # carry opposes shorts
+                USD_OIS: [0.01] * len(_Z_MIXED),  # carry opposes shorts
                 EUR_OIS: [0.05] * len(_Z_MIXED),
-                "CVIX": [50.0] * len(_Z_MIXED),    # vol blowout
+                "CVIX": [50.0] * len(_Z_MIXED),  # vol blowout
             },
         )
         out_plain = _strategy(cfg).generate_signals(plain)
@@ -290,7 +293,8 @@ class TestCarryFilter:
         assert out.iloc[3] == 1.0
 
     def test_missing_ois_passes_with_warning(
-        self, caplog: pytest.LogCaptureFixture,
+        self,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         # No OIS columns at all → fail-open: entry still happens + WARNING.
         df = _frame([0.0, 0.0, 2.0, 2.0, 0.0])
@@ -298,13 +302,15 @@ class TestCarryFilter:
             out = _strategy(_config(**self.CFG)).generate_signals(df)
         assert out.iloc[2] == -1.0
         carry_warnings = [
-            r for r in caplog.records
+            r
+            for r in caplog.records
             if "Carry filter" in r.getMessage() and r.levelno == logging.WARNING
         ]
         assert len(carry_warnings) == 1
 
     def test_nan_ois_rows_pass_with_single_warning(
-        self, caplog: pytest.LogCaptureFixture,
+        self,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         n = 5
         df = _frame(
@@ -315,7 +321,8 @@ class TestCarryFilter:
             out = _strategy(_config(**self.CFG)).generate_signals(df)
         assert out.iloc[2] == -1.0  # NaN carry rows fail open
         carry_warnings = [
-            r for r in caplog.records
+            r
+            for r in caplog.records
             if "Carry filter" in r.getMessage() and r.levelno == logging.WARNING
         ]
         assert len(carry_warnings) == 1  # one summary, not one per row
@@ -459,7 +466,8 @@ class TestNoLookahead:
         usd = list(0.03 + rng.normal(0, 0.005, n))
         eur = list(0.02 + rng.normal(0, 0.005, n))
         df = _frame(
-            z, prices=prices,
+            z,
+            prices=prices,
             **{"CVIX": cvix, USD_OIS: usd, EUR_OIS: eur},
         )
         cfg = _config(
@@ -472,7 +480,9 @@ class TestNoLookahead:
         for t in (5, 15, 30, 45, n - 1):
             prefix = _strategy(cfg).generate_signals(df.iloc[:t])
             pd.testing.assert_series_equal(
-                prefix, full.iloc[:t], check_exact=True,
+                prefix,
+                full.iloc[:t],
+                check_exact=True,
             )
 
 
@@ -501,7 +511,10 @@ class _FakeProvider:
         return self.series.get(series_id, pd.Series(dtype=float))
 
     def get_aligned_series(
-        self, symbols: list[str], start: datetime, end: datetime,
+        self,
+        symbols: list[str],
+        start: datetime,
+        end: datetime,
     ) -> pd.DataFrame | None:
         if symbols == [PAIR] and self.pair_closes is not None:
             idx = pd.date_range(end=end, periods=len(self.pair_closes), freq="D")
@@ -533,8 +546,11 @@ class _CapturingStore:
 _PRICES = {PAIR: {"bid": 1.0999, "ask": 1.1001}}  # mid 1.1 → z = +10 → short
 
 
-def _live_strategy(cfg: RateDiffMRConfig, provider: _FakeProvider) -> tuple[
-    RateDiffMRStrategy, _CapturingStore,
+def _live_strategy(
+    cfg: RateDiffMRConfig, provider: _FakeProvider
+) -> tuple[
+    RateDiffMRStrategy,
+    _CapturingStore,
 ]:
     store = _CapturingStore()
     s = RateDiffMRStrategy(cfg, data_provider=provider, snapshot_store=store)
@@ -585,7 +601,8 @@ class TestLivePathFilters:
         assert values["filters"]["carry"]["value"] == pytest.approx(0.025)
 
     def test_missing_ois_warns_once_per_gap(
-        self, caplog: pytest.LogCaptureFixture,
+        self,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         cfg = _config(
             carry_filter_enabled=True,
@@ -602,10 +619,7 @@ class TestLivePathFilters:
         with caplog.at_level(logging.WARNING):
             asyncio.run(strat.generate_intents(_PRICES, _FakeBroker()))
             asyncio.run(strat.generate_intents(_PRICES, _FakeBroker()))
-        gap_warnings = [
-            r for r in caplog.records
-            if "OIS data unavailable" in r.getMessage()
-        ]
+        gap_warnings = [r for r in caplog.records if "OIS data unavailable" in r.getMessage()]
         assert len(gap_warnings) == 1  # once per gap, not per tick
         # Carry failed OPEN both ticks (blocked entries came from momentum).
         for snap in store.snapshots:
@@ -629,17 +643,25 @@ class TestLiveSpreadSeries:
     series the model was fit on), NOT a hardcoded US_10Y-DE_10Y (not ingested)
     or a constant 0.5 fallback."""
 
-    def _strat(self, provider: _FakeProvider) -> tuple[
-        RateDiffMRStrategy, _CapturingStore,
+    def _strat(
+        self, provider: _FakeProvider
+    ) -> tuple[
+        RateDiffMRStrategy,
+        _CapturingStore,
     ]:
         store = _CapturingStore()
         s = RateDiffMRStrategy(
-            _config(), data_provider=provider, snapshot_store=store,
+            _config(),
+            data_provider=provider,
+            snapshot_store=store,
         )
         # beta=1 so the spread VALUE actually reaches z (unlike the beta=0
         # fixture) — proves which series feeds the model at tick time.
         s._model = {
-            "alpha": 0.0, "beta": 1.0, "r_squared": 0.9, "residual_std": 0.01,
+            "alpha": 0.0,
+            "beta": 1.0,
+            "r_squared": 0.9,
+            "residual_std": 0.01,
         }
         s._last_fit = datetime.now(UTC)
         return s, store
@@ -655,6 +677,7 @@ class TestLiveSpreadSeries:
         class _EmptyProv(_FakeProvider):
             def get_aligned_series(self, symbols, start, end):  # type: ignore[override]
                 return None
+
         s, _ = self._strat(_EmptyProv())
         # Fail closed: no fabricated 0.5 spread, no trade.
         assert asyncio.run(s.generate_intents(_PRICES, _FakeBroker())) == []
@@ -678,16 +701,24 @@ class TestLivePathLiquidity:
     ratio across the thin (1.5×) and block (2.0×) thresholds.
     """
 
-    def _strat(self, profile: LiquidityProfile | None) -> tuple[
-        RateDiffMRStrategy, _CapturingStore,
+    def _strat(
+        self, profile: LiquidityProfile | None
+    ) -> tuple[
+        RateDiffMRStrategy,
+        _CapturingStore,
     ]:
         store = _CapturingStore()
         s = RateDiffMRStrategy(
-            _config(), data_provider=_FakeProvider(), snapshot_store=store,
+            _config(),
+            data_provider=_FakeProvider(),
+            snapshot_store=store,
             liquidity_profile=profile,
         )
         s._model = {
-            "alpha": 1.0, "beta": 0.0, "r_squared": 0.9, "residual_std": 0.01,
+            "alpha": 1.0,
+            "beta": 0.0,
+            "r_squared": 0.9,
+            "residual_std": 0.01,
         }
         s._last_fit = datetime.now(UTC)
         return s, store

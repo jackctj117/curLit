@@ -49,7 +49,9 @@ class TestOMSWiring:
     ) -> None:
         oms = OrderManager(broker, journal=journal)
         intent = OrderIntent(
-            strategy_id="strat-1", symbol="EUR_USD", target_position=10_000.0,
+            strategy_id="strat-1",
+            symbol="EUR_USD",
+            target_position=10_000.0,
         )
         oms.submit_intent(intent)
 
@@ -67,12 +69,15 @@ class TestOMSWiring:
     ) -> None:
         oms = OrderManager(broker, journal=journal)
         intent = OrderIntent(
-            strategy_id="strat-1", symbol="EUR_USD", target_position=5_000.0,
+            strategy_id="strat-1",
+            symbol="EUR_USD",
+            target_position=5_000.0,
         )
         oms.submit_intent(intent)
 
         intents = [
-            e for e in journal.query_by_intent(intent.intent_id)
+            e
+            for e in journal.query_by_intent(intent.intent_id)
             if e.event_type == EventType.INTENT_SUBMITTED
         ]
         assert len(intents) == 1
@@ -86,7 +91,9 @@ class TestOMSWiring:
         # Same target as current position (0) → no order placed.
         oms = OrderManager(broker, journal=journal)
         intent = OrderIntent(
-            strategy_id="strat-1", symbol="EUR_USD", target_position=0.5,
+            strategy_id="strat-1",
+            symbol="EUR_USD",
+            target_position=0.5,
         )
         oms.submit_intent(intent)
         events = journal.query_by_intent(intent.intent_id)
@@ -101,7 +108,9 @@ class TestOMSWiring:
         # OMS without a journal must still trade — bookkeeping is optional.
         oms = OrderManager(broker, journal=None)
         intent = OrderIntent(
-            strategy_id="strat-1", symbol="EUR_USD", target_position=10_000.0,
+            strategy_id="strat-1",
+            symbol="EUR_USD",
+            target_position=10_000.0,
         )
         oms.submit_intent(intent)
         # Must not raise.
@@ -119,7 +128,9 @@ class TestOMSWiring:
 
         oms = OrderManager(broker, journal=_BoomJournal())  # type: ignore[arg-type]
         intent = OrderIntent(
-            strategy_id="strat-1", symbol="EUR_USD", target_position=10_000.0,
+            strategy_id="strat-1",
+            symbol="EUR_USD",
+            target_position=10_000.0,
         )
         oms.submit_intent(intent)
         # Trade still went through.
@@ -138,14 +149,19 @@ class TestRejectionWiring:
     ) -> None:
         handler = RejectionHandler(journal=journal)
         intent = OrderIntent(
-            strategy_id="strat-1", symbol="EUR_USD", target_position=10_000.0,
+            strategy_id="strat-1",
+            symbol="EUR_USD",
+            target_position=10_000.0,
         )
         order = Order(
-            symbol="EUR_USD", side="buy", quantity=10_000,
+            symbol="EUR_USD",
+            side="buy",
+            quantity=10_000,
             order_type=OrderType.MARKET,
         )
         handler.handle(
-            intent=intent, order=order,
+            intent=intent,
+            order=order,
             exc=Exception("insufficient_margin"),
             attempt=1,
         )
@@ -186,14 +202,15 @@ class TestReconcilerWiring:
         state = _FakeStateStore()
         strategies = [_FakeStrategy("strat-1")]
         recon = PositionReconciler(
-            broker, oms, state, strategies, journal=journal,
+            broker,
+            oms,
+            state,
+            strategies,
+            journal=journal,
         )
         recon.reconcile()
         events = journal.all_events()
-        recon_events = [
-            e for e in events
-            if e.event_type == EventType.RECONCILIATION_REPORT
-        ]
+        recon_events = [e for e in events if e.event_type == EventType.RECONCILIATION_REPORT]
         assert len(recon_events) == 1
         assert "summary" in recon_events[0].payload
 
@@ -218,10 +235,16 @@ class TestChainIntegrity:
         state = _FakeStateStore()
         strategies = [_FakeStrategy("strat-1")]
         PositionReconciler(
-            broker, oms, state, strategies, journal=journal,
+            broker,
+            oms,
+            state,
+            strategies,
+            journal=journal,
         ).reconcile()
         intent = OrderIntent(
-            strategy_id="strat-1", symbol="EUR_USD", target_position=10_000.0,
+            strategy_id="strat-1",
+            symbol="EUR_USD",
+            target_position=10_000.0,
         )
         oms.submit_intent(intent)
 

@@ -268,7 +268,9 @@ class TestCodeToolRouting:
         resolver = QuestionResolver(code_tools={"grep": grep_tool})
         q = _well_formed_question(routing=Routing.CODE_TOOL)
         result = resolver.resolve(
-            q, tool_name="grep", tool_args={"pattern": "future_dated"},
+            q,
+            tool_name="grep",
+            tool_args={"pattern": "future_dated"},
         )
         assert result.status == ResolutionStatus.RESOLVED
         assert result.answer == "found at line 142"
@@ -319,8 +321,7 @@ class TestOtherAgentRouting:
         assert result.status == ResolutionStatus.RESOLVED
         assert "Bear says" in result.answer
         assert captured["target"] == "bear_reviewer"
-        assert "decision_blocker" in captured["prompt"].lower() or \
-               "rule B.1" in captured["prompt"]
+        assert "decision_blocker" in captured["prompt"].lower() or "rule B.1" in captured["prompt"]
 
     def test_no_target_agent_fails_loud(self) -> None:
         resolver = QuestionResolver(agent_dispatch=lambda t, p: "x")
@@ -398,8 +399,9 @@ class TestCaps:
             r = resolver.resolve(q, tool_name="anything")
             statuses.append(r.status)
         # First MAX_REFORMULATES are REFORMULATE
-        assert all(s == ResolutionStatus.REFORMULATE
-                   for s in statuses[:MAX_REFORMULATES_PER_QUESTION])
+        assert all(
+            s == ResolutionStatus.REFORMULATE for s in statuses[:MAX_REFORMULATES_PER_QUESTION]
+        )
         # The (cap+1)-th attempt escalates the underlying decision
         assert statuses[-1] == ResolutionStatus.ESCALATE
 

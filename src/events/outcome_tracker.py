@@ -57,6 +57,7 @@ def _idea_is_bullish(action: str, direction: str) -> bool | None:
         return False
     return None
 
+
 #: Matches the niche marker the ledger folds into notes, e.g. "[niche 3hop …]".
 _NICHE_RE = re.compile(r"\[niche(?:\s+(\d+)hop)?[^\]]*\]", re.I)
 
@@ -85,11 +86,10 @@ def parse_niche_marker(notes: str | None) -> tuple[bool, int | None]:
 def _default_price_fn(engine: Any) -> PriceFn:
     def _fetch(tickers: list[str]) -> dict[str, float]:
         from src.events.prices import get_prices  # noqa: PLC0415
+
         out = get_prices(tickers, engine=engine)
-        return {
-            t: float(v["price"]) for t, v in out.items()
-            if v.get("price") is not None
-        }
+        return {t: float(v["price"]) for t, v in out.items() if v.get("price") is not None}
+
     return _fetch
 
 
@@ -159,12 +159,14 @@ def score_open_ideas(
             entry = float(r["price_at_signal"])
             entry_at = parse_ts(r["created_at"])
             horizon = (
-                int(r["time_stop_days"]) if r["time_stop_days"] is not None
+                int(r["time_stop_days"])
+                if r["time_stop_days"] is not None
                 else config.default_horizon_days
             )
             due = entry_at is not None and now >= entry_at + timedelta(days=horizon)
             bullish = _idea_is_bullish(
-                str(r["action"] or ""), str(r["direction"] or ""),
+                str(r["action"] or ""),
+                str(r["direction"] or ""),
             )
             last = current.get(str(r["ticker"]))
             prev_mfe = r["prev_mfe"]
@@ -194,17 +196,31 @@ def score_open_ideas(
 
             is_niche, hop = parse_niche_marker(r["notes"])
             red_team = bool(r["notes"] and "red-team" in str(r["notes"]).lower())
-            conn.execute(_UPSERT, {
-                "idea_id": r["idea_id"], "ticker": r["ticker"],
-                "action": r["action"], "direction": r["direction"],
-                "theme": r["theme"], "time_horizon": r["time_horizon"],
-                "confidence": r["confidence"], "is_niche": is_niche,
-                "hop_count": hop, "red_team_survived": red_team,
-                "entry_price": entry, "entry_at": entry_at,
-                "last_price": last, "last_at": now if last is not None else None,
-                "return_pct": signed, "mfe": mfe, "mae": mae,
-                "horizon_days": horizon, "outcome": outcome, "now": now,
-            })
+            conn.execute(
+                _UPSERT,
+                {
+                    "idea_id": r["idea_id"],
+                    "ticker": r["ticker"],
+                    "action": r["action"],
+                    "direction": r["direction"],
+                    "theme": r["theme"],
+                    "time_horizon": r["time_horizon"],
+                    "confidence": r["confidence"],
+                    "is_niche": is_niche,
+                    "hop_count": hop,
+                    "red_team_survived": red_team,
+                    "entry_price": entry,
+                    "entry_at": entry_at,
+                    "last_price": last,
+                    "last_at": now if last is not None else None,
+                    "return_pct": signed,
+                    "mfe": mfe,
+                    "mae": mae,
+                    "horizon_days": horizon,
+                    "outcome": outcome,
+                    "now": now,
+                },
+            )
             counts[outcome] = counts.get(outcome, 0) + 1
 
     logger.info("outcome scoring: %s", counts)

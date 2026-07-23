@@ -30,8 +30,13 @@ class TestStatePersistence:
         path = str(tmp_path / "cb.json")
         s1 = CBSentimentShiftStrategy(CBSentimentConfig(state_path=path))
         s1.open_positions["EURUSD"] = OpenPosition(
-            symbol="EURUSD", entry_ts=datetime.now(UTC), entry_price=1.10,
-            quantity=-1000.0, direction=-1, stop_loss=1.11, source_cb="FED",
+            symbol="EURUSD",
+            entry_ts=datetime.now(UTC),
+            entry_price=1.10,
+            quantity=-1000.0,
+            direction=-1,
+            stop_loss=1.11,
+            source_cb="FED",
         )
         s1._save_state()
         # A fresh instance reloads the book on construction.
@@ -50,6 +55,7 @@ class TestStatePersistence:
 
     def test_corrupt_file_fails_loud(self, tmp_path) -> None:
         import json
+
         path = tmp_path / "cb.json"
         path.write_text("{ not valid json")
         with pytest.raises(json.JSONDecodeError):
@@ -58,8 +64,12 @@ class TestStatePersistence:
     def test_no_path_is_in_memory_only(self, tmp_path) -> None:
         s = CBSentimentShiftStrategy(CBSentimentConfig(state_path=None))
         s.open_positions["EURUSD"] = OpenPosition(
-            symbol="EURUSD", entry_ts=datetime.now(UTC), entry_price=1.10,
-            quantity=1000.0, direction=1, stop_loss=1.09,
+            symbol="EURUSD",
+            entry_ts=datetime.now(UTC),
+            entry_price=1.10,
+            quantity=1000.0,
+            direction=1,
+            stop_loss=1.09,
         )
         s._save_state()  # no path → no-op, nothing written
         assert not list(tmp_path.glob("*.json"))
@@ -86,8 +96,12 @@ class _HoldingBroker:
 
 def _open_pos(pair: str, qty: float) -> OpenPosition:
     return OpenPosition(
-        symbol=pair, entry_ts=datetime.now(UTC), entry_price=1.10,
-        quantity=qty, direction=1 if qty > 0 else -1, stop_loss=1.09,
+        symbol=pair,
+        entry_ts=datetime.now(UTC),
+        entry_price=1.10,
+        quantity=qty,
+        direction=1 if qty > 0 else -1,
+        stop_loss=1.09,
         source_cb="FED",
     )
 
@@ -107,6 +121,7 @@ class TestPhantomDrop:
 
     def test_real_position_kept(self, monkeypatch) -> None:
         from src.execution.broker import Position
+
         strat = CBSentimentShiftStrategy(CBSentimentConfig(max_concurrent_positions=3))
         strat.open_positions["EURUSD"] = _open_pos("EURUSD", -1000.0)
         broker = _HoldingBroker([Position("EURUSD", -1000.0, 1.10)])
@@ -120,6 +135,7 @@ class TestPhantomDrop:
         class _NoPos:
             def get_account(self) -> Any:
                 return SimpleNamespace(equity=100_000.0)
+
         strat = CBSentimentShiftStrategy(CBSentimentConfig(max_concurrent_positions=3))
         strat.open_positions["EURUSD"] = _open_pos("EURUSD", 1000.0)
         monkeypatch.setattr(strat, "_check_new_events", lambda: [])
@@ -153,7 +169,7 @@ def test_cap_enforced_within_single_tick(monkeypatch) -> None:
     monkeypatch.setattr(strat, "_refresh_thresholds", lambda: None)
     intents = asyncio.run(strat.generate_intents(_prices(pairs), _Broker()))
     entries = [i for i in intents if i.target_position != 0]
-    assert len(entries) == 3          # capped in-tick, not 5
+    assert len(entries) == 3  # capped in-tick, not 5
     assert len(strat.open_positions) == 3
 
 

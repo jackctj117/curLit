@@ -97,7 +97,8 @@ class TestEvaluateThreshold:
     def test_pass_gte(self) -> None:
         report = {"oos_metrics": {"sharpe": 0.7}}
         passed, missing, actual = evaluate_threshold(
-            "oos_metrics.sharpe >= 0.50", report,
+            "oos_metrics.sharpe >= 0.50",
+            report,
         )
         assert passed
         assert not missing
@@ -106,7 +107,8 @@ class TestEvaluateThreshold:
     def test_fail_gte(self) -> None:
         report = {"oos_metrics": {"sharpe": 0.3}}
         passed, missing, _ = evaluate_threshold(
-            "oos_metrics.sharpe >= 0.50", report,
+            "oos_metrics.sharpe >= 0.50",
+            report,
         )
         assert not passed
         assert not missing
@@ -115,14 +117,16 @@ class TestEvaluateThreshold:
         # Boundary: equal does NOT pass on >
         report = {"sharpe_ci_95": {"low": 0.0}}
         passed, _, _ = evaluate_threshold(
-            "sharpe_ci_95.low > 0.0", report,
+            "sharpe_ci_95.low > 0.0",
+            report,
         )
         assert not passed
 
     def test_missing_path(self) -> None:
         report = {"sharpe": 0.7}
         passed, missing, actual = evaluate_threshold(
-            "oos_metrics.sharpe >= 0.50", report,
+            "oos_metrics.sharpe >= 0.50",
+            report,
         )
         assert not passed
         assert missing
@@ -131,19 +135,22 @@ class TestEvaluateThreshold:
     def test_not_in(self) -> None:
         report = {"decay_severity": "NO"}
         passed, _, _ = evaluate_threshold(
-            "decay_severity not in ['STRONG', 'MODERATE']", report,
+            "decay_severity not in ['STRONG', 'MODERATE']",
+            report,
         )
         assert passed
         report["decay_severity"] = "MODERATE"
         passed2, _, _ = evaluate_threshold(
-            "decay_severity not in ['STRONG', 'MODERATE']", report,
+            "decay_severity not in ['STRONG', 'MODERATE']",
+            report,
         )
         assert not passed2
 
     def test_eq_bool(self) -> None:
         report = {"regime_diversified": True}
         passed, _, _ = evaluate_threshold(
-            "regime_diversified == True", report,
+            "regime_diversified == True",
+            report,
         )
         assert passed
 

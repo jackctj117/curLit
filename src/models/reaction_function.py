@@ -27,7 +27,8 @@ class FedReactionFunction:
         unemployment_gap = self.u_star - unemployment
         return max(
             0.0,
-            self.r_star + core_pce
+            self.r_star
+            + core_pce
             + self.w_core_pce * 1.5 * inflation_gap
             + self.w_unemployment * unemployment_gap
             + self.w_fci * (0.0 - fci),
@@ -41,13 +42,21 @@ class FedReactionFunction:
 
         def loss(params: np.ndarray[Any, Any]) -> float:
             self.w_core_pce, self.w_unemployment, self.w_fci = params
-            pred = np.array([
-                self.implied_rate(pce, u, fci)
-                for pce, u, fci in zip(df["core_pce"], df["unemployment"], df["fci"], strict=False)
-            ])
+            pred = np.array(
+                [
+                    self.implied_rate(pce, u, fci)
+                    for pce, u, fci in zip(
+                        df["core_pce"], df["unemployment"], df["fci"], strict=False
+                    )
+                ]
+            )
             return float(((pred - actual) ** 2).sum() / len(actual))
 
         result = minimize(loss, x0=[0.6, 0.3, 0.1], bounds=[(0, 2), (0, 2), (0, 1)])
         self.w_core_pce, self.w_unemployment, self.w_fci = result.x
-        logger.info("Fed RF calibrated: w_pce=%.3f w_u=%.3f w_fci=%.3f",
-                      self.w_core_pce, self.w_unemployment, self.w_fci)
+        logger.info(
+            "Fed RF calibrated: w_pce=%.3f w_u=%.3f w_fci=%.3f",
+            self.w_core_pce,
+            self.w_unemployment,
+            self.w_fci,
+        )

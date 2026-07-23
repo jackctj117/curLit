@@ -21,8 +21,7 @@ from src.execution.paper_broker import PaperBroker
 
 
 def _order(side: str, qty: float, symbol: str = "EURUSD") -> Order:
-    return Order(symbol=symbol, side=side, quantity=qty,
-                 order_type=OrderType.MARKET)
+    return Order(symbol=symbol, side=side, quantity=qty, order_type=OrderType.MARKET)
 
 
 def _pos(broker: PaperBroker, symbol: str = "EURUSD"):
@@ -55,9 +54,9 @@ class TestAveragePriceAccounting:
     def test_add_same_direction_volume_weights_basis(self) -> None:
         b = PaperBroker()
         b.set_price("EURUSD", 1.0999, 1.1000)
-        b.place_order(_order("buy", 100))          # 100 @ 1.1000
+        b.place_order(_order("buy", 100))  # 100 @ 1.1000
         b.set_price("EURUSD", 1.1999, 1.2000)
-        b.place_order(_order("buy", 100))          # 100 @ 1.2000
+        b.place_order(_order("buy", 100))  # 100 @ 1.2000
         pos = _pos(b)
         assert pos.quantity == pytest.approx(200)
         assert pos.avg_price == pytest.approx(1.15)
@@ -66,9 +65,9 @@ class TestAveragePriceAccounting:
     def test_partial_reduce_keeps_basis_and_realizes(self) -> None:
         b = PaperBroker()
         b.set_price("EURUSD", 1.0998, 1.1000)
-        b.place_order(_order("buy", 100))          # 100 @ 1.1000 (ask)
+        b.place_order(_order("buy", 100))  # 100 @ 1.1000 (ask)
         b.set_price("EURUSD", 1.2000, 1.2002)
-        b.place_order(_order("sell", 50))          # close 50 @ 1.2000 (bid)
+        b.place_order(_order("sell", 50))  # close 50 @ 1.2000 (bid)
         pos = _pos(b)
         assert pos.quantity == pytest.approx(50)
         assert pos.avg_price == pytest.approx(1.1000)  # basis UNCHANGED
@@ -88,9 +87,9 @@ class TestAveragePriceAccounting:
     def test_flip_long_to_short_resets_basis_to_fill(self) -> None:
         b = PaperBroker()
         b.set_price("EURUSD", 1.0998, 1.1000)
-        b.place_order(_order("buy", 100))          # long 100 @ 1.1000
+        b.place_order(_order("buy", 100))  # long 100 @ 1.1000
         b.set_price("EURUSD", 1.2000, 1.2002)
-        b.place_order(_order("sell", 150))         # fill @ 1.2000 (bid)
+        b.place_order(_order("sell", 150))  # fill @ 1.2000 (bid)
         pos = _pos(b)
         assert pos.quantity == pytest.approx(-50)
         assert pos.avg_price == pytest.approx(1.2000)  # residual basis = fill
@@ -99,9 +98,9 @@ class TestAveragePriceAccounting:
     def test_flip_short_to_long_resets_basis_to_fill(self) -> None:
         b = PaperBroker()
         b.set_price("EURUSD", 1.2000, 1.2002)
-        b.place_order(_order("sell", 100))         # short 100 @ 1.2000 (bid)
+        b.place_order(_order("sell", 100))  # short 100 @ 1.2000 (bid)
         b.set_price("EURUSD", 1.0998, 1.1000)
-        b.place_order(_order("buy", 150))          # fill @ 1.1000 (ask)
+        b.place_order(_order("buy", 150))  # fill @ 1.1000 (ask)
         pos = _pos(b)
         assert pos.quantity == pytest.approx(50)
         assert pos.avg_price == pytest.approx(1.1000)
@@ -111,9 +110,9 @@ class TestAveragePriceAccounting:
     def test_short_reduce_keeps_basis(self) -> None:
         b = PaperBroker()
         b.set_price("EURUSD", 1.2000, 1.2002)
-        b.place_order(_order("sell", 100))         # short 100 @ 1.2000
+        b.place_order(_order("sell", 100))  # short 100 @ 1.2000
         b.set_price("EURUSD", 1.2498, 1.2500)
-        b.place_order(_order("buy", 40))           # cover 40 @ 1.2500 (ask)
+        b.place_order(_order("buy", 40))  # cover 40 @ 1.2500 (ask)
         pos = _pos(b)
         assert pos.quantity == pytest.approx(-60)
         assert pos.avg_price == pytest.approx(1.2000)
@@ -125,9 +124,9 @@ class TestAveragePriceAccounting:
         b.set_price("EURUSD", 1.0998, 1.1000)
         b.place_order(_order("buy", 100))
         b.set_price("EURUSD", 1.2000, 1.2002)
-        b.place_order(_order("sell", 100))         # flat
+        b.place_order(_order("sell", 100))  # flat
         b.set_price("EURUSD", 1.2998, 1.3000)
-        b.place_order(_order("buy", 10))           # fresh entry @ 1.3000
+        b.place_order(_order("buy", 10))  # fresh entry @ 1.3000
         pos = _pos(b)
         assert pos.quantity == pytest.approx(10)
         assert pos.avg_price == pytest.approx(1.3000)

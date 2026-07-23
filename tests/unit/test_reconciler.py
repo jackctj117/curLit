@@ -75,14 +75,20 @@ def _make_broker_with(
 
 class TestReconciliationOutcomes:
     def test_matched_when_sizes_align(self) -> None:
-        broker = _make_broker_with([
-            Position(symbol="EURUSD", quantity=1000.0, avg_price=1.10),
-        ])
-        state = _FakeStateStore({
-            "s1": {"symbol": "EURUSD", "size": 1000.0},
-        })
+        broker = _make_broker_with(
+            [
+                Position(symbol="EURUSD", quantity=1000.0, avg_price=1.10),
+            ]
+        )
+        state = _FakeStateStore(
+            {
+                "s1": {"symbol": "EURUSD", "size": 1000.0},
+            }
+        )
         recon = PositionReconciler(
-            broker, _RecordingOMS(), state,  # type: ignore[arg-type]
+            broker,
+            _RecordingOMS(),
+            state,  # type: ignore[arg-type]
             strategies=[_StrategyDouble("s1")],
         )
         report = recon.reconcile()
@@ -91,25 +97,36 @@ class TestReconciliationOutcomes:
         assert not report.has_mismatches
 
     def test_filled_pending_event_leg_not_flattened_on_cold_start(
-        self, tmp_path: Any,
+        self,
+        tmp_path: Any,
     ) -> None:
         # CL-ngs3 (P0): a leg filled at the broker but not yet promoted out of
         # pending_entries (crash after fill, before confirm_entries ran) must
         # be MATCHED, not flattened. The reconciler confirms pending entries
         # against the broker snapshot before classifying.
         from src.strategies.event_book import EventBook, EventPosition
+
         book = EventBook(
-            state_path=str(tmp_path / "book.json"), max_loss_pct=0.5,
-            per_instrument_max_pct=1.0, haven_max_pct=1.0,
-            max_holding_hours=48, reconcile_grace_sec=300,
+            state_path=str(tmp_path / "book.json"),
+            max_loss_pct=0.5,
+            per_instrument_max_pct=1.0,
+            haven_max_pct=1.0,
+            max_holding_hours=48,
+            reconcile_grace_sec=300,
         )
         now = datetime.now(UTC)
         book.record_entry(
             EventPosition(
-                symbol="USD_CAD", event_id=1, entry_ts=now, entry_price=1.36,
-                quantity=-500.0, direction=-1, stop_price=1.40, headline="x",
+                symbol="USD_CAD",
+                event_id=1,
+                entry_ts=now,
+                entry_price=1.36,
+                quantity=-500.0,
+                direction=-1,
+                stop_price=1.40,
+                headline="x",
             ),
-            [],   # broker flat at submit time → baseline 0
+            [],  # broker flat at submit time → baseline 0
             now,
         )
         # Pending entry contributes 0 until confirmed — which is exactly why a
@@ -131,7 +148,10 @@ class TestReconciliationOutcomes:
         broker = _make_broker_with([Position("USD_CAD", -500.0, 1.36)])  # filled
         oms = _RecordingOMS()
         recon = PositionReconciler(
-            broker, oms, None, strategies=[strat],  # type: ignore[arg-type]
+            broker,
+            oms,
+            None,
+            strategies=[strat],  # type: ignore[arg-type]
         )
         report = recon.reconcile()
         statuses = [e.status for e in report.entries]
@@ -143,13 +163,17 @@ class TestReconciliationOutcomes:
         # form (USD_CAD); the strategy claims the same leg. Both sides must
         # canonicalize to USDCAD and MATCH — NOT be double-orphaned and
         # flattened (the false-orphan-flatten money-path bug).
-        broker = _make_broker_with([
-            Position(symbol="USD_CAD", quantity=-500.0, avg_price=1.36),
-        ])
+        broker = _make_broker_with(
+            [
+                Position(symbol="USD_CAD", quantity=-500.0, avg_price=1.36),
+            ]
+        )
         state = _FakeStateStore({"s1": {"symbol": "USD_CAD", "size": -500.0}})
         oms = _RecordingOMS()
         recon = PositionReconciler(
-            broker, oms, state,  # type: ignore[arg-type]
+            broker,
+            oms,
+            state,  # type: ignore[arg-type]
             strategies=[_StrategyDouble("s1")],
         )
         report = recon.reconcile()
@@ -160,14 +184,20 @@ class TestReconciliationOutcomes:
         assert oms.submitted == []  # nothing falsely flattened
 
     def test_size_mismatch_detected(self) -> None:
-        broker = _make_broker_with([
-            Position(symbol="EURUSD", quantity=1500.0, avg_price=1.10),
-        ])
-        state = _FakeStateStore({
-            "s1": {"symbol": "EURUSD", "size": 1000.0},
-        })
+        broker = _make_broker_with(
+            [
+                Position(symbol="EURUSD", quantity=1500.0, avg_price=1.10),
+            ]
+        )
+        state = _FakeStateStore(
+            {
+                "s1": {"symbol": "EURUSD", "size": 1000.0},
+            }
+        )
         recon = PositionReconciler(
-            broker, _RecordingOMS(), state,  # type: ignore[arg-type]
+            broker,
+            _RecordingOMS(),
+            state,  # type: ignore[arg-type]
             strategies=[_StrategyDouble("s1")],
         )
         report = recon.reconcile()
@@ -178,12 +208,16 @@ class TestReconciliationOutcomes:
 
     def test_orphaned_broker_detected(self) -> None:
         # Broker has a position no strategy claims.
-        broker = _make_broker_with([
-            Position(symbol="USDJPY", quantity=500.0, avg_price=150.0),
-        ])
+        broker = _make_broker_with(
+            [
+                Position(symbol="USDJPY", quantity=500.0, avg_price=150.0),
+            ]
+        )
         state = _FakeStateStore({"s1": None})  # s1 is flat
         recon = PositionReconciler(
-            broker, _RecordingOMS(), state,  # type: ignore[arg-type]
+            broker,
+            _RecordingOMS(),
+            state,  # type: ignore[arg-type]
             strategies=[_StrategyDouble("s1")],
         )
         report = recon.reconcile()
@@ -196,11 +230,15 @@ class TestReconciliationOutcomes:
     def test_orphaned_internal_detected(self) -> None:
         # Internal claims a position broker doesn't have.
         broker = _make_broker_with([])
-        state = _FakeStateStore({
-            "s1": {"symbol": "EURUSD", "size": 1000.0},
-        })
+        state = _FakeStateStore(
+            {
+                "s1": {"symbol": "EURUSD", "size": 1000.0},
+            }
+        )
         recon = PositionReconciler(
-            broker, _RecordingOMS(), state,  # type: ignore[arg-type]
+            broker,
+            _RecordingOMS(),
+            state,  # type: ignore[arg-type]
             strategies=[_StrategyDouble("s1")],
         )
         report = recon.reconcile()
@@ -217,15 +255,21 @@ class TestReconciliationOutcomes:
 
 class TestMultiStrategyAggregation:
     def test_two_strategies_share_symbol_aggregate_to_match_broker(self) -> None:
-        broker = _make_broker_with([
-            Position(symbol="EURUSD", quantity=1500.0, avg_price=1.10),
-        ])
-        state = _FakeStateStore({
-            "s1": {"symbol": "EURUSD", "size": 1000.0},
-            "s2": {"symbol": "EURUSD", "size": 500.0},
-        })
+        broker = _make_broker_with(
+            [
+                Position(symbol="EURUSD", quantity=1500.0, avg_price=1.10),
+            ]
+        )
+        state = _FakeStateStore(
+            {
+                "s1": {"symbol": "EURUSD", "size": 1000.0},
+                "s2": {"symbol": "EURUSD", "size": 500.0},
+            }
+        )
         recon = PositionReconciler(
-            broker, _RecordingOMS(), state,  # type: ignore[arg-type]
+            broker,
+            _RecordingOMS(),
+            state,  # type: ignore[arg-type]
             strategies=[_StrategyDouble("s1"), _StrategyDouble("s2")],
         )
         report = recon.reconcile()
@@ -237,12 +281,16 @@ class TestMultiStrategyAggregation:
     def test_two_strategies_offset_each_other(self) -> None:
         # s1 long 1000, s2 short 1000 → net 0; broker must be flat to match.
         broker = _make_broker_with([])
-        state = _FakeStateStore({
-            "s1": {"symbol": "EURUSD", "size": 1000.0},
-            "s2": {"symbol": "EURUSD", "size": -1000.0},
-        })
+        state = _FakeStateStore(
+            {
+                "s1": {"symbol": "EURUSD", "size": 1000.0},
+                "s2": {"symbol": "EURUSD", "size": -1000.0},
+            }
+        )
         recon = PositionReconciler(
-            broker, _RecordingOMS(), state,  # type: ignore[arg-type]
+            broker,
+            _RecordingOMS(),
+            state,  # type: ignore[arg-type]
             strategies=[_StrategyDouble("s1"), _StrategyDouble("s2")],
         )
         report = recon.reconcile()
@@ -261,13 +309,17 @@ class TestMultiStrategyAggregation:
 
 class TestPolicyActions:
     def test_orphaned_broker_flatten_submits_zero_intent(self) -> None:
-        broker = _make_broker_with([
-            Position(symbol="USDJPY", quantity=500.0, avg_price=150.0),
-        ])
+        broker = _make_broker_with(
+            [
+                Position(symbol="USDJPY", quantity=500.0, avg_price=150.0),
+            ]
+        )
         oms = _RecordingOMS()
         state = _FakeStateStore({"s1": None})
         recon = PositionReconciler(
-            broker, oms, state,  # type: ignore[arg-type]
+            broker,
+            oms,
+            state,  # type: ignore[arg-type]
             strategies=[_StrategyDouble("s1")],
             policy=ReconciliationPolicy(on_orphaned_broker="flatten"),
         )
@@ -279,13 +331,17 @@ class TestPolicyActions:
         assert any("flattened" in a for a in report.actions_taken)
 
     def test_orphaned_broker_hold_does_not_submit(self) -> None:
-        broker = _make_broker_with([
-            Position(symbol="USDJPY", quantity=500.0, avg_price=150.0),
-        ])
+        broker = _make_broker_with(
+            [
+                Position(symbol="USDJPY", quantity=500.0, avg_price=150.0),
+            ]
+        )
         oms = _RecordingOMS()
         state = _FakeStateStore({"s1": None})
         recon = PositionReconciler(
-            broker, oms, state,  # type: ignore[arg-type]
+            broker,
+            oms,
+            state,  # type: ignore[arg-type]
             strategies=[_StrategyDouble("s1")],
             policy=ReconciliationPolicy(on_orphaned_broker="hold"),
         )
@@ -294,13 +350,17 @@ class TestPolicyActions:
         assert any("held" in a for a in report.actions_taken)
 
     def test_orphaned_broker_alert_only_logs_only(self) -> None:
-        broker = _make_broker_with([
-            Position(symbol="USDJPY", quantity=500.0, avg_price=150.0),
-        ])
+        broker = _make_broker_with(
+            [
+                Position(symbol="USDJPY", quantity=500.0, avg_price=150.0),
+            ]
+        )
         oms = _RecordingOMS()
         state = _FakeStateStore({"s1": None})
         recon = PositionReconciler(
-            broker, oms, state,  # type: ignore[arg-type]
+            broker,
+            oms,
+            state,  # type: ignore[arg-type]
             strategies=[_StrategyDouble("s1")],
             policy=ReconciliationPolicy(on_orphaned_broker="alert_only"),
         )
@@ -316,11 +376,15 @@ class TestPolicyActions:
         # Internal-state cleanup is alert-only — never emits orders to broker.
         broker = _make_broker_with([])
         oms = _RecordingOMS()
-        state = _FakeStateStore({
-            "s1": {"symbol": "EURUSD", "size": 1000.0},
-        })
+        state = _FakeStateStore(
+            {
+                "s1": {"symbol": "EURUSD", "size": 1000.0},
+            }
+        )
         recon = PositionReconciler(
-            broker, oms, state,  # type: ignore[arg-type]
+            broker,
+            oms,
+            state,  # type: ignore[arg-type]
             strategies=[_StrategyDouble("s1")],
         )
         report = recon.reconcile()
@@ -341,11 +405,15 @@ class TestRobustness:
                     raise RuntimeError("DB down for this strategy")
                 return None
 
-        broker = _make_broker_with([
-            Position(symbol="EURUSD", quantity=1000.0, avg_price=1.10),
-        ])
+        broker = _make_broker_with(
+            [
+                Position(symbol="EURUSD", quantity=1000.0, avg_price=1.10),
+            ]
+        )
         recon = PositionReconciler(
-            broker, _RecordingOMS(), _RaisingState(),  # type: ignore[arg-type]
+            broker,
+            _RecordingOMS(),
+            _RaisingState(),  # type: ignore[arg-type]
             strategies=[_StrategyDouble("broken"), _StrategyDouble("good")],
         )
         # Should still produce a report (broker positions visible).
@@ -377,7 +445,8 @@ class TestRobustness:
                 raise RuntimeError
 
         recon = PositionReconciler(
-            _BrokenBroker(), _RecordingOMS(),  # type: ignore[arg-type]
+            _BrokenBroker(),
+            _RecordingOMS(),  # type: ignore[arg-type]
             _FakeStateStore({"s1": None}),  # type: ignore[arg-type]
             strategies=[_StrategyDouble("s1")],
         )
@@ -389,7 +458,9 @@ class TestRobustness:
         broker = _make_broker_with([])
         with pytest.raises(AssertionError):
             PositionReconciler(
-                broker, _RecordingOMS(), _FakeStateStore({}),  # type: ignore[arg-type]
+                broker,
+                _RecordingOMS(),
+                _FakeStateStore({}),  # type: ignore[arg-type]
                 strategies=[],
             )
 
@@ -418,40 +489,58 @@ class TestMultiPositionBook:
         the single-position store were flattened as orphaned_broker. With the
         book consulted, they MATCH (note the underscore normalization:
         USD_JPY -> USDJPY) and the flatten never fires."""
-        broker = _make_broker_with([
-            Position(symbol="USDJPY", quantity=-500.0, avg_price=150.0),
-            Position(symbol="EURUSD", quantity=1000.0, avg_price=1.10),
-        ])
+        broker = _make_broker_with(
+            [
+                Position(symbol="USDJPY", quantity=-500.0, avg_price=150.0),
+                Position(symbol="EURUSD", quantity=1000.0, avg_price=1.10),
+            ]
+        )
         state = _FakeStateStore({"ev": None})  # store knows nothing
         oms = _RecordingOMS()
         recon = PositionReconciler(
-            broker, oms, state,  # type: ignore[arg-type]
-            strategies=[_BookStrategyDouble("ev", {
-                "USD_JPY": _BookPos(-500.0),
-                "EUR_USD": _BookPos(1000.0),
-            })],
+            broker,
+            oms,
+            state,  # type: ignore[arg-type]
+            strategies=[
+                _BookStrategyDouble(
+                    "ev",
+                    {
+                        "USD_JPY": _BookPos(-500.0),
+                        "EUR_USD": _BookPos(1000.0),
+                    },
+                )
+            ],
         )
         report = recon.reconcile()
         assert not report.has_mismatches
-        assert all(
-            e.status == ReconciliationStatus.MATCHED for e in report.entries
-        )
+        assert all(e.status == ReconciliationStatus.MATCHED for e in report.entries)
         assert oms.submitted == []  # nothing flattened
 
     def test_store_position_suppresses_book_double_count(self) -> None:
         """A strategy present in the store must not ALSO contribute its book
         (double counting would misreport a size mismatch)."""
-        broker = _make_broker_with([
-            Position(symbol="EURUSD", quantity=1000.0, avg_price=1.10),
-        ])
-        state = _FakeStateStore({
-            "s1": {"symbol": "EURUSD", "size": 1000.0},
-        })
+        broker = _make_broker_with(
+            [
+                Position(symbol="EURUSD", quantity=1000.0, avg_price=1.10),
+            ]
+        )
+        state = _FakeStateStore(
+            {
+                "s1": {"symbol": "EURUSD", "size": 1000.0},
+            }
+        )
         recon = PositionReconciler(
-            broker, _RecordingOMS(), state,  # type: ignore[arg-type]
-            strategies=[_BookStrategyDouble("s1", {
-                "EUR_USD": _BookPos(1000.0),  # same position, book form
-            })],
+            broker,
+            _RecordingOMS(),
+            state,  # type: ignore[arg-type]
+            strategies=[
+                _BookStrategyDouble(
+                    "s1",
+                    {
+                        "EUR_USD": _BookPos(1000.0),  # same position, book form
+                    },
+                )
+            ],
         )
         report = recon.reconcile()
         assert not report.has_mismatches  # 1000 vs 1000, not 2000 vs 1000
@@ -459,13 +548,17 @@ class TestMultiPositionBook:
     def test_true_orphan_still_flattened(self) -> None:
         """The safety net stays intact: a broker position in NO store and NO
         book is still classified orphaned_broker and flattened."""
-        broker = _make_broker_with([
-            Position(symbol="GBPUSD", quantity=700.0, avg_price=1.25),
-        ])
+        broker = _make_broker_with(
+            [
+                Position(symbol="GBPUSD", quantity=700.0, avg_price=1.25),
+            ]
+        )
         state = _FakeStateStore({"ev": None})
         oms = _RecordingOMS()
         recon = PositionReconciler(
-            broker, oms, state,  # type: ignore[arg-type]
+            broker,
+            oms,
+            state,  # type: ignore[arg-type]
             strategies=[_BookStrategyDouble("ev", {"USD_JPY": _BookPos(-1.0)})],
             policy=ReconciliationPolicy(on_orphaned_broker="flatten"),
         )
@@ -478,7 +571,9 @@ class TestMultiPositionBook:
         broker = _make_broker_with([])
         state = _FakeStateStore({"a": None, "b": None})
         recon = PositionReconciler(
-            broker, _RecordingOMS(), state,  # type: ignore[arg-type]
+            broker,
+            _RecordingOMS(),
+            state,  # type: ignore[arg-type]
             strategies=[
                 _BookStrategyDouble("a", {}),
                 _StrategyDouble("b"),  # no open_positions attr at all
@@ -499,12 +594,16 @@ class TestCheckAlignment:
     mid-session) and None — not a mismatch — when the broker is unreachable."""
 
     def test_aligned_book_reports_clean(self) -> None:
-        broker = _make_broker_with([
-            Position(symbol="EURUSD", quantity=1000.0, avg_price=1.10),
-        ])
+        broker = _make_broker_with(
+            [
+                Position(symbol="EURUSD", quantity=1000.0, avg_price=1.10),
+            ]
+        )
         state = _FakeStateStore({"s1": {"symbol": "EURUSD", "size": 1000.0}})
         recon = PositionReconciler(
-            broker, _RecordingOMS(), state,  # type: ignore[arg-type]
+            broker,
+            _RecordingOMS(),
+            state,  # type: ignore[arg-type]
             strategies=[_StrategyDouble("s1")],
         )
         report = recon.check_alignment()
@@ -514,13 +613,17 @@ class TestCheckAlignment:
     def test_mismatch_detected_without_actions(self) -> None:
         # Orphaned broker position: reconcile() would flatten it; the
         # periodic alignment check must ONLY report it.
-        broker = _make_broker_with([
-            Position(symbol="GBPUSD", quantity=700.0, avg_price=1.25),
-        ])
+        broker = _make_broker_with(
+            [
+                Position(symbol="GBPUSD", quantity=700.0, avg_price=1.25),
+            ]
+        )
         state = _FakeStateStore({"s1": None})
         oms = _RecordingOMS()
         recon = PositionReconciler(
-            broker, oms, state,  # type: ignore[arg-type]
+            broker,
+            oms,
+            state,  # type: ignore[arg-type]
             strategies=[_StrategyDouble("s1")],
             policy=ReconciliationPolicy(on_orphaned_broker="flatten"),
         )
@@ -537,7 +640,9 @@ class TestCheckAlignment:
 
         state = _FakeStateStore({"s1": {"symbol": "EURUSD", "size": 1000.0}})
         recon = PositionReconciler(
-            _DeadBroker(), _RecordingOMS(), state,  # type: ignore[arg-type]
+            _DeadBroker(),
+            _RecordingOMS(),
+            state,  # type: ignore[arg-type]
             strategies=[_StrategyDouble("s1")],
         )
         assert recon.check_alignment() is None
@@ -545,12 +650,16 @@ class TestCheckAlignment:
     def test_multi_leg_book_matches_across_dialects(self) -> None:
         # Event book keys OANDA-underscore; broker keys compact — the
         # alignment pass must use the same canonicalization as cold start.
-        broker = _make_broker_with([
-            Position(symbol="USDJPY", quantity=-500.0, avg_price=150.0),
-        ])
+        broker = _make_broker_with(
+            [
+                Position(symbol="USDJPY", quantity=-500.0, avg_price=150.0),
+            ]
+        )
         state = _FakeStateStore({"ev": None})
         recon = PositionReconciler(
-            broker, _RecordingOMS(), state,  # type: ignore[arg-type]
+            broker,
+            _RecordingOMS(),
+            state,  # type: ignore[arg-type]
             strategies=[_BookStrategyDouble("ev", {"USD_JPY": _BookPos(-500.0)})],
         )
         report = recon.check_alignment()

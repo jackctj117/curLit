@@ -68,41 +68,60 @@ class TestSingleAssetCosts:
     def test_per_pair_cost_applied_when_pair_known(self) -> None:
         cm = CostModel(overnight_funding_annual_bps=0.0)
         df = WalkForwardRunner._trades_for_signals(
-            signals=_signals(), data=_data(), cost_model=cm, pair="EURUSD",
+            signals=_signals(),
+            data=_data(),
+            cost_model=cm,
+            pair="EURUSD",
         )
         expected = df["position_change"] * 0.6e-4
         pd.testing.assert_series_equal(
-            df["cost"], expected, check_names=False,
+            df["cost"],
+            expected,
+            check_names=False,
         )
         assert (df["funding"] == 0.0).all()
 
     def test_flat_cost_when_pair_unknown(self) -> None:
         cm = CostModel(overnight_funding_annual_bps=0.0)
         df = WalkForwardRunner._trades_for_signals(
-            signals=_signals(), data=_data(), cost_model=cm, pair=None,
+            signals=_signals(),
+            data=_data(),
+            cost_model=cm,
+            pair=None,
         )
         expected = df["position_change"] * cm.cost_per_turn
         pd.testing.assert_series_equal(
-            df["cost"], expected, check_names=False,
+            df["cost"],
+            expected,
+            check_names=False,
         )
 
     def test_overnight_funding_charged_on_held_positions(self) -> None:
         cm = CostModel()  # 15 bps/yr funding
         df = WalkForwardRunner._trades_for_signals(
-            signals=_signals(), data=_data(), cost_model=cm, pair="EURUSD",
+            signals=_signals(),
+            data=_data(),
+            cost_model=cm,
+            pair="EURUSD",
         )
         expected_funding = df["position"].abs() * _FUNDING_DAILY_15BPS
         pd.testing.assert_series_equal(
-            df["funding"], expected_funding, check_names=False,
+            df["funding"],
+            expected_funding,
+            check_names=False,
         )
         # Funding is part of cost → net_return drops by exactly funding
         # vs the zero-funding run.
         cm0 = CostModel(overnight_funding_annual_bps=0.0)
         df0 = WalkForwardRunner._trades_for_signals(
-            signals=_signals(), data=_data(), cost_model=cm0, pair="EURUSD",
+            signals=_signals(),
+            data=_data(),
+            cost_model=cm0,
+            pair="EURUSD",
         )
         assert np.allclose(
-            df["net_return"], df0["net_return"] - df["funding"],
+            df["net_return"],
+            df0["net_return"] - df["funding"],
         )
         # Sanity: holding costs money — total net is strictly lower.
         assert df["net_return"].sum() < df0["net_return"].sum()
@@ -110,12 +129,17 @@ class TestSingleAssetCosts:
     def test_legacy_flag_restores_flat_costs_no_funding(self) -> None:
         cm = CostModel()  # funding + per-pair spreads configured
         df = WalkForwardRunner._trades_for_signals(
-            signals=_signals(), data=_data(), cost_model=cm, pair="EURUSD",
+            signals=_signals(),
+            data=_data(),
+            cost_model=cm,
+            pair="EURUSD",
             legacy_flat_costs=True,
         )
         expected = df["position_change"] * cm.cost_per_turn  # flat 0.8 bps
         pd.testing.assert_series_equal(
-            df["cost"], expected, check_names=False,
+            df["cost"],
+            expected,
+            check_names=False,
         )
         assert (df["funding"] == 0.0).all()
 
@@ -123,11 +147,16 @@ class TestSingleAssetCosts:
         # Pre-CL-x50g test doubles expose only cost_per_turn — must not break.
         flat = SimpleNamespace(cost_per_turn=1e-4)
         df = WalkForwardRunner._trades_for_signals(
-            signals=_signals(), data=_data(), cost_model=flat, pair="EURUSD",
+            signals=_signals(),
+            data=_data(),
+            cost_model=flat,
+            pair="EURUSD",
         )
         expected = df["position_change"] * 1e-4
         pd.testing.assert_series_equal(
-            df["cost"], expected, check_names=False,
+            df["cost"],
+            expected,
+            check_names=False,
         )
         assert (df["funding"] == 0.0).all()
 
@@ -159,7 +188,9 @@ class TestMultiAssetCosts:
         signals, data = self._panel()
         cm = CostModel()
         df = WalkForwardRunner._trades_for_signals(
-            signals=signals, data=data, cost_model=cm,
+            signals=signals,
+            data=data,
+            cost_model=cm,
         )
         fd = _FUNDING_DAILY_15BPS
         # Positions (lagged): both flat, flat, ±1, ±1.
@@ -175,12 +206,17 @@ class TestMultiAssetCosts:
         signals, data = self._panel()
         cm = CostModel()
         df = WalkForwardRunner._trades_for_signals(
-            signals=signals, data=data, cost_model=cm, legacy_flat_costs=True,
+            signals=signals,
+            data=data,
+            cost_model=cm,
+            legacy_flat_costs=True,
         )
         # Old behavior: same flat cost for every pair, no funding.
         expected = df["position_change"] * cm.cost_per_turn
         pd.testing.assert_series_equal(
-            df["cost"], expected, check_names=False,
+            df["cost"],
+            expected,
+            check_names=False,
         )
         assert (df["funding"] == 0.0).all()
 
@@ -236,14 +272,18 @@ class TestRunnerEndToEnd:
     def _run(cfg: WalkForwardConfig, cm: object) -> pd.DataFrame:
         runner = WalkForwardRunner(cfg)
         result = runner.run(
-            TestRunnerEndToEnd._panel(), lambda: _AlwaysLongEURUSD(), cm,
+            TestRunnerEndToEnd._panel(),
+            lambda: _AlwaysLongEURUSD(),
+            cm,
         )
         assert not result.trades.empty
         return result.trades
 
     _CFG = {
-        "is_window_days": 100, "oos_window_days": 50,
-        "step_days": 50, "min_history": 100,
+        "is_window_days": 100,
+        "oos_window_days": 50,
+        "step_days": 50,
+        "min_history": 100,
     }
 
     def test_per_pair_cost_via_inferred_symbol(self) -> None:
@@ -254,23 +294,30 @@ class TestRunnerEndToEnd:
         # EURUSD per-pair (0.6 bps), not the flat 0.8 bps.
         expected = trades["position_change"] * 0.6e-4
         pd.testing.assert_series_equal(
-            trades["cost"], expected, check_names=False,
+            trades["cost"],
+            expected,
+            check_names=False,
         )
 
     def test_legacy_flag_reproduces_old_numbers(self) -> None:
         cm = CostModel()
         trades = self._run(
-            WalkForwardConfig(**self._CFG, legacy_flat_costs=True), cm,
+            WalkForwardConfig(**self._CFG, legacy_flat_costs=True),
+            cm,
         )
         # Exactly the pre-CL-x50g formula: flat cost_per_turn, no funding.
         expected_cost = trades["position_change"] * cm.cost_per_turn
         pd.testing.assert_series_equal(
-            trades["cost"], expected_cost, check_names=False,
+            trades["cost"],
+            expected_cost,
+            check_names=False,
         )
         assert (trades["funding"] == 0.0).all()
         expected_net = trades["strategy_return"] - expected_cost
         pd.testing.assert_series_equal(
-            trades["net_return"], expected_net, check_names=False,
+            trades["net_return"],
+            expected_net,
+            check_names=False,
         )
 
     def test_funding_lowers_net_returns_as_expected(self) -> None:

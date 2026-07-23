@@ -60,7 +60,9 @@ class FeatureStore:
 
 
 def rate_differential_zscore(
-    us_2y: pd.Series, de_2y: pd.Series, window: int = 252,
+    us_2y: pd.Series,
+    de_2y: pd.Series,
+    window: int = 252,
 ) -> pd.Series:
     diff = us_2y - de_2y
     roll_mean = diff.rolling(window).mean()
@@ -95,9 +97,12 @@ def zscore(series: pd.Series, window: int = 252) -> pd.Series:
 
 # -- registry factory --------------------------------------------------
 
+
 def make_default_store() -> FeatureStore:
     store = FeatureStore()
-    store.register(FeatureSpec("rate_diff_zscore", ["us_2y", "de_2y"], rate_differential_zscore, 252))
+    store.register(
+        FeatureSpec("rate_diff_zscore", ["us_2y", "de_2y"], rate_differential_zscore, 252)
+    )
     store.register(FeatureSpec("realized_vol", ["price"], realized_vol, 20))
     store.register(FeatureSpec("cot_zscore", ["net_position"], cot_zscore, 156))
     store.register(FeatureSpec("carry", ["target_rate", "base_rate"], carry, 1))

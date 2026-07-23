@@ -22,7 +22,9 @@ class TestRateDiffModel:
         assert result["r_squared"] > 0.5
 
     def test_quality_ok_gate(self) -> None:
-        df = pd.DataFrame({"target": np.random.randn(200).cumsum() + 1.1, "spread": np.random.randn(200)})
+        df = pd.DataFrame(
+            {"target": np.random.randn(200).cumsum() + 1.1, "spread": np.random.randn(200)}
+        )
         model = RateDiffModel(min_r_squared=0.25)
         model.fit(df)
         assert model.quality_ok == (model.result["r_squared"] >= 0.25) if model.result else False
@@ -90,9 +92,7 @@ class TestWalkForward:
 
         # Sane train_sharpe — must NOT be in the hundreds (was 992 pre-fix)
         for ts in result.fold_metrics["train_sharpe"]:
-            assert -5.0 < ts < 5.0, (
-                f"train_sharpe={ts:.1f} out of sane range — CL-u9rn regressed"
-            )
+            assert -5.0 < ts < 5.0, f"train_sharpe={ts:.1f} out of sane range — CL-u9rn regressed"
 
     def test_multi_asset_strategy_dataframe_signals(self) -> None:
         """CL-40n2 v2: strategies that return DataFrame signals (one
@@ -111,17 +111,22 @@ class TestWalkForward:
         # Two-pair synthetic data — wide DataFrame with both columns
         rng = np.random.default_rng(7)
         n = 1500
-        data = pd.DataFrame({
-            "EURUSD": 1.1 * np.exp(
-                np.cumsum(rng.normal(0.0001, 0.005, n)),
-            ),
-            "USDJPY": 110 * np.exp(
-                np.cumsum(rng.normal(0.0001, 0.006, n)),
-            ),
-            "close": 1.1 * np.exp(
-                np.cumsum(rng.normal(0.0001, 0.005, n)),
-            ),
-        })
+        data = pd.DataFrame(
+            {
+                "EURUSD": 1.1
+                * np.exp(
+                    np.cumsum(rng.normal(0.0001, 0.005, n)),
+                ),
+                "USDJPY": 110
+                * np.exp(
+                    np.cumsum(rng.normal(0.0001, 0.006, n)),
+                ),
+                "close": 1.1
+                * np.exp(
+                    np.cumsum(rng.normal(0.0001, 0.005, n)),
+                ),
+            }
+        )
         data.index = pd.date_range("2018-01-01", periods=n, freq="B")
 
         class TwoPairStrategy:
@@ -133,16 +138,14 @@ class TestWalkForward:
 
             def generate_signals(self, test: pd.DataFrame) -> pd.DataFrame:
                 # Long when below mean, short when above; both pairs
-                eu_pos = (
-                    (test["EURUSD"] < self._eu_mean).astype(float) - 0.5
+                eu_pos = (test["EURUSD"] < self._eu_mean).astype(float) - 0.5
+                uj_pos = (test["USDJPY"] < self._uj_mean).astype(float) - 0.5
+                return pd.DataFrame(
+                    {
+                        "EURUSD": eu_pos,
+                        "USDJPY": uj_pos,
+                    }
                 )
-                uj_pos = (
-                    (test["USDJPY"] < self._uj_mean).astype(float) - 0.5
-                )
-                return pd.DataFrame({
-                    "EURUSD": eu_pos,
-                    "USDJPY": uj_pos,
-                })
 
         runner = WalkForwardRunner(WalkForwardConfig(min_history=756))
         cost = CostModel()

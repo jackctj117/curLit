@@ -21,7 +21,9 @@ STATUS = """  ✓ engine (pid 65695)
 
 def test_parse_status():
     assert parse_status(STATUS) == {
-        "engine": True, "x_monitor": False, "health_watch": True,
+        "engine": True,
+        "x_monitor": False,
+        "health_watch": True,
     }
 
 
@@ -37,7 +39,9 @@ def test_down_pages_once_then_silent():
 def test_recovery_notice_with_duration():
     down = {"x_monitor": (NOW - timedelta(minutes=34)).isoformat()}
     alerts, new_down = decide_fleet_alerts(
-        {"engine": True, "x_monitor": True}, down, NOW,
+        {"engine": True, "x_monitor": True},
+        down,
+        NOW,
     )
     assert len(alerts) == 1
     assert "RECOVERED: x_monitor" in alerts[0] and "34min" in alerts[0]
@@ -84,7 +88,10 @@ def test_x_staleness_empty_feed_is_stale():
 
 def test_halt_onset_pages_with_reason():
     msg, halted = decide_halt_alert(
-        True, False, "kill switch reconciliation_failure (action=halt_new)", NOW,
+        True,
+        False,
+        "kill switch reconciliation_failure (action=halt_new)",
+        NOW,
     )
     assert halted and msg is not None
     assert "ENGINE HALTED" in msg and "reconciliation_failure" in msg

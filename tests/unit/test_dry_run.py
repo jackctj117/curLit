@@ -101,6 +101,7 @@ class TestIdeaBriefHandler:
 class TestInstallDryRunDriver:
     def test_overwrites_canonical_provider_drivers(self) -> None:
         from src.research.llm.client import _DRIVERS
+
         # Snapshot pre-install
         before = dict(_DRIVERS)
         install_dry_run_driver()
@@ -120,13 +121,14 @@ class TestStubHttpGet:
     def test_returns_parseable_atom(self) -> None:
         body = stub_http_get("http://example.com/whatever")
         feed = FeedConfig(
-            name="t", adapter="arxiv", query_url="x", source_label="dry-run",
+            name="t",
+            adapter="arxiv",
+            query_url="x",
+            source_label="dry-run",
         )
         papers = ArxivFetcher(http_get=lambda _u: body).fetch(feed)
         assert len(papers) == 1
-        assert papers[0].title == (
-            "Dry-run synthetic paper for pipeline preflight"
-        )
+        assert papers[0].title == ("Dry-run synthetic paper for pipeline preflight")
 
     def test_same_response_for_any_url(self) -> None:
         assert stub_http_get("http://a") == stub_http_get("http://b")
@@ -137,23 +139,31 @@ class TestStubBacktestRunner:
         metrics = stub_backtest_runner(tmp_path / "stub.py")
         # Every threshold path the verdict engine reads is present
         for k in (
-            "sharpe", "n_trades", "hit_rate", "max_drawdown", "profit_factor",
+            "sharpe",
+            "n_trades",
+            "hit_rate",
+            "max_drawdown",
+            "profit_factor",
         ):
             assert k in metrics["oos_metrics"]
         assert "low" in metrics["sharpe_ci_95"]
         for top in (
-            "is_oos_sharpe_ratio", "edge_concentration",
-            "regime_diversified", "decay_severity",
+            "is_oos_sharpe_ratio",
+            "edge_concentration",
+            "regime_diversified",
+            "decay_severity",
         ):
             assert top in metrics
 
     def test_metrics_pass_real_review_rules(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         """Sanity: the stub metrics should produce no rule failures
         when fed through the real REVIEW_RULES.md verdict engine.
         Otherwise the dry-run wouldn't end in PROMOTE."""
         from src.research.agents.reviewer import Position
+
         metrics = stub_backtest_runner(tmp_path / "stub.py")
         rules = parse_rules("docs/research/REVIEW_RULES.md")
         # Build a minimal candidate report shape (top-level keys

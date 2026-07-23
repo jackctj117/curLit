@@ -57,8 +57,13 @@ class _CannedDriver(Driver):
     ) -> LLMResponse:
         self.calls.append(messages)
         return LLMResponse(
-            text=self.canned_text, model=model, provider=self.name,
-            input_tokens=10, output_tokens=20, usd_cost=0.0001, elapsed_sec=0.01,
+            text=self.canned_text,
+            model=model,
+            provider=self.name,
+            input_tokens=10,
+            output_tokens=20,
+            usd_cost=0.0001,
+            elapsed_sec=0.01,
         )
 
 
@@ -97,7 +102,8 @@ def cfg(idea_prompt: Path, monkeypatch: pytest.MonkeyPatch) -> ResearchConfig:
     return ResearchConfig(
         providers={
             "canned-idea": ProviderConfig(
-                api_key_env="CANNED_IDEA_KEY", default_model="m1",
+                api_key_env="CANNED_IDEA_KEY",
+                default_model="m1",
             ),
         },
         agents={
@@ -125,24 +131,17 @@ def _make_idea(cfg: ResearchConfig, canned: str) -> IdeaGenerator:
 
 class TestParsePosition:
     def test_proposed(self) -> None:
-        assert (
-            parse_position("**FINAL_POSITION**: PROPOSED") == IdeaStatus.PROPOSED
-        )
+        assert parse_position("**FINAL_POSITION**: PROPOSED") == IdeaStatus.PROPOSED
 
     def test_declined(self) -> None:
-        assert (
-            parse_position("**FINAL_POSITION**: DECLINED") == IdeaStatus.DECLINED
-        )
+        assert parse_position("**FINAL_POSITION**: DECLINED") == IdeaStatus.DECLINED
 
     def test_no_keyword_defaults_declined(self) -> None:
         # Caution-default — never PROPOSED without an explicit keyword.
         assert parse_position("ambiguous text") == IdeaStatus.DECLINED
 
     def test_last_match_wins(self) -> None:
-        text = (
-            "Initial draft might be PROPOSED.\n\n"
-            "**FINAL_POSITION**: DECLINED"
-        )
+        text = "Initial draft might be PROPOSED.\n\n**FINAL_POSITION**: DECLINED"
         assert parse_position(text) == IdeaStatus.DECLINED
 
 
@@ -196,7 +195,8 @@ class TestValidateBrief:
         extract.parent.mkdir(parents=True)
         extract.write_text("# stub\n")
         text = _valid_brief_text(extract).replace(
-            "predicted_sharpe_range", "sharp_range",
+            "predicted_sharpe_range",
+            "sharp_range",
         )
         issues = validate_brief(text, extract)
         assert any("predicted_sharpe_range" in i for i in issues)
@@ -206,9 +206,11 @@ class TestValidateBrief:
         extract.parent.mkdir(parents=True)
         extract.write_text("# stub\n")
         # Replace the references section with one that doesn't cite it
-        text = _valid_brief_text(extract).replace(
-            f"- {extract}", "- some other reference"
-        ).replace(extract.name, "different.md")
+        text = (
+            _valid_brief_text(extract)
+            .replace(f"- {extract}", "- some other reference")
+            .replace(extract.name, "different.md")
+        )
         issues = validate_brief(text, extract)
         assert any("does not cite the source extract" in i for i in issues)
 
@@ -294,9 +296,7 @@ class TestIdeateIntegration:
         # Position says PROPOSED, but the brief is missing required
         # sections. Should be downgraded to DECLINED with issues listed.
         canned = (
-            "# Hypothesis: incomplete\n\n"
-            "## Source extract\nblah\n\n"
-            "**FINAL_POSITION**: PROPOSED\n"
+            "# Hypothesis: incomplete\n\n## Source extract\nblah\n\n**FINAL_POSITION**: PROPOSED\n"
         )
         idea = _make_idea(cfg, canned)
         result = idea.ideate(
@@ -307,9 +307,7 @@ class TestIdeateIntegration:
         assert result.status == IdeaStatus.DECLINED
         assert result.hypothesis_path is None
         assert result.validation_issues
-        assert any(
-            "Change to baseline" in i for i in result.validation_issues
-        )
+        assert any("Change to baseline" in i for i in result.validation_issues)
 
     def test_default_slug_used_when_none_passed(
         self,

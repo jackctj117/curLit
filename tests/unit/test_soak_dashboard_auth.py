@@ -41,7 +41,9 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     monkeypatch.setattr(soak_dashboard, "_engine_api_get", lambda path: None)
     monkeypatch.setattr(soak_dashboard, "_recent_trades", lambda n=15: [])
     monkeypatch.setattr(
-        soak_dashboard, "DEFAULT_STATE_PATH", tmp_path / "state.json",
+        soak_dashboard,
+        "DEFAULT_STATE_PATH",
+        tmp_path / "state.json",
     )
     return TestClient(soak_dashboard.app)
 
@@ -82,7 +84,8 @@ def test_accepts_right_secret_on_approvals(client: TestClient) -> None:
 
 def test_post_approvals_rejects_without_header(client: TestClient) -> None:
     resp = client.post(
-        "/api/approvals/some-slug", json={"gate": 1, "action": "APPROVE"},
+        "/api/approvals/some-slug",
+        json={"gate": 1, "action": "APPROVE"},
     )
     assert resp.status_code == 403
 
@@ -97,10 +100,13 @@ def test_html_shell_stays_open(client: TestClient) -> None:
 
 
 @pytest.mark.parametrize(
-    "bad", ["", "curlit-dev", "change-me-to-a-random-string", "CHANGE_ME_ABC"],
+    "bad",
+    ["", "curlit-dev", "change-me-to-a-random-string", "CHANGE_ME_ABC"],
 )
 def test_serves_503_when_secret_unset_or_default(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch, bad: str,
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    bad: str,
 ) -> None:
     if bad:
         monkeypatch.setenv("WEB_API_SECRET", bad)
@@ -112,10 +118,12 @@ def test_serves_503_when_secret_unset_or_default(
 
 
 @pytest.mark.parametrize(
-    "bad", ["", "curlit-dev", "change-me-to-a-random-string", "CHANGE_ME_ABC"],
+    "bad",
+    ["", "curlit-dev", "change-me-to-a-random-string", "CHANGE_ME_ABC"],
 )
 def test_refuses_boot_on_default_secret(
-    monkeypatch: pytest.MonkeyPatch, bad: str,
+    monkeypatch: pytest.MonkeyPatch,
+    bad: str,
 ) -> None:
     if bad:
         monkeypatch.setenv("WEB_API_SECRET", bad)
@@ -162,7 +170,8 @@ def test_engine_api_get_sends_header_not_query_param(
 
 @pytest.mark.parametrize("bad", ["", "curlit-dev"])
 def test_engine_api_get_skips_call_without_real_secret(
-    monkeypatch: pytest.MonkeyPatch, bad: str,
+    monkeypatch: pytest.MonkeyPatch,
+    bad: str,
 ) -> None:
     if bad:
         monkeypatch.setenv("WEB_API_SECRET", bad)
@@ -194,7 +203,8 @@ def test_wrong_length_key_still_rejected(client: TestClient) -> None:
     """Sanity: hashing both sides must not change accept/reject behavior
     for keys of a different length than the secret."""
     resp = client.get(
-        "/api/soak", headers={"X-API-Key": SECRET + "-longer-than-expected"},
+        "/api/soak",
+        headers={"X-API-Key": SECRET + "-longer-than-expected"},
     )
     assert resp.status_code == 403
 

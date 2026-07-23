@@ -51,12 +51,16 @@ class TestFxVolatilityTable:
     def test_insert_and_query(self, sqlite_engine) -> None:  # type: ignore[no-untyped-def]
         _apply(sqlite_engine, Path("migrations/003_fx_volatility.sql"))
         with sqlite_engine.begin() as conn:
-            conn.execute(text(
-                "INSERT INTO fx_volatility VALUES ('2026-04-01', 'CVIX', 8.5)",
-            ))
-            v = conn.execute(text(
-                "SELECT value FROM fx_volatility WHERE index_name='CVIX'",
-            )).scalar()
+            conn.execute(
+                text(
+                    "INSERT INTO fx_volatility VALUES ('2026-04-01', 'CVIX', 8.5)",
+                )
+            )
+            v = conn.execute(
+                text(
+                    "SELECT value FROM fx_volatility WHERE index_name='CVIX'",
+                )
+            ).scalar()
             assert v == 8.5
 
 
@@ -67,8 +71,13 @@ class TestResearchPapersTable:
         assert "research_papers" in insp.get_table_names()
         cols = {c["name"] for c in insp.get_columns("research_papers")}
         assert {
-            "paper_id", "title", "abstract", "url", "relevance_score",
-            "read_status", "implementation_priority",
+            "paper_id",
+            "title",
+            "abstract",
+            "url",
+            "relevance_score",
+            "read_status",
+            "implementation_priority",
         } <= cols
         idx_names = {i["name"] for i in insp.get_indexes("research_papers")}
         assert "idx_research_papers_triage" in idx_names
@@ -76,14 +85,17 @@ class TestResearchPapersTable:
     def test_default_unread(self, sqlite_engine) -> None:  # type: ignore[no-untyped-def]
         _apply(sqlite_engine, Path("migrations/004_research_papers.sql"))
         with sqlite_engine.begin() as conn:
-            conn.execute(text(
-                "INSERT INTO research_papers (paper_id, title) "
-                "VALUES ('arxiv:2024.001', 'Test paper')",
-            ))
-            status = conn.execute(text(
-                "SELECT read_status FROM research_papers "
-                "WHERE paper_id='arxiv:2024.001'",
-            )).scalar()
+            conn.execute(
+                text(
+                    "INSERT INTO research_papers (paper_id, title) "
+                    "VALUES ('arxiv:2024.001', 'Test paper')",
+                )
+            )
+            status = conn.execute(
+                text(
+                    "SELECT read_status FROM research_papers WHERE paper_id='arxiv:2024.001'",
+                )
+            ).scalar()
             assert status == "unread"
 
 
@@ -94,8 +106,16 @@ class TestGeoEventsTable:
         assert "geo_events" in insp.get_table_names()
         cols = {c["name"] for c in insp.get_columns("geo_events")}
         assert {
-            "id", "seen_at", "source", "external_id", "headline",
-            "url", "theme", "assessment", "status", "status_updated_at",
+            "id",
+            "seen_at",
+            "source",
+            "external_id",
+            "headline",
+            "url",
+            "theme",
+            "assessment",
+            "status",
+            "status_updated_at",
         } <= cols
         idx_names = {i["name"] for i in insp.get_indexes("geo_events")}
         assert "idx_geo_events_status_seen" in idx_names
@@ -103,34 +123,42 @@ class TestGeoEventsTable:
     def test_default_status_new_and_unique_external_id(self, sqlite_engine) -> None:  # type: ignore[no-untyped-def]
         _apply(sqlite_engine, Path("migrations/005_geo_events.sql"))
         with sqlite_engine.begin() as conn:
-            conn.execute(text(
-                "INSERT INTO geo_events "
-                "(seen_at, source, external_id, headline, status_updated_at) "
-                "VALUES ('2026-07-14T00:00:00Z', 'gdelt', 'abc', 'h1', "
-                "'2026-07-14T00:00:00Z')",
-            ))
-            status = conn.execute(text(
-                "SELECT status FROM geo_events WHERE external_id='abc'",
-            )).scalar()
+            conn.execute(
+                text(
+                    "INSERT INTO geo_events "
+                    "(seen_at, source, external_id, headline, status_updated_at) "
+                    "VALUES ('2026-07-14T00:00:00Z', 'gdelt', 'abc', 'h1', "
+                    "'2026-07-14T00:00:00Z')",
+                )
+            )
+            status = conn.execute(
+                text(
+                    "SELECT status FROM geo_events WHERE external_id='abc'",
+                )
+            ).scalar()
             assert status == "NEW"
         with pytest.raises(Exception, match="(?i)unique"), sqlite_engine.begin() as conn:
-            conn.execute(text(
-                "INSERT INTO geo_events "
-                "(seen_at, source, external_id, headline, status_updated_at) "
-                "VALUES ('2026-07-14T00:00:00Z', 'gdelt', 'abc', 'dup', "
-                "'2026-07-14T00:00:00Z')",
-            ))
+            conn.execute(
+                text(
+                    "INSERT INTO geo_events "
+                    "(seen_at, source, external_id, headline, status_updated_at) "
+                    "VALUES ('2026-07-14T00:00:00Z', 'gdelt', 'abc', 'dup', "
+                    "'2026-07-14T00:00:00Z')",
+                )
+            )
 
     def test_status_check_constraint(self, sqlite_engine) -> None:  # type: ignore[no-untyped-def]
         _apply(sqlite_engine, Path("migrations/005_geo_events.sql"))
         with pytest.raises(Exception, match="(?i)check"), sqlite_engine.begin() as conn:
-            conn.execute(text(
-                "INSERT INTO geo_events "
-                "(seen_at, source, external_id, headline, status, "
-                "status_updated_at) "
-                "VALUES ('2026-07-14T00:00:00Z', 'gdelt', 'xyz', 'h', "
-                "'BOGUS', '2026-07-14T00:00:00Z')",
-            ))
+            conn.execute(
+                text(
+                    "INSERT INTO geo_events "
+                    "(seen_at, source, external_id, headline, status, "
+                    "status_updated_at) "
+                    "VALUES ('2026-07-14T00:00:00Z', 'gdelt', 'xyz', 'h', "
+                    "'BOGUS', '2026-07-14T00:00:00Z')",
+                )
+            )
 
 
 class TestVolumeSpikesTable:
@@ -140,8 +168,15 @@ class TestVolumeSpikesTable:
         assert "volume_spikes" in insp.get_table_names()
         cols = {c["name"] for c in insp.get_columns("volume_spikes")}
         assert {
-            "id", "ticker", "scanned_at", "rvol", "volume",
-            "avg_volume_20d", "price_change_pct", "is_unusual", "source",
+            "id",
+            "ticker",
+            "scanned_at",
+            "rvol",
+            "volume",
+            "avg_volume_20d",
+            "price_change_pct",
+            "is_unusual",
+            "source",
         } <= cols
         idx_names = {i["name"] for i in insp.get_indexes("volume_spikes")}
         assert "idx_volume_spikes_ticker_scanned" in idx_names
@@ -150,14 +185,17 @@ class TestVolumeSpikesTable:
     def test_defaults_not_unusual_yfinance_source(self, sqlite_engine) -> None:  # type: ignore[no-untyped-def]
         _apply(sqlite_engine, Path("migrations/006_volume_spikes.sql"))
         with sqlite_engine.begin() as conn:
-            conn.execute(text(
-                "INSERT INTO volume_spikes (ticker, scanned_at, rvol) "
-                "VALUES ('FRO', '2026-07-20T00:00:00Z', 3.2)",
-            ))
-            row = conn.execute(text(
-                "SELECT is_unusual, source FROM volume_spikes "
-                "WHERE ticker='FRO'",
-            )).fetchone()
+            conn.execute(
+                text(
+                    "INSERT INTO volume_spikes (ticker, scanned_at, rvol) "
+                    "VALUES ('FRO', '2026-07-20T00:00:00Z', 3.2)",
+                )
+            )
+            row = conn.execute(
+                text(
+                    "SELECT is_unusual, source FROM volume_spikes WHERE ticker='FRO'",
+                )
+            ).fetchone()
             assert not row[0]
             assert row[1] == "yfinance"
 
@@ -169,12 +207,26 @@ class TestTradeIdeasTable:
         assert "trade_ideas" in insp.get_table_names()
         cols = {c["name"] for c in insp.get_columns("trade_ideas")}
         assert {
-            "id", "idea_id", "geo_event_id", "ticker", "action",
-            "direction", "confidence", "time_horizon",
-            "holding_period_days", "time_stop_days", "stop_loss_pct",
-            "preferred_instrument", "instrument_reason", "rationale",
-            "suggested_entry", "notes", "price_at_signal", "created_at",
-            "status", "status_updated_at",
+            "id",
+            "idea_id",
+            "geo_event_id",
+            "ticker",
+            "action",
+            "direction",
+            "confidence",
+            "time_horizon",
+            "holding_period_days",
+            "time_stop_days",
+            "stop_loss_pct",
+            "preferred_instrument",
+            "instrument_reason",
+            "rationale",
+            "suggested_entry",
+            "notes",
+            "price_at_signal",
+            "created_at",
+            "status",
+            "status_updated_at",
         } <= cols
         idx_names = {i["name"] for i in insp.get_indexes("trade_ideas")}
         assert "idx_trade_ideas_status_created" in idx_names
@@ -193,23 +245,26 @@ class TestTradeIdeasTable:
         with sqlite_engine.begin() as conn:
             conn.execute(insert)
             conn.execute(insert)  # dedups silently
-            status, count = conn.execute(text(
-                "SELECT status, (SELECT count(*) FROM trade_ideas) "
-                "FROM trade_ideas",
-            )).fetchone()
+            status, count = conn.execute(
+                text(
+                    "SELECT status, (SELECT count(*) FROM trade_ideas) FROM trade_ideas",
+                )
+            ).fetchone()
             assert status == "pending"
             assert count == 1
 
     def test_status_check_constraint(self, sqlite_engine) -> None:  # type: ignore[no-untyped-def]
         _apply(sqlite_engine, Path("migrations/007_trade_ideas.sql"))
         with pytest.raises(Exception, match="(?i)check"), sqlite_engine.begin() as conn:
-            conn.execute(text(
-                "INSERT INTO trade_ideas "
-                "(idea_id, geo_event_id, ticker, action, created_at, "
-                "status, status_updated_at) "
-                "VALUES ('x', 1, 'TSM', 'long', '2026-07-20T00:00:00Z', "
-                "'BOGUS', '2026-07-20T00:00:00Z')",
-            ))
+            conn.execute(
+                text(
+                    "INSERT INTO trade_ideas "
+                    "(idea_id, geo_event_id, ticker, action, created_at, "
+                    "status, status_updated_at) "
+                    "VALUES ('x', 1, 'TSM', 'long', '2026-07-20T00:00:00Z', "
+                    "'BOGUS', '2026-07-20T00:00:00Z')",
+                )
+            )
 
 
 class TestTradeIdeaLevelsMigration:
@@ -239,44 +294,57 @@ class TestTradeIdeaLevelsMigration:
         self._apply_007_and_008(sqlite_engine)
         cols = {c["name"] for c in inspect(sqlite_engine).get_columns("trade_ideas")}
         assert {
-            "stop_price", "target_prices", "risk_reward", "entry_trigger",
-            "invalidation", "dte_window", "suggested_strike",
+            "stop_price",
+            "target_prices",
+            "risk_reward",
+            "entry_trigger",
+            "invalidation",
+            "dte_window",
+            "suggested_strike",
         } <= cols
 
     def test_new_columns_default_null(self, sqlite_engine) -> None:  # type: ignore[no-untyped-def]
         self._apply_007_and_008(sqlite_engine)
         with sqlite_engine.begin() as conn:
-            conn.execute(text(
-                "INSERT INTO trade_ideas "
-                "(idea_id, geo_event_id, ticker, action, created_at, "
-                "status_updated_at) "
-                "VALUES ('lv1', 1, 'TSM', 'buy_puts', "
-                "'2026-07-20T00:00:00Z', '2026-07-20T00:00:00Z')",
-            ))
-            row = conn.execute(text(
-                "SELECT stop_price, target_prices, risk_reward, "
-                "entry_trigger, invalidation, dte_window, suggested_strike "
-                "FROM trade_ideas WHERE idea_id='lv1'",
-            )).fetchone()
+            conn.execute(
+                text(
+                    "INSERT INTO trade_ideas "
+                    "(idea_id, geo_event_id, ticker, action, created_at, "
+                    "status_updated_at) "
+                    "VALUES ('lv1', 1, 'TSM', 'buy_puts', "
+                    "'2026-07-20T00:00:00Z', '2026-07-20T00:00:00Z')",
+                )
+            )
+            row = conn.execute(
+                text(
+                    "SELECT stop_price, target_prices, risk_reward, "
+                    "entry_trigger, invalidation, dte_window, suggested_strike "
+                    "FROM trade_ideas WHERE idea_id='lv1'",
+                )
+            ).fetchone()
             assert all(v is None for v in row)
 
     def test_level_columns_round_trip(self, sqlite_engine) -> None:  # type: ignore[no-untyped-def]
         self._apply_007_and_008(sqlite_engine)
         with sqlite_engine.begin() as conn:
-            conn.execute(text(
-                "INSERT INTO trade_ideas "
-                "(idea_id, geo_event_id, ticker, action, created_at, "
-                "status_updated_at, stop_price, target_prices, risk_reward, "
-                "entry_trigger, invalidation, dte_window, suggested_strike) "
-                "VALUES ('lv2', 1, 'TSM', 'buy_puts', "
-                "'2026-07-20T00:00:00Z', '2026-07-20T00:00:00Z', "
-                "186.0, '[155.0, 141.0]', 1.3, 'on blockade', "
-                "'denial', '1-3 weeks', 164.0)",
-            ))
-            row = conn.execute(text(
-                "SELECT stop_price, target_prices, dte_window, suggested_strike "
-                "FROM trade_ideas WHERE idea_id='lv2'",
-            )).fetchone()
+            conn.execute(
+                text(
+                    "INSERT INTO trade_ideas "
+                    "(idea_id, geo_event_id, ticker, action, created_at, "
+                    "status_updated_at, stop_price, target_prices, risk_reward, "
+                    "entry_trigger, invalidation, dte_window, suggested_strike) "
+                    "VALUES ('lv2', 1, 'TSM', 'buy_puts', "
+                    "'2026-07-20T00:00:00Z', '2026-07-20T00:00:00Z', "
+                    "186.0, '[155.0, 141.0]', 1.3, 'on blockade', "
+                    "'denial', '1-3 weeks', 164.0)",
+                )
+            )
+            row = conn.execute(
+                text(
+                    "SELECT stop_price, target_prices, dte_window, suggested_strike "
+                    "FROM trade_ideas WHERE idea_id='lv2'",
+                )
+            ).fetchone()
             assert row[0] == 186.0
             assert row[1] == "[155.0, 141.0]"
             assert row[2] == "1-3 weeks"

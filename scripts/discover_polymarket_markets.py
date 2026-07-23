@@ -65,12 +65,37 @@ DEFAULT_HTTP_TIMEOUT_SEC: float = 30.0
 # for research-side filtering. Kept in sync intentionally — discovery
 # and research both need the same FX/macro lens.
 _FX_MACRO_KEYWORDS: tuple[str, ...] = (
-    "fed", "fomc", "rate cut", "rate hike", "inflation", "cpi", "ppi",
-    "ecb", "boj", "bank of japan", "bank of england", "boe",
-    "treasury", "yield curve", "recession", "gdp", "unemployment",
-    "nonfarm", "nfp", "jobs report", "trade deficit", "tariff",
-    "election", "central bank", "monetary policy", "interest rate",
-    "dollar", "euro", "yen", "pound", "currency",
+    "fed",
+    "fomc",
+    "rate cut",
+    "rate hike",
+    "inflation",
+    "cpi",
+    "ppi",
+    "ecb",
+    "boj",
+    "bank of japan",
+    "bank of england",
+    "boe",
+    "treasury",
+    "yield curve",
+    "recession",
+    "gdp",
+    "unemployment",
+    "nonfarm",
+    "nfp",
+    "jobs report",
+    "trade deficit",
+    "tariff",
+    "election",
+    "central bank",
+    "monetary policy",
+    "interest rate",
+    "dollar",
+    "euro",
+    "yen",
+    "pound",
+    "currency",
 )
 
 
@@ -80,10 +105,15 @@ _GAMMA_PAGE_SIZE: int = 100
 
 
 def _one_page(
-    api_url: str, params: dict[str, str], timeout_sec: float,
+    api_url: str,
+    params: dict[str, str],
+    timeout_sec: float,
 ) -> list[dict[str, Any]]:
     resp = httpx.get(
-        api_url, params=params, timeout=timeout_sec, follow_redirects=True,
+        api_url,
+        params=params,
+        timeout=timeout_sec,
+        follow_redirects=True,
     )
     resp.raise_for_status()
     data = resp.json()
@@ -115,7 +145,9 @@ def fetch_active_markets(
 
     if limit <= _GAMMA_PAGE_SIZE:
         return _one_page(
-            api_url, {**base, "limit": str(limit)}, timeout_sec,
+            api_url,
+            {**base, "limit": str(limit)},
+            timeout_sec,
         )[:limit]
 
     out: list[dict[str, Any]] = []
@@ -140,7 +172,8 @@ def is_fx_macro_relevant(market: dict[str, Any]) -> bool:
     FX/macro keywords."""
     haystack = (
         str(market.get("question") or market.get("title") or "")
-        + " " + str(market.get("description") or "")
+        + " "
+        + str(market.get("description") or "")
     ).lower()
     return any(kw in haystack for kw in _FX_MACRO_KEYWORDS)
 
@@ -223,19 +256,14 @@ def merge_into_config(
       preserved, replaced, added, placeholders_remaining.
     """
     existing_doc = yaml.safe_load(existing_path.read_text()) or {} if existing_path.exists() else {}
-    existing_markets = (
-        existing_doc.get("markets", []) if isinstance(existing_doc, dict)
-        else []
-    )
+    existing_markets = existing_doc.get("markets", []) if isinstance(existing_doc, dict) else []
 
     by_slug: dict[str, dict[str, Any]] = {}
     for m in existing_markets:
         if isinstance(m, dict) and m.get("slug"):
             by_slug[str(m["slug"])] = dict(m)
 
-    discovered_by_slug = {
-        str(m.get("slug")): m for m in discovered if m.get("slug")
-    }
+    discovered_by_slug = {str(m.get("slug")): m for m in discovered if m.get("slug")}
     stats = {"preserved": 0, "replaced": 0, "added": 0, "placeholders_remaining": 0}
 
     # Walk existing entries first to preserve order
@@ -272,7 +300,8 @@ def merge_into_config(
 
 
 def _canonical_entry(
-    market: dict[str, Any], existing: dict[str, Any] | None = None,
+    market: dict[str, Any],
+    existing: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build a polymarket_markets.yaml entry from a Gamma API market.
     Preserves any extra fields (description / fx_relevance) from an
@@ -315,10 +344,7 @@ def _load_theme_terms(
     from src.events.playbooks import load_playbooks  # noqa: PLC0415
 
     playbooks = load_playbooks(playbooks_path)
-    return {
-        key: tuple(t.lower() for t in pb.watch_terms)
-        for key, pb in playbooks.items()
-    }
+    return {key: tuple(t.lower() for t in pb.watch_terms) for key, pb in playbooks.items()}
 
 
 def match_theme(
@@ -334,9 +360,15 @@ def match_theme(
     # space-separated ("taiwan blockade"). Normalize hyphens/underscores
     # to spaces so slug tokens match multi-word terms.
     haystack = (
-        str(market.get("question") or market.get("title") or "")
-        + " " + str(market.get("slug") or "")
-    ).lower().replace("-", " ").replace("_", " ")
+        (
+            str(market.get("question") or market.get("title") or "")
+            + " "
+            + str(market.get("slug") or "")
+        )
+        .lower()
+        .replace("-", " ")
+        .replace("_", " ")
+    )
     if not haystack.strip():
         return None
     best: tuple[int, int, str, str] | None = None  # (score, term_len, theme, term)
@@ -438,17 +470,10 @@ def merge_geo_config(
     ``slug``. Existing entries are preserved verbatim (operator may have
     hand-tuned the theme); genuinely new slugs are appended. Returns
     ``(new_doc, {"existing", "added", "skipped_duplicate"})``."""
-    existing_doc = (
-        yaml.safe_load(existing_path.read_text()) or {}
-        if existing_path.exists() else {}
-    )
-    existing_markets = (
-        existing_doc.get("markets", []) if isinstance(existing_doc, dict)
-        else []
-    )
+    existing_doc = yaml.safe_load(existing_path.read_text()) or {} if existing_path.exists() else {}
+    existing_markets = existing_doc.get("markets", []) if isinstance(existing_doc, dict) else []
     seen: set[str] = {
-        str(m["slug"]) for m in existing_markets
-        if isinstance(m, dict) and m.get("slug")
+        str(m["slug"]) for m in existing_markets if isinstance(m, dict) and m.get("slug")
     }
     stats = {"existing": len(seen), "added": 0, "skipped_duplicate": 0}
     new_markets = list(existing_markets)
@@ -482,7 +507,8 @@ def _run_geo(args: argparse.Namespace) -> int:
     theme_terms = _load_theme_terms(args.playbooks)
     try:
         raw_markets = fetch_active_markets(
-            limit=args.limit, order_by_volume24hr=True,
+            limit=args.limit,
+            order_by_volume24hr=True,
         )
     except Exception as exc:
         print(
@@ -492,8 +518,10 @@ def _run_geo(args: argparse.Namespace) -> int:
         return 1
 
     discovered = discover_geo_markets(
-        raw_markets, theme_terms,
-        min_volume_usd=args.min_volume, limit=args.limit,
+        raw_markets,
+        theme_terms,
+        min_volume_usd=args.min_volume,
+        limit=args.limit,
     )
     print(
         f"Gamma API returned {len(raw_markets)} markets; "
@@ -573,6 +601,7 @@ def _run_fx(args: argparse.Namespace) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     from src.dotenv_bootstrap import load_project_env  # noqa: PLC0415
+
     load_project_env()
 
     p = argparse.ArgumentParser(
@@ -584,40 +613,53 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     p.add_argument(
-        "--mode", choices=("geo", "fx"), default="geo",
+        "--mode",
+        choices=("geo", "fx"),
+        default="geo",
         help="geo: geopolitical theme discovery (default); fx: FX/macro",
     )
     p.add_argument(
-        "--config", default=str(DEFAULT_CONFIG_PATH),
+        "--config",
+        default=str(DEFAULT_CONFIG_PATH),
         help="[fx mode] Path to polymarket_markets.yaml",
     )
     p.add_argument(
-        "--out", default=None,
-        help="[geo mode] Output config path "
-             f"(default {DEFAULT_GEO_CONFIG_PATH})",
+        "--out",
+        default=None,
+        help=f"[geo mode] Output config path (default {DEFAULT_GEO_CONFIG_PATH})",
     )
     p.add_argument(
-        "--playbooks", default="configs/event_playbooks.yaml",
+        "--playbooks",
+        default="configs/event_playbooks.yaml",
         help="[geo mode] Playbook config supplying watch_terms",
     )
     p.add_argument(
-        "--limit", type=int, default=200,
+        "--limit",
+        type=int,
+        default=200,
         help="Cap on markets pulled/kept (highest volume first)",
     )
     p.add_argument(
-        "--min-volume", type=float, default=5_000.0,
+        "--min-volume",
+        type=float,
+        default=5_000.0,
         help="Minimum USD volume to consider a market (filter noise)",
     )
     p.add_argument(
-        "--gamma-limit", type=int, default=200,
+        "--gamma-limit",
+        type=int,
+        default=200,
         help="[fx mode] How many markets to pull from Gamma for filtering",
     )
     p.add_argument(
-        "--dry-run", action="store_true",
+        "--dry-run",
+        action="store_true",
         help="Print what would change but don't write the YAML",
     )
     p.add_argument(
-        "-v", "--verbose", action="store_true",
+        "-v",
+        "--verbose",
+        action="store_true",
         help="Enable DEBUG logging",
     )
     args = p.parse_args(argv)

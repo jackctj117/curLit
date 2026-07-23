@@ -71,7 +71,9 @@ def compute_vol_z_score(
         # signal loops (CL-2yta).
         logger.warning(
             "get_series failed for %s: %s: %s",
-            series_id, type(exc).__name__, exc,
+            series_id,
+            type(exc).__name__,
+            exc,
         )
         return 0.0
     if vol_series is None or len(vol_series) < lookback_days * 0.8:

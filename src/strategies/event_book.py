@@ -75,7 +75,7 @@ class EventPosition:
     entry_ts: datetime
     entry_price: float
     quantity: float  # signed units
-    direction: int   # +1 long / -1 short
+    direction: int  # +1 long / -1 short
     stop_price: float
     headline: str = ""
 
@@ -95,7 +95,7 @@ class ExitRecord:
 
     symbol: str
     position: EventPosition
-    reason: str          # "hard_stop" | "time_stop"
+    reason: str  # "hard_stop" | "time_stop"
     pnl: float
     held_hours: float
     current_price: float | None
@@ -121,7 +121,7 @@ class PendingExit:
     captured at trigger time)."""
 
     position: EventPosition
-    reason: str              # "hard_stop" | "time_stop"
+    reason: str  # "hard_stop" | "time_stop"
     triggered_ts: datetime
     trigger_price: float | None
     #: Exit-intent emissions so far (1 = the trigger tick). Emissions
@@ -233,7 +233,8 @@ class EventBook:
             logger.error(
                 "Event book state %s is corrupt — backing up to %s and starting "
                 "a FRESH book (realized P&L reset to 0; loss cap restarts).",
-                path, corrupt,
+                path,
+                corrupt,
             )
             try:
                 os.replace(path, corrupt)
@@ -251,8 +252,7 @@ class EventBook:
         pending_exit_syms = set(payload.get("pending_exits") or {})
         pending_entry_syms = set(payload.get("pending_entries") or {})
         overlap = sorted(
-            (open_syms & pending_exit_syms)
-            | (pending_entry_syms & (open_syms | pending_exit_syms))
+            (open_syms & pending_exit_syms) | (pending_entry_syms & (open_syms | pending_exit_syms))
         )
         if overlap:
             raise ValueError(
@@ -268,7 +268,8 @@ class EventBook:
                 self.open_positions[sym] = self._position_from_payload(sym, pos)
             except (KeyError, TypeError, ValueError):
                 logger.warning(
-                    "Skipping unparseable persisted event position %r", sym,
+                    "Skipping unparseable persisted event position %r",
+                    sym,
                 )
         # pending_exits is ABSENT from pre-CL-8cw1 state files (the live
         # format at rollout) — a missing key MUST load as an empty dict.
@@ -288,13 +289,12 @@ class EventBook:
                     triggered_ts=triggered_ts,
                     trigger_price=float(price_raw) if price_raw is not None else None,
                     emit_count=int(entry.get("emit_count", 1)),
-                    trigger_broker_qty=(
-                        float(qty_raw) if qty_raw is not None else None
-                    ),
+                    trigger_broker_qty=(float(qty_raw) if qty_raw is not None else None),
                 )
             except (KeyError, TypeError, ValueError):
                 logger.warning(
-                    "Skipping unparseable persisted pending exit %r", sym,
+                    "Skipping unparseable persisted pending exit %r",
+                    sym,
                 )
         # pending_entries is ABSENT from every pre-CL-hqyj-entry state file
         # (the live format at rollout) — a missing key MUST load as an empty
@@ -308,14 +308,13 @@ class EventBook:
                 self.pending_entries[sym] = PendingEntry(
                     position=self._position_from_payload(sym, entry["position"]),
                     submitted_ts=submitted_ts,
-                    entry_broker_qty=(
-                        float(qty_raw) if qty_raw is not None else None
-                    ),
+                    entry_broker_qty=(float(qty_raw) if qty_raw is not None else None),
                     confirmed_qty=float(entry.get("confirmed_qty", 0.0)),
                 )
             except (KeyError, TypeError, ValueError):
                 logger.warning(
-                    "Skipping unparseable persisted pending entry %r", sym,
+                    "Skipping unparseable persisted pending entry %r",
+                    sym,
                 )
 
     @staticmethod
@@ -355,8 +354,7 @@ class EventBook:
             "realized_pnl": self.realized_pnl,
             "closed_trades": self.closed_trades,
             "open_positions": {
-                sym: self._position_payload(pos)
-                for sym, pos in self.open_positions.items()
+                sym: self._position_payload(pos) for sym, pos in self.open_positions.items()
             },
             "pending_exits": {
                 sym: {
@@ -457,10 +455,13 @@ class EventBook:
             pos = pending.position
             # Reconciler-facing size is the CONFIRMED fill, never intended.
             merged[sym] = EventPosition(
-                symbol=pos.symbol, event_id=pos.event_id,
-                entry_ts=pos.entry_ts, entry_price=pos.entry_price,
+                symbol=pos.symbol,
+                event_id=pos.event_id,
+                entry_ts=pos.entry_ts,
+                entry_price=pos.entry_price,
                 quantity=pending.confirmed_qty,
-                direction=pos.direction, stop_price=pos.stop_price,
+                direction=pos.direction,
+                stop_price=pos.stop_price,
                 headline=pos.headline,
             )
         return merged
@@ -492,15 +493,24 @@ class EventBook:
             # commits its intended magnitude; a partially-promoted-but-still-
             # pending leg (shouldn't happen — promotion removes it) would
             # still not under-count.
-            qty = pos.quantity if pending.confirmed_qty == 0.0 else (
-                pos.quantity if abs(pos.quantity) >= abs(pending.confirmed_qty)
-                else pending.confirmed_qty
+            qty = (
+                pos.quantity
+                if pending.confirmed_qty == 0.0
+                else (
+                    pos.quantity
+                    if abs(pos.quantity) >= abs(pending.confirmed_qty)
+                    else pending.confirmed_qty
+                )
             )
             merged[sym] = EventPosition(
-                symbol=pos.symbol, event_id=pos.event_id,
-                entry_ts=pos.entry_ts, entry_price=pos.entry_price,
-                quantity=qty, direction=pos.direction,
-                stop_price=pos.stop_price, headline=pos.headline,
+                symbol=pos.symbol,
+                event_id=pos.event_id,
+                entry_ts=pos.entry_ts,
+                entry_price=pos.entry_price,
+                quantity=qty,
+                direction=pos.direction,
+                stop_price=pos.stop_price,
+                headline=pos.headline,
             )
         return merged
 
@@ -512,18 +522,24 @@ class EventBook:
         pos = entry.position
         pnl = (
             (entry.trigger_price - pos.entry_price) * pos.quantity
-            if entry.trigger_price is not None else 0.0
+            if entry.trigger_price is not None
+            else 0.0
         )
         held_hours = (entry.triggered_ts - pos.entry_ts).total_seconds() / 3600.0
         return ExitRecord(
-            symbol=symbol, position=pos, reason=entry.reason, pnl=pnl,
-            held_hours=held_hours, current_price=entry.trigger_price,
+            symbol=symbol,
+            position=pos,
+            reason=entry.reason,
+            pnl=pnl,
+            held_hours=held_hours,
+            current_price=entry.trigger_price,
             book_realized_pnl=self.realized_pnl + pnl,
             emit_count=entry.emit_count,
         )
 
     def _net_broker_quantities(
-        self, broker_positions: Iterable[Any],
+        self,
+        broker_positions: Iterable[Any],
     ) -> dict[str, float | None]:
         """Account-wide NET quantity per canonical symbol from a broker
         position snapshot (CL-9dhg finding 1). A symbol whose quantity
@@ -573,8 +589,7 @@ class EventBook:
         :meth:`confirm_exits` can confirm a co-held symbol from the
         residual and finalize a never-filled leg as phantom."""
         trigger_net = (
-            self._net_broker_quantities(broker_positions)
-            if broker_positions is not None else None
+            self._net_broker_quantities(broker_positions) if broker_positions is not None else None
         )
         records: list[ExitRecord] = []
         # Phase 1 first, so a leg triggered below isn't emitted twice in
@@ -582,9 +597,11 @@ class EventBook:
         for symbol, entry in self.pending_exits.items():
             entry.emit_count += 1
             logger.warning(
-                "exit for %s not confirmed, re-emitting (emission %d, "
-                "reason=%s, event_id=%s)",
-                symbol, entry.emit_count, entry.reason, entry.position.event_id,
+                "exit for %s not confirmed, re-emitting (emission %d, reason=%s, event_id=%s)",
+                symbol,
+                entry.emit_count,
+                entry.reason,
+                entry.position.event_id,
             )
             records.append(self._pending_exit_record(symbol, entry))
         # Phase 2: trigger detection on open legs (conditions unchanged).
@@ -608,10 +625,13 @@ class EventBook:
             trigger_broker_qty: float | None = None
             if trigger_net is not None:
                 trigger_broker_qty = trigger_net.get(
-                    self._norm_symbol(symbol), 0.0,
+                    self._norm_symbol(symbol),
+                    0.0,
                 )
             entry = PendingExit(
-                position=pos, reason=exit_reason, triggered_ts=now,
+                position=pos,
+                reason=exit_reason,
+                triggered_ts=now,
                 trigger_price=current,
                 trigger_broker_qty=trigger_broker_qty,
             )
@@ -621,9 +641,11 @@ class EventBook:
             logger.info(
                 "Event exit triggered %s: %s trigger_price=%s held=%.1fh "
                 "event_id=%s — awaiting broker flat confirmation",
-                symbol, exit_reason,
+                symbol,
+                exit_reason,
                 "n/a" if current is None else f"{current:.5f}",
-                held_hours, pos.event_id,
+                held_hours,
+                pos.event_id,
             )
             records.append(self._pending_exit_record(symbol, entry))
         return records
@@ -681,18 +703,13 @@ class EventBook:
             confirmed = abs(current_qty) < self._FLAT_QTY  # (a) broker flat
             if not confirmed and entry.trigger_broker_qty is not None:
                 # (b) co-holder residual: our share left the account.
-                expected_residual = (
-                    entry.trigger_broker_qty - entry.position.quantity
-                )
+                expected_residual = entry.trigger_broker_qty - entry.position.quantity
                 tolerance = max(1.0, 0.01 * abs(entry.position.quantity))
                 confirmed = abs(current_qty - expected_residual) <= tolerance
             if not confirmed:
                 continue  # broker still holds our share — keep retrying
             del self.pending_exits[symbol]
-            if (
-                entry.trigger_broker_qty is not None
-                and abs(entry.trigger_broker_qty) < 1e-9
-            ):
+            if entry.trigger_broker_qty is not None and abs(entry.trigger_broker_qty) < 1e-9:
                 # PHANTOM (CL-9dhg finding 2): the broker demonstrably
                 # never held this leg at trigger — the entry order never
                 # filled. Drop it WITHOUT booking P&L: a fabricated
@@ -704,7 +721,9 @@ class EventBook:
                     "trigger (trigger_broker_qty=0, reason=%s, event_id=%s, "
                     "%d emission(s)). Entry order never filled; dropping "
                     "WITHOUT booking realized P&L.",
-                    symbol, entry.reason, entry.position.event_id,
+                    symbol,
+                    entry.reason,
+                    entry.position.event_id,
                     entry.emit_count,
                 )
                 continue
@@ -715,9 +734,13 @@ class EventBook:
             logger.info(
                 "Event exit %s: %s pnl=%.2f held=%.1fh event_id=%s (broker "
                 "confirmed %s after %d emission(s))",
-                symbol, entry.reason, record.pnl, record.held_hours,
+                symbol,
+                entry.reason,
+                record.pnl,
+                record.held_hours,
                 entry.position.event_id,
-                "flat" if abs(current_qty) < self._FLAT_QTY
+                "flat"
+                if abs(current_qty) < self._FLAT_QTY
                 else f"co-holder residual {current_qty:.0f}",
                 entry.emit_count,
             )
@@ -725,7 +748,9 @@ class EventBook:
         return records
 
     def confirm_entries(
-        self, broker_positions: Iterable[Any], now: datetime,
+        self,
+        broker_positions: Iterable[Any],
+        now: datetime,
     ) -> list[EventPosition]:
         """Confirm pending entries against the broker (ENTRY half of
         CL-hqyj — mirror of :meth:`confirm_exits`).
@@ -803,7 +828,11 @@ class EventBook:
                 "Event entry %s: broker was unreadable at submit — "
                 "best-effort promoting at %.0f (min of intended %.0f and "
                 "broker net %.0f, intended sign) after grace (event_id=%s)",
-                symbol, best_effort, pos.quantity, broker_now, pos.event_id,
+                symbol,
+                best_effort,
+                pos.quantity,
+                broker_now,
+                pos.event_id,
             )
             self._promote_entry(symbol, entry, best_effort, promoted)
         return promoted
@@ -819,9 +848,14 @@ class EventBook:
         ACTUAL broker fill (the partial-fill fix), persist, and log."""
         pos = entry.position
         confirmed = EventPosition(
-            symbol=pos.symbol, event_id=pos.event_id, entry_ts=pos.entry_ts,
-            entry_price=pos.entry_price, quantity=fill, direction=pos.direction,
-            stop_price=pos.stop_price, headline=pos.headline,
+            symbol=pos.symbol,
+            event_id=pos.event_id,
+            entry_ts=pos.entry_ts,
+            entry_price=pos.entry_price,
+            quantity=fill,
+            direction=pos.direction,
+            stop_price=pos.stop_price,
+            headline=pos.headline,
         )
         del self.pending_entries[symbol]
         self.open_positions[symbol] = confirmed
@@ -831,17 +865,26 @@ class EventBook:
             logger.warning(
                 "Event entry %s PARTIALLY filled: booked %.0f vs intended "
                 "%.0f (event_id=%s) — book now tracks the ACTUAL broker size",
-                symbol, fill, pos.quantity, pos.event_id,
+                symbol,
+                fill,
+                pos.quantity,
+                pos.event_id,
             )
         else:
             logger.info(
                 "Event entry %s confirmed: filled %.0f (intended %.0f) "
                 "event_id=%s — promoted to open, stop/time-stop now active",
-                symbol, fill, pos.quantity, pos.event_id,
+                symbol,
+                fill,
+                pos.quantity,
+                pos.event_id,
             )
 
     def _reject_entry(
-        self, symbol: str, entry: PendingEntry, broker_now: float,
+        self,
+        symbol: str,
+        entry: PendingEntry,
+        broker_now: float,
     ) -> None:
         """Drop a pending entry that never filled within grace — book
         NOTHING (mirror of the phantom prune, for the pending path)."""
@@ -852,7 +895,10 @@ class EventBook:
             "Event entry %s REJECTED — no qualifying fill within grace "
             "(broker net %.0f, intended %.0f, event_id=%s); dropping WITHOUT "
             "booking any position (order likely rejected)",
-            symbol, broker_now, pos.quantity, pos.event_id,
+            symbol,
+            broker_now,
+            pos.quantity,
+            pos.event_id,
         )
 
     # ------------------------------------------------------------------
@@ -864,6 +910,7 @@ class EventBook:
         """Compare-form for position matching — delegates to the shared
         canonical_symbol (CL-qqra) so there is ONE normalizer repo-wide."""
         from src.execution.broker import canonical_symbol  # noqa: PLC0415
+
         return canonical_symbol(sym)
 
     def reconcile(self, broker: Any, now: datetime) -> list[Any] | None:
@@ -890,18 +937,14 @@ class EventBook:
         backstop; the phantom pruner now only backstops LEGACY
         ``open_positions`` legs (record_entry no longer creates prunable
         open legs — ENTRY half of CL-hqyj)."""
-        if (
-            not self.open_positions
-            and not self.pending_exits
-            and not self.pending_entries
-        ):
+        if not self.open_positions and not self.pending_exits and not self.pending_entries:
             return None
         try:
             positions = list(broker.get_positions())
         except Exception:
             logger.debug(
-                "event_driven: broker positions unavailable — skipping phantom "
-                "reconciliation", exc_info=True,
+                "event_driven: broker positions unavailable — skipping phantom reconciliation",
+                exc_info=True,
             )
             return None
         held = {self._norm_symbol(p.symbol) for p in positions}
@@ -915,7 +958,8 @@ class EventBook:
                 logger.warning(
                     "event_driven: pruning phantom position %s (event id=%s) — "
                     "broker does not hold it (order likely rejected)",
-                    symbol, pos.event_id,
+                    symbol,
+                    pos.event_id,
                 )
                 del self.open_positions[symbol]
                 pruned += 1
@@ -940,15 +984,17 @@ class EventBook:
                     "positions will be opened; exits still flow. Reset "
                     "requires operator action on %s. (Kill-switch "
                     "integration pending — this is the loud log.)",
-                    self.realized_pnl, cap,
-                    self._max_loss_pct * 100, equity,
+                    self.realized_pnl,
+                    cap,
+                    self._max_loss_pct * 100,
+                    equity,
                     self._state_path_str,
                 )
                 self._breach_logged = True
             else:
                 logger.warning(
-                    "Event book loss cap still breached (realized P&L %.2f) — "
-                    "new entries blocked", self.realized_pnl,
+                    "Event book loss cap still breached (realized P&L %.2f) — new entries blocked",
+                    self.realized_pnl,
                 )
         elif self._breach_logged:
             logger.warning(
@@ -1033,7 +1079,11 @@ class EventBook:
             logger.warning(
                 "Concentration cap [%s]: already at/over %.0f%% of equity "
                 "(open notional %.0f >= cap %.0f) — SKIPPING new %s entry",
-                binding, cap_pct * 100, open_exposure, cap_notional, symbol,
+                binding,
+                cap_pct * 100,
+                open_exposure,
+                cap_notional,
+                symbol,
             )
             return 0.0
         if proposed_notional <= headroom:
@@ -1045,7 +1095,13 @@ class EventBook:
             "Concentration cap [%s]: %s entry reduced from %.0f to %.0f "
             "units (open notional %.0f + proposed %.0f would exceed cap "
             "%.0f = %.0f%% of equity)",
-            binding, symbol, size, capped, open_exposure, proposed_notional,
-            cap_notional, cap_pct * 100,
+            binding,
+            symbol,
+            size,
+            capped,
+            open_exposure,
+            proposed_notional,
+            cap_notional,
+            cap_pct * 100,
         )
         return capped

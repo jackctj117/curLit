@@ -70,7 +70,8 @@ class TestRSSFetcher:
     def test_parses_substack_atom_into_papers(self) -> None:
         fetcher = RSSFetcher(http_get=lambda _u: _SAMPLE_RSS_SUBSTACK)
         feed = FeedConfig(
-            name="doomberg", adapter="rss",
+            name="doomberg",
+            adapter="rss",
             query_url="https://newsletter.doomberg.com/feed",
             source_label="Doomberg",
         )
@@ -89,8 +90,10 @@ class TestRSSFetcher:
     ) -> None:
         fetcher = RSSFetcher(http_get=lambda _u: _RSS_NO_DESCRIPTION)
         feed = FeedConfig(
-            name="t", adapter="rss",
-            query_url="x", source_label="T",
+            name="t",
+            adapter="rss",
+            query_url="x",
+            source_label="T",
         )
         papers = fetcher.fetch(feed)
         assert len(papers) == 1
@@ -105,14 +108,20 @@ class TestRSSFetcher:
 
         fetcher = RSSFetcher(http_get=boom)
         feed = FeedConfig(
-            name="bad", adapter="rss", query_url="x", source_label="bad",
+            name="bad",
+            adapter="rss",
+            query_url="x",
+            source_label="bad",
         )
         assert fetcher.fetch(feed) == []
 
     def test_malformed_xml_returns_empty(self) -> None:
         fetcher = RSSFetcher(http_get=lambda _u: "<<bad")
         feed = FeedConfig(
-            name="bad", adapter="rss", query_url="x", source_label="bad",
+            name="bad",
+            adapter="rss",
+            query_url="x",
+            source_label="bad",
         )
         assert fetcher.fetch(feed) == []
 
@@ -131,51 +140,55 @@ class TestRSSAdapterRegistration:
 # Minimal Gamma API shape — actual responses have many more fields,
 # but we only consume question / description / outcomes /
 # outcomePrices / endDate / volume / slug / id.
-_SAMPLE_POLY_API = json.dumps([
-    {
-        "id": "fed-cuts-jun",
-        "slug": "fed-cuts-25bps-june-2026",
-        "question": "Will the Fed cut rates by 25bps in June 2026?",
-        "description": "Resolves YES if the Fed FOMC cuts the federal funds rate target by 25bps at its June 2026 meeting.",
-        "outcomes": ["Yes", "No"],
-        "outcomePrices": ["0.78", "0.22"],
-        "volume": 1250000,
-        "endDate": "2026-06-15",
-        "active": True,
-        "closed": False,
-    },
-    {
-        "id": "election",
-        "slug": "us-election",
-        "question": "2028 US presidential election winner?",
-        "description": "Predicts the winner of the 2028 US presidential election.",
-        "outcomes": ["Republican", "Democrat", "Other"],
-        "outcomePrices": ["0.48", "0.49", "0.03"],
-        "volume": 50000000,
-        "endDate": "2028-11-08",
-    },
-    {
-        # NOT FX/macro relevant — should be filtered out
-        "id": "sports-market",
-        "slug": "lebron-mvp-2027",
-        "question": "Will LeBron James win MVP in the 2026-27 season?",
-        "description": "Sports market.",
-        "outcomes": ["Yes", "No"],
-        "outcomePrices": ["0.05", "0.95"],
-        "volume": 100000,
-        "endDate": "2027-06-01",
-    },
-])
+_SAMPLE_POLY_API = json.dumps(
+    [
+        {
+            "id": "fed-cuts-jun",
+            "slug": "fed-cuts-25bps-june-2026",
+            "question": "Will the Fed cut rates by 25bps in June 2026?",
+            "description": "Resolves YES if the Fed FOMC cuts the federal funds rate target by 25bps at its June 2026 meeting.",
+            "outcomes": ["Yes", "No"],
+            "outcomePrices": ["0.78", "0.22"],
+            "volume": 1250000,
+            "endDate": "2026-06-15",
+            "active": True,
+            "closed": False,
+        },
+        {
+            "id": "election",
+            "slug": "us-election",
+            "question": "2028 US presidential election winner?",
+            "description": "Predicts the winner of the 2028 US presidential election.",
+            "outcomes": ["Republican", "Democrat", "Other"],
+            "outcomePrices": ["0.48", "0.49", "0.03"],
+            "volume": 50000000,
+            "endDate": "2028-11-08",
+        },
+        {
+            # NOT FX/macro relevant — should be filtered out
+            "id": "sports-market",
+            "slug": "lebron-mvp-2027",
+            "question": "Will LeBron James win MVP in the 2026-27 season?",
+            "description": "Sports market.",
+            "outcomes": ["Yes", "No"],
+            "outcomePrices": ["0.05", "0.95"],
+            "volume": 100000,
+            "endDate": "2027-06-01",
+        },
+    ]
+)
 
 
 class TestPolymarketFetcher:
     def test_filters_to_fx_macro_keywords(self) -> None:
         fetcher = PolymarketFetcher(http_get=lambda _u: _SAMPLE_POLY_API)
+
         # Pass a duck-typed feed object (anything with .query_url +
         # .source_label attrs)
         class _Feed:
             query_url = "https://gamma-api.polymarket.com/markets"
             source_label = "Polymarket FX"
+
         papers = fetcher.fetch(_Feed())
         # The sports market should be filtered out (no fx/macro keywords)
         slugs = [p.url.split("/")[-1] for p in papers]
@@ -185,9 +198,11 @@ class TestPolymarketFetcher:
 
     def test_format_outcomes_with_prices(self) -> None:
         fetcher = PolymarketFetcher(http_get=lambda _u: _SAMPLE_POLY_API)
+
         class _Feed:
             query_url = "x"
             source_label = "Polymarket"
+
         papers = fetcher.fetch(_Feed())
         fed_market = next(p for p in papers if "Fed" in p.title)
         assert "Yes=78.0%" in fed_market.abstract
@@ -197,37 +212,49 @@ class TestPolymarketFetcher:
     def test_handles_outcome_prices_as_json_string(self) -> None:
         # Real Gamma API sometimes returns outcomePrices as a JSON-
         # encoded string rather than a native list. Defend against it.
-        body = json.dumps([{
-            "id": "x", "slug": "fed-x",
-            "question": "Will the Fed do anything?",
-            "description": "fed monetary policy",
-            "outcomes": '["Yes", "No"]',  # string, not list
-            "outcomePrices": '["0.50", "0.50"]',
-            "volume": 100,
-            "endDate": "2026-12-31",
-        }])
+        body = json.dumps(
+            [
+                {
+                    "id": "x",
+                    "slug": "fed-x",
+                    "question": "Will the Fed do anything?",
+                    "description": "fed monetary policy",
+                    "outcomes": '["Yes", "No"]',  # string, not list
+                    "outcomePrices": '["0.50", "0.50"]',
+                    "volume": 100,
+                    "endDate": "2026-12-31",
+                }
+            ]
+        )
         fetcher = PolymarketFetcher(http_get=lambda _u: body)
+
         class _Feed:
             query_url = "x"
             source_label = "P"
+
         papers = fetcher.fetch(_Feed())
         assert len(papers) == 1
         assert "Yes=50.0%" in papers[0].abstract
 
     def test_unparseable_response_returns_empty(self) -> None:
         fetcher = PolymarketFetcher(http_get=lambda _u: "not json")
+
         class _Feed:
             query_url = "x"
             source_label = "P"
+
         assert fetcher.fetch(_Feed()) == []
 
     def test_http_failure_returns_empty(self) -> None:
         def boom(_u: str) -> str:
             raise ConnectionError("offline")
+
         fetcher = PolymarketFetcher(http_get=boom)
+
         class _Feed:
             query_url = "x"
             source_label = "P"
+
         assert fetcher.fetch(_Feed()) == []
 
 

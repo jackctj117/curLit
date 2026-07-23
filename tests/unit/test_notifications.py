@@ -53,7 +53,8 @@ def http_recorder(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
         return _FakeResponse(status_code=200)
 
     monkeypatch.setattr(
-        "src.research.notifications.httpx.post", fake_post,
+        "src.research.notifications.httpx.post",
+        fake_post,
     )
     return calls
 
@@ -82,9 +83,7 @@ class TestPushoverRemoved:
                     continue
                 if "PUSHOVER_" in path.read_text(encoding="utf-8"):
                     offenders.append(str(path.relative_to(self._ROOT)))
-        assert offenders == [], (
-            f"PUSHOVER_* env vars referenced in: {offenders}"
-        )
+        assert offenders == [], f"PUSHOVER_* env vars referenced in: {offenders}"
 
     def test_notifications_module_has_no_pushover_symbols(self) -> None:
         import src.research.notifications as mod
@@ -98,7 +97,9 @@ class TestPushoverRemoved:
         assert not hasattr(r, "pushover_error")
 
     def test_pushover_env_alone_dispatches_nothing(
-        self, monkeypatch: pytest.MonkeyPatch, http_recorder: list[Any],
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        http_recorder: list[Any],
     ) -> None:
         """Even with the legacy env vars set, no HTTP call happens —
         the channel is gone, not just gated off."""
@@ -118,7 +119,9 @@ class TestPushoverRemoved:
 
 class TestGating:
     def test_no_env_vars_no_dispatch(
-        self, monkeypatch: pytest.MonkeyPatch, http_recorder: list[Any],
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        http_recorder: list[Any],
     ) -> None:
         monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
         monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
@@ -127,7 +130,9 @@ class TestGating:
         assert http_recorder == []
 
     def test_telegram_configured_dispatches(
-        self, monkeypatch: pytest.MonkeyPatch, http_recorder: list[Any],
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        http_recorder: list[Any],
     ) -> None:
         _set_telegram_env(monkeypatch)
         result = notify_operator(title="GATE 1", message="hi")
@@ -142,7 +147,9 @@ class TestGating:
         assert "parse_mode" not in call["data"]
 
     def test_priority_accepted_but_ignored(
-        self, monkeypatch: pytest.MonkeyPatch, http_recorder: list[Any],
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        http_recorder: list[Any],
     ) -> None:
         """Legacy callers still pass priority (an old Pushover concept);
         the Telegram payload must not grow a priority field."""
@@ -152,7 +159,9 @@ class TestGating:
         assert "priority" not in http_recorder[0]["data"]
 
     def test_telegram_handles_underscores_in_message(
-        self, monkeypatch: pytest.MonkeyPatch, http_recorder: list[Any],
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        http_recorder: list[Any],
     ) -> None:
         """Smoke regression: an underscore-laden slug used to trigger a
         Telegram 400 because Markdown parse_mode interpreted ``_..._``
@@ -163,12 +172,12 @@ class TestGating:
             message="Slug: regime_carry_underscores_in_slug\nNext line",
         )
         assert result.telegram_succeeded
-        assert "regime_carry_underscores_in_slug" in (
-            http_recorder[0]["data"]["text"]
-        )
+        assert "regime_carry_underscores_in_slug" in (http_recorder[0]["data"]["text"])
 
     def test_partial_env_no_dispatch(
-        self, monkeypatch: pytest.MonkeyPatch, http_recorder: list[Any],
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        http_recorder: list[Any],
     ) -> None:
         monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "btok")
         monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
@@ -182,22 +191,25 @@ class TestHtmlHelpers:
         # Headlines/slugs/reasons are interpolated into HTML bodies —
         # <, & and > must be escaped; underscores stay literal (the
         # whole reason HTML replaced Markdown, CL-frn7).
-        assert html_escape("<b>x & y</b> a_slug_") == (
-            "&lt;b&gt;x &amp; y&lt;/b&gt; a_slug_"
-        )
+        assert html_escape("<b>x & y</b> a_slug_") == ("&lt;b&gt;x &amp; y&lt;/b&gt; a_slug_")
 
     def test_html_escape_non_str(self) -> None:
         assert html_escape(42) == "42"
 
     def test_html_to_plain_strips_tags_and_unescapes(self) -> None:
-        assert _html_to_plain(
-            "<b>Trades:</b> EURUSD &amp; DXY\n<i>x &lt; y</i>",
-        ) == "Trades: EURUSD & DXY\nx < y"
+        assert (
+            _html_to_plain(
+                "<b>Trades:</b> EURUSD &amp; DXY\n<i>x &lt; y</i>",
+            )
+            == "Trades: EURUSD & DXY\nx < y"
+        )
 
 
 class TestHtmlMode:
     def test_telegram_gets_html_parse_mode_and_bold_title(
-        self, monkeypatch: pytest.MonkeyPatch, http_recorder: list[Any],
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        http_recorder: list[Any],
     ) -> None:
         _set_telegram_env(monkeypatch)
         result = notify_operator(
@@ -209,16 +221,19 @@ class TestHtmlMode:
         telegram = http_recorder[0]
         assert telegram["data"]["parse_mode"] == "HTML"
         assert telegram["data"]["text"] == (
-            "<b>GATE 1 — new trading hypothesis</b>\n\n"
-            "<b>Trades:</b> EURUSD"
+            "<b>GATE 1 — new trading hypothesis</b>\n\n<b>Trades:</b> EURUSD"
         )
 
     def test_hostile_title_escaped_for_telegram(
-        self, monkeypatch: pytest.MonkeyPatch, http_recorder: list[Any],
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        http_recorder: list[Any],
     ) -> None:
         _set_telegram_env(monkeypatch)
         notify_operator(
-            title="Paper <Q3> says risk & carry_trade", message="m", html=True,
+            title="Paper <Q3> says risk & carry_trade",
+            message="m",
+            html=True,
         )
         assert (
             "<b>Paper &lt;Q3&gt; says risk &amp; carry_trade</b>"
@@ -226,7 +241,8 @@ class TestHtmlMode:
         )
 
     def test_html_400_falls_back_to_plain_text(
-        self, monkeypatch: pytest.MonkeyPatch,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """A malformed-tag 400 must never silence a gate alert: the
         dispatcher retries once with tags stripped, no parse_mode."""
@@ -241,10 +257,13 @@ class TestHtmlMode:
             return _FakeResponse(status_code=200)
 
         monkeypatch.setattr(
-            "src.research.notifications.httpx.post", flaky_post,
+            "src.research.notifications.httpx.post",
+            flaky_post,
         )
         result = notify_operator(
-            title="t", message="<b>broken<b> tags", html=True,
+            title="t",
+            message="<b>broken<b> tags",
+            html=True,
         )
         assert result.telegram_succeeded
         assert len(calls) == 2
@@ -252,7 +271,9 @@ class TestHtmlMode:
         assert calls[1]["data"]["text"] == "t\n\nbroken tags"
 
     def test_plain_mode_unchanged_for_legacy_callers(
-        self, monkeypatch: pytest.MonkeyPatch, http_recorder: list[Any],
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        http_recorder: list[Any],
     ) -> None:
         _set_telegram_env(monkeypatch)
         notify_operator(title="t", message="a_b <raw>")
@@ -263,7 +284,8 @@ class TestHtmlMode:
 
 class TestFailureHandling:
     def test_transport_error_recorded_not_raised(
-        self, monkeypatch: pytest.MonkeyPatch,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         _set_telegram_env(monkeypatch)
 
@@ -271,7 +293,8 @@ class TestFailureHandling:
             raise ConnectionError("telegram down")
 
         monkeypatch.setattr(
-            "src.research.notifications.httpx.post", boom,
+            "src.research.notifications.httpx.post",
+            boom,
         )
         result = notify_operator(title="t", message="m")
         assert result.telegram_attempted
@@ -280,7 +303,8 @@ class TestFailureHandling:
         assert not result.any_succeeded
 
     def test_http_400_recorded_in_result(
-        self, monkeypatch: pytest.MonkeyPatch,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         _set_telegram_env(monkeypatch)
 
@@ -288,7 +312,8 @@ class TestFailureHandling:
             return _FakeResponse(status_code=400)
 
         monkeypatch.setattr(
-            "src.research.notifications.httpx.post", bad,
+            "src.research.notifications.httpx.post",
+            bad,
         )
         result = notify_operator(title="t", message="m")
         assert result.telegram_attempted
@@ -306,13 +331,15 @@ class TestHttpxLogSuppression:
         import logging as _logging
 
         from src.research import notifications
+
         importlib.reload(notifications)
         assert _logging.getLogger("httpx").level == _logging.WARNING
 
 
 class TestTokenScrubbing:
     def test_telegram_token_redacted_from_error(
-        self, monkeypatch: pytest.MonkeyPatch,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """httpx echoes the request URL on HTTPStatusError, and that
         URL contains the bot token. Verify the dispatcher scrubs it

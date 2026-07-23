@@ -52,11 +52,13 @@ from src.research.verdict import parse_rules
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Run the autonomous research loop")
     p.add_argument(
-        "--config", default="configs/research_agents.yaml",
+        "--config",
+        default="configs/research_agents.yaml",
         help="Research agent + debate config",
     )
     p.add_argument(
-        "--feeds", default="configs/paper_streams.yaml",
+        "--feeds",
+        default="configs/paper_streams.yaml",
         help="Paper feed config",
     )
     p.add_argument("--debate", default="promotion_review")
@@ -65,15 +67,18 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--hypothesis-dir", default=str(DEFAULT_HYPOTHESIS_DIR))
     p.add_argument("--candidate-dir", default=str(DEFAULT_CANDIDATE_DIR))
     p.add_argument(
-        "--backtest-start", default="2018-01-01",
+        "--backtest-start",
+        default="2018-01-01",
         help="Backtest window start (ISO date)",
     )
     p.add_argument(
-        "--backtest-end", default="2024-12-31",
+        "--backtest-end",
+        default="2024-12-31",
         help="Backtest window end (ISO date)",
     )
     p.add_argument(
-        "--no-backtest", action="store_true",
+        "--no-backtest",
+        action="store_true",
         help=(
             "Skip the real backtest_runner. Implementer ships with "
             "empty backtest_metrics, verdict engine ESCALATEs everything "
@@ -81,7 +86,8 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     p.add_argument(
-        "--dry-run", action="store_true",
+        "--dry-run",
+        action="store_true",
         help=(
             "Walk every phase with stubbed LLM calls + stubbed HTTP + "
             "stubbed backtest. No real API calls, no network, no "
@@ -90,7 +96,8 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     p.add_argument(
-        "--auto-approve", action="store_true",
+        "--auto-approve",
+        action="store_true",
         help=(
             "Auto-flip PENDING_OPERATOR_APPROVAL → APPROVED and "
             "PENDING_DEPLOY_CONFIRMATION → DEPLOY_APPROVED before each "
@@ -100,7 +107,10 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     p.add_argument(
-        "-v", "--verbose", action="store_true", help="DEBUG-level logging",
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="DEBUG-level logging",
     )
     return p
 
@@ -115,6 +125,7 @@ def main(argv: list[str] | None = None) -> int:
     # invoking the script. Explicit env vars (systemd / shell exports)
     # still win over the file's contents.
     from src.dotenv_bootstrap import load_project_env  # noqa: PLC0415
+
     load_project_env()
 
     # Dry-run pollutes nothing: every output path gets re-rooted under
@@ -127,6 +138,7 @@ def main(argv: list[str] | None = None) -> int:
         # config validator sees the dry-run drivers under the
         # canonical provider names.
         from src.research.dry_run import install_dry_run_driver  # noqa: PLC0415
+
         install_dry_run_driver()
         # Make sure agent-config validators don't fail on missing API
         # keys for the canonical providers — DryRunDriver doesn't need
@@ -138,6 +150,7 @@ def main(argv: list[str] | None = None) -> int:
         # explicit --state / --hypothesis-dir / --candidate-dir flags
         # if they want to inspect outputs in a stable location.
         import tempfile  # noqa: PLC0415
+
         dry_run_tmp = Path(tempfile.mkdtemp(prefix="research-dry-run-"))
         defaults_used = {
             "state": args.state == str(DEFAULT_STATE_PATH),
@@ -154,37 +167,53 @@ def main(argv: list[str] | None = None) -> int:
         if defaults_used["cand"]:
             args.candidate_dir = str(dry_run_tmp / "candidates")
         print(
-            f"DRY RUN: stubbed LLM + HTTP + backtest; outputs under "
-            f"{dry_run_tmp}",
+            f"DRY RUN: stubbed LLM + HTTP + backtest; outputs under {dry_run_tmp}",
         )
 
     research_config = load_config(args.config)
     feed_configs = load_feed_configs(args.feeds)
 
-    extractor = cast(PaperExtractor, PaperExtractor.from_config(
-        name="paper_extractor", research_config=research_config,
-    ))
-    idea_agent = cast(IdeaGenerator, IdeaGenerator.from_config(
-        name="idea_generator", research_config=research_config,
-    ))
-    implementer = cast(Implementer, Implementer.from_config(
-        name="implementer", research_config=research_config,
-    ))
+    extractor = cast(
+        PaperExtractor,
+        PaperExtractor.from_config(
+            name="paper_extractor",
+            research_config=research_config,
+        ),
+    )
+    idea_agent = cast(
+        IdeaGenerator,
+        IdeaGenerator.from_config(
+            name="idea_generator",
+            research_config=research_config,
+        ),
+    )
+    implementer = cast(
+        Implementer,
+        Implementer.from_config(
+            name="implementer",
+            research_config=research_config,
+        ),
+    )
     if args.dry_run and dry_run_tmp is not None:
         from src.research.dry_run import stub_http_get  # noqa: PLC0415
+
         extract_store = ExtractStore(root=dry_run_tmp / "extracts")
         ingest_runner = IngestRunner(
-            extractor=extractor, store=extract_store, http_get=stub_http_get,
+            extractor=extractor,
+            store=extract_store,
+            http_get=stub_http_get,
         )
         orchestrator = DebateOrchestrator(
-            research_config=research_config, debate_name=args.debate,
+            research_config=research_config,
+            debate_name=args.debate,
             transcript_root=dry_run_tmp / "debates",
         )
     else:
         extract_store = ExtractStore()
         ingest_runner = IngestRunner(extractor=extractor, store=extract_store)
         orchestrator = DebateOrchestrator(
-            research_config=research_config, debate_name=args.debate,
+            research_config=research_config,
+            debate_name=args.debate,
         )
 
     # Wire the real backtest_runner unless --no-backtest / --dry-run.
@@ -192,13 +221,16 @@ def main(argv: list[str] | None = None) -> int:
     # engine and we don't want to require it for --dry-run / --no-backtest.
     from collections.abc import Callable as _Callable  # noqa: PLC0415
     from typing import Any as _Any  # noqa: PLC0415
+
     backtest_runner: _Callable[[Path], dict[str, _Any]] | None = None
     if args.dry_run:
         from src.research.dry_run import stub_backtest_runner  # noqa: PLC0415
+
         backtest_runner = stub_backtest_runner
     elif not args.no_backtest:
         from src.data.provider import DataProvider  # noqa: PLC0415
         from src.runtime.run_engine import _build_db_engine  # noqa: PLC0415
+
         backtest_runner = make_backtest_runner(
             data_provider=DataProvider(_build_db_engine()),
             start=args.backtest_start,
@@ -211,6 +243,7 @@ def main(argv: list[str] | None = None) -> int:
     registrar = None
     if args.dry_run and dry_run_tmp is not None:
         from src.research.promote import PromoteRegistrar  # noqa: PLC0415
+
         # Seed a minimal portfolio YAML for the registrar to mutate.
         portfolio_yaml = dry_run_tmp / "live_portfolio.yaml"
         portfolio_yaml.write_text(
@@ -220,7 +253,8 @@ def main(argv: list[str] | None = None) -> int:
             experimental_dir=dry_run_tmp / "_experimental",
             production_dir=dry_run_tmp / "production",
             portfolio_yaml=portfolio_yaml,
-            skip_git=True, skip_pr=True,
+            skip_git=True,
+            skip_pr=True,
         )
 
     rules_path = research_config.debates[args.debate].rules_path
@@ -237,7 +271,8 @@ def main(argv: list[str] | None = None) -> int:
         hypothesis_dir=Path(args.hypothesis_dir),
         candidate_dir=Path(args.candidate_dir),
         experimental_code_dir=(
-            dry_run_tmp / "_experimental" if dry_run_tmp is not None
+            dry_run_tmp / "_experimental"
+            if dry_run_tmp is not None
             else Path("src/strategies/_experimental")
         ),
         backtest_runner=backtest_runner,

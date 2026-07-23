@@ -58,9 +58,19 @@ _WEIGHTS_KEYWORDS: float = 0.3
 # characters so a verbose-but-empty response doesn't outscore a
 # concise informative one.
 _FILLER_WORDS: tuple[str, ...] = (
-    "however", "moreover", "furthermore", "additionally", "in conclusion",
-    "in summary", "it is important to note", "as mentioned", "indeed",
-    "essentially", "basically", "ultimately", "interestingly",
+    "however",
+    "moreover",
+    "furthermore",
+    "additionally",
+    "in conclusion",
+    "in summary",
+    "it is important to note",
+    "as mentioned",
+    "indeed",
+    "essentially",
+    "basically",
+    "ultimately",
+    "interestingly",
 )
 
 
@@ -68,7 +78,7 @@ _FILLER_WORDS: tuple[str, ...] = (
 # We pick the parity model on each side: Claude Opus 4.7 vs
 # DeepSeek's reasoner (closest reasoning-tier comparable).
 _DEFAULT_MODELS: dict[str, str] = {
-    "claude":   "claude-opus-4-7",
+    "claude": "claude-opus-4-7",
     "deepseek": "deepseek-reasoner",
 }
 
@@ -154,9 +164,12 @@ def _score_keywords(text: str, expected: list[str]) -> float:
 
 
 def score_response(
-    text: str, prompt: PromptSpec,
+    text: str,
+    prompt: PromptSpec,
     weights: tuple[float, float, float] = (
-        _WEIGHTS_STRUCTURE, _WEIGHTS_DENSITY, _WEIGHTS_KEYWORDS,
+        _WEIGHTS_STRUCTURE,
+        _WEIGHTS_DENSITY,
+        _WEIGHTS_KEYWORDS,
     ),
 ) -> QualityScore:
     s = _score_structure(text, prompt.expected_format)
@@ -165,12 +178,18 @@ def score_response(
     w_s, w_d, w_k = weights
     weighted = w_s * s + w_d * d + w_k * k
     return QualityScore(
-        structure=s, density=d, keyword_presence=k, weighted=weighted,
+        structure=s,
+        density=d,
+        keyword_presence=k,
+        weighted=weighted,
     )
 
 
 def run_one(
-    provider: str, model: str, prompt: PromptSpec, max_tokens: int = 2048,
+    provider: str,
+    model: str,
+    prompt: PromptSpec,
+    max_tokens: int = 2048,
 ) -> ComparisonRow:
     client = get_client(provider)
     resp: LLMResponse = client.complete(
@@ -225,11 +244,11 @@ def summarize(rows: list[ComparisonRow]) -> dict[str, Any]:
         # 0.01 to avoid division-by-zero on a totally broken response.
         cost_per_quality = total_cost / max(0.01, avg_quality * n)
         summary[prov] = {
-            "n_prompts":         n,
-            "total_usd":         round(total_cost, 6),
-            "avg_quality":       round(avg_quality, 3),
-            "avg_latency_sec":   round(avg_latency, 2),
-            "usd_per_quality":   round(cost_per_quality, 6),
+            "n_prompts": n,
+            "total_usd": round(total_cost, 6),
+            "avg_quality": round(avg_quality, 3),
+            "avg_latency_sec": round(avg_latency, 2),
+            "usd_per_quality": round(cost_per_quality, 6),
         }
     return summary
 
@@ -239,22 +258,28 @@ def main(argv: list[str] | None = None) -> int:
 
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument(
-        "--prompt-file", type=Path, required=True,
+        "--prompt-file",
+        type=Path,
+        required=True,
         help="JSON file with PromptSpec[] (see scripts/_seed_prompts/)",
     )
     p.add_argument(
-        "--providers", default="claude,deepseek",
+        "--providers",
+        default="claude,deepseek",
         help="Comma-separated list of providers to test",
     )
     p.add_argument(
-        "--models", default="",
+        "--models",
+        default="",
         help=(
             "Optional comma-separated provider:model overrides "
             "(e.g. 'claude:claude-sonnet-4-6,deepseek:deepseek-chat')"
         ),
     )
     p.add_argument(
-        "--out", type=Path, default=Path("reports/llm_compare.json"),
+        "--out",
+        type=Path,
+        default=Path("reports/llm_compare.json"),
         help="Output JSON path",
     )
     p.add_argument("-v", "--verbose", action="store_true")
@@ -278,11 +303,13 @@ def main(argv: list[str] | None = None) -> int:
     for prompt in prompts:
         for provider in providers:
             model = model_overrides.get(provider) or _DEFAULT_MODELS.get(
-                provider, "",
+                provider,
+                "",
             )
             if not model:
                 logger.error(
-                    "No default model for %s and no override given", provider,
+                    "No default model for %s and no override given",
+                    provider,
                 )
                 return 2
             try:
@@ -290,15 +317,22 @@ def main(argv: list[str] | None = None) -> int:
             except Exception as exc:
                 logger.error(
                     "%s/%s failed on prompt %s: %s: %s",
-                    provider, model, prompt.name,
-                    type(exc).__name__, exc,
+                    provider,
+                    model,
+                    prompt.name,
+                    type(exc).__name__,
+                    exc,
                 )
                 continue
             rows.append(row)
             logger.info(
                 "%s/%s [%s]: q=%.3f cost=$%.4f t=%.1fs",
-                provider, model, prompt.name,
-                row.quality.weighted, row.usd_cost, row.elapsed_sec,
+                provider,
+                model,
+                prompt.name,
+                row.quality.weighted,
+                row.usd_cost,
+                row.elapsed_sec,
             )
 
     summary = summarize(rows)
@@ -317,14 +351,15 @@ def main(argv: list[str] | None = None) -> int:
 
     if "claude" in summary and "deepseek" in summary:
         cost_ratio = summary["claude"]["total_usd"] / max(
-            1e-6, summary["deepseek"]["total_usd"],
+            1e-6,
+            summary["deepseek"]["total_usd"],
         )
         quality_ratio = summary["claude"]["avg_quality"] / max(
-            0.01, summary["deepseek"]["avg_quality"],
+            0.01,
+            summary["deepseek"]["avg_quality"],
         )
         print(
-            f"\nClaude / DeepSeek ratios:  cost={cost_ratio:.1f}×  "
-            f"quality={quality_ratio:.2f}×",
+            f"\nClaude / DeepSeek ratios:  cost={cost_ratio:.1f}×  quality={quality_ratio:.2f}×",
         )
 
     print(f"\nFull report: {args.out}")

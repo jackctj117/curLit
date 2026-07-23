@@ -17,15 +17,17 @@ _TRADING_DAYS_PER_YEAR = 252.0
 class CostModel:
     spread_bps: float = 0.5
     slippage_bps: float = 0.3
-    per_pair_spreads: dict[str, float] = field(default_factory=lambda: {
-        "EURUSD": 0.3,
-        "USDJPY": 0.4,
-        "GBPUSD": 0.6,
-        "USDCAD": 0.5,
-        "AUDUSD": 0.6,
-        "NZDUSD": 0.7,
-        "USDCHF": 0.5,
-    })
+    per_pair_spreads: dict[str, float] = field(
+        default_factory=lambda: {
+            "EURUSD": 0.3,
+            "USDJPY": 0.4,
+            "GBPUSD": 0.6,
+            "USDCAD": 0.5,
+            "AUDUSD": 0.6,
+            "NZDUSD": 0.7,
+            "USDCHF": 0.5,
+        }
+    )
     cross_spread_default_bps: float = 1.5
     news_spread_multiplier: float = 2.0
     overnight_spread_multiplier: float = 3.0

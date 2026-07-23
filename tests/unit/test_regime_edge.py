@@ -18,8 +18,11 @@ from src.edge_testing.regime_edge import (
 
 
 def _build_prices(
-    n: int = 1000, vol: float = 0.005, drift: float = 0.0,
-    crisis_window: tuple[int, int] | None = None, seed: int = 0,
+    n: int = 1000,
+    vol: float = 0.005,
+    drift: float = 0.0,
+    crisis_window: tuple[int, int] | None = None,
+    seed: int = 0,
 ) -> pd.Series:
     """Geometric Brownian-ish prices, with optional vol-spike window."""
     rng = np.random.default_rng(seed)
@@ -35,8 +38,10 @@ def _build_prices(
 
 
 def _build_strat_returns_per_regime(
-    regimes: pd.Series, regime_means: dict[MarketRegime, float],
-    vol: float = 0.005, seed: int = 0,
+    regimes: pd.Series,
+    regime_means: dict[MarketRegime, float],
+    vol: float = 0.005,
+    seed: int = 0,
 ) -> pd.Series:
     """Build strategy returns whose mean depends on regime label."""
     rng = np.random.default_rng(seed)
@@ -109,7 +114,7 @@ class TestAnalyzeBasic:
     def test_per_regime_stats_present(self) -> None:
         prices = _build_prices(n=1500, crisis_window=(900, 1000), seed=20)
         analyzer = RegimeEdgeAnalyzer()
-        regimes = analyzer.classify_regimes(prices)
+        analyzer.classify_regimes(prices)  # smoke: must not raise
         # Strategy returns: equal positive mean across regimes.
         rng = np.random.default_rng(21)
         strat = pd.Series(rng.normal(0.0005, 0.005, len(prices)), index=prices.index)
@@ -153,7 +158,10 @@ class TestConcentration:
             MarketRegime.HIGH_VOL_CHOPPY: 0.0,
         }
         strat = _build_strat_returns_per_regime(
-            regimes, means, vol=0.001, seed=41,
+            regimes,
+            means,
+            vol=0.001,
+            seed=41,
         )
         report = analyzer.analyze(strat, prices)
         assert report.edge_concentration > 0.7
@@ -197,6 +205,7 @@ class TestNegativeRegimeWarn:
 class TestReporting:
     def test_to_dict_serializable(self) -> None:
         import json
+
         prices = _build_prices(n=1000, crisis_window=(700, 800), seed=70)
         analyzer = RegimeEdgeAnalyzer()
         rng = np.random.default_rng(71)
@@ -212,5 +221,6 @@ class TestReporting:
         prices = _build_prices(n=500, seed=80)
         with pytest.raises(AssertionError):
             RegimeEdgeAnalyzer().analyze(
-                pd.Series(dtype=float), prices,
+                pd.Series(dtype=float),
+                prices,
             )

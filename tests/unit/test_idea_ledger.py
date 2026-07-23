@@ -104,8 +104,7 @@ def _assessment(*ideas: dict[str, Any]) -> dict[str, Any]:
 def _all_rows(engine: Any) -> list[dict[str, Any]]:
     with engine.connect() as conn:
         return [
-            dict(r._mapping)
-            for r in conn.execute(text("SELECT * FROM trade_ideas ORDER BY id"))
+            dict(r._mapping) for r in conn.execute(text("SELECT * FROM trade_ideas ORDER BY id"))
         ]
 
 
@@ -123,11 +122,25 @@ class TestMigrationSmoke:
         assert "trade_ideas" in insp.get_table_names()
         cols = {c["name"] for c in insp.get_columns("trade_ideas")}
         assert {
-            "idea_id", "geo_event_id", "ticker", "action", "direction",
-            "confidence", "time_horizon", "holding_period_days",
-            "time_stop_days", "stop_loss_pct", "preferred_instrument",
-            "instrument_reason", "rationale", "suggested_entry", "notes",
-            "price_at_signal", "created_at", "status", "status_updated_at",
+            "idea_id",
+            "geo_event_id",
+            "ticker",
+            "action",
+            "direction",
+            "confidence",
+            "time_horizon",
+            "holding_period_days",
+            "time_stop_days",
+            "stop_loss_pct",
+            "preferred_instrument",
+            "instrument_reason",
+            "rationale",
+            "suggested_entry",
+            "notes",
+            "price_at_signal",
+            "created_at",
+            "status",
+            "status_updated_at",
         } <= cols
         idx = {i["name"] for i in insp.get_indexes("trade_ideas")}
         assert "idx_trade_ideas_status_created" in idx
@@ -136,9 +149,11 @@ class TestMigrationSmoke:
     def test_status_check_constraint_enforced(self, engine: Any) -> None:
         persist_ideas(engine, 1, _assessment(_idea()), now=NOW)
         with pytest.raises(Exception, match="(?i)constraint"), engine.begin() as conn:
-            conn.execute(text(
-                "UPDATE trade_ideas SET status = 'bogus'",
-            ))
+            conn.execute(
+                text(
+                    "UPDATE trade_ideas SET status = 'bogus'",
+                )
+            )
 
 
 # --------------------------------------------------------------------- #
@@ -191,7 +206,8 @@ class TestPersist:
 
     def test_malformed_idea_dropped_individually(self, engine: Any) -> None:
         n = persist_ideas(
-            engine, 1,
+            engine,
+            1,
             _assessment({"ticker": "", "action": "long"}, _idea()),
             now=NOW,
         )
@@ -204,8 +220,10 @@ class TestTradeCardPersistence:
 
     def test_card_levels_persisted_with_price(self, engine: Any) -> None:
         idea = _idea(
-            action="buy_puts", direction="bearish",
-            stop_loss_pct=0.40, target_pct=[0.10, 0.18],
+            action="buy_puts",
+            direction="bearish",
+            stop_loss_pct=0.40,
+            target_pct=[0.10, 0.18],
             entry_trigger="on confirmed blockade language",
             invalidation="official denial",
         )
@@ -214,19 +232,21 @@ class TestTradeCardPersistence:
         row = _all_rows(engine)[0]
         # buy_puts is bearish → stop ABOVE spot (option underlying default),
         # rounded to the name's tick (>= 100 → 1dp).
-        assert row["stop_price"] == pytest.approx(186.2)   # 172.4 × 1.08
+        assert row["stop_price"] == pytest.approx(186.2)  # 172.4 × 1.08
         # targets DOWN, stored as a JSON list.
         import json
+
         assert json.loads(row["target_prices"]) == [155.2, 141.4]
         assert row["risk_reward"] is not None
         assert row["entry_trigger"] == "on confirmed blockade language"
         assert row["invalidation"] == "official denial"
-        assert row["dte_window"] == "1-3 weeks"          # short horizon
+        assert row["dte_window"] == "1-3 weeks"  # short horizon
         assert row["suggested_strike"] == pytest.approx(163.8)  # 172.4 × 0.95
 
     def test_dollar_levels_null_without_price(self, engine: Any) -> None:
         idea = _idea(
-            entry_trigger="on strength", invalidation="denial",
+            entry_trigger="on strength",
+            invalidation="denial",
             target_pct=[0.10],
         )
         persist_ideas(engine, 1, _assessment(idea), prices={}, now=NOW)
@@ -238,20 +258,23 @@ class TestTradeCardPersistence:
         assert row["suggested_strike"] is None
         assert row["entry_trigger"] == "on strength"
         assert row["invalidation"] == "denial"
-        assert row["dte_window"] == "1-3 weeks"          # DTE is price-free
+        assert row["dte_window"] == "1-3 weeks"  # DTE is price-free
 
     def test_stock_stop_uses_llm_pct(self, engine: Any) -> None:
         # A STOCK idea's stop_loss_pct is a real share move → dollar stop.
         idea = _idea(
-            action="short", direction="bearish", stop_loss_pct=0.09,
-            time_horizon="structural", holding_period_days="60",
+            action="short",
+            direction="bearish",
+            stop_loss_pct=0.09,
+            time_horizon="structural",
+            holding_period_days="60",
         )
         prices = {"TSM": {"price": 100.0, "change_pct": 0.0}}
         persist_ideas(engine, 1, _assessment(idea), prices=prices, now=NOW)
         row = _all_rows(engine)[0]
         # short → stop above; stock → uses the 9% the LLM gave.
         assert row["stop_price"] == pytest.approx(109.0)
-        assert row["suggested_strike"] is None            # not an option
+        assert row["suggested_strike"] is None  # not an option
 
     def test_list_open_parses_target_prices_to_list(self, engine: Any) -> None:
         idea = _idea(target_pct=[0.10, 0.18])
@@ -319,18 +342,32 @@ class TestExpiry:
 
     def test_not_yet_elapsed_stays_pending(self, engine: Any) -> None:
         persist_ideas(engine, 1, _assessment(_idea(time_stop_days=5)), now=NOW)
-        assert expire_stale(
-            engine, now=NOW + timedelta(days=4, hours=23),
-        ) == 0
+        assert (
+            expire_stale(
+                engine,
+                now=NOW + timedelta(days=4, hours=23),
+            )
+            == 0
+        )
         assert _all_rows(engine)[0]["status"] == "pending"
 
     def test_only_stale_rows_expire(self, engine: Any) -> None:
-        persist_ideas(engine, 1, _assessment(
-            _idea(time_stop_days=3),
-            _idea(ticker="RTX", action="long", direction="bullish",
-                  time_stop_days=20, time_horizon="medium",
-                  holding_period_days="10-20"),
-        ), now=NOW)
+        persist_ideas(
+            engine,
+            1,
+            _assessment(
+                _idea(time_stop_days=3),
+                _idea(
+                    ticker="RTX",
+                    action="long",
+                    direction="bullish",
+                    time_stop_days=20,
+                    time_horizon="medium",
+                    holding_period_days="10-20",
+                ),
+            ),
+            now=NOW,
+        )
         assert expire_stale(engine, now=NOW + timedelta(days=4)) == 1
         by_ticker = {r["ticker"]: r["status"] for r in _all_rows(engine)}
         assert by_ticker == {"TSM": "expired", "RTX": "pending"}
@@ -369,12 +406,14 @@ class TestListOpen:
     def test_pending_only_newest_first(self, engine: Any) -> None:
         persist_ideas(engine, 1, _assessment(_idea()), now=NOW)
         persist_ideas(
-            engine, 2,
+            engine,
+            2,
             _assessment(_idea(ticker="RTX", action="long", direction="bullish")),
             now=NOW + timedelta(hours=2),
         )
         persist_ideas(
-            engine, 3,
+            engine,
+            3,
             _assessment(_idea(ticker="LMT", action="long", time_stop_days=1)),
             now=NOW - timedelta(days=5),
         )
@@ -405,24 +444,43 @@ class TestListOpen:
 
 class TestListOpenConsolidated:
     def test_consolidates_ticker_action_with_event_count(
-        self, engine: Any,
+        self,
+        engine: Any,
     ) -> None:
         from src.events.idea_ledger import list_open_consolidated
 
         # Three events propose gold LONG; one proposes crude LONG. The
         # TABLE keeps all four rows (audit trail); the consolidated view
         # collapses gold to one entry with event_count=3.
-        gold = {"ticker": "XAU_USD", "action": "long", "direction": "bullish",
-                "confidence": 0.7, "rationale": "r", "time_horizon": "short",
-                "holding_period_days": "2-6", "time_stop_days": 5}
+        gold = {
+            "ticker": "XAU_USD",
+            "action": "long",
+            "direction": "bullish",
+            "confidence": 0.7,
+            "rationale": "r",
+            "time_horizon": "short",
+            "holding_period_days": "2-6",
+            "time_stop_days": 5,
+        }
         for eid in (1, 2, 3):
-            persist_ideas(engine, eid, _assessment(dict(gold)),
-                          now=NOW + timedelta(minutes=eid))
-        persist_ideas(engine, 4, _assessment({
-            "ticker": "BCO_USD", "action": "long", "direction": "bullish",
-            "confidence": 0.6, "rationale": "r", "time_horizon": "short",
-            "holding_period_days": "2-6", "time_stop_days": 5}),
-            now=NOW + timedelta(minutes=5))
+            persist_ideas(engine, eid, _assessment(dict(gold)), now=NOW + timedelta(minutes=eid))
+        persist_ideas(
+            engine,
+            4,
+            _assessment(
+                {
+                    "ticker": "BCO_USD",
+                    "action": "long",
+                    "direction": "bullish",
+                    "confidence": 0.6,
+                    "rationale": "r",
+                    "time_horizon": "short",
+                    "holding_period_days": "2-6",
+                    "time_stop_days": 5,
+                }
+            ),
+            now=NOW + timedelta(minutes=5),
+        )
 
         # Raw view keeps every per-event row (audit trail intact).
         assert len(list_open(engine)) == 4
@@ -436,14 +494,40 @@ class TestListOpenConsolidated:
     def test_same_ticker_different_action_not_merged(self, engine: Any) -> None:
         from src.events.idea_ledger import list_open_consolidated
 
-        persist_ideas(engine, 1, _assessment({
-            "ticker": "XAU_USD", "action": "long", "direction": "bullish",
-            "confidence": 0.7, "rationale": "r", "time_horizon": "short",
-            "holding_period_days": "2-6", "time_stop_days": 5}), now=NOW)
-        persist_ideas(engine, 2, _assessment({
-            "ticker": "XAU_USD", "action": "buy_calls", "direction": "bullish",
-            "confidence": 0.7, "rationale": "r", "time_horizon": "short",
-            "holding_period_days": "2-6", "time_stop_days": 5}), now=NOW)
+        persist_ideas(
+            engine,
+            1,
+            _assessment(
+                {
+                    "ticker": "XAU_USD",
+                    "action": "long",
+                    "direction": "bullish",
+                    "confidence": 0.7,
+                    "rationale": "r",
+                    "time_horizon": "short",
+                    "holding_period_days": "2-6",
+                    "time_stop_days": 5,
+                }
+            ),
+            now=NOW,
+        )
+        persist_ideas(
+            engine,
+            2,
+            _assessment(
+                {
+                    "ticker": "XAU_USD",
+                    "action": "buy_calls",
+                    "direction": "bullish",
+                    "confidence": 0.7,
+                    "rationale": "r",
+                    "time_horizon": "short",
+                    "holding_period_days": "2-6",
+                    "time_stop_days": 5,
+                }
+            ),
+            now=NOW,
+        )
         consolidated = list_open_consolidated(engine)
         # Two entries — the action differs, so they don't merge.
         assert len(consolidated) == 2

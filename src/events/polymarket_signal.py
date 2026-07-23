@@ -67,14 +67,40 @@ DEFAULT_WINDOW_HOURS: int = 24
 #: the inverse. We infer polarity from the question text, not the theme, so a
 #: "ceasefire" market in russia_ukraine reads correctly.
 _ESCALATION_WORDS: tuple[str, ...] = (
-    "clos", "closure", "block", "blockade", "invas", "invade", "attack",
-    "strike", "war", "conflict", "coup", "seiz", "nationaliz", "collapse",
-    "disrupt", "sanction", "escalat", "shut", "default", "nuclear",
-    "declare war", "cross border",
+    "clos",
+    "closure",
+    "block",
+    "blockade",
+    "invas",
+    "invade",
+    "attack",
+    "strike",
+    "war",
+    "conflict",
+    "coup",
+    "seiz",
+    "nationaliz",
+    "collapse",
+    "disrupt",
+    "sanction",
+    "escalat",
+    "shut",
+    "default",
+    "nuclear",
+    "declare war",
+    "cross border",
 )
 _DEESCALATION_WORDS: tuple[str, ...] = (
-    "ceasefire", "truce", "peace deal", "de-escalat", "deescalat",
-    "normaliz", "resolved", "end of war", "end the war", "withdraw",
+    "ceasefire",
+    "truce",
+    "peace deal",
+    "de-escalat",
+    "deescalat",
+    "normaliz",
+    "resolved",
+    "end of war",
+    "end the war",
+    "withdraw",
 )
 
 
@@ -85,7 +111,10 @@ HttpGetJson = Callable[[str, dict[str, str]], Any]
 def _default_http_get_json(url: str, params: dict[str, str]) -> Any:
     """Production HTTP GET returning parsed JSON. Raises on non-2xx."""
     resp = httpx.get(
-        url, params=params, timeout=DEFAULT_TIMEOUT_SEC, follow_redirects=True,
+        url,
+        params=params,
+        timeout=DEFAULT_TIMEOUT_SEC,
+        follow_redirects=True,
     )
     resp.raise_for_status()
     return resp.json()
@@ -108,11 +137,11 @@ class ProbShift:
     slug: str
     question: str
     theme: str
-    latest_prob: float          # current YES prob in [0, 1]
-    earliest_prob: float        # window-start YES prob in [0, 1]
-    delta: float                # latest - earliest (signed)
+    latest_prob: float  # current YES prob in [0, 1]
+    earliest_prob: float  # window-start YES prob in [0, 1]
+    delta: float  # latest - earliest (signed)
     window_hours: int
-    anchor_id: Any = None       # poly_market_probs.id of the latest obs (dedup)
+    anchor_id: Any = None  # poly_market_probs.id of the latest obs (dedup)
 
     @property
     def rising(self) -> bool:
@@ -148,12 +177,14 @@ def load_tracked_markets(
         if not slug or not token:
             logger.warning("skipping geo market missing slug/yes_token_id: %s", m)
             continue
-        out.append(TrackedMarket(
-            slug=slug,
-            question=str(m.get("question") or slug),
-            yes_token_id=token,
-            theme=str(m.get("theme") or "other"),
-        ))
+        out.append(
+            TrackedMarket(
+                slug=slug,
+                question=str(m.get("question") or slug),
+                yes_token_id=token,
+                theme=str(m.get("theme") or "other"),
+            )
+        )
     return out
 
 
@@ -183,7 +214,9 @@ class PolymarketSignal:
         except Exception as exc:
             logger.debug(
                 "gamma slug fetch failed for %s: %s: %s",
-                slug, type(exc).__name__, exc,
+                slug,
+                type(exc).__name__,
+                exc,
             )
             return None
         market = None
@@ -202,7 +235,9 @@ class PolymarketSignal:
         except Exception as exc:
             logger.debug(
                 "clob midpoint fetch failed for %s: %s: %s",
-                token_id, type(exc).__name__, exc,
+                token_id,
+                type(exc).__name__,
+                exc,
             )
             return None
         if not isinstance(data, dict):
@@ -248,7 +283,8 @@ class PolymarketSignal:
                 prob = self.fetch_current_prob(market)
             except Exception:
                 logger.exception(
-                    "poll failed for %s; skipping", market.slug,
+                    "poll failed for %s; skipping",
+                    market.slug,
                 )
                 continue
             if prob is None:
@@ -258,17 +294,23 @@ class PolymarketSignal:
                 self._persist(market, prob, now)
             except Exception:
                 logger.exception(
-                    "persist failed for %s; skipping", market.slug,
+                    "persist failed for %s; skipping",
+                    market.slug,
                 )
                 continue
             observed.append((market, prob))
         logger.info(
-            "poly: observed %d/%d markets", len(observed), len(markets),
+            "poly: observed %d/%d markets",
+            len(observed),
+            len(markets),
         )
         return observed
 
     def _persist(
-        self, market: TrackedMarket, prob: float, observed_at: datetime,
+        self,
+        market: TrackedMarket,
+        prob: float,
+        observed_at: datetime,
     ) -> None:
         with self.engine.begin() as conn:
             conn.execute(
@@ -308,16 +350,18 @@ class PolymarketSignal:
         cutoff = (now - timedelta(hours=window_hours)).isoformat()
         shifts: list[ProbShift] = []
         with self.engine.connect() as conn:
-            rows = list(conn.execute(
-                text(
-                    "SELECT id, slug, question, theme, yes_prob, observed_at, "
-                    "       notified_shift "
-                    "FROM poly_market_probs "
-                    "WHERE observed_at >= :cutoff "
-                    "ORDER BY slug ASC, observed_at ASC"
-                ),
-                {"cutoff": cutoff},
-            ))
+            rows = list(
+                conn.execute(
+                    text(
+                        "SELECT id, slug, question, theme, yes_prob, observed_at, "
+                        "       notified_shift "
+                        "FROM poly_market_probs "
+                        "WHERE observed_at >= :cutoff "
+                        "ORDER BY slug ASC, observed_at ASC"
+                    ),
+                    {"cutoff": cutoff},
+                )
+            )
         by_slug: dict[str, list[Any]] = {}
         for row in rows:
             by_slug.setdefault(row.slug, []).append(row)
@@ -331,16 +375,18 @@ class PolymarketSignal:
                 continue
             if latest.notified_shift:  # already alerted this exact shift
                 continue
-            shifts.append(ProbShift(
-                slug=slug,
-                question=str(latest.question or slug),
-                theme=str(latest.theme or "other"),
-                latest_prob=float(latest.yes_prob),
-                earliest_prob=float(earliest.yes_prob),
-                delta=delta,
-                window_hours=window_hours,
-                anchor_id=latest.id,
-            ))
+            shifts.append(
+                ProbShift(
+                    slug=slug,
+                    question=str(latest.question or slug),
+                    theme=str(latest.theme or "other"),
+                    latest_prob=float(latest.yes_prob),
+                    earliest_prob=float(earliest.yes_prob),
+                    delta=delta,
+                    window_hours=window_hours,
+                    anchor_id=latest.id,
+                )
+            )
         return shifts
 
     def _mark_notified(self, shift: ProbShift) -> None:
@@ -351,10 +397,7 @@ class PolymarketSignal:
             return
         with self.engine.begin() as conn:
             conn.execute(
-                text(
-                    "UPDATE poly_market_probs SET notified_shift = :mark "
-                    "WHERE id = :id"
-                ),
+                text("UPDATE poly_market_probs SET notified_shift = :mark WHERE id = :id"),
                 {"mark": f"{shift.delta_points:+d}", "id": shift.anchor_id},
             )
 
@@ -371,7 +414,8 @@ class PolymarketSignal:
             self._mark_notified(shift)
         except Exception:
             logger.exception(
-                "failed to mark shift notified for %s; may re-alert", shift.slug,
+                "failed to mark shift notified for %s; may re-alert",
+                shift.slug,
             )
         return result
 
@@ -385,7 +429,8 @@ class PolymarketSignal:
                 sent += 1
             except Exception:
                 logger.exception(
-                    "shift notify failed for %s; continuing", shift.slug,
+                    "shift notify failed for %s; continuing",
+                    shift.slug,
                 )
         return sent
 
@@ -394,7 +439,8 @@ class PolymarketSignal:
     # ------------------------------------------------------------------ #
 
     def latest_prob_for_theme(
-        self, theme: str,
+        self,
+        theme: str,
     ) -> dict[str, dict[str, Any]]:
         """Most-recent YES prob per market in ``theme`` — the digest cites
         it as corroboration ("Prediction mkt: Hormuz-closure 18% ↑"). Also
@@ -405,18 +451,22 @@ class PolymarketSignal:
         Fail-soft: any DB error returns ``{}``."""
         try:
             with self.engine.connect() as conn:
-                rows = list(conn.execute(
-                    text(
-                        "SELECT slug, question, yes_prob, observed_at "
-                        "FROM poly_market_probs "
-                        "WHERE theme = :theme "
-                        "ORDER BY slug ASC, observed_at DESC"
-                    ),
-                    {"theme": theme},
-                ))
+                rows = list(
+                    conn.execute(
+                        text(
+                            "SELECT slug, question, yes_prob, observed_at "
+                            "FROM poly_market_probs "
+                            "WHERE theme = :theme "
+                            "ORDER BY slug ASC, observed_at DESC"
+                        ),
+                        {"theme": theme},
+                    )
+                )
         except Exception:
             logger.debug(
-                "latest_prob_for_theme failed for %s", theme, exc_info=True,
+                "latest_prob_for_theme failed for %s",
+                theme,
+                exc_info=True,
             )
             return {}
         out: dict[str, dict[str, Any]] = {}
@@ -486,8 +536,8 @@ def _implied_read(shift: ProbShift) -> str:
     if polarity_up_is_escalation is None:
         return (
             "rising YES — market pricing in higher odds"
-            if shift.rising else
-            "falling YES — market pricing out the outcome"
+            if shift.rising
+            else "falling YES — market pricing out the outcome"
         )
     escalating = shift.rising == polarity_up_is_escalation
     if escalating:

@@ -15,10 +15,14 @@ from src.monitoring.morning_digest import (
 NOW = datetime(2026, 7, 22, 15, 0, tzinfo=UTC)  # 11:00 ET
 
 
-def _alpaca(occ="DHT260821C00020000", qty="1", avg="0.57", cur="0.30",
-            plpc="-0.47"):
-    return {"symbol": occ, "qty": qty, "avg_entry_price": avg,
-            "current_price": cur, "unrealized_plpc": plpc}
+def _alpaca(occ="DHT260821C00020000", qty="1", avg="0.57", cur="0.30", plpc="-0.47"):
+    return {
+        "symbol": occ,
+        "qty": qty,
+        "avg_entry_price": avg,
+        "current_price": cur,
+        "unrealized_plpc": plpc,
+    }
 
 
 def test_occ_description():
@@ -34,10 +38,8 @@ def test_occ_description():
 
 def test_positions_lists_longs_and_shorts_with_reading():
     oanda = [
-        Position(symbol="EURUSD", quantity=10_000, avg_price=1.0842,
-                 unrealized_pnl=12.5),
-        Position(symbol="USDCHF", quantity=-15_462, avg_price=0.86,
-                 unrealized_pnl=-31.2),
+        Position(symbol="EURUSD", quantity=10_000, avg_price=1.0842, unrealized_pnl=12.5),
+        Position(symbol="USDCHF", quantity=-15_462, avg_price=0.86, unrealized_pnl=-31.2),
     ]
     body = build_position_digest(oanda, [_alpaca()], now=NOW)
     assert "EURUSD +10,000" in body
@@ -51,12 +53,14 @@ def test_positions_lists_longs_and_shorts_with_reading():
 def test_positions_closed_and_balances_sections():
     closed = [
         {"venue": "OANDA", "desc": "USD_CAD short 8,916", "pl": "+2.00"},
-        {"venue": "Alpaca", "desc": "LPG $47.5 call [stop_loss]",
-         "pl": "$-234 (-73%)"},
+        {"venue": "Alpaca", "desc": "LPG $47.5 call [stop_loss]", "pl": "$-234 (-73%)"},
     ]
     body = build_position_digest(
-        [], [], closed_24h=closed,
-        balances={"OANDA": "$100,002.58", "Alpaca": "$99,321.00"}, now=NOW,
+        [],
+        [],
+        closed_24h=closed,
+        balances={"OANDA": "$100,002.58", "Alpaca": "$99,321.00"},
+        now=NOW,
     )
     assert "Closed last 24h" in body
     assert "USD_CAD short 8,916" in body and "+2.00" in body
@@ -75,16 +79,27 @@ def test_positions_unavailable_never_looks_flat():
 # --------------------------------------------------------------------------- #
 
 
-def _idea(ticker="LPG", conf=0.78, pref="calls, 3-6 weeks",
-          rat="Hormuz closure threat lifts LPG export rates"):
-    return {"ticker": ticker, "action": "buy_calls", "confidence": conf,
-            "preferred_instrument": pref, "rationale": rat}
+def _idea(
+    ticker="LPG",
+    conf=0.78,
+    pref="calls, 3-6 weeks",
+    rat="Hormuz closure threat lifts LPG export rates",
+):
+    return {
+        "ticker": ticker,
+        "action": "buy_calls",
+        "confidence": conf,
+        "preferred_instrument": pref,
+        "rationale": rat,
+    }
 
 
 def test_ideas_deduped_ranked_and_capped():
     ideas = [
-        _idea("LPG", 0.78), _idea("LPG", 0.80),  # dupe: keep 0.80
-        _idea("CENX", 0.79), _idea("BCO_USD", 0.71),
+        _idea("LPG", 0.78),
+        _idea("LPG", 0.80),  # dupe: keep 0.80
+        _idea("CENX", 0.79),
+        _idea("BCO_USD", 0.71),
     ]
     body = build_long_ideas_digest(ideas, now=NOW, limit=2)
     assert "0.80" in body and body.index("LPG") < body.index("CENX")
@@ -111,7 +126,8 @@ def test_ideas_empty_state():
 
 def test_ideas_render_company_name_when_provided():
     body = build_long_ideas_digest(
-        [_idea(ticker="VG", conf=0.78)], now=NOW,
+        [_idea(ticker="VG", conf=0.78)],
+        now=NOW,
         names={"VG": "Venture Global, Inc."},
     )
     assert "<b>VG</b> (Venture Global, Inc.) 0.78 via calls" in body
@@ -124,7 +140,8 @@ def test_ideas_degrade_to_bare_ticker_without_names():
 
 def test_ideas_name_is_html_escaped_and_truncated():
     body = build_long_ideas_digest(
-        [_idea(ticker="VG")], now=NOW,
+        [_idea(ticker="VG")],
+        now=NOW,
         names={"VG": "Evil & Co <b>" + "x" * 40},
     )
     assert "<b>x" not in body.split("<b>VG</b>")[1]  # injected tag escaped
@@ -135,7 +152,8 @@ def test_ideas_name_is_html_escaped_and_truncated():
 def test_ideas_names_looked_up_by_upper_key():
     # Idea ticker is lower-case; the map is keyed UPPER (the dedup key).
     body = build_long_ideas_digest(
-        [_idea(ticker="vg", conf=0.78)], now=NOW,
+        [_idea(ticker="vg", conf=0.78)],
+        now=NOW,
         names={"VG": "Venture Global, Inc."},
     )
     assert "(Venture Global, Inc.)" in body

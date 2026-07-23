@@ -79,6 +79,7 @@ class Config:
         a subsequent spike is considered a valid deleveraging signal.
         Fixed at 5; not a free parameter.
     """
+
     fast_window: int = 5
     slow_window: int = 63
     compression_threshold: float = 0.75
@@ -127,11 +128,7 @@ class Strategy:
         close = train_data["close"].astype(float)
         log_ret = np.log(close / close.shift(1))
 
-        slow_vol = (
-            log_ret.shift(1)
-            .rolling(cfg.slow_window, min_periods=cfg.slow_window // 2)
-            .std()
-        )
+        slow_vol = log_ret.shift(1).rolling(cfg.slow_window, min_periods=cfg.slow_window // 2).std()
         # Store median in-sample slow vol as a scale reference
         self._vol_scale = float(slow_vol.median())
         if np.isnan(self._vol_scale) or self._vol_scale <= 0:
@@ -175,9 +172,7 @@ class Strategy:
             cfg.fast_window, min_periods=max(2, cfg.fast_window // 2)
         ).std()
 
-        slow_vol = shifted_ret.rolling(
-            cfg.slow_window, min_periods=cfg.slow_window // 2
-        ).std()
+        slow_vol = shifted_ret.rolling(cfg.slow_window, min_periods=cfg.slow_window // 2).std()
 
         # ---- 2. Vol ratio ----
         # Guard against zero slow_vol
@@ -191,10 +186,7 @@ class Strategy:
         # Number of compression bars in the preceding [hold_bars, slow_window] window
         # We use a window of slow_window bars to count compression history
         compression_count = (
-            compression_flag.astype(int)
-            .shift(1)
-            .rolling(cfg.slow_window, min_periods=1)
-            .sum()
+            compression_flag.astype(int).shift(1).rolling(cfg.slow_window, min_periods=1).sum()
         )
 
         # ---- 5. Entry condition ----

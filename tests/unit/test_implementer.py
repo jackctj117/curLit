@@ -64,8 +64,13 @@ class _CannedDriver(Driver):
     ) -> LLMResponse:
         self.calls.append({"model": model})
         return LLMResponse(
-            text=self.canned_text, model=model, provider=self.name,
-            input_tokens=10, output_tokens=20, usd_cost=0.001, elapsed_sec=0.01,
+            text=self.canned_text,
+            model=model,
+            provider=self.name,
+            input_tokens=10,
+            output_tokens=20,
+            usd_cost=0.001,
+            elapsed_sec=0.01,
         )
 
 
@@ -101,7 +106,8 @@ def cfg(
     return ResearchConfig(
         providers={
             "canned-impl": ProviderConfig(
-                api_key_env="CANNED_IMPL_KEY", default_model="m1",
+                api_key_env="CANNED_IMPL_KEY",
+                default_model="m1",
             ),
         },
         agents={
@@ -155,16 +161,10 @@ class TestExtractCode:
 
 class TestParsePosition:
     def test_explicit_final_position_implemented(self) -> None:
-        assert (
-            parse_position("**FINAL_POSITION**: IMPLEMENTED")
-            == ImplementerStatus.IMPLEMENTED
-        )
+        assert parse_position("**FINAL_POSITION**: IMPLEMENTED") == ImplementerStatus.IMPLEMENTED
 
     def test_explicit_final_position_rejected(self) -> None:
-        assert (
-            parse_position("**FINAL_POSITION**: REJECTED")
-            == ImplementerStatus.REJECTED
-        )
+        assert parse_position("**FINAL_POSITION**: REJECTED") == ImplementerStatus.REJECTED
 
     def test_no_keyword_defaults_rejected(self) -> None:
         # Caution-default: never IMPLEMENTED without explicit declaration.
@@ -201,10 +201,7 @@ class TestExtractPrediction:
 class TestExtractDataSources:
     def test_parses_list(self) -> None:
         text = (
-            "## Data sources actually consumed\n"
-            "- FRED IRLTLT01DEM156N\n"
-            "- prices.EURUSD\n"
-            "## next\n"
+            "## Data sources actually consumed\n- FRED IRLTLT01DEM156N\n- prices.EURUSD\n## next\n"
         )
         sources = extract_data_sources(text)
         assert "FRED IRLTLT01DEM156N" in sources

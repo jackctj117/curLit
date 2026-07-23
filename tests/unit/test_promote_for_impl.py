@@ -11,13 +11,13 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-from sqlalchemy import create_engine, text
-
 from scripts.promote_papers_to_idea_agent import (
     _find_extract_path,
     _select_promotable_papers,
     _set_status,
 )
+from sqlalchemy import create_engine, text
+
 from src.research.agents.idea import IdeaResult, IdeaStatus
 
 
@@ -26,7 +26,8 @@ def papers_engine(tmp_path):  # type: ignore[no-untyped-def]
     """Sqlite shim seeded with one for_implementation row + one read row."""
     engine = create_engine(f"sqlite:///{tmp_path / 'p.db'}")
     with engine.begin() as conn:
-        conn.execute(text("""
+        conn.execute(
+            text("""
             CREATE TABLE research_papers (
                 paper_id TEXT PRIMARY KEY,
                 source TEXT, title TEXT, authors TEXT,
@@ -37,8 +38,10 @@ def papers_engine(tmp_path):  # type: ignore[no-untyped-def]
                 relevance_score REAL DEFAULT 0,
                 my_notes TEXT
             )
-        """))
-        conn.execute(text("""
+        """)
+        )
+        conn.execute(
+            text("""
             INSERT INTO research_papers
                 (paper_id, title, source, read_status,
                  implementation_priority, relevance_score)
@@ -49,7 +52,8 @@ def papers_engine(tmp_path):  # type: ignore[no-untyped-def]
                  'for_implementation', 2, 16.5),
                 ('hash_c', 'Some other paper', 'NBER',
                  'read', 0, 5.0)
-        """))
+        """)
+        )
     return engine
 
 
@@ -97,9 +101,11 @@ class TestSetStatus:
     def test_writes_new_status(self, papers_engine) -> None:  # type: ignore[no-untyped-def]
         _set_status(papers_engine, "hash_a", "in_pipeline")
         with papers_engine.connect() as conn:
-            v = conn.execute(text(
-                "SELECT read_status FROM research_papers WHERE paper_id='hash_a'",
-            )).scalar()
+            v = conn.execute(
+                text(
+                    "SELECT read_status FROM research_papers WHERE paper_id='hash_a'",
+                )
+            ).scalar()
         assert v == "in_pipeline"
 
 
@@ -108,8 +114,9 @@ class TestEndToEndCycle:
     IdeaGenerator to verify the full read→call→transition flow.
     """
 
-    def _mock_idea(self, status: IdeaStatus, hypothesis_path: Path | None = None,
-                   reason: str = "") -> MagicMock:
+    def _mock_idea(
+        self, status: IdeaStatus, hypothesis_path: Path | None = None, reason: str = ""
+    ) -> MagicMock:
         result = IdeaResult(
             status=status,
             strategy_slug="carry-trade-alpha",
@@ -124,7 +131,10 @@ class TestEndToEndCycle:
         return agent
 
     def test_proposed_writes_hypothesis_and_transitions(
-        self, papers_engine, extract_root: Path, tmp_path: Path,
+        self,
+        papers_engine,
+        extract_root: Path,
+        tmp_path: Path,
     ) -> None:  # type: ignore[no-untyped-def]
         from scripts import promote_papers_to_idea_agent as mod
 
@@ -138,16 +148,19 @@ class TestEndToEndCycle:
 
         idea_agent = self._mock_idea(IdeaStatus.PROPOSED, hypothesis_path=hyp_path)
         with (
-            patch("src.runtime.run_engine._build_db_engine",
-                  return_value=papers_engine),
-            patch("src.research.agents.idea.IdeaGenerator.from_config",
-                  return_value=idea_agent),
+            patch("src.runtime.run_engine._build_db_engine", return_value=papers_engine),
+            patch("src.research.agents.idea.IdeaGenerator.from_config", return_value=idea_agent),
         ):
-            rc = mod.main([
-                "--extract-root", str(extract_root),
-                "--hypothesis-dir", str(hypothesis_dir),
-                "--max-papers", "10",
-            ])
+            rc = mod.main(
+                [
+                    "--extract-root",
+                    str(extract_root),
+                    "--hypothesis-dir",
+                    str(hypothesis_dir),
+                    "--max-papers",
+                    "10",
+                ]
+            )
 
         assert rc == 0
         # hash_a had an extract → ideate ran → in_pipeline.
@@ -155,44 +168,56 @@ class TestEndToEndCycle:
         # row, ideate ran on the stub → in_pipeline (mock returns
         # PROPOSED for both calls, so both transition together).
         with papers_engine.connect() as conn:
-            states = dict(conn.execute(text(
-                "SELECT paper_id, read_status FROM research_papers"
-            )).fetchall())
+            states = dict(
+                conn.execute(text("SELECT paper_id, read_status FROM research_papers")).fetchall()
+            )
         assert states["hash_a"] == "in_pipeline"
         assert states["hash_b"] == "in_pipeline"  # synthesized + processed
-        assert states["hash_c"] == "read"          # untouched
+        assert states["hash_c"] == "read"  # untouched
         # Synthesized extract should now exist on disk under hash_b.md
         assert (extract_root / "hash_b.md").exists()
 
     def test_declined_transitions_to_idea_declined(
-        self, papers_engine, extract_root: Path, tmp_path: Path,
+        self,
+        papers_engine,
+        extract_root: Path,
+        tmp_path: Path,
     ) -> None:  # type: ignore[no-untyped-def]
         from scripts import promote_papers_to_idea_agent as mod
 
         idea_agent = self._mock_idea(
-            IdeaStatus.DECLINED, reason="paper too theoretical",
+            IdeaStatus.DECLINED,
+            reason="paper too theoretical",
         )
         with (
-            patch("src.runtime.run_engine._build_db_engine",
-                  return_value=papers_engine),
-            patch("src.research.agents.idea.IdeaGenerator.from_config",
-                  return_value=idea_agent),
+            patch("src.runtime.run_engine._build_db_engine", return_value=papers_engine),
+            patch("src.research.agents.idea.IdeaGenerator.from_config", return_value=idea_agent),
         ):
-            rc = mod.main([
-                "--extract-root", str(extract_root),
-                "--hypothesis-dir", str(tmp_path / "hyp"),
-                "--max-papers", "10",
-            ])
+            rc = mod.main(
+                [
+                    "--extract-root",
+                    str(extract_root),
+                    "--hypothesis-dir",
+                    str(tmp_path / "hyp"),
+                    "--max-papers",
+                    "10",
+                ]
+            )
 
         assert rc == 0
         with papers_engine.connect() as conn:
-            v = conn.execute(text(
-                "SELECT read_status FROM research_papers WHERE paper_id='hash_a'",
-            )).scalar()
+            v = conn.execute(
+                text(
+                    "SELECT read_status FROM research_papers WHERE paper_id='hash_a'",
+                )
+            ).scalar()
         assert v == "idea_declined"
 
     def test_idea_agent_raises_leaves_status_unchanged(
-        self, papers_engine, extract_root: Path, tmp_path: Path,
+        self,
+        papers_engine,
+        extract_root: Path,
+        tmp_path: Path,
     ) -> None:  # type: ignore[no-untyped-def]
         """An LLM blip shouldn't lose the operator's promotion. The
         row stays in for_implementation so the next run retries."""
@@ -201,53 +226,65 @@ class TestEndToEndCycle:
         idea_agent = MagicMock()
         idea_agent.ideate.side_effect = RuntimeError("LLM hiccup")
         with (
-            patch("src.runtime.run_engine._build_db_engine",
-                  return_value=papers_engine),
-            patch("src.research.agents.idea.IdeaGenerator.from_config",
-                  return_value=idea_agent),
+            patch("src.runtime.run_engine._build_db_engine", return_value=papers_engine),
+            patch("src.research.agents.idea.IdeaGenerator.from_config", return_value=idea_agent),
         ):
-            rc = mod.main([
-                "--extract-root", str(extract_root),
-                "--hypothesis-dir", str(tmp_path / "hyp"),
-                "--max-papers", "10",
-            ])
+            rc = mod.main(
+                [
+                    "--extract-root",
+                    str(extract_root),
+                    "--hypothesis-dir",
+                    str(tmp_path / "hyp"),
+                    "--max-papers",
+                    "10",
+                ]
+            )
         assert rc == 0
         with papers_engine.connect() as conn:
-            v = conn.execute(text(
-                "SELECT read_status FROM research_papers WHERE paper_id='hash_a'",
-            )).scalar()
+            v = conn.execute(
+                text(
+                    "SELECT read_status FROM research_papers WHERE paper_id='hash_a'",
+                )
+            ).scalar()
         assert v == "for_implementation"
 
     def test_synthesize_extract_uses_abstract(
-        self, papers_engine, tmp_path: Path,
+        self,
+        papers_engine,
+        tmp_path: Path,
     ) -> None:  # type: ignore[no-untyped-def]
         """Direct test of the synthesis helper: an extract built from a
         DB row should contain the title, abstract, and a stable
         synthesized-from-DB note so audit can tell it apart from a real
         LLM extract."""
         from scripts.promote_papers_to_idea_agent import (
-            _fetch_paper_row, _synthesize_extract,
+            _fetch_paper_row,
+            _synthesize_extract,
         )
 
         # Add abstract to hash_b so we have something to synthesize from.
         with papers_engine.begin() as conn:
-            conn.execute(text("""
+            conn.execute(
+                text("""
                 UPDATE research_papers
                 SET abstract = 'A real abstract about volatility risk premium.',
                     url = 'https://example.com/vrp'
                 WHERE paper_id = 'hash_b'
-            """))
+            """)
+            )
 
         row = _fetch_paper_row(papers_engine, "hash_b")
         assert row is not None
         path = _synthesize_extract("hash_b", row, tmp_path)
         body = path.read_text()
-        assert "Volatility risk premium" in body          # title
-        assert "real abstract about volatility" in body   # abstract content
-        assert "synthesized from DB row" in body          # provenance marker
+        assert "Volatility risk premium" in body  # title
+        assert "real abstract about volatility" in body  # abstract content
+        assert "synthesized from DB row" in body  # provenance marker
 
     def test_dry_run_doesnt_call_llm_or_transition(
-        self, papers_engine, extract_root: Path,
+        self,
+        papers_engine,
+        extract_root: Path,
     ) -> None:  # type: ignore[no-untyped-def]
         from scripts import promote_papers_to_idea_agent as mod
 
@@ -255,15 +292,18 @@ class TestEndToEndCycle:
             "src.runtime.run_engine._build_db_engine",
             return_value=papers_engine,
         ):
-            rc = mod.main([
-                "--extract-root", str(extract_root),
-                "--dry-run",
-            ])
+            rc = mod.main(
+                [
+                    "--extract-root",
+                    str(extract_root),
+                    "--dry-run",
+                ]
+            )
         assert rc == 0
         # Statuses unchanged.
         with papers_engine.connect() as conn:
-            states = dict(conn.execute(text(
-                "SELECT paper_id, read_status FROM research_papers"
-            )).fetchall())
+            states = dict(
+                conn.execute(text("SELECT paper_id, read_status FROM research_papers")).fetchall()
+            )
         assert states["hash_a"] == "for_implementation"
         assert states["hash_b"] == "for_implementation"

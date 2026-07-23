@@ -28,8 +28,18 @@ logger = logging.getLogger(__name__)
 
 CLASSIFIER_VERSION = "v1-haiku"
 
-_TOPICS = {"tariffs", "china", "energy", "defense", "appointments",
-           "broad_market", "self_referential", "trade", "monetary", "other"}
+_TOPICS = {
+    "tariffs",
+    "china",
+    "energy",
+    "defense",
+    "appointments",
+    "broad_market",
+    "self_referential",
+    "trade",
+    "monetary",
+    "other",
+}
 _TONES = {"positive", "negative", "threatening", "de-escalatory", "neutral"}
 
 _SYSTEM_PROMPT = """You label social-media posts for an academic-style \
@@ -77,24 +87,39 @@ def classify_pending(
     unclassified; the loop retries)."""
     now = now or datetime.now(UTC)
     with engine.connect() as conn:
-        rows = [dict(r._mapping) for r in conn.execute(text("""
+        rows = [
+            dict(r._mapping)
+            for r in conn.execute(
+                text("""
             SELECT p.post_id, p.text FROM truth_posts p
             LEFT JOIN truth_classifications c ON c.post_id = p.post_id
             WHERE c.post_id IS NULL
             ORDER BY p.posted_at
             LIMIT :lim
-        """), {"lim": batch_size})]
+        """),
+                {"lim": batch_size},
+            )
+        ]
     if not rows:
         return 0
 
     written = 0
     empties = [r for r in rows if not str(r["text"]).strip()]
     for r in empties:
-        _store(engine, r["post_id"], {
-            "relevant": False, "topic": None, "secondary": [],
-            "tone": None, "entities": [], "explicit_market": False,
-            "confidence": 1.0,
-        }, now)
+        _store(
+            engine,
+            r["post_id"],
+            {
+                "relevant": False,
+                "topic": None,
+                "secondary": [],
+                "tone": None,
+                "entities": [],
+                "explicit_market": False,
+                "confidence": 1.0,
+            },
+            now,
+        )
         written += 1
     to_classify = [r for r in rows if str(r["text"]).strip()]
     if not to_classify:
@@ -102,11 +127,10 @@ def classify_pending(
 
     llm = client if client is not None else get_client("claude-code")
     chosen_model = model or os.environ.get(
-        "TRUTH_CLASSIFIER_MODEL", DEFAULT_TRIAGE_MODEL,
+        "TRUTH_CLASSIFIER_MODEL",
+        DEFAULT_TRIAGE_MODEL,
     )
-    numbered = "\n\n".join(
-        f"[{i}] {str(r['text'])[:1500]}" for i, r in enumerate(to_classify)
-    )
+    numbered = "\n\n".join(f"[{i}] {str(r['text'])[:1500]}" for i, r in enumerate(to_classify))
     try:
         resp = llm.complete(
             messages=[
@@ -118,8 +142,11 @@ def classify_pending(
         )
         items = extract_json_array(resp.text)
     except Exception as exc:
-        logger.warning("truth classifier: LLM failed — %d post(s) retry "
-                       "next cycle: %s", len(to_classify), str(exc)[:200])
+        logger.warning(
+            "truth classifier: LLM failed — %d post(s) retry next cycle: %s",
+            len(to_classify),
+            str(exc)[:200],
+        )
         return written
 
     by_idx: dict[int, dict[str, Any]] = {}
@@ -140,7 +167,10 @@ def classify_pending(
 
 
 def _store(
-    engine: Any, post_id: str, item: dict[str, Any], now: datetime,
+    engine: Any,
+    post_id: str,
+    item: dict[str, Any],
+    now: datetime,
 ) -> None:
     import json  # noqa: PLC0415
 
@@ -151,15 +181,14 @@ def _store(
     if tone is not None and tone not in _TONES:
         tone = "neutral"
     secondary = [
-        s for s in (item.get("secondary") or [])
-        if isinstance(s, str) and s.lower() in _TOPICS
+        s for s in (item.get("secondary") or []) if isinstance(s, str) and s.lower() in _TOPICS
     ]
     entities = [
-        str(e)[:80] for e in (item.get("entities") or [])
-        if isinstance(e, str) and e.strip()
+        str(e)[:80] for e in (item.get("entities") or []) if isinstance(e, str) and e.strip()
     ][:10]
     with engine.begin() as conn:
-        conn.execute(text("""
+        conn.execute(
+            text("""
             INSERT INTO truth_classifications
                 (post_id, is_market_relevant, primary_topic,
                  secondary_topics, tone, named_entities,
@@ -167,15 +196,17 @@ def _store(
                  classifier_version, classified_at)
             VALUES (:i, :rel, :top, :sec, :tone, :ent, :xm, :conf, :v, :at)
             ON CONFLICT (post_id) DO NOTHING
-        """), {
-            "i": post_id,
-            "rel": bool(item.get("relevant")),
-            "top": topic,
-            "sec": json.dumps(secondary),
-            "tone": tone,
-            "ent": json.dumps(entities),
-            "xm": bool(item.get("explicit_market")),
-            "conf": _clamp01(item.get("confidence")),
-            "v": CLASSIFIER_VERSION,
-            "at": now,
-        })
+        """),
+            {
+                "i": post_id,
+                "rel": bool(item.get("relevant")),
+                "top": topic,
+                "sec": json.dumps(secondary),
+                "tone": tone,
+                "ent": json.dumps(entities),
+                "xm": bool(item.get("explicit_market")),
+                "conf": _clamp01(item.get("confidence")),
+                "v": CLASSIFIER_VERSION,
+                "at": now,
+            },
+        )

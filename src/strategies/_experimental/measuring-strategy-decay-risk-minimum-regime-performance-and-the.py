@@ -30,6 +30,7 @@ warnings.filterwarnings("ignore", category=RuntimeWarning)
 # Config
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class MRPConfig:
     """
@@ -56,6 +57,7 @@ class MRPConfig:
         the worst third of regime cells.
         Acceptable range: [0.10, 0.50]. Default 0.34.
     """
+
     momentum_window: int = 20
     vol_window: int = 21
     n_regimes: int = 3
@@ -66,6 +68,7 @@ class MRPConfig:
 # ---------------------------------------------------------------------------
 # Strategy
 # ---------------------------------------------------------------------------
+
 
 class Strategy:
     """
@@ -91,8 +94,8 @@ class Strategy:
     def __init__(self, config: MRPConfig | None = None) -> None:
         self.config = config if config is not None else MRPConfig()
         # Fitted state
-        self._vol_quantiles: np.ndarray | None = None      # breakpoints for vol bins
-        self._trend_quantiles: np.ndarray | None = None    # breakpoints for trend bins
+        self._vol_quantiles: np.ndarray | None = None  # breakpoints for vol bins
+        self._trend_quantiles: np.ndarray | None = None  # breakpoints for trend bins
         self._suppressed_cells: set[tuple[int, int]] = set()  # (vol_bin, trend_bin) pairs
         self._fitted: bool = False
 
@@ -118,26 +121,28 @@ class Strategy:
         log_ret_lag = log_ret.shift(1)
 
         # Momentum: rolling sum of lagged log returns
-        mom_raw = log_ret_lag.rolling(cfg.momentum_window, min_periods=cfg.momentum_window // 2).sum()
+        mom_raw = log_ret_lag.rolling(
+            cfg.momentum_window, min_periods=cfg.momentum_window // 2
+        ).sum()
 
         # Realised vol: rolling std of lagged log returns, annualised
-        vol = (
-            log_ret_lag
-            .rolling(cfg.vol_window, min_periods=cfg.vol_window // 2)
-            .std()
-            * np.sqrt(252)
+        vol = log_ret_lag.rolling(cfg.vol_window, min_periods=cfg.vol_window // 2).std() * np.sqrt(
+            252
         )
         vol = vol.replace(0, np.nan)
 
         # Trend strength: |momentum| normalised by vol (high = trending, low = choppy)
         trend_str = mom_raw.abs() / (vol + 1e-10)
 
-        feats = pd.DataFrame({
-            "ret": log_ret,          # actual return at t (used for MRP calc in fit)
-            "mom": mom_raw,
-            "vol": vol,
-            "trend_str": trend_str,
-        }, index=close.index)
+        feats = pd.DataFrame(
+            {
+                "ret": log_ret,  # actual return at t (used for MRP calc in fit)
+                "mom": mom_raw,
+                "vol": vol,
+                "trend_str": trend_str,
+            },
+            index=close.index,
+        )
         return feats
 
     def _assign_bins(
@@ -204,8 +209,7 @@ class Strategy:
 
         # Assign bins
         bins = self._assign_bins(
-            feats["vol"], feats["trend_str"],
-            self._vol_quantiles, self._trend_quantiles
+            feats["vol"], feats["trend_str"], self._vol_quantiles, self._trend_quantiles
         )
         feats = feats.join(bins)
 
@@ -268,8 +272,7 @@ class Strategy:
         # Assign regime bins using fitted quantiles
         valid_mask = feats["vol"].notna() & feats["trend_str"].notna()
         bins = self._assign_bins(
-            feats["vol"], feats["trend_str"],
-            self._vol_quantiles, self._trend_quantiles
+            feats["vol"], feats["trend_str"], self._vol_quantiles, self._trend_quantiles
         )
 
         # Build final signal: suppress if in a worst-regime cell

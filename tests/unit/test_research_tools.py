@@ -26,16 +26,21 @@ class _FakeUniverse:
         return self._ciks.get((ticker or "").upper())
 
 
-_SUBMISSIONS = json.dumps({
-    "filings": {"recent": {
-        "form": ["8-K", "10-K", "10-Q"],
-        "accessionNumber": [
-            "0000000000-26-000001", "0001801368-26-000012",
-            "0001801368-26-000030",
-        ],
-        "primaryDocument": ["ev.htm", "mp-10k.htm", "mp-10q.htm"],
-    }},
-})
+_SUBMISSIONS = json.dumps(
+    {
+        "filings": {
+            "recent": {
+                "form": ["8-K", "10-K", "10-Q"],
+                "accessionNumber": [
+                    "0000000000-26-000001",
+                    "0001801368-26-000012",
+                    "0001801368-26-000030",
+                ],
+                "primaryDocument": ["ev.htm", "mp-10k.htm", "mp-10q.htm"],
+            }
+        },
+    }
+)
 
 _DOC_HTML = (
     "<html><head><style>.x{color:red}</style></head><body>"
@@ -54,6 +59,7 @@ def _fake_sec(submissions: str = _SUBMISSIONS, doc: str = _DOC_HTML):
     def _get(url: str, headers: dict[str, str]) -> str:
         assert "User-Agent" in headers
         return submissions if "submissions" in url else doc
+
     return _get
 
 
@@ -115,19 +121,33 @@ def test_sec_excerpt_picks_10k_and_extracts():
 
 
 def test_sec_excerpt_falls_back_to_10q():
-    subs = json.dumps({"filings": {"recent": {
-        "form": ["8-K", "10-Q"],
-        "accessionNumber": ["a-1", "b-2"],
-        "primaryDocument": ["x.htm", "q.htm"],
-    }}})
+    subs = json.dumps(
+        {
+            "filings": {
+                "recent": {
+                    "form": ["8-K", "10-Q"],
+                    "accessionNumber": ["a-1", "b-2"],
+                    "primaryDocument": ["x.htm", "q.htm"],
+                }
+            }
+        }
+    )
     tools = ResearchTools(sec_http_get=_fake_sec(submissions=subs))
     assert tools.sec_excerpt(123)[:6] == "[10-Q]"
 
 
 def test_sec_excerpt_none_when_no_periodic_filing():
-    subs = json.dumps({"filings": {"recent": {
-        "form": ["8-K"], "accessionNumber": ["a-1"], "primaryDocument": ["x.htm"],
-    }}})
+    subs = json.dumps(
+        {
+            "filings": {
+                "recent": {
+                    "form": ["8-K"],
+                    "accessionNumber": ["a-1"],
+                    "primaryDocument": ["x.htm"],
+                }
+            }
+        }
+    )
     tools = ResearchTools(sec_http_get=_fake_sec(submissions=subs))
     assert tools.sec_excerpt(123) is None
 
@@ -140,6 +160,7 @@ def test_sec_excerpt_fail_soft_on_bad_json():
 def test_sec_excerpt_fail_soft_on_fetch_error():
     def boom(url, headers):
         raise RuntimeError("sec down")
+
     assert ResearchTools(sec_http_get=boom).sec_excerpt(123) is None
 
 
@@ -151,8 +172,11 @@ def test_sec_excerpt_fail_soft_on_fetch_error():
 def test_ground_one_combines_profile_and_filing():
     tools = ResearchTools(
         sec_http_get=_fake_sec(),
-        profile_fn=lambda t: {"sector": "Materials", "industry": "Mining",
-                              "summary": "Rare-earth producer."},
+        profile_fn=lambda t: {
+            "sector": "Materials",
+            "industry": "Mining",
+            "summary": "Rare-earth producer.",
+        },
     )
     block = tools.ground_one("MP", "MP Materials", _FakeUniverse({"MP": 1801368}))
     assert block is not None
@@ -171,8 +195,7 @@ def test_ground_one_none_when_no_data():
 def test_enrich_skips_tickerless_and_returns_blocks():
     tools = ResearchTools(
         sec_http_get=_fake_sec(),
-        profile_fn=lambda t: {"sector": "Materials", "industry": "Mining",
-                              "summary": "x"},
+        profile_fn=lambda t: {"sector": "Materials", "industry": "Mining", "summary": "x"},
     )
     ideas = [
         SimpleNamespace(ticker="MP", company_name="MP Materials"),

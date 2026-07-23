@@ -7,8 +7,6 @@ import os
 from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from src.research.ingest import FeedConfig
 from src.research.social_ingest import (
     FourchanFetcher,
@@ -49,16 +47,16 @@ class TestRegistry:
     def test_all_five_adapters_registered(self) -> None:
         register_social_fetchers()
         from src.research.ingest import _FETCHER_REGISTRY
+
         for adapter in ("reddit", "hackernews", "fourchan", "lainchan", "twitter"):
-            assert adapter in _FETCHER_REGISTRY, (
-                f"{adapter} missing from fetcher registry"
-            )
+            assert adapter in _FETCHER_REGISTRY, f"{adapter} missing from fetcher registry"
 
 
 class TestHackerNews:
     def _fake_http(self, hits: list[dict]) -> object:
         def _shim(url: str) -> str:
             return json.dumps({"hits": hits})
+
         return _shim
 
     def test_pulls_recent_hits(self) -> None:
@@ -81,10 +79,16 @@ class TestHackerNews:
     def test_drops_stale_hits(self) -> None:
         # 48h old, default max_age is 12h.
         old_ts = int((datetime.now(UTC) - timedelta(hours=48)).timestamp())
-        hits = [{
-            "objectID": "2", "title": "Old", "url": "u",
-            "created_at_i": old_ts, "author": "a", "story_text": "",
-        }]
+        hits = [
+            {
+                "objectID": "2",
+                "title": "Old",
+                "url": "u",
+                "created_at_i": old_ts,
+                "author": "a",
+                "story_text": "",
+            }
+        ]
         f = HackerNewsFetcher(http_get=self._fake_http(hits))
         assert f.fetch(_feed("hackernews", "front", "HN")) == []
 
@@ -93,20 +97,24 @@ class TestFourchan:
     def _fake_http(self, pages: list) -> object:
         def _shim(url: str) -> str:
             return json.dumps(pages)
+
         return _shim
 
     def test_pulls_recent_threads(self) -> None:
         now = int(datetime.now(UTC).timestamp())
-        pages = [{
-            "threads": [
-                {
-                    "no": 12345, "time": now - 1800,
-                    "sub": "EUR/USD analysis",
-                    "com": "What do you think?",
-                    "name": "Anonymous",
-                },
-            ],
-        }]
+        pages = [
+            {
+                "threads": [
+                    {
+                        "no": 12345,
+                        "time": now - 1800,
+                        "sub": "EUR/USD analysis",
+                        "com": "What do you think?",
+                        "name": "Anonymous",
+                    },
+                ],
+            }
+        ]
         f = FourchanFetcher(http_get=self._fake_http(pages))
         out = f.fetch(_feed("fourchan", "biz", "4chan /biz/ (low-signal)"))
         assert len(out) == 1
@@ -115,15 +123,25 @@ class TestFourchan:
 
     def test_drops_stale_threads(self) -> None:
         old = int((datetime.now(UTC) - timedelta(hours=24)).timestamp())
-        pages = [{"threads": [{
-            "no": 1, "time": old, "sub": "old", "com": "stale",
-        }]}]
+        pages = [
+            {
+                "threads": [
+                    {
+                        "no": 1,
+                        "time": old,
+                        "sub": "old",
+                        "com": "stale",
+                    }
+                ]
+            }
+        ]
         f = FourchanFetcher(http_get=self._fake_http(pages))
         assert f.fetch(_feed("fourchan", "biz")) == []
 
     def test_handles_invalid_json(self) -> None:
         def _shim(url: str) -> str:
             return "not json"
+
         f = FourchanFetcher(http_get=_shim)
         assert f.fetch(_feed("fourchan", "biz")) == []
 
@@ -132,17 +150,24 @@ class TestLainchan:
     def _fake_http(self, pages: list) -> object:
         def _shim(url: str) -> str:
             return json.dumps(pages)
+
         return _shim
 
     def test_pulls_recent_threads(self) -> None:
         now = int(datetime.now(UTC).timestamp())
-        pages = [{
-            "threads": [{
-                "no": 999, "time": now,
-                "sub": "Privacy", "com": "discussion",
-                "name": "lain",
-            }],
-        }]
+        pages = [
+            {
+                "threads": [
+                    {
+                        "no": 999,
+                        "time": now,
+                        "sub": "Privacy",
+                        "com": "discussion",
+                        "name": "lain",
+                    }
+                ],
+            }
+        ]
         f = LainchanFetcher(http_get=self._fake_http(pages))
         out = f.fetch(_feed("lainchan", "tech"))
         assert len(out) == 1
@@ -158,12 +183,14 @@ class TestTwitter:
 
     def test_api_response_parses(self) -> None:
         body = {
-            "data": [{
-                "id": "1234",
-                "text": "Fed cut incoming",
-                "created_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
-                "author_id": "user-1",
-            }],
+            "data": [
+                {
+                    "id": "1234",
+                    "text": "Fed cut incoming",
+                    "created_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+                    "author_id": "user-1",
+                }
+            ],
             "includes": {
                 "users": [{"id": "user-1", "username": "@trader"}],
             },
@@ -199,6 +226,5 @@ class TestReddit:
             assert f.fetch(_feed("reddit", "wallstreetbets")) == []
 
     def test_parse_subs_handles_r_prefix(self) -> None:
-        assert RedditFetcher._parse_subs("r/wallstreetbets,r/forex") == \
-            ["wallstreetbets", "forex"]
+        assert RedditFetcher._parse_subs("r/wallstreetbets,r/forex") == ["wallstreetbets", "forex"]
         assert RedditFetcher._parse_subs("foo, bar  baz") == ["foo", "bar", "baz"]

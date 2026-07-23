@@ -25,15 +25,29 @@ from src.events.confluence import ConfluenceConfig, EventConfluence
 
 
 def _pricing_payload() -> dict[str, Any]:
-    return {"prices": [
-        {"instrument": "EUR_USD", "tradeable": True,
-         "bids": [{"price": "1.0800"}], "asks": [{"price": "1.0802"}]},
-        {"instrument": "XAU_USD", "tradeable": True,
-         "bids": [{"price": "2400.0"}], "asks": [{"price": "2400.4"}]},
-        {"instrument": "USD_JPY", "tradeable": False,  # halted → skipped
-         "bids": [{"price": "150.0"}], "asks": [{"price": "150.02"}]},
-        {"instrument": "BAD", "tradeable": True, "bids": [], "asks": []},  # no book
-    ]}
+    return {
+        "prices": [
+            {
+                "instrument": "EUR_USD",
+                "tradeable": True,
+                "bids": [{"price": "1.0800"}],
+                "asks": [{"price": "1.0802"}],
+            },
+            {
+                "instrument": "XAU_USD",
+                "tradeable": True,
+                "bids": [{"price": "2400.0"}],
+                "asks": [{"price": "2400.4"}],
+            },
+            {
+                "instrument": "USD_JPY",
+                "tradeable": False,  # halted → skipped
+                "bids": [{"price": "150.0"}],
+                "asks": [{"price": "150.02"}],
+            },
+            {"instrument": "BAD", "tradeable": True, "bids": [], "asks": []},  # no book
+        ]
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -52,9 +66,16 @@ def test_parse_happy_and_filters():
 def test_parse_empty_and_garbage():
     assert parse_oanda_pricing({}) == []
     assert parse_oanda_pricing({"prices": [None, 3, "x"]}) == []
-    assert parse_oanda_pricing({"prices": [
-        {"instrument": "EUR_USD", "bids": [{"price": "x"}], "asks": [{"price": "1"}]},
-    ]}) == []  # unparseable price
+    assert (
+        parse_oanda_pricing(
+            {
+                "prices": [
+                    {"instrument": "EUR_USD", "bids": [{"price": "x"}], "asks": [{"price": "1"}]},
+                ]
+            }
+        )
+        == []
+    )  # unparseable price
 
 
 # --------------------------------------------------------------------------- #
@@ -72,7 +93,11 @@ def test_fetch_builds_request_and_parses():
         return _pricing_payload()
 
     out = fetch_oanda_pricing(
-        ["EUR_USD", "XAU_USD"], "KEY", "ACC", practice=True, http_get=fake_get,
+        ["EUR_USD", "XAU_USD"],
+        "KEY",
+        "ACC",
+        practice=True,
+        http_get=fake_get,
     )
     assert {r["symbol"] for r in out} == {"EUR_USD", "XAU_USD"}
     assert seen["url"].endswith("/v3/accounts/ACC/pricing")
@@ -102,7 +127,8 @@ def intraday_engine(tmp_path):  # type: ignore[no-untyped-def]
     """sqlite with the intraday_quotes table (no Timescale hypertable)."""
     engine = create_engine(f"sqlite:///{tmp_path / 'iq.db'}")
     with engine.begin() as conn:
-        conn.execute(text("""
+        conn.execute(
+            text("""
             CREATE TABLE intraday_quotes (
                 ts TIMESTAMP NOT NULL,
                 symbol TEXT NOT NULL,
@@ -110,7 +136,8 @@ def intraday_engine(tmp_path):  # type: ignore[no-untyped-def]
                 bid FLOAT, ask FLOAT, mid FLOAT NOT NULL,
                 PRIMARY KEY (ts, symbol, source)
             )
-        """))
+        """)
+        )
     return engine
 
 
@@ -121,8 +148,12 @@ def _fixed_clock(ts: datetime):
 def test_poll_once_writes_quotes(intraday_engine):
     ts = datetime(2026, 7, 20, 12, 0, tzinfo=UTC)
     pricer = IntradayPricer(
-        intraday_engine, ["EUR_USD", "XAU_USD"], "K", "A",
-        http_get=lambda u, h, p: _pricing_payload(), clock=_fixed_clock(ts),
+        intraday_engine,
+        ["EUR_USD", "XAU_USD"],
+        "K",
+        "A",
+        http_get=lambda u, h, p: _pricing_payload(),
+        clock=_fixed_clock(ts),
     )
     counts = pricer.poll_once()
     assert counts["written"] == 2
@@ -135,20 +166,31 @@ def test_poll_once_prunes_old(intraday_engine):
     now = datetime(2026, 7, 20, 12, 0, tzinfo=UTC)
     old = now - timedelta(hours=48)
     with intraday_engine.begin() as conn:
-        conn.execute(text(
-            "INSERT INTO intraday_quotes (ts, symbol, source, mid) "
-            "VALUES (:ts, 'EUR_USD', 'oanda', 1.0)",
-        ), {"ts": old})
+        conn.execute(
+            text(
+                "INSERT INTO intraday_quotes (ts, symbol, source, mid) "
+                "VALUES (:ts, 'EUR_USD', 'oanda', 1.0)",
+            ),
+            {"ts": old},
+        )
     pricer = IntradayPricer(
-        intraday_engine, ["EUR_USD"], "K", "A", retention_hours=24,
-        http_get=lambda u, h, p: _pricing_payload(), clock=_fixed_clock(now),
+        intraday_engine,
+        ["EUR_USD"],
+        "K",
+        "A",
+        retention_hours=24,
+        http_get=lambda u, h, p: _pricing_payload(),
+        clock=_fixed_clock(now),
     )
     counts = pricer.poll_once()
     assert counts["pruned"] == 1  # the 48h-old row is gone
     with intraday_engine.connect() as conn:
-        remaining = conn.execute(text(
-            "SELECT COUNT(*) FROM intraday_quotes WHERE ts = :ts",
-        ), {"ts": old}).scalar()
+        remaining = conn.execute(
+            text(
+                "SELECT COUNT(*) FROM intraday_quotes WHERE ts = :ts",
+            ),
+            {"ts": old},
+        ).scalar()
     assert remaining == 0
 
 
@@ -157,7 +199,11 @@ def test_poll_once_fail_soft(intraday_engine):
         raise RuntimeError("oanda down")
 
     pricer = IntradayPricer(
-        intraday_engine, ["EUR_USD"], "K", "A", http_get=boom,
+        intraday_engine,
+        ["EUR_USD"],
+        "K",
+        "A",
+        http_get=boom,
         clock=_fixed_clock(datetime(2026, 7, 20, 12, 0, tzinfo=UTC)),
     )
     assert pricer.poll_once() == {"written": 0, "pruned": 0, "instruments": 0}
@@ -170,10 +216,13 @@ def test_poll_once_fail_soft(intraday_engine):
 
 def _seed(engine, symbol, ts, mid):
     with engine.begin() as conn:
-        conn.execute(text(
-            "INSERT INTO intraday_quotes (ts, symbol, source, mid) "
-            "VALUES (:ts, :s, 'oanda', :m)",
-        ), {"ts": ts, "s": symbol, "m": mid})
+        conn.execute(
+            text(
+                "INSERT INTO intraday_quotes (ts, symbol, source, mid) "
+                "VALUES (:ts, :s, 'oanda', :m)",
+            ),
+            {"ts": ts, "s": symbol, "m": mid},
+        )
 
 
 def test_get_intraday_value_nearest_at_or_before(intraday_engine):
@@ -185,7 +234,8 @@ def test_get_intraday_value_nearest_at_or_before(intraday_engine):
     assert prov.get_intraday_value("XAU_USD", base) == pytest.approx(2402.0)
     # At/before -2min is the -4min row.
     assert prov.get_intraday_value(
-        "XAU_USD", base - timedelta(minutes=2),
+        "XAU_USD",
+        base - timedelta(minutes=2),
     ) == pytest.approx(2400.0)
 
 
@@ -197,7 +247,9 @@ def test_get_intraday_value_staleness_bound(intraday_engine):
     assert prov.get_intraday_value("XAU_USD", base, max_staleness_minutes=15) is None
     # 30-min bound admits it.
     assert prov.get_intraday_value(
-        "XAU_USD", base, max_staleness_minutes=30,
+        "XAU_USD",
+        base,
+        max_staleness_minutes=30,
     ) == pytest.approx(2400.0)
 
 
@@ -214,9 +266,13 @@ def test_get_intraday_value_missing_table_returns_none(tmp_path):
     engine = create_engine(f"sqlite:///{tmp_path / 'empty.db'}")
     prov = DataProvider(engine)
     # No intraday_quotes table at all → caught → None (daily fallback).
-    assert prov.get_intraday_value(
-        "XAU_USD", datetime(2026, 7, 20, tzinfo=UTC),
-    ) is None
+    assert (
+        prov.get_intraday_value(
+            "XAU_USD",
+            datetime(2026, 7, 20, tzinfo=UTC),
+        )
+        is None
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -250,10 +306,16 @@ def _long_oanda_event(seen_at: datetime) -> dict[str, Any]:
         "seen_at": seen_at.isoformat(),
         "theme": "energy_chokepoint",
         "assessment": {
-            "urgency": 9, "confidence": 0.9, "direction": "bullish",
+            "urgency": 9,
+            "confidence": 0.9,
+            "direction": "bullish",
             "affected": [
-                {"instrument": "XAU_USD", "kind": "oanda",
-                 "direction": "long", "reason": "haven bid"},
+                {
+                    "instrument": "XAU_USD",
+                    "kind": "oanda",
+                    "direction": "long",
+                    "reason": "haven bid",
+                },
             ],
         },
     }

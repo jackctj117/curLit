@@ -20,7 +20,9 @@ from src.execution.paper_broker import STREAM_HALF_SPREAD_BPS, PaperBroker
 
 
 def _collect(
-    broker: PaperBroker, symbols: list[str], n: int,
+    broker: PaperBroker,
+    symbols: list[str],
+    n: int,
 ) -> list[dict[str, Any]]:
     """Pull n ticks from the (infinite) stream, with a hang guard."""
 

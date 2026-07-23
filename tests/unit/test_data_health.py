@@ -30,23 +30,27 @@ _REQS = [
 def engine(tmp_path):  # type: ignore[no-untyped-def]
     eng = create_engine(f"sqlite:///{tmp_path / 'h.db'}")
     with eng.begin() as conn:
-        conn.execute(text("CREATE TABLE macro_data (observation_date TEXT, "
-                          "series_id TEXT, value FLOAT, release_date TEXT)"))
+        conn.execute(
+            text(
+                "CREATE TABLE macro_data (observation_date TEXT, "
+                "series_id TEXT, value FLOAT, release_date TEXT)"
+            )
+        )
         conn.execute(text("CREATE TABLE prices (ts TEXT, symbol TEXT, close FLOAT)"))
 
         def macro(sid, days_ago, n):
             for i in range(n):
                 d = (NOW - timedelta(days=days_ago + i)).date().isoformat()
-                conn.execute(text("INSERT INTO macro_data VALUES (:d,:s,1.0,:d)"),
-                             {"d": d, "s": sid})
+                conn.execute(
+                    text("INSERT INTO macro_data VALUES (:d,:s,1.0,:d)"), {"d": d, "s": sid}
+                )
 
-        macro("FULL", days_ago=1, n=5)      # fresh, enough rows -> OK
+        macro("FULL", days_ago=1, n=5)  # fresh, enough rows -> OK
         macro("SPARSE_S", days_ago=1, n=2)  # fresh but only 2 (< 10) -> SPARSE
         # EMPTY_S: nothing inserted -> EMPTY
-        for i in range(3):                  # price, enough rows but 30d stale
+        for i in range(3):  # price, enough rows but 30d stale
             d = (NOW - timedelta(days=30 + i)).isoformat()
-            conn.execute(text("INSERT INTO prices VALUES (:t,'STALE_PX',1.0)"),
-                         {"t": d})
+            conn.execute(text("INSERT INTO prices VALUES (:t,'STALE_PX',1.0)"), {"t": d})
     return eng
 
 
@@ -97,6 +101,7 @@ def test_log_startup_health_never_raises_on_bad_engine():
     class _Bad:
         def connect(self):
             raise RuntimeError("db down")
+
     result = log_startup_health(_Bad(), now=NOW)
     assert isinstance(result, list)
     assert all(h.status == "EMPTY" for h in result)

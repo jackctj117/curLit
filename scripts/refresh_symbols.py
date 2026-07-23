@@ -32,21 +32,28 @@ logger = logging.getLogger(__name__)
 
 def main(argv: list[str] | None = None) -> int:
     from src.dotenv_bootstrap import load_project_env  # noqa: PLC0415
+
     load_project_env()
 
     parser = argparse.ArgumentParser(
         description="Refresh the US-listed symbol universe from NASDAQ Trader.",
     )
     parser.add_argument(
-        "--once", action="store_true", default=True,
+        "--once",
+        action="store_true",
+        default=True,
         help="Run a single refresh and exit (default; only mode supported).",
     )
     parser.add_argument(
-        "--no-sec", action="store_true",
+        "--no-sec",
+        action="store_true",
         help="Skip the SEC EDGAR name/CIK enrichment step (CL-9xha).",
     )
     parser.add_argument(
-        "-v", "--verbose", action="store_true", help="DEBUG logging.",
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="DEBUG logging.",
     )
     args = parser.parse_args(argv)
 
@@ -70,26 +77,32 @@ def main(argv: list[str] | None = None) -> int:
 
     with engine.connect() as conn:
         total = conn.execute(text("SELECT COUNT(*) FROM symbols")).scalar()
-        by_exchange = conn.execute(text(
-            "SELECT exchange, COUNT(*) FROM symbols "
-            "GROUP BY exchange ORDER BY COUNT(*) DESC",
-        )).fetchall()
-        etf_count = conn.execute(text(
-            "SELECT COUNT(*) FROM symbols WHERE is_etf",
-        )).scalar()
-        last_refreshed = conn.execute(text(
-            "SELECT MAX(last_refreshed) FROM symbols",
-        )).scalar()
+        by_exchange = conn.execute(
+            text(
+                "SELECT exchange, COUNT(*) FROM symbols GROUP BY exchange ORDER BY COUNT(*) DESC",
+            )
+        ).fetchall()
+        etf_count = conn.execute(
+            text(
+                "SELECT COUNT(*) FROM symbols WHERE is_etf",
+            )
+        ).scalar()
+        last_refreshed = conn.execute(
+            text(
+                "SELECT MAX(last_refreshed) FROM symbols",
+            )
+        ).scalar()
         sec_covered = None
         if sec_counts is not None:
-            sec_covered = conn.execute(text(
-                "SELECT COUNT(*) FROM symbols WHERE sec_name IS NOT NULL",
-            )).scalar()
+            sec_covered = conn.execute(
+                text(
+                    "SELECT COUNT(*) FROM symbols WHERE sec_name IS NOT NULL",
+                )
+            ).scalar()
 
     logger.info("symbols refresh complete: %s", counts)
     if sec_counts is not None:
-        logger.info("SEC enrichment: %s (sec_name populated on %s rows)",
-                    sec_counts, sec_covered)
+        logger.info("SEC enrichment: %s (sec_name populated on %s rows)", sec_counts, sec_covered)
     logger.info("total symbols in table: %s", total)
     for exchange, n in by_exchange:
         logger.info("  %-6s %d", exchange, n)

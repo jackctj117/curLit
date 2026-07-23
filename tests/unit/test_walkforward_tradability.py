@@ -35,7 +35,8 @@ class _ConstSizeStrategy:
 
     def generate_signals(self, test: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame(
-            {self.symbol: 1.0}, index=test.index,
+            {self.symbol: 1.0},
+            index=test.index,
         )
 
 
@@ -66,8 +67,11 @@ class TestTradabilityFilterIntegration:
         tf = TradabilityFilter(registry=registry)
 
         cfg = WalkForwardConfig(
-            is_window_days=400, oos_window_days=63, step_days=63,
-            min_history=400, tradability_filter=tf,
+            is_window_days=400,
+            oos_window_days=63,
+            step_days=63,
+            min_history=400,
+            tradability_filter=tf,
         )
         runner = WalkForwardRunner(cfg)
         result = runner.run(
@@ -89,9 +93,8 @@ class TestTradabilityFilterIntegration:
             # day) doesn't count — there's still real price data on
             # that day. We're checking what happens AFTER.
             from datetime import timedelta
-            tail_strat = result.trades.loc[
-                cutoff + timedelta(days=1):, "strategy_return"
-            ]
+
+            tail_strat = result.trades.loc[cutoff + timedelta(days=1) :, "strategy_return"]
             assert (tail_strat == 0).all(), (
                 f"Expected zero strategy_return after delisting; got "
                 f"{(tail_strat != 0).sum()} non-zero bars"
@@ -101,7 +104,9 @@ class TestTradabilityFilterIntegration:
         # Same panel + strategy, no filter → some non-zero returns.
         panel = _build_panel()
         cfg = WalkForwardConfig(
-            is_window_days=400, oos_window_days=63, step_days=63,
+            is_window_days=400,
+            oos_window_days=63,
+            step_days=63,
             min_history=400,
         )
         runner = WalkForwardRunner(cfg)

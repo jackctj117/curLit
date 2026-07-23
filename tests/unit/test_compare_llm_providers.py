@@ -7,10 +7,7 @@ on synthesized rows so the harness itself can't drift.
 
 from __future__ import annotations
 
-import json
-
 import pytest
-
 from scripts.compare_llm_providers import (
     ComparisonRow,
     PromptSpec,
@@ -72,7 +69,9 @@ class TestScoreKeywords:
 class TestWeightedScore:
     def test_combines_components(self) -> None:
         prompt = PromptSpec(
-            name="t", system="", user="",
+            name="t",
+            system="",
+            user="",
             expected_keywords=["carry"],
             expected_format="json",
         )
@@ -88,15 +87,25 @@ class TestSummarize:
     def test_groups_by_provider(self) -> None:
         rows = [
             ComparisonRow(
-                prompt_name="p1", provider="claude", model="m",
-                text="t", input_tokens=10, output_tokens=20,
-                usd_cost=0.001, elapsed_sec=2.0,
+                prompt_name="p1",
+                provider="claude",
+                model="m",
+                text="t",
+                input_tokens=10,
+                output_tokens=20,
+                usd_cost=0.001,
+                elapsed_sec=2.0,
                 quality=QualityScore(1.0, 1.0, 1.0, 1.0),
             ),
             ComparisonRow(
-                prompt_name="p1", provider="deepseek", model="m",
-                text="t", input_tokens=10, output_tokens=20,
-                usd_cost=0.0001, elapsed_sec=2.5,
+                prompt_name="p1",
+                provider="deepseek",
+                model="m",
+                text="t",
+                input_tokens=10,
+                output_tokens=20,
+                usd_cost=0.0001,
+                elapsed_sec=2.5,
                 quality=QualityScore(0.8, 0.8, 0.8, 0.8),
             ),
         ]
@@ -112,6 +121,7 @@ class TestSummarize:
 class TestPromptFile:
     def test_seed_file_loads(self) -> None:
         from pathlib import Path
+
         from scripts.compare_llm_providers import load_prompts
 
         prompts = load_prompts(Path("scripts/_seed_prompts/idea_extract.json"))

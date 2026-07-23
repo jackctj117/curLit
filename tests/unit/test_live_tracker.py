@@ -135,7 +135,10 @@ class TestSeverityClassification:
 class TestStatistics:
     def test_z_score_negative_when_underperforming(self) -> None:
         expected = BacktestExpectations(
-            sharpe=2.0, hit_rate=0.6, mean_return=0.0007, vol=0.006,
+            sharpe=2.0,
+            hit_rate=0.6,
+            mean_return=0.0007,
+            vol=0.006,
         )
         tracker = LiveEdgeTracker("s", expected, alpha=0.05)
         live = _underperforming_returns(expected, n_days=252, seed=10, multiplier=0.0)
@@ -144,7 +147,10 @@ class TestStatistics:
 
     def test_p_values_in_unit_interval(self) -> None:
         expected = BacktestExpectations(
-            sharpe=1.5, hit_rate=0.55, mean_return=0.0006, vol=0.006,
+            sharpe=1.5,
+            hit_rate=0.55,
+            mean_return=0.0006,
+            vol=0.006,
         )
         tracker = LiveEdgeTracker("s", expected, alpha=0.05)
         live = _matched_returns(expected, n_days=252, seed=20)
@@ -158,7 +164,10 @@ class TestStatistics:
         # sample is reliably negative across seeds (otherwise rng can flip the
         # sample sign by chance and defeat the test).
         expected = BacktestExpectations(
-            sharpe=0.5, hit_rate=0.51, mean_return=0.0001, vol=0.005,
+            sharpe=0.5,
+            hit_rate=0.51,
+            mean_return=0.0001,
+            vol=0.005,
         )
         tracker = LiveEdgeTracker("s", expected, alpha=0.05)
         rng = np.random.default_rng(99)
@@ -177,7 +186,10 @@ class TestStatistics:
 class TestMinLiveDays:
     def test_default_min_60_days(self) -> None:
         expected = BacktestExpectations(
-            sharpe=1.0, hit_rate=0.5, mean_return=0.0001, vol=0.01,
+            sharpe=1.0,
+            hit_rate=0.5,
+            mean_return=0.0001,
+            vol=0.01,
         )
         tracker = LiveEdgeTracker("s", expected)
         # 59 days → insufficient.
@@ -190,7 +202,10 @@ class TestMinLiveDays:
 
     def test_configurable_min_days(self) -> None:
         expected = BacktestExpectations(
-            sharpe=1.0, hit_rate=0.5, mean_return=0.0001, vol=0.01,
+            sharpe=1.0,
+            hit_rate=0.5,
+            mean_return=0.0001,
+            vol=0.01,
         )
         tracker = LiveEdgeTracker("s", expected, min_live_days=10)
         rng = np.random.default_rng(0)
@@ -208,19 +223,28 @@ class TestConstruction:
     def test_invalid_hit_rate_rejected(self) -> None:
         with pytest.raises(AssertionError):
             BacktestExpectations(
-                sharpe=1.0, hit_rate=1.5, mean_return=0.0001, vol=0.01,
+                sharpe=1.0,
+                hit_rate=1.5,
+                mean_return=0.0001,
+                vol=0.01,
             )
 
     def test_invalid_alpha_rejected(self) -> None:
         expected = BacktestExpectations(
-            sharpe=1.0, hit_rate=0.5, mean_return=0.0001, vol=0.01,
+            sharpe=1.0,
+            hit_rate=0.5,
+            mean_return=0.0001,
+            vol=0.01,
         )
         with pytest.raises(AssertionError):
             LiveEdgeTracker("s", expected, alpha=2.0)
 
     def test_empty_strategy_id_rejected(self) -> None:
         expected = BacktestExpectations(
-            sharpe=1.0, hit_rate=0.5, mean_return=0.0001, vol=0.01,
+            sharpe=1.0,
+            hit_rate=0.5,
+            mean_return=0.0001,
+            vol=0.01,
         )
         with pytest.raises(AssertionError):
             LiveEdgeTracker("", expected)
@@ -234,21 +258,35 @@ class TestConstruction:
 class TestReporting:
     def test_to_dict_contains_required_fields(self) -> None:
         expected = BacktestExpectations(
-            sharpe=1.0, hit_rate=0.5, mean_return=0.0001, vol=0.01,
+            sharpe=1.0,
+            hit_rate=0.5,
+            mean_return=0.0001,
+            vol=0.01,
         )
         tracker = LiveEdgeTracker("s", expected, alpha=0.05)
         live = _matched_returns(expected, n_days=252, seed=0)
         d = tracker.assess(live).to_dict()
         for key in (
-            "strategy_id", "ts", "live_n_days", "live_sharpe",
-            "live_hit_rate", "live_mean_return", "sharpe_z_score",
-            "sharpe_p_value", "hit_rate_p_value", "severity", "recommendation",
+            "strategy_id",
+            "ts",
+            "live_n_days",
+            "live_sharpe",
+            "live_hit_rate",
+            "live_mean_return",
+            "sharpe_z_score",
+            "sharpe_p_value",
+            "hit_rate_p_value",
+            "severity",
+            "recommendation",
         ):
             assert key in d, f"to_dict missing {key}"
 
     def test_pandas_series_input_accepted(self) -> None:
         expected = BacktestExpectations(
-            sharpe=1.0, hit_rate=0.5, mean_return=0.0001, vol=0.01,
+            sharpe=1.0,
+            hit_rate=0.5,
+            mean_return=0.0001,
+            vol=0.01,
         )
         tracker = LiveEdgeTracker("s", expected, alpha=0.05)
         rng = np.random.default_rng(7)

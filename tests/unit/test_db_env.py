@@ -21,8 +21,12 @@ from sqlalchemy.engine import URL
 from src.data import db_env
 
 _ENV_VARS = (
-    "DATABASE_URL", "POSTGRES_USER", "POSTGRES_PASSWORD",
-    "POSTGRES_HOST", "POSTGRES_PORT", "POSTGRES_DB",
+    "DATABASE_URL",
+    "POSTGRES_USER",
+    "POSTGRES_PASSWORD",
+    "POSTGRES_HOST",
+    "POSTGRES_PORT",
+    "POSTGRES_DB",
 )
 
 
@@ -38,7 +42,8 @@ def _password_warnings(records: list[logging.LogRecord]) -> list[logging.LogReco
 
 class TestBuildDbUrl:
     def test_special_char_password_round_trips(
-        self, monkeypatch: pytest.MonkeyPatch,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setenv("POSTGRES_PASSWORD", "p@ss:word/")
         url = db_env.build_db_url()
@@ -67,14 +72,17 @@ class TestBuildDbUrl:
         )
 
     def test_database_url_override_wins(
-        self, monkeypatch: pytest.MonkeyPatch,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         # Passed through as-is — not re-parsed, not re-rendered.
         monkeypatch.setenv("DATABASE_URL", "sqlite://")
         assert db_env.build_db_url() == "sqlite://"
 
     def test_changeme_warns_once_per_process(
-        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         monkeypatch.setattr(db_env, "_warned", False)
         with caplog.at_level(logging.WARNING, logger="src.data.db_env"):
@@ -83,7 +91,9 @@ class TestBuildDbUrl:
         assert len(_password_warnings(caplog.records)) == 1
 
     def test_no_warning_when_password_rotated(
-        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         monkeypatch.setattr(db_env, "_warned", False)
         monkeypatch.setenv("POSTGRES_PASSWORD", "rotated")
@@ -97,20 +107,24 @@ class TestAdoption:
     changeme password with no warning; each module must now bind the
     shared helper at import level and the local copy must be gone."""
 
-    @pytest.mark.parametrize("modname", [
-        "scripts.execute_options",
-        "scripts.morning_digest",
-        "scripts.truth_monitor",
-        "scripts.truth_report",
-        "migrations.run",
-    ])
+    @pytest.mark.parametrize(
+        "modname",
+        [
+            "scripts.execute_options",
+            "scripts.morning_digest",
+            "scripts.truth_monitor",
+            "scripts.truth_report",
+            "migrations.run",
+        ],
+    )
     def test_binds_shared_helper_and_drops_local_copy(self, modname: str) -> None:
         mod = importlib.import_module(modname)
         assert mod.build_db_url is db_env.build_db_url
         assert not hasattr(mod, "_build_db_url")
 
     def test_migrations_get_engine_delegates(
-        self, monkeypatch: pytest.MonkeyPatch,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         from migrations import run as run_mod
 
@@ -118,7 +132,8 @@ class TestAdoption:
         assert str(run_mod.get_engine().url) == "sqlite://"
 
     def test_migrations_get_engine_database_url_override_wins(
-        self, monkeypatch: pytest.MonkeyPatch,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         # New with CL-8cw1: migrations honour DATABASE_URL like every
         # other consumer of the shared convention.
@@ -128,7 +143,8 @@ class TestAdoption:
         assert str(run_mod.get_engine().url) == "sqlite://"
 
     def test_migrations_get_engine_default_shape_unchanged(
-        self, monkeypatch: pytest.MonkeyPatch,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         from migrations import run as run_mod
 

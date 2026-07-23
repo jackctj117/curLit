@@ -33,12 +33,18 @@ REQUEST_GAP_SEC = 2.0
 
 def main(argv: list[str] | None = None) -> int:
     from src.dotenv_bootstrap import load_project_env  # noqa: PLC0415
+
     load_project_env()
 
     parser = argparse.ArgumentParser(description="Reddit → geo_events monitor.")
     parser.add_argument("--once", action="store_true", help="One cycle, exit.")
-    parser.add_argument("--loop", type=int, metavar="SECONDS", default=None,
-                        help="Poll every SECONDS (daemon mode).")
+    parser.add_argument(
+        "--loop",
+        type=int,
+        metavar="SECONDS",
+        default=None,
+        help="Poll every SECONDS (daemon mode).",
+    )
     parser.add_argument("--watchlist", default=WATCHLIST_PATH)
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args(argv)
@@ -71,9 +77,13 @@ def main(argv: list[str] | None = None) -> int:
             "'script' app at https://www.reddit.com/prefs/apps and set the "
             "creds in .env for reliable polling.",
         )
-    logger.info("reddit monitor: %d subreddits (%d tier-1), %d playbooks, "
-                "auth=%s", len(subs), sum(1 for s in subs if s.tier == 1),
-                len(playbooks), "oauth" if oauth else "public(blocked-risk)")
+    logger.info(
+        "reddit monitor: %d subreddits (%d tier-1), %d playbooks, auth=%s",
+        len(subs),
+        sum(1 for s in subs if s.tier == 1),
+        len(playbooks),
+        "oauth" if oauth else "public(blocked-risk)",
+    )
 
     def _cycle(cycle_n: int) -> None:
         polled = ingested = 0
@@ -88,8 +98,7 @@ def main(argv: list[str] | None = None) -> int:
                     logger.info(result.summary_line(sub.name))
                 ingested += result.ingested
             time.sleep(REQUEST_GAP_SEC)
-        logger.info("reddit cycle %d complete: polled=%d ingested=%d",
-                    cycle_n, polled, ingested)
+        logger.info("reddit cycle %d complete: polled=%d ingested=%d", cycle_n, polled, ingested)
 
     if args.loop:
         logger.info("looping every %ds (Ctrl-C to stop)", args.loop)

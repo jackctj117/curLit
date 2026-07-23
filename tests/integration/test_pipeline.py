@@ -1,7 +1,6 @@
 """Integration test — end-to-end pipeline: mock data through ingestion, feature, model, signal."""
 
 import logging
-import pytest
 
 logger = logging.getLogger(__name__)
 
@@ -11,6 +10,7 @@ class TestPipeline:
         """Verify rate diff model fits and produces signals on synthetic data."""
         import numpy as np
         import pandas as pd
+
         from src.models.rate_diff import RateDiffModel
 
         np.random.seed(42)
@@ -29,6 +29,7 @@ class TestPipeline:
     def test_feature_computation(self) -> None:
         import numpy as np
         import pandas as pd
+
         from src.features import realized_vol, zscore
 
         price = pd.Series(np.random.randn(100).cumsum() + 100)

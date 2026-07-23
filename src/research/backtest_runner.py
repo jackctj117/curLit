@@ -156,7 +156,8 @@ def _read_symbols(strategy_cls: type) -> list[str]:
             # on __init__ — fall through to the EURUSD default below.
             logger.debug(
                 "instantiating %s to read symbols failed",
-                strategy_cls.__name__, exc_info=True,
+                strategy_cls.__name__,
+                exc_info=True,
             )
             syms = None
     if not syms:
@@ -181,7 +182,9 @@ def _read_execution_symbol(strategy_cls: type, symbols: list[str]) -> str:
         logger.warning(
             "strategy %s declares execution_symbol=%r but it's not in "
             "symbols=%r; falling back to symbols[0]",
-            strategy_cls.__name__, exec_sym, symbols,
+            strategy_cls.__name__,
+            exec_sym,
+            symbols,
         )
         return symbols[0]
     return str(exec_sym)
@@ -279,7 +282,11 @@ def make_backtest_runner(
         execution_symbol = _read_execution_symbol(strategy_cls, symbols)
         logger.info(
             "research backtest: %s symbols=%s exec=%s window=%s..%s",
-            strategy_cls.__name__, symbols, execution_symbol, start, end,
+            strategy_cls.__name__,
+            symbols,
+            execution_symbol,
+            start,
+            end,
         )
 
         # 2) Pull data for ALL declared symbols so the strategy can
@@ -291,7 +298,9 @@ def make_backtest_runner(
         start_dt = datetime.fromisoformat(start)
         end_dt = datetime.fromisoformat(end)
         data = data_provider.get_aligned_series(
-            symbols=symbols, start=start_dt, end=end_dt,
+            symbols=symbols,
+            start=start_dt,
+            end=end_dt,
         )
         if data is None or data.empty:
             msg = (
@@ -332,21 +341,25 @@ def make_backtest_runner(
 
         # 4) Analytics + bootstrap CI.
         full = PerformanceAnalytics.metrics(oos)
-        is_sharpe = float(
-            result.fold_metrics["train_sharpe"].mean(),
-        ) if not result.fold_metrics.empty else 0.0
-        oos_sharpe = float(full.get("sharpe", 0.0))
-        is_oos_ratio = (
-            abs(is_sharpe / oos_sharpe) if oos_sharpe != 0 else 0.0
+        is_sharpe = (
+            float(
+                result.fold_metrics["train_sharpe"].mean(),
+            )
+            if not result.fold_metrics.empty
+            else 0.0
         )
+        oos_sharpe = float(full.get("sharpe", 0.0))
+        is_oos_ratio = abs(is_sharpe / oos_sharpe) if oos_sharpe != 0 else 0.0
         try:
             ci_low, ci_high = stationary_bootstrap_sharpe_ci(
-                oos, n_bootstrap=bootstrap_n,
+                oos,
+                n_bootstrap=bootstrap_n,
             )
         except Exception as exc:
             logger.warning(
                 "bootstrap CI failed: %s: %s — using point estimate",
-                type(exc).__name__, exc,
+                type(exc).__name__,
+                exc,
             )
             ci_low, ci_high = oos_sharpe, oos_sharpe
 
@@ -358,7 +371,8 @@ def make_backtest_runner(
         # 6) Trade-count: number of position changes (entries+exits)
         n_trades = (
             int(result.trades["position_change"].astype(bool).sum())
-            if "position_change" in result.trades.columns else 0
+            if "position_change" in result.trades.columns
+            else 0
         )
 
         return {

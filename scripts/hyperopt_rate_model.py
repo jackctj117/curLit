@@ -229,7 +229,9 @@ def load_data(pair: str, start: datetime, end: datetime) -> pd.DataFrame:
 
     dp = DataProvider(_build_db_engine())
     df = dp.get_aligned_series(
-        [pair, "US_10Y", "DE_10Y", *_EXTRA_SERIES], start, end,
+        [pair, "US_10Y", "DE_10Y", *_EXTRA_SERIES],
+        start,
+        end,
     )
     if df is None or df.empty:
         raise RuntimeError(
@@ -262,9 +264,7 @@ def make_objective(
     """
     pair_cost = _PairCost(cost_model, pair)
     cfg_field_names = {f.name for f in dataclasses.fields(RateDiffMRConfig)}
-    series_overrides = {
-        k: v for k, v in FILTER_SERIES_OVERRIDES.items() if k in cfg_field_names
-    }
+    series_overrides = {k: v for k, v in FILTER_SERIES_OVERRIDES.items() if k in cfg_field_names}
 
     def objective(trial: Any) -> float:
         params = suggest_params(trial, space)
@@ -298,7 +298,9 @@ def _git_rev() -> str:
     try:
         return subprocess.run(
             ["git", "rev-parse", "--short", "HEAD"],
-            capture_output=True, text=True, check=True,
+            capture_output=True,
+            text=True,
+            check=True,
             cwd=Path(__file__).parent,
         ).stdout.strip()
     except Exception:
@@ -350,16 +352,22 @@ def main() -> int:
     parser.add_argument("--end", type=str, default=datetime.now(UTC).strftime("%Y-%m-%d"))
     parser.add_argument("--pair", type=str, default="EURUSD")
     parser.add_argument(
-        "--study-db", type=Path, default=Path("data/optuna/rate_diff_mr.db"),
+        "--study-db",
+        type=Path,
+        default=Path("data/optuna/rate_diff_mr.db"),
         help="SQLite file backing the Optuna study (resumable across runs).",
     )
     parser.add_argument(
-        "--jobs", type=int, default=1,
+        "--jobs",
+        type=int,
+        default=1,
         help="Optuna n_jobs. Default 1 (serial) — trials share one "
-             "pre-loaded data frame, no DB session per trial needed.",
+        "pre-loaded data frame, no DB session per trial needed.",
     )
     parser.add_argument(
-        "--out", type=Path, default=Path("configs/best_rate_params.json"),
+        "--out",
+        type=Path,
+        default=Path("configs/best_rate_params.json"),
     )
     args = parser.parse_args()
 
@@ -369,6 +377,7 @@ def main() -> int:
     )
 
     from src.dotenv_bootstrap import load_project_env
+
     load_project_env()
 
     import optuna
@@ -384,13 +393,18 @@ def main() -> int:
     logger.info("Loaded %d aligned daily rows; columns=%s", len(data), list(data.columns))
 
     wf_config = WalkForwardConfig(
-        is_window_days=756, oos_window_days=63, step_days=63, min_history=756,
+        is_window_days=756,
+        oos_window_days=63,
+        step_days=63,
+        min_history=756,
     )
     if len(data) < wf_config.min_history + wf_config.oos_window_days:
         logger.error(
             "Aligned frame too short for one walk-forward fold: %d rows, need >= %d. "
             "Check prices/macro_data coverage for %s + US_10Y + DE_10Y.",
-            len(data), wf_config.min_history + wf_config.oos_window_days, args.pair,
+            len(data),
+            wf_config.min_history + wf_config.oos_window_days,
+            args.pair,
         )
         return 1
 
@@ -408,7 +422,11 @@ def main() -> int:
     )
     logger.info(
         "Study %s @ %s (%d existing trials) — running %d new trials, jobs=%d",
-        study.study_name, storage, len(study.trials), args.trials, args.jobs,
+        study.study_name,
+        storage,
+        len(study.trials),
+        args.trials,
+        args.jobs,
     )
 
     objective = make_objective(data, space, args.pair, wf_config, CostModel())
@@ -425,7 +443,7 @@ def main() -> int:
         "best_trial_number": best.number,
         "best_trial_attrs": dict(best.user_attrs),
         "objective": f"sharpe - {DD_WEIGHT}*abs(max_drawdown); "
-                     f"score={PENALTY_SCORE} if n_trades < {MIN_TRADES}",
+        f"score={PENALTY_SCORE} if n_trades < {MIN_TRADES}",
         "metadata": {
             "window": {"start": start.date().isoformat(), "end": end.date().isoformat()},
             "n_obs_aligned": int(len(data)),
@@ -447,13 +465,17 @@ def main() -> int:
     logger.info("Best params written to %s", args.out)
 
     print()
-    print(f"Best trial #{best.number}: score={best.value:.3f} "
-          f"(sharpe={best.user_attrs.get('sharpe', float('nan')):.3f}, "
-          f"max_dd={best.user_attrs.get('max_drawdown', float('nan')):.1%}, "
-          f"n_trades={best.user_attrs.get('n_trades', 0)})")
+    print(
+        f"Best trial #{best.number}: score={best.value:.3f} "
+        f"(sharpe={best.user_attrs.get('sharpe', float('nan')):.3f}, "
+        f"max_dd={best.user_attrs.get('max_drawdown', float('nan')):.1%}, "
+        f"n_trades={best.user_attrs.get('n_trades', 0)})"
+    )
     print()
-    print("NOT auto-applied. To adopt, the operator would edit "
-          "src/strategies/rate_diff_mean_reversion.py::RateDiffMRConfig:")
+    print(
+        "NOT auto-applied. To adopt, the operator would edit "
+        "src/strategies/rate_diff_mean_reversion.py::RateDiffMRConfig:"
+    )
     for line in config_diff(best.params):
         print(line)
     return 0

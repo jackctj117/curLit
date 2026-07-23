@@ -15,7 +15,6 @@ import os
 import socket
 from datetime import UTC, date, datetime, timedelta
 
-import pandas as pd
 import pytest
 from sqlalchemy import text
 
@@ -56,10 +55,20 @@ def fixture_data(engine):
         rows = []
         for i in range(5):
             d = start + timedelta(days=i)
-            rows.append({"ts": datetime.combine(d, datetime.min.time(), tzinfo=UTC),
-                         "symbol": "EURUSD", "close": 1.10 + i * 0.001})
-            rows.append({"ts": datetime.combine(d, datetime.min.time(), tzinfo=UTC),
-                         "symbol": "US_10Y", "close": 2.50 + i * 0.01})
+            rows.append(
+                {
+                    "ts": datetime.combine(d, datetime.min.time(), tzinfo=UTC),
+                    "symbol": "EURUSD",
+                    "close": 1.10 + i * 0.001,
+                }
+            )
+            rows.append(
+                {
+                    "ts": datetime.combine(d, datetime.min.time(), tzinfo=UTC),
+                    "symbol": "US_10Y",
+                    "close": 2.50 + i * 0.01,
+                }
+            )
         for r in rows:
             conn.execute(
                 text(
@@ -77,8 +86,13 @@ def fixture_data(engine):
                   (observation_date, release_date, series_id, value, source)
                 VALUES (:obs, :rel, :sid, :val, :src)
             """),
-            {"obs": date(2010, 1, 4), "rel": datetime.now(UTC),
-             "sid": "IRLTLT01DEM156N", "val": 1.95, "src": "fred"},
+            {
+                "obs": date(2010, 1, 4),
+                "rel": datetime.now(UTC),
+                "sid": "IRLTLT01DEM156N",
+                "val": 1.95,
+                "src": "fred",
+            },
         )
 
     yield (start, end)
@@ -87,14 +101,17 @@ def fixture_data(engine):
     with engine.begin() as conn:
         conn.execute(
             text(
-                "DELETE FROM prices WHERE source = 'test_data_provider' "
-                "AND ts >= :s AND ts <= :e"
+                "DELETE FROM prices WHERE source = 'test_data_provider' AND ts >= :s AND ts <= :e"
             ),
-            {"s": datetime.combine(start, datetime.min.time(), tzinfo=UTC),
-             "e": datetime.combine(end, datetime.min.time(), tzinfo=UTC)},
+            {
+                "s": datetime.combine(start, datetime.min.time(), tzinfo=UTC),
+                "e": datetime.combine(end, datetime.min.time(), tzinfo=UTC),
+            },
         )
         conn.execute(
-            text("DELETE FROM macro_data WHERE observation_date = :d AND series_id = 'IRLTLT01DEM156N'"),
+            text(
+                "DELETE FROM macro_data WHERE observation_date = :d AND series_id = 'IRLTLT01DEM156N'"
+            ),
             {"d": date(2010, 1, 4)},
         )
 

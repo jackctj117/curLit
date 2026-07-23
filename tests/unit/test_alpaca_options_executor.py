@@ -25,17 +25,18 @@ from src.execution.alpaca_options_executor import (
 NOW = datetime(2026, 7, 21, 16, 0, tzinfo=UTC)  # 12:00 ET
 NOW_AT_OPEN = datetime(2026, 7, 21, 13, 35, tzinfo=UTC)  # 9:35 ET
 
+
 def _no_tech(_t: str):  # unit tests: no live yfinance — fail-open path
     return None
 
 
-_CONTRACT = {"symbol": "RTX260821C00105000", "strike_price": "105",
-             "expiration_date": "2026-08-18"}
+_CONTRACT = {"symbol": "RTX260821C00105000", "strike_price": "105", "expiration_date": "2026-08-18"}
 
 
 class _FakeClient:
-    def __init__(self, contract: Any = _CONTRACT, ask: float | None = 2.0,
-                 market_open: bool = True) -> None:
+    def __init__(
+        self, contract: Any = _CONTRACT, ask: float | None = 2.0, market_open: bool = True
+    ) -> None:
         self._contract = contract
         self._ask = ask
         self._market_open = market_open
@@ -50,8 +51,9 @@ class _FakeClient:
     def get_option_ask(self, occ: str) -> float | None:
         return self._ask
 
-    def submit_option_order(self, occ: str, qty: int, side: str = "buy",
-                            client_order_id: str | None = None) -> dict[str, Any]:
+    def submit_option_order(
+        self, occ: str, qty: int, side: str = "buy", client_order_id: str | None = None
+    ) -> dict[str, Any]:
         self.orders.append((occ, qty, side))
         return {"id": f"ord-{len(self.orders)}", "status": "accepted"}
 
@@ -62,29 +64,40 @@ def engine(tmp_path):  # type: ignore[no-untyped-def]
 
     eng = create_engine(f"sqlite:///{tmp_path / 'a.db'}")
     with eng.begin() as conn:
-        conn.execute(text("""
+        conn.execute(
+            text("""
             CREATE TABLE trade_ideas (
                 idea_id TEXT PRIMARY KEY, ticker TEXT, action TEXT,
                 confidence FLOAT, preferred_instrument TEXT, notes TEXT,
                 status TEXT DEFAULT 'pending', created_at TEXT)
-        """))
-        sql = _strip_sql_comments(
-            Path("migrations/014_alpaca_option_orders.sql").read_text())
+        """)
+        )
+        sql = _strip_sql_comments(Path("migrations/014_alpaca_option_orders.sql").read_text())
         sql = sql.replace("TIMESTAMPTZ", "TEXT").replace("NUMERIC", "FLOAT")
         for stmt in [s.strip() for s in sql.split(";") if s.strip()]:
             conn.execute(text(stmt))
     return eng
 
 
-def _seed(engine, idea_id, *, ticker="RTX", action="buy_calls", conf=0.6,
-          notes="[niche 3hop asym0.6] torque | survived red-team; top risk: x",
-          pref="~5% OTM, 4 weeks"):
+def _seed(
+    engine,
+    idea_id,
+    *,
+    ticker="RTX",
+    action="buy_calls",
+    conf=0.6,
+    notes="[niche 3hop asym0.6] torque | survived red-team; top risk: x",
+    pref="~5% OTM, 4 weeks",
+):
     with engine.begin() as conn:
-        conn.execute(text("""
+        conn.execute(
+            text("""
             INSERT INTO trade_ideas (idea_id, ticker, action, confidence,
                 preferred_instrument, notes, status, created_at)
             VALUES (:i,:t,:a,:c,:p,:n,'pending','2026-07-21')
-        """), {"i": idea_id, "t": ticker, "a": action, "c": conf, "p": pref, "n": notes})
+        """),
+            {"i": idea_id, "t": ticker, "a": action, "c": conf, "p": pref, "n": notes},
+        )
 
 
 def _price(_t: str) -> float:
@@ -118,8 +131,11 @@ def test_submits_eligible_idea(engine):
     assert counts["submitted"] == 1
     assert client.orders == [("RTX260821C00105000", 1, "buy")]
     with engine.connect() as c:
-        row = c.execute(text("SELECT status, opt_type, premium_est FROM "
-                             "alpaca_option_orders WHERE idea_id='ok'")).one()
+        row = c.execute(
+            text(
+                "SELECT status, opt_type, premium_est FROM alpaca_option_orders WHERE idea_id='ok'"
+            )
+        ).one()
     assert row[0] == "submitted" and row[1] == "call" and row[2] == pytest.approx(200.0)
 
 
@@ -130,8 +146,12 @@ def test_skips_when_premium_over_cap(engine):
     assert counts["skipped_premium"] == 1 and counts["submitted"] == 0
     assert client.orders == []
     with engine.connect() as c:
-        assert c.execute(text("SELECT status FROM alpaca_option_orders "
-                              "WHERE idea_id='pricey'")).scalar() == "skipped_premium"
+        assert (
+            c.execute(
+                text("SELECT status FROM alpaca_option_orders WHERE idea_id='pricey'")
+            ).scalar()
+            == "skipped_premium"
+        )
 
 
 def test_daily_cap_enforced(engine):
@@ -139,7 +159,13 @@ def test_daily_cap_enforced(engine):
         _seed(engine, f"i{i}")
     client = _FakeClient(ask=1.0)
     counts = execute_pending_options(
-        engine, client, _price, cfg=OptionsExecConfig(max_per_day=2), now=NOW, technicals_fn=_no_tech)
+        engine,
+        client,
+        _price,
+        cfg=OptionsExecConfig(max_per_day=2),
+        now=NOW,
+        technicals_fn=_no_tech,
+    )
     assert counts["submitted"] == 2
     assert len(client.orders) == 2
 
@@ -151,9 +177,13 @@ def test_hourly_pace_caps_this_cycle(engine):
         _seed(engine, f"h{i}")
     client = _FakeClient(ask=1.0)
     counts = execute_pending_options(
-        engine, client, _price,
+        engine,
+        client,
+        _price,
         cfg=OptionsExecConfig(max_per_day=10, max_per_hour=2),
-        now=NOW, technicals_fn=_no_tech)
+        now=NOW,
+        technicals_fn=_no_tech,
+    )
     assert counts["submitted"] == 2  # hourly pace, not the 10/day room
     assert len(client.orders) == 2
 
@@ -170,7 +200,9 @@ def test_dedup_not_reexecuted(engine):
 
 def test_transient_no_contract_not_recorded_and_retries(engine):
     _seed(engine, "nc")
-    counts = execute_pending_options(engine, _FakeClient(contract=None), _price, now=NOW, technicals_fn=_no_tech)
+    counts = execute_pending_options(
+        engine, _FakeClient(contract=None), _price, now=NOW, technicals_fn=_no_tech
+    )
     assert counts["no_contract"] == 1 and counts["submitted"] == 0
     # NOT recorded → still fetchable next cycle.
     assert {i["idea_id"] for i in fetch_executable_ideas(engine, OptionsExecConfig())} == {"nc"}
@@ -178,13 +210,17 @@ def test_transient_no_contract_not_recorded_and_retries(engine):
 
 def test_no_quote_is_transient(engine):
     _seed(engine, "nq")
-    counts = execute_pending_options(engine, _FakeClient(ask=None), _price, now=NOW, technicals_fn=_no_tech)
+    counts = execute_pending_options(
+        engine, _FakeClient(ask=None), _price, now=NOW, technicals_fn=_no_tech
+    )
     assert counts["no_quote"] == 1
 
 
 def test_no_price_skips(engine):
     _seed(engine, "np")
-    counts = execute_pending_options(engine, _FakeClient(), lambda t: None, now=NOW, technicals_fn=_no_tech)
+    counts = execute_pending_options(
+        engine, _FakeClient(), lambda t: None, now=NOW, technicals_fn=_no_tech
+    )
     assert counts["no_price"] == 1 and counts["submitted"] == 0
 
 
@@ -205,21 +241,22 @@ def test_entry_delayed_in_first_15_minutes(engine):
     # 9:35 ET: spreads still wide — ordinary-confidence ideas wait.
     _seed(engine, "early")
     client = _FakeClient(ask=1.0)
-    counts = execute_pending_options(engine, client, _price, now=NOW_AT_OPEN,
-                                     technicals_fn=_no_tech)
+    counts = execute_pending_options(
+        engine, client, _price, now=NOW_AT_OPEN, technicals_fn=_no_tech
+    )
     assert counts["entry_delayed"] == 1 and counts["submitted"] == 0
     assert client.orders == []
     # transient: still fetchable on the next 5-min cycle
-    assert {i["idea_id"] for i in
-            fetch_executable_ideas(engine, OptionsExecConfig())} == {"early"}
+    assert {i["idea_id"] for i in fetch_executable_ideas(engine, OptionsExecConfig())} == {"early"}
 
 
 def test_entry_delay_override_for_high_confidence(engine):
     # conf 0.85 >= 0.80 override: extremely strong signal enters at 9:35.
     _seed(engine, "hot", conf=0.85)
     client = _FakeClient(ask=1.0)
-    counts = execute_pending_options(engine, client, _price, now=NOW_AT_OPEN,
-                                     technicals_fn=_no_tech)
+    counts = execute_pending_options(
+        engine, client, _price, now=NOW_AT_OPEN, technicals_fn=_no_tech
+    )
     assert counts["submitted"] == 1 and counts["entry_delayed"] == 0
 
 
@@ -228,9 +265,12 @@ def test_entry_allowed_after_delay_window(engine):
     _seed(engine, "later")
     client = _FakeClient(ask=1.0)
     counts = execute_pending_options(
-        engine, client, _price,
+        engine,
+        client,
+        _price,
         now=datetime(2026, 7, 21, 13, 50, tzinfo=UTC),  # 9:50 ET
-        technicals_fn=_no_tech)
+        technicals_fn=_no_tech,
+    )
     assert counts["submitted"] == 1 and counts["entry_delayed"] == 0
 
 
@@ -243,9 +283,17 @@ from src.events.technical_context import TechnicalContext  # noqa: E402
 
 def _ctx(trend: str, breakout: str) -> TechnicalContext:
     return TechnicalContext(
-        ticker="RTX", last_close=100.0, sma20=95.0, sma50=90.0, trend=trend,
-        pct_from_20d_high=-0.05, pct_from_20d_low=0.05, support=90.0,
-        resistance=105.0, breakout_state=breakout, volume_ratio=1.0,
+        ticker="RTX",
+        last_close=100.0,
+        sma20=95.0,
+        sma50=90.0,
+        trend=trend,
+        pct_from_20d_high=-0.05,
+        pct_from_20d_low=0.05,
+        support=90.0,
+        resistance=105.0,
+        breakout_state=breakout,
+        volume_ratio=1.0,
     )
 
 
@@ -254,8 +302,8 @@ def test_misaligned_calls_skipped(engine):
     _seed(engine, "mis")
     client = _FakeClient(ask=1.0)
     counts = execute_pending_options(
-        engine, client, _price, now=NOW,
-        technicals_fn=lambda t: _ctx("downtrend", "at_lows"))
+        engine, client, _price, now=NOW, technicals_fn=lambda t: _ctx("downtrend", "at_lows")
+    )
     assert counts["misaligned"] == 1 and counts["submitted"] == 0
     assert client.orders == []
     # transient: still fetchable next cycle
@@ -266,16 +314,15 @@ def test_aligned_calls_submitted(engine):
     _seed(engine, "al")
     client = _FakeClient(ask=1.0)
     counts = execute_pending_options(
-        engine, client, _price, now=NOW,
-        technicals_fn=lambda t: _ctx("uptrend", "at_highs"))
+        engine, client, _price, now=NOW, technicals_fn=lambda t: _ctx("uptrend", "at_highs")
+    )
     assert counts["submitted"] == 1
 
 
 def test_no_context_fails_open(engine):
     _seed(engine, "noctx")
     client = _FakeClient(ask=1.0)
-    counts = execute_pending_options(
-        engine, client, _price, now=NOW, technicals_fn=lambda t: None)
+    counts = execute_pending_options(engine, client, _price, now=NOW, technicals_fn=lambda t: None)
     assert counts["submitted"] == 1  # gate can't judge -> allow
 
 
@@ -308,17 +355,16 @@ def test_duplicate_client_order_id_recovers_not_rebuys(engine):
 
     class _DupClient(_FakeClient):
         def submit_option_order(self, occ, qty, side="buy", client_order_id=None):
-            raise RuntimeError(
-                "422 client_order_id must be unique: order already exists")
+            raise RuntimeError("422 client_order_id must be unique: order already exists")
 
     client = _DupClient(ask=1.0)
-    counts = execute_pending_options(engine, client, _price, now=NOW,
-                                     technicals_fn=_no_tech)
+    counts = execute_pending_options(engine, client, _price, now=NOW, technicals_fn=_no_tech)
     assert counts.get("recovered") == 1
     assert counts["submitted"] == 0 and counts["error"] == 0
     with engine.connect() as c:
-        row = c.execute(text("SELECT status, detail FROM alpaca_option_orders "
-                             "WHERE idea_id='dup1'")).one()
+        row = c.execute(
+            text("SELECT status, detail FROM alpaca_option_orders WHERE idea_id='dup1'")
+        ).one()
     assert row[0] == "submitted" and "recovered" in row[1]
     # dedup restored: not fetchable next cycle
     assert fetch_executable_ideas(engine, OptionsExecConfig()) == []

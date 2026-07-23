@@ -33,8 +33,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 logger = logging.getLogger(__name__)
 
-STATE_PATH = Path(os.environ.get("HEALTH_WATCH_STATE",
-                                 "data/health_watch_state.json"))
+STATE_PATH = Path(os.environ.get("HEALTH_WATCH_STATE", "data/health_watch_state.json"))
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -44,8 +43,7 @@ def _load_state() -> dict:
     except FileNotFoundError:
         return {}
     except Exception:
-        logger.warning("health watch: unreadable state — starting fresh",
-                       exc_info=True)
+        logger.warning("health watch: unreadable state — starting fresh", exc_info=True)
         return {}
 
 
@@ -53,13 +51,14 @@ def _fleet_status_output() -> str | None:
     try:
         proc = subprocess.run(  # noqa: S603 — our own script, fixed argv
             ["bash", str(_REPO_ROOT / "scripts" / "daemons.sh"), "status"],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True,
+            text=True,
+            timeout=30,
             cwd=str(_REPO_ROOT),
         )
         return proc.stdout
     except Exception:
-        logger.warning("health watch: daemons.sh status failed",
-                       exc_info=True)
+        logger.warning("health watch: daemons.sh status failed", exc_info=True)
         return None
 
 
@@ -78,7 +77,8 @@ def _engine_halt_state() -> bool | None:
     try:
         resp = httpx.get(
             f"http://{host}:{port}/api/system",
-            headers={"X-API-Key": secret}, timeout=5.0,
+            headers={"X-API-Key": secret},
+            timeout=5.0,
         )
         resp.raise_for_status()
         data = resp.json()
@@ -86,8 +86,7 @@ def _engine_halt_state() -> bool | None:
             return None  # engine up but OMS not wired → unknown, not "clear"
         return bool(data.get("oms_halted"))
     except Exception:
-        logger.debug("health watch: engine /api/system unreachable",
-                     exc_info=True)
+        logger.debug("health watch: engine /api/system unreachable", exc_info=True)
         return None
 
 
@@ -106,23 +105,25 @@ def _recent_halt_reason() -> str | None:
     for line in reversed(tail):
         if "KILL SWITCH:" in line and "triggered" in line:
             m = re.search(
-                r"KILL SWITCH: (\S+) triggered — action=(\S+)", line,
+                r"KILL SWITCH: (\S+) triggered — action=(\S+)",
+                line,
             )
-            return (f"kill switch {m.group(1)} (action={m.group(2)})"
-                    if m else "kill switch fired")
+            return f"kill switch {m.group(1)} (action={m.group(2)})" if m else "kill switch fired"
     return None
 
 
 def _newest_x_event(engine) -> datetime | None:  # noqa: ANN001
     from sqlalchemy import text  # noqa: PLC0415
+
     try:
         with engine.connect() as conn:
-            return conn.execute(text(
-                "SELECT MAX(seen_at) FROM geo_events WHERE source LIKE 'x%'",
-            )).scalar()
+            return conn.execute(
+                text(
+                    "SELECT MAX(seen_at) FROM geo_events WHERE source LIKE 'x%'",
+                )
+            ).scalar()
     except Exception:
-        logger.warning("health watch: x-freshness query failed",
-                       exc_info=True)
+        logger.warning("health watch: x-freshness query failed", exc_info=True)
         return None
 
 
@@ -150,7 +151,9 @@ def run_once(now: datetime | None = None) -> int:
     if output is not None:
         current = parse_status(output)
         alerts, new_down = decide_fleet_alerts(
-            current, dict(state.get("down") or {}), now,
+            current,
+            dict(state.get("down") or {}),
+            now,
         )
         messages.extend(alerts)
         state["down"] = new_down
@@ -158,13 +161,14 @@ def run_once(now: datetime | None = None) -> int:
         logger.warning("health watch: fleet status unavailable this cycle")
 
     try:
-        stale_hours = float(os.environ.get("X_INGEST_STALE_HOURS",
-                                           DEFAULT_X_STALE_HOURS))
+        stale_hours = float(os.environ.get("X_INGEST_STALE_HOURS", DEFAULT_X_STALE_HOURS))
     except ValueError:
         stale_hours = DEFAULT_X_STALE_HOURS
     engine = create_engine(build_db_url())
     msg, is_stale = decide_x_staleness_alert(
-        _newest_x_event(engine), bool(state.get("x_stale")), now,
+        _newest_x_event(engine),
+        bool(state.get("x_stale")),
+        now,
         stale_hours=stale_hours,
     )
     if msg:
@@ -202,6 +206,7 @@ def run_once(now: datetime | None = None) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     from src.dotenv_bootstrap import load_project_env  # noqa: PLC0415
+
     load_project_env()
 
     parser = argparse.ArgumentParser(description="Fleet watchdog.")

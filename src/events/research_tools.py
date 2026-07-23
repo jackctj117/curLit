@@ -35,8 +35,7 @@ import httpx
 logger = logging.getLogger(__name__)
 
 _DEFAULT_SEC_USER_AGENT = (
-    "Mozilla/5.0 (curLit niche-research; set SEC_EDGAR_USER_AGENT to declare "
-    "a contact)"
+    "Mozilla/5.0 (curLit niche-research; set SEC_EDGAR_USER_AGENT to declare a contact)"
 )
 
 _SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik:010d}.json"
@@ -45,8 +44,13 @@ _ARCHIVE_URL = "https://www.sec.gov/Archives/edgar/data/{cik}/{accn}/{doc}"
 #: Anchors (lower-cased) where a 10-K's supply-chain / dependency content lives;
 #: searched in order to start the excerpt at the useful part.
 _EXCERPT_ANCHORS = (
-    "risk factors", "item 1a", "principal customers", "our customers",
-    "our business", "item 1.", "competition",
+    "risk factors",
+    "item 1a",
+    "principal customers",
+    "our customers",
+    "our business",
+    "item 1.",
+    "competition",
 )
 
 #: Injectable transports so unit tests feed canned bodies (no live network).
@@ -65,6 +69,7 @@ def yfinance_profile(ticker: str) -> dict[str, Any] | None:
     → None (the caller degrades to SEC-only or no grounding)."""
     try:
         import yfinance as yf  # noqa: PLC0415 — deferred; cheap for non-live callers
+
         info = dict(yf.Ticker(ticker).info or {})
     except Exception:
         logger.debug("yfinance profile unavailable for %s", ticker, exc_info=True)
@@ -79,7 +84,10 @@ def yfinance_profile(ticker: str) -> dict[str, Any] | None:
 def html_to_text(raw_html: str) -> str:
     """Strip an HTML filing to whitespace-collapsed plain text."""
     stripped = re.sub(
-        r"<(script|style)[^>]*>.*?</\1>", " ", raw_html, flags=re.I | re.S,
+        r"<(script|style)[^>]*>.*?</\1>",
+        " ",
+        raw_html,
+        flags=re.I | re.S,
     )
     stripped = re.sub(r"<[^>]+>", " ", stripped)
     stripped = _html.unescape(stripped)
@@ -143,9 +151,11 @@ class ResearchTools:
             self._technicals_fn = technicals_fn
         else:
             from src.events.technical_context import compute_for_ticker  # noqa: PLC0415
+
             self._technicals_fn = compute_for_ticker
         self.sec_user_agent = sec_user_agent or os.environ.get(
-            "SEC_EDGAR_USER_AGENT", _DEFAULT_SEC_USER_AGENT,
+            "SEC_EDGAR_USER_AGENT",
+            _DEFAULT_SEC_USER_AGENT,
         )
         self.max_excerpt_chars = max_excerpt_chars
         self.max_summary_chars = max_summary_chars
@@ -162,7 +172,8 @@ class ResearchTools:
         """
         try:
             body = self._sec_http_get(
-                _SUBMISSIONS_URL.format(cik=int(cik)), self._headers(),
+                _SUBMISSIONS_URL.format(cik=int(cik)),
+                self._headers(),
             )
             sub = json.loads(body)
         except Exception:
@@ -184,7 +195,9 @@ class ResearchTools:
             return None
         form, accn, doc = pick
         url = _ARCHIVE_URL.format(
-            cik=int(cik), accn=accn.replace("-", ""), doc=doc,
+            cik=int(cik),
+            accn=accn.replace("-", ""),
+            doc=doc,
         )
         try:
             raw = self._sec_http_get(url, self._headers())
@@ -196,7 +209,10 @@ class ResearchTools:
         return f"[{form}] {excerpt}" if excerpt else None
 
     def ground_one(
-        self, ticker: str, company_name: str, universe: Any,
+        self,
+        ticker: str,
+        company_name: str,
+        universe: Any,
     ) -> str | None:
         """A single grounding block for one name (profile + SEC excerpt), or
         None when no real data could be gathered."""
@@ -206,9 +222,7 @@ class ResearchTools:
         except Exception:
             profile = None
         if profile:
-            si = " / ".join(
-                x for x in (profile.get("sector"), profile.get("industry")) if x
-            )
+            si = " / ".join(x for x in (profile.get("sector"), profile.get("industry")) if x)
             if si:
                 parts.append(f"Sector: {si}")
             summary = (profile.get("summary") or "").strip()
@@ -230,6 +244,7 @@ class ResearchTools:
             ctx = None
         if ctx is not None:
             from src.events.technical_context import format_context_block  # noqa: PLC0415
+
             parts.append(format_context_block(ctx))
         # Options-activity confirmation (CL-mtum) — free chain-snapshot read
         # (P/C skew, volume vs baseline). Uses the universe's DB engine when
@@ -238,6 +253,7 @@ class ResearchTools:
         if db_engine is not None:
             try:
                 from src.events.options_activity import activity_note  # noqa: PLC0415
+
                 note = activity_note(db_engine, ticker)
             except Exception:
                 note = None

@@ -38,7 +38,8 @@ def make_db() -> Any:
     producer's 005_geo_events.sql schema (timestamps as ISO TEXT)."""
     engine = sa.create_engine("sqlite://")
     with engine.begin() as conn:
-        conn.execute(text("""
+        conn.execute(
+            text("""
             CREATE TABLE geo_events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 seen_at TEXT NOT NULL,
@@ -51,7 +52,8 @@ def make_db() -> Any:
                 status TEXT NOT NULL DEFAULT 'NEW',
                 status_updated_at TEXT NOT NULL
             )
-        """))
+        """)
+        )
     return engine
 
 
@@ -76,9 +78,10 @@ def insert_event(
         "urgency": urgency,
         "horizon": "hours",
         "confidence": confidence,
-        "affected": affected if affected is not None else [
-            {"instrument": "USD_CAD", "kind": "oanda",
-             "direction": "long", "reason": "test"},
+        "affected": affected
+        if affected is not None
+        else [
+            {"instrument": "USD_CAD", "kind": "oanda", "direction": "long", "reason": "test"},
         ],
         "rationale": "test fixture",
     }
@@ -106,7 +109,8 @@ def insert_event(
 def get_status(db: Any, event_id: int) -> str:
     with db.connect() as conn:
         return conn.execute(
-            text("SELECT status FROM geo_events WHERE id = :id"), {"id": event_id},
+            text("SELECT status FROM geo_events WHERE id = :id"),
+            {"id": event_id},
         ).scalar()
 
 
@@ -125,7 +129,10 @@ class FakeProvider:
         self.daily_vol = daily_vol
 
     def get_intraday_value(
-        self, symbol: str, as_of: datetime, max_staleness_minutes: int = 15,
+        self,
+        symbol: str,
+        as_of: datetime,
+        max_staleness_minutes: int = 15,
     ) -> float | None:
         # CL-hn0t: the reference baseline is now sourced from the intraday
         # store, so the fake serves p0 here (an event-timescale quote).
@@ -135,7 +142,10 @@ class FakeProvider:
         return self.p0
 
     def get_realized_vol(
-        self, pair: str, window: int = 20, as_of: datetime | None = None,
+        self,
+        pair: str,
+        window: int = 20,
+        as_of: datetime | None = None,
     ) -> float | None:
         return self.daily_vol * math.sqrt(252.0)
 
@@ -146,7 +156,9 @@ class FakeBroker:
 
     def get_account(self) -> Any:
         return SimpleNamespace(
-            balance=self._equity, equity=self._equity, margin_used=0.0,
+            balance=self._equity,
+            equity=self._equity,
+            margin_used=0.0,
         )
 
 
@@ -161,8 +173,9 @@ def make_strategy(
     return EventDrivenStrategy(cfg, data_provider=provider, db_engine=db)
 
 
-def run(strategy: EventDrivenStrategy, prices: dict[str, Any] | None = None,
-        broker: Any = None) -> list[OrderIntent]:
+def run(
+    strategy: EventDrivenStrategy, prices: dict[str, Any] | None = None, broker: Any = None
+) -> list[OrderIntent]:
     return asyncio.run(
         strategy.generate_intents(prices or {}, broker or FakeBroker()),
     )
@@ -243,8 +256,7 @@ class TestDirectionConfirmation:
 
     def test_short_needs_negative_move(self, tmp_path: Any) -> None:
         db = make_db()
-        affected = [{"instrument": "USD_CAD", "kind": "fx",
-                     "direction": "short", "reason": "test"}]
+        affected = [{"instrument": "USD_CAD", "kind": "fx", "direction": "short", "reason": "test"}]
         eid = insert_event(db, affected=affected, direction="bearish")
         strat = make_strategy(tmp_path, db=db, provider=FakeProvider(p0=1.0, daily_vol=0.01))
         intents = run(strat, {"USD_CAD": tick(0.99)})
@@ -254,8 +266,7 @@ class TestDirectionConfirmation:
 
     def test_short_rejects_positive_move(self, tmp_path: Any) -> None:
         db = make_db()
-        affected = [{"instrument": "USD_CAD", "kind": "fx",
-                     "direction": "short", "reason": "test"}]
+        affected = [{"instrument": "USD_CAD", "kind": "fx", "direction": "short", "reason": "test"}]
         eid = insert_event(db, affected=affected, direction="bearish")
         strat = make_strategy(tmp_path, db=db, provider=FakeProvider(p0=0.99, daily_vol=0.01))
         assert run(strat, {"USD_CAD": tick(1.0)}) == []
@@ -301,7 +312,9 @@ class TestWindow:
         assert get_status(db, eid) == "EXPIRED"
 
     def test_expired_high_urgency_alert_capped_at_one_per_run(
-        self, tmp_path: Any, sent_alerts: list[tuple[str, str, int]],
+        self,
+        tmp_path: Any,
+        sent_alerts: list[tuple[str, str, int]],
     ) -> None:
         db = make_db()
         insert_event(db, minutes_ago=300, urgency=9)
@@ -326,37 +339,52 @@ def make_price_db() -> Any:
     against genuine rows (parity, not a mock)."""
     engine = sa.create_engine("sqlite://")
     with engine.begin() as conn:
-        conn.execute(text("""
+        conn.execute(
+            text("""
             CREATE TABLE prices (
                 ts TIMESTAMP, symbol VARCHAR(64), close FLOAT,
                 PRIMARY KEY (ts, symbol)
             )
-        """))
-        conn.execute(text("""
+        """)
+        )
+        conn.execute(
+            text("""
             CREATE TABLE macro_data (
                 observation_date DATE, series_id VARCHAR(64),
                 value FLOAT, release_date DATE,
                 PRIMARY KEY (observation_date, series_id)
             )
-        """))
-        conn.execute(text("""
+        """)
+        )
+        conn.execute(
+            text("""
             CREATE TABLE intraday_quotes (
                 ts TIMESTAMP, symbol VARCHAR(64), mid FLOAT
             )
-        """))
+        """)
+        )
         # 25 daily closes per DB-native symbol (GOLD, USDCAD, OIL_WTI) so
         # get_realized_vol has its window+1 rows. USDCAD trends up.
         for i in range(25):
             d = f"2026-02-{i + 1:02d} 00:00:00"
-            conn.execute(text(
-                "INSERT INTO prices VALUES (:t, 'GOLD', :c)",
-            ), {"t": d, "c": 2400.0 + i * 2.0})
-            conn.execute(text(
-                "INSERT INTO prices VALUES (:t, 'USDCAD', :c)",
-            ), {"t": d, "c": 1.30 + i * 0.001})
-            conn.execute(text(
-                "INSERT INTO prices VALUES (:t, 'OIL_WTI', :c)",
-            ), {"t": d, "c": 70.0 + i * 0.1})
+            conn.execute(
+                text(
+                    "INSERT INTO prices VALUES (:t, 'GOLD', :c)",
+                ),
+                {"t": d, "c": 2400.0 + i * 2.0},
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO prices VALUES (:t, 'USDCAD', :c)",
+                ),
+                {"t": d, "c": 1.30 + i * 0.001},
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO prices VALUES (:t, 'OIL_WTI', :c)",
+                ),
+                {"t": d, "c": 70.0 + i * 0.1},
+            )
     return engine
 
 
@@ -381,40 +409,60 @@ class TestGateBBatchParity:
     def _confluence(self, engine: Any) -> Any:
         from src.data.provider import DataProvider
         from src.events.confluence import ConfluenceConfig, EventConfluence
+
         provider = DataProvider(engine)
         return EventConfluence(
-            config=ConfluenceConfig(), data_provider=provider, db_engine=engine,
+            config=ConfluenceConfig(),
+            data_provider=provider,
+            db_engine=engine,
             instrument_map=_default_instrument_map_for_test(),
         )
 
     def _fixture_events(self, now: datetime) -> list[dict[str, Any]]:
         seen = now - timedelta(minutes=60)
+
         # A spread of tradable legs across three instruments + a couple of
         # non-tradable/unmapped ones the batch must simply skip.
         def ev(eid: int, aff: list[dict[str, Any]]) -> dict[str, Any]:
             return {
-                "id": eid, "seen_at": seen.isoformat(), "theme": "energy",
-                "assessment": json.dumps({
-                    "urgency": 8, "confidence": 0.9, "affected": aff,
-                }),
+                "id": eid,
+                "seen_at": seen.isoformat(),
+                "theme": "energy",
+                "assessment": json.dumps(
+                    {
+                        "urgency": 8,
+                        "confidence": 0.9,
+                        "affected": aff,
+                    }
+                ),
             }
+
         return [
-            ev(1, [{"instrument": "USD_CAD", "kind": "fx",
-                    "direction": "long", "reason": "a"}]),
-            ev(2, [{"instrument": "XAU_USD", "kind": "oanda",
-                    "direction": "long", "reason": "b"},
-                   {"instrument": "USD_CAD", "kind": "fx",
-                    "direction": "short", "reason": "c"}]),
-            ev(3, [{"instrument": "BCO_USD", "kind": "oanda",
-                    "direction": "long", "reason": "d"},
-                   {"instrument": "SOME_EQUITY", "kind": "equity_watch",
-                    "direction": "watch", "reason": "e"}]),
+            ev(1, [{"instrument": "USD_CAD", "kind": "fx", "direction": "long", "reason": "a"}]),
+            ev(
+                2,
+                [
+                    {"instrument": "XAU_USD", "kind": "oanda", "direction": "long", "reason": "b"},
+                    {"instrument": "USD_CAD", "kind": "fx", "direction": "short", "reason": "c"},
+                ],
+            ),
+            ev(
+                3,
+                [
+                    {"instrument": "BCO_USD", "kind": "oanda", "direction": "long", "reason": "d"},
+                    {
+                        "instrument": "SOME_EQUITY",
+                        "kind": "equity_watch",
+                        "direction": "watch",
+                        "reason": "e",
+                    },
+                ],
+            ),
         ]
 
     def _checks_signature(self, result: Any) -> list[tuple[Any, ...]]:
         return [
-            (c.instrument, c.symbol, c.confirmed, c.move_frac,
-             c.threshold_frac, c.reason)
+            (c.instrument, c.symbol, c.confirmed, c.move_frac, c.threshold_frac, c.reason)
             for c in result.checks
         ]
 
@@ -430,26 +478,29 @@ class TestGateBBatchParity:
         # daily-close short-circuit).
         for eng in (eng_a, eng_b):
             with eng.begin() as conn:  # geo_events for the transition write
-                conn.execute(text("""
+                conn.execute(
+                    text("""
                     CREATE TABLE geo_events (
                         id INTEGER PRIMARY KEY, status TEXT,
                         status_updated_at TEXT
                     )
-                """))
+                """)
+                )
                 for eid in (1, 2, 3):
                     conn.execute(
                         text("INSERT INTO geo_events VALUES (:i, 'ASSESSED', '')"),
                         {"i": eid},
                     )
             for sym, ref, cur in [
-                ("USD_CAD", 1.34, 1.36), ("XAU_USD", 2400.0, 2440.0),
+                ("USD_CAD", 1.34, 1.36),
+                ("XAU_USD", 2400.0, 2440.0),
                 ("BCO_USD", 70.0, 71.5),
             ]:
                 _seed_intraday(eng, sym, seen, ref)
                 _seed_intraday(eng, sym, now, cur)
 
-        conf_a = self._confluence(eng_a)   # per-call path
-        conf_b = self._confluence(eng_b)   # batched path
+        conf_a = self._confluence(eng_a)  # per-call path
+        conf_b = self._confluence(eng_b)  # batched path
         events = self._fixture_events(now)
         cache = conf_b.build_poll_cache(events, now)
         # The cache actually batched the tradable instrument set.
@@ -460,7 +511,10 @@ class TestGateBBatchParity:
         for ev_a, ev_b in zip(events, events, strict=True):
             r_call = conf_a.evaluate_and_transition(ev_a, prices={}, now=now)
             r_batch = conf_b.evaluate_and_transition(
-                ev_b, prices={}, now=now, poll_cache=cache,
+                ev_b,
+                prices={},
+                now=now,
+                poll_cache=cache,
             )
             assert r_call.outcome == r_batch.outcome
             assert r_call.transitioned == r_batch.transitioned
@@ -490,7 +544,10 @@ class TestGateBBatchParity:
         # down intraday — proving the tick, not the cache, drove p1.
         ev1 = events[0]
         r = conf.evaluate_and_transition(
-            ev1, prices={"USD_CAD": tick(1.40)}, now=now, poll_cache=cache,
+            ev1,
+            prices={"USD_CAD": tick(1.40)},
+            now=now,
+            poll_cache=cache,
         )
         chk = next(c for c in r.checks if c.symbol == "USD_CAD")
         assert chk.confirmed
@@ -500,7 +557,9 @@ class TestGateBBatchParity:
 def _default_instrument_map_for_test() -> dict[str, str]:
     # OANDA ids pass through as the market symbol (same as the live config).
     return {
-        "USD_CAD": "USD_CAD", "XAU_USD": "XAU_USD", "BCO_USD": "BCO_USD",
+        "USD_CAD": "USD_CAD",
+        "XAU_USD": "XAU_USD",
+        "BCO_USD": "BCO_USD",
     }
 
 
@@ -523,11 +582,11 @@ class TestBoundedAssessedPoll:
     def test_limit_caps_and_orders_freshest_first(self, tmp_path: Any) -> None:
         db = make_db()
         # Insert 5 in-window rows at increasing recency (older → newer).
-        ids_in_order = [
-            insert_event(db, minutes_ago=60 + (5 - i)) for i in range(5)
-        ]
+        ids_in_order = [insert_event(db, minutes_ago=60 + (5 - i)) for i in range(5)]
         strat = make_strategy(
-            tmp_path, db=db, provider=confirming_provider(),
+            tmp_path,
+            db=db,
+            provider=confirming_provider(),
             assessed_poll_limit=3,
         )
         rows = strat._fetch_assessed()
@@ -538,30 +597,37 @@ class TestBoundedAssessedPoll:
         assert returned == list(reversed(ids_in_order))[:3]
 
     def test_cap_elision_is_logged(
-        self, tmp_path: Any, caplog: pytest.LogCaptureFixture,
+        self,
+        tmp_path: Any,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         db = make_db()
         for _ in range(4):
             insert_event(db, minutes_ago=60)
         strat = make_strategy(
-            tmp_path, db=db, provider=confirming_provider(),
+            tmp_path,
+            db=db,
+            provider=confirming_provider(),
             assessed_poll_limit=2,
         )
         with caplog.at_level("WARNING", logger="src.strategies.event_driven"):
             rows = strat._fetch_assessed()
         assert rows is not None and len(rows) == 2
         assert any(
-            "ASSESSED poll capped" in r.message and "elided" in r.message
-            for r in caplog.records
+            "ASSESSED poll capped" in r.message and "elided" in r.message for r in caplog.records
         )
 
     def test_no_log_when_under_cap(
-        self, tmp_path: Any, caplog: pytest.LogCaptureFixture,
+        self,
+        tmp_path: Any,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         db = make_db()
         insert_event(db, minutes_ago=60)
         strat = make_strategy(
-            tmp_path, db=db, provider=confirming_provider(),
+            tmp_path,
+            db=db,
+            provider=confirming_provider(),
             assessed_poll_limit=200,
         )
         with caplog.at_level("WARNING", logger="src.strategies.event_driven"):
@@ -596,7 +662,9 @@ class TestSizing:
         db = make_db()
         insert_event(db)
         strat = make_strategy(
-            tmp_path, db=db, provider=confirming_provider(),
+            tmp_path,
+            db=db,
+            provider=confirming_provider(),
             per_instrument_max_pct=1.0,
         )
         intents = run(strat, CONFIRM_PRICES, FakeBroker(equity=100_000))
@@ -613,11 +681,14 @@ class TestSizing:
 
     def test_short_size_is_negative_with_stop_above(self, tmp_path: Any) -> None:
         db = make_db()
-        affected = [{"instrument": "USD_CAD", "kind": "oanda",
-                     "direction": "short", "reason": "test"}]
+        affected = [
+            {"instrument": "USD_CAD", "kind": "oanda", "direction": "short", "reason": "test"}
+        ]
         insert_event(db, affected=affected, direction="bearish")
         strat = make_strategy(
-            tmp_path, db=db, provider=FakeProvider(p0=1.02, daily_vol=0.01),
+            tmp_path,
+            db=db,
+            provider=FakeProvider(p0=1.02, daily_vol=0.01),
             per_instrument_max_pct=1.0,
         )
         intents = run(strat, {"USD_CAD": tick(1.0)}, FakeBroker(equity=100_000))
@@ -643,16 +714,21 @@ def seed_position(
     # Direct book assignment: strategy.open_positions is a merged VIEW
     # (open + pending exits) since CL-8cw1 — mutations target the book.
     strat.book.open_positions[symbol] = EventPosition(
-        symbol=symbol, event_id=1,
+        symbol=symbol,
+        event_id=1,
         entry_ts=datetime.now(UTC) - timedelta(hours=hours_ago),
-        entry_price=entry_price, quantity=quantity, direction=direction,
-        stop_price=stop_price, headline="seeded",
+        entry_price=entry_price,
+        quantity=quantity,
+        direction=direction,
+        stop_price=stop_price,
+        headline="seeded",
     )
 
 
 class TestExits:
     def test_time_stop_finalizes_on_broker_flat_confirmation(
-        self, tmp_path: Any,
+        self,
+        tmp_path: Any,
     ) -> None:
         """Two-phase (CL-8cw1): the trigger tick emits the exit intent and
         PARKS the leg in pending_exits (nothing finalized); the next tick's
@@ -724,7 +800,9 @@ class TestCaps:
         db = make_db()
         eid = insert_event(db)
         strat = make_strategy(
-            tmp_path, db=db, provider=confirming_provider(),
+            tmp_path,
+            db=db,
+            provider=confirming_provider(),
             max_concurrent_event_positions=2,
         )
         seed_position(strat, symbol="XAU_USD", hours_ago=0.5)
@@ -735,13 +813,21 @@ class TestCaps:
         assert get_status(db, eid) == "CONFIRMED"
 
     def test_event_book_loss_cap_blocks_entries_and_logs_critical(
-        self, tmp_path: Any, caplog: pytest.LogCaptureFixture,
+        self,
+        tmp_path: Any,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         state_path = tmp_path / "event_book_state.json"
-        state_path.write_text(json.dumps({
-            "version": 1, "realized_pnl": -2500.0,
-            "closed_trades": 3, "open_positions": {},
-        }))
+        state_path.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "realized_pnl": -2500.0,
+                    "closed_trades": 3,
+                    "open_positions": {},
+                }
+            )
+        )
         db = make_db()
         eid = insert_event(db)
         strat = make_strategy(tmp_path, db=db, provider=confirming_provider())
@@ -755,10 +841,16 @@ class TestCaps:
 
     def test_book_under_cap_allows_entries(self, tmp_path: Any) -> None:
         state_path = tmp_path / "event_book_state.json"
-        state_path.write_text(json.dumps({
-            "version": 1, "realized_pnl": -1000.0,  # under 2% of 100k
-            "closed_trades": 1, "open_positions": {},
-        }))
+        state_path.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "realized_pnl": -1000.0,  # under 2% of 100k
+                    "closed_trades": 1,
+                    "open_positions": {},
+                }
+            )
+        )
         db = make_db()
         insert_event(db)
         strat = make_strategy(tmp_path, db=db, provider=confirming_provider())
@@ -788,7 +880,8 @@ class TestLiquidityWindowGate:
         assert get_status(db, eid) == "CONFIRMED"  # confirmed, never traded
 
     def test_tight_spread_still_enters_with_active_profile(
-        self, tmp_path: Any,
+        self,
+        tmp_path: Any,
     ) -> None:
         db = make_db()
         insert_event(db)
@@ -814,12 +907,18 @@ class TestPerLegConfirmation:
 
     def test_only_individually_confirmed_leg_is_traded(self, tmp_path: Any) -> None:
         db = make_db()
-        insert_event(db, affected=[
-            {"instrument": "USD_CAD", "kind": "oanda",
-             "direction": "long", "reason": "moved"},
-            {"instrument": "USD_JPY", "kind": "oanda",
-             "direction": "long", "reason": "did-not-move"},
-        ])
+        insert_event(
+            db,
+            affected=[
+                {"instrument": "USD_CAD", "kind": "oanda", "direction": "long", "reason": "moved"},
+                {
+                    "instrument": "USD_JPY",
+                    "kind": "oanda",
+                    "direction": "long",
+                    "reason": "did-not-move",
+                },
+            ],
+        )
         strat = make_strategy(tmp_path, db=db, provider=confirming_provider())
         # USD_CAD moves vs its 0.99 reference (confirms); USD_JPY is flat at
         # the reference (does NOT individually confirm).
@@ -834,15 +933,24 @@ class TestPerLegConfirmation:
 # =============================================================================
 
 
-def _seed(strat: EventDrivenStrategy, symbol: str, units: float,
-          price: float = 1.0, stop_price: float | None = None) -> None:
+def _seed(
+    strat: EventDrivenStrategy,
+    symbol: str,
+    units: float,
+    price: float = 1.0,
+    stop_price: float | None = None,
+) -> None:
     """Seed a tracked open position (notional = |units| * price). Default
     stop is a far-away 0.5 so the full-path tests' exit check (against the
     FakeProvider's p0=0.99 fallback price) doesn't close the seed before
     the new entry is sized."""
     strat.book.open_positions[symbol] = EventPosition(
-        symbol=symbol, event_id=1, entry_ts=datetime.now(UTC),
-        entry_price=price, quantity=units, direction=1 if units >= 0 else -1,
+        symbol=symbol,
+        event_id=1,
+        entry_ts=datetime.now(UTC),
+        entry_price=price,
+        quantity=units,
+        direction=1 if units >= 0 else -1,
         stop_price=stop_price if stop_price is not None else 0.5,
         headline=f"seeded {symbol}",
     )
@@ -871,7 +979,10 @@ class TestConcentrationCap:
         strat = make_strategy(tmp_path, db=make_db(), per_instrument_max_pct=0.25)
         _seed(strat, "BCO_USD", 20_000.0)
         capped = strat._concentration_capped_size(
-            "BCO_USD", size=15_000.0, entry_price=1.0, equity=100_000.0,
+            "BCO_USD",
+            size=15_000.0,
+            entry_price=1.0,
+            equity=100_000.0,
         )
         assert capped == pytest.approx(5_000.0)
 
@@ -880,16 +991,25 @@ class TestConcentrationCap:
         # (size 0), sign preserved regardless of direction.
         strat = make_strategy(tmp_path, db=make_db(), per_instrument_max_pct=0.25)
         _seed(strat, "BCO_USD", 25_000.0)
-        assert strat._concentration_capped_size(
-            "BCO_USD", size=-9_000.0, entry_price=1.0, equity=100_000.0,
-        ) == 0.0
+        assert (
+            strat._concentration_capped_size(
+                "BCO_USD",
+                size=-9_000.0,
+                entry_price=1.0,
+                equity=100_000.0,
+            )
+            == 0.0
+        )
 
     def test_under_cap_unchanged(self, tmp_path: Any) -> None:
         # Nothing open; a 5k BCO leg is well under the 25k cap → intact.
         # The cap is a ceiling, not a flat limiter — under-cap passes as-is.
         strat = make_strategy(tmp_path, db=make_db(), per_instrument_max_pct=0.25)
         assert strat._concentration_capped_size(
-            "BCO_USD", size=5_000.0, entry_price=1.0, equity=100_000.0,
+            "BCO_USD",
+            size=5_000.0,
+            entry_price=1.0,
+            equity=100_000.0,
         ) == pytest.approx(5_000.0)
 
     def test_other_instrument_open_does_not_count(self, tmp_path: Any) -> None:
@@ -897,7 +1017,10 @@ class TestConcentrationCap:
         strat = make_strategy(tmp_path, db=make_db(), per_instrument_max_pct=0.25)
         _seed(strat, "WTICO_USD", 24_000.0)  # near-cap in a DIFFERENT name
         assert strat._concentration_capped_size(
-            "BCO_USD", size=20_000.0, entry_price=1.0, equity=100_000.0,
+            "BCO_USD",
+            size=20_000.0,
+            entry_price=1.0,
+            equity=100_000.0,
         ) == pytest.approx(20_000.0)  # BCO itself is empty → full leg
 
     # ---- haven-cluster cap: the tighter of the two binds ----
@@ -908,12 +1031,17 @@ class TestConcentrationCap:
         # is only 20k - 12k = 8k → the cluster cap (smaller) binds. A 15k
         # gold leg is trimmed to 8k, NOT 25k.
         strat = make_strategy(
-            tmp_path, db=make_db(),
-            per_instrument_max_pct=0.25, haven_max_pct=0.20,
+            tmp_path,
+            db=make_db(),
+            per_instrument_max_pct=0.25,
+            haven_max_pct=0.20,
         )
         _seed(strat, "XAG_USD", 12_000.0)
         capped = strat._concentration_capped_size(
-            "XAU_USD", size=15_000.0, entry_price=1.0, equity=100_000.0,
+            "XAU_USD",
+            size=15_000.0,
+            entry_price=1.0,
+            equity=100_000.0,
         )
         assert capped == pytest.approx(8_000.0)  # haven-cluster headroom
 
@@ -924,12 +1052,17 @@ class TestConcentrationCap:
         # cluster would SKIP. To isolate per-instrument-binds we lift the
         # haven cap above the per-name exposure so the per-name cap wins.
         strat = make_strategy(
-            tmp_path, db=make_db(),
-            per_instrument_max_pct=0.25, haven_max_pct=0.40,
+            tmp_path,
+            db=make_db(),
+            per_instrument_max_pct=0.25,
+            haven_max_pct=0.40,
         )
         _seed(strat, "XAU_USD", 23_000.0)
         capped = strat._concentration_capped_size(
-            "XAU_USD", size=10_000.0, entry_price=1.0, equity=100_000.0,
+            "XAU_USD",
+            size=10_000.0,
+            entry_price=1.0,
+            equity=100_000.0,
         )
         # per-instrument headroom 25k - 23k = 2k binds (cluster headroom
         # 40k - 23k = 17k is looser).
@@ -940,49 +1073,67 @@ class TestConcentrationCap:
         # leg is skipped even though GOLD's own per-instrument headroom
         # (25k) is wide open. Either cap exhausted → skip.
         strat = make_strategy(
-            tmp_path, db=make_db(),
-            per_instrument_max_pct=0.25, haven_max_pct=0.20,
+            tmp_path,
+            db=make_db(),
+            per_instrument_max_pct=0.25,
+            haven_max_pct=0.20,
         )
         _seed(strat, "XAG_USD", 20_000.0)
-        assert strat._concentration_capped_size(
-            "XAU_USD", size=15_000.0, entry_price=1.0, equity=100_000.0,
-        ) == 0.0
+        assert (
+            strat._concentration_capped_size(
+                "XAU_USD",
+                size=15_000.0,
+                entry_price=1.0,
+                equity=100_000.0,
+            )
+            == 0.0
+        )
 
     # ---- full confirmed-entry path ----
 
     def test_per_instrument_warning_names_the_cap(
-        self, tmp_path: Any, caplog: pytest.LogCaptureFixture,
+        self,
+        tmp_path: Any,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         # 22k BCO_USD open (per-instrument cap 25k @ 100k); a 50k proposed
         # leg is trimmed to the 3k headroom and the WARNING names the
         # per-instrument cap (the general-instrument path, not haven).
         strat = make_strategy(
-            tmp_path, db=make_db(), per_instrument_max_pct=0.25,
+            tmp_path,
+            db=make_db(),
+            per_instrument_max_pct=0.25,
         )
         _seed(strat, "BCO_USD", 22_000.0)
         with caplog.at_level(logging.WARNING, logger="src.strategies.event_driven"):
             capped = strat._concentration_capped_size(
-                "BCO_USD", size=50_000.0, entry_price=1.0, equity=100_000.0,
+                "BCO_USD",
+                size=50_000.0,
+                entry_price=1.0,
+                equity=100_000.0,
             )
         assert capped == pytest.approx(3_000.0)
-        assert any(
-            "Concentration cap [per-instrument]" in r.getMessage()
-            for r in caplog.records
-        )
+        assert any("Concentration cap [per-instrument]" in r.getMessage() for r in caplog.records)
 
     def test_confirmed_haven_entry_skipped_at_cluster_cap_logs_warning(
-        self, tmp_path: Any, caplog: pytest.LogCaptureFixture,
+        self,
+        tmp_path: Any,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         # Full path: silver already at the haven cluster cap → the new GOLD
         # entry is skipped (no intent), row stays CONFIRMED, WARNING names
         # the haven-cluster cap.
         db = make_db()
-        affected = [{"instrument": "XAU_USD", "kind": "oanda",
-                     "direction": "long", "reason": "risk-off"}]
+        affected = [
+            {"instrument": "XAU_USD", "kind": "oanda", "direction": "long", "reason": "risk-off"}
+        ]
         eid = insert_event(db, affected=affected)
         strat = make_strategy(
-            tmp_path, db=db, provider=FakeProvider(p0=0.99, daily_vol=0.01),
-            haven_max_pct=0.20, max_concurrent_event_positions=5,
+            tmp_path,
+            db=db,
+            provider=FakeProvider(p0=0.99, daily_vol=0.01),
+            haven_max_pct=0.20,
+            max_concurrent_event_positions=5,
         )
         # 20k silver open (keyed by symbol) = the 20k haven cap @ 100k.
         _seed(strat, "XAG_USD", 20_000.0)
@@ -990,24 +1141,26 @@ class TestConcentrationCap:
             intents = run(strat, {"XAU_USD": tick(1.0)}, FakeBroker(equity=100_000))
         assert intents == []
         assert get_status(db, eid) == "CONFIRMED"  # confirmed, never traded
-        assert any(
-            "Concentration cap [haven-cluster" in r.getMessage()
-            for r in caplog.records
-        )
+        assert any("Concentration cap [haven-cluster" in r.getMessage() for r in caplog.records)
 
     def test_confirmed_haven_entry_reduced_under_cluster_cap(
-        self, tmp_path: Any,
+        self,
+        tmp_path: Any,
     ) -> None:
         # Silver partially open (10k of a 20k cluster cap); a fresh confirmed
         # GOLD entry is trimmed to the 10k cluster headroom (the tighter of
         # per-instrument 25k vs cluster 10k) rather than skipped.
         db = make_db()
-        affected = [{"instrument": "XAU_USD", "kind": "oanda",
-                     "direction": "long", "reason": "risk-off"}]
+        affected = [
+            {"instrument": "XAU_USD", "kind": "oanda", "direction": "long", "reason": "risk-off"}
+        ]
         insert_event(db, affected=affected)
         strat = make_strategy(
-            tmp_path, db=db, provider=FakeProvider(p0=0.99, daily_vol=0.01),
-            haven_max_pct=0.20, per_instrument_max_pct=0.25,
+            tmp_path,
+            db=db,
+            provider=FakeProvider(p0=0.99, daily_vol=0.01),
+            haven_max_pct=0.20,
+            per_instrument_max_pct=0.25,
             max_concurrent_event_positions=5,
         )
         _seed(strat, "XAG_USD", 10_000.0)
@@ -1024,7 +1177,9 @@ class TestConcentrationCap:
 
 class TestMissingTable:
     def test_noop_and_logs_once(
-        self, tmp_path: Any, caplog: pytest.LogCaptureFixture,
+        self,
+        tmp_path: Any,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         db = sa.create_engine("sqlite://")  # no geo_events table
         strat = make_strategy(tmp_path, db=db)
@@ -1044,13 +1199,15 @@ class TestMissingTable:
         strat = make_strategy(tmp_path, db=db, provider=confirming_provider())
         assert run(strat, CONFIRM_PRICES) == []
         with db.begin() as conn:
-            conn.execute(text("""
+            conn.execute(
+                text("""
                 CREATE TABLE geo_events (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     seen_at TEXT, source TEXT, external_id TEXT,
                     headline TEXT, url TEXT, theme TEXT,
                     assessment TEXT, status TEXT, status_updated_at TEXT)
-            """))
+            """)
+            )
         insert_event(db)
         assert len(run(strat, CONFIRM_PRICES)) == 1
 
@@ -1062,11 +1219,14 @@ class TestMissingTable:
 
 class TestInstrumentMapping:
     def test_unknown_instrument_skipped_with_warning(
-        self, tmp_path: Any, caplog: pytest.LogCaptureFixture,
+        self,
+        tmp_path: Any,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         db = make_db()
-        affected = [{"instrument": "KC_COFFEE", "kind": "fx",
-                     "direction": "long", "reason": "frost"}]
+        affected = [
+            {"instrument": "KC_COFFEE", "kind": "fx", "direction": "long", "reason": "frost"}
+        ]
         eid = insert_event(db, affected=affected)
         strat = make_strategy(tmp_path, db=db, provider=confirming_provider())
         with caplog.at_level(logging.WARNING, logger="src.strategies.event_driven"):
@@ -1077,8 +1237,7 @@ class TestInstrumentMapping:
 
     def test_alias_maps_to_broker_instrument(self, tmp_path: Any) -> None:
         db = make_db()
-        affected = [{"instrument": "USDCAD", "kind": "fx",
-                     "direction": "long", "reason": "test"}]
+        affected = [{"instrument": "USDCAD", "kind": "fx", "direction": "long", "reason": "test"}]
         insert_event(db, affected=affected)
         strat = make_strategy(tmp_path, db=db, provider=confirming_provider())
         intents = run(strat, CONFIRM_PRICES)
@@ -1089,8 +1248,9 @@ class TestInstrumentMapping:
         """An event whose only affected entries are equity_watch can
         never confirm (nothing tradable gates) — alert-only by design."""
         db = make_db()
-        affected = [{"instrument": "NVDA", "kind": "equity_watch",
-                     "direction": "watch", "reason": "test"}]
+        affected = [
+            {"instrument": "NVDA", "kind": "equity_watch", "direction": "watch", "reason": "test"}
+        ]
         eid = insert_event(db, affected=affected)
         strat = make_strategy(tmp_path, db=db, provider=confirming_provider())
         assert run(strat, {"NVDA": tick(1.0)}) == []
@@ -1104,14 +1264,14 @@ class TestInstrumentMapping:
 
 class TestAlerts:
     def test_confirmed_alert_content(
-        self, tmp_path: Any, sent_alerts: list[tuple[str, str, int]],
+        self,
+        tmp_path: Any,
+        sent_alerts: list[tuple[str, str, int]],
     ) -> None:
         db = make_db()
         affected = [
-            {"instrument": "USD_CAD", "kind": "oanda",
-             "direction": "long", "reason": "test"},
-            {"instrument": "NVDA", "kind": "equity_watch",
-             "direction": "watch", "reason": "test"},
+            {"instrument": "USD_CAD", "kind": "oanda", "direction": "long", "reason": "test"},
+            {"instrument": "NVDA", "kind": "equity_watch", "direction": "watch", "reason": "test"},
         ]
         insert_event(db, affected=affected, headline="Major pipeline explosion")
         strat = make_strategy(tmp_path, db=db, provider=confirming_provider())
@@ -1137,21 +1297,29 @@ class TestAlerts:
 
 class TestBuildStrategies:
     def test_event_id_routes_to_event_strategy(
-        self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Any,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         import src.runtime.run_engine as run_engine
 
         monkeypatch.setattr(
-            run_engine, "_build_db_engine", lambda: sa.create_engine("sqlite://"),
+            run_engine,
+            "_build_db_engine",
+            lambda: sa.create_engine("sqlite://"),
         )
-        config = {"strategies": [{
-            "id": "event_driven",
-            "enabled": True,
-            "config": {
-                "event_risk_pct": 0.007,
-                "event_book_state_path": str(tmp_path / "book.json"),
-            },
-        }]}
+        config = {
+            "strategies": [
+                {
+                    "id": "event_driven",
+                    "enabled": True,
+                    "config": {
+                        "event_risk_pct": 0.007,
+                        "event_book_state_path": str(tmp_path / "book.json"),
+                    },
+                }
+            ]
+        }
         strategies = run_engine.build_strategies(config, broker=None, oms=None)
         assert len(strategies) == 1
         assert isinstance(strategies[0], EventDrivenStrategy)
@@ -1159,18 +1327,27 @@ class TestBuildStrategies:
         assert strategies[0].db is not None
 
     def test_enabled_false_skips_strategy(
-        self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Any,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         import src.runtime.run_engine as run_engine
 
         monkeypatch.setattr(
-            run_engine, "_build_db_engine", lambda: sa.create_engine("sqlite://"),
+            run_engine,
+            "_build_db_engine",
+            lambda: sa.create_engine("sqlite://"),
         )
-        config = {"strategies": [
-            {"id": "event_driven", "enabled": False,
-             "config": {"event_book_state_path": str(tmp_path / "book.json")}},
-            {"id": "cb_sentiment_shift"},
-        ]}
+        config = {
+            "strategies": [
+                {
+                    "id": "event_driven",
+                    "enabled": False,
+                    "config": {"event_book_state_path": str(tmp_path / "book.json")},
+                },
+                {"id": "cb_sentiment_shift"},
+            ]
+        }
         strategies = run_engine.build_strategies(config, broker=None, oms=None)
         assert len(strategies) == 1
         assert not isinstance(strategies[0], EventDrivenStrategy)
@@ -1204,23 +1381,33 @@ class TestStatePersistence:
         assert (tmp_path / "event_book_state.json.corrupt").exists()
 
     def test_legacy_state_file_without_pending_key_loads_empty(
-        self, tmp_path: Any,
+        self,
+        tmp_path: Any,
     ) -> None:
         # The LIVE data/event_book_state.json predates pending_exits
         # (CL-8cw1) — the missing key must default to no pending exits,
         # with every legacy field loaded untouched.
         state_path = tmp_path / "event_book_state.json"
-        state_path.write_text(json.dumps({
-            "version": 1, "realized_pnl": -250.0, "closed_trades": 2,
-            "open_positions": {
-                "USD_CAD": {
-                    "event_id": 7,
-                    "entry_ts": datetime.now(UTC).isoformat(),
-                    "entry_price": 1.0, "quantity": 1000.0,
-                    "direction": 1, "stop_price": 0.99, "headline": "legacy",
-                },
-            },
-        }))
+        state_path.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "realized_pnl": -250.0,
+                    "closed_trades": 2,
+                    "open_positions": {
+                        "USD_CAD": {
+                            "event_id": 7,
+                            "entry_ts": datetime.now(UTC).isoformat(),
+                            "entry_price": 1.0,
+                            "quantity": 1000.0,
+                            "direction": 1,
+                            "stop_price": 0.99,
+                            "headline": "legacy",
+                        },
+                    },
+                }
+            )
+        )
         strat = make_strategy(tmp_path, db=make_db())
         assert strat.book.pending_exits == {}
         assert strat.book.realized_pnl == pytest.approx(-250.0)
@@ -1238,7 +1425,8 @@ def _add_advisory(db: Any, eid: int, ideas: list[dict[str, Any]]) -> None:
     insert_event predates the advisory keys)."""
     with db.begin() as conn:
         raw = conn.execute(
-            text("SELECT assessment FROM geo_events WHERE id = :id"), {"id": eid},
+            text("SELECT assessment FROM geo_events WHERE id = :id"),
+            {"id": eid},
         ).scalar()
         assessment = json.loads(raw)
         assessment["trade_ideas"] = ideas
@@ -1249,26 +1437,43 @@ def _add_advisory(db: Any, eid: int, ideas: list[dict[str, Any]]) -> None:
 
 
 _IDEAS = [
-    {"ticker": "TSM", "action": "buy_puts", "direction": "bearish",
-     "confidence": 0.7, "rationale": "advanced-node concentration",
-     "time_horizon": "short", "holding_period_days": "2-6",
-     "time_stop_days": 5},
-    {"ticker": "RTX", "action": "long", "direction": "bullish",
-     "confidence": 0.5, "rationale": "defense demand",
-     "time_horizon": "medium", "holding_period_days": "10-20",
-     "time_stop_days": 20},
+    {
+        "ticker": "TSM",
+        "action": "buy_puts",
+        "direction": "bearish",
+        "confidence": 0.7,
+        "rationale": "advanced-node concentration",
+        "time_horizon": "short",
+        "holding_period_days": "2-6",
+        "time_stop_days": 5,
+    },
+    {
+        "ticker": "RTX",
+        "action": "long",
+        "direction": "bullish",
+        "confidence": 0.5,
+        "rationale": "defense demand",
+        "time_horizon": "medium",
+        "holding_period_days": "10-20",
+        "time_stop_days": 20,
+    },
 ]
 
 
 class TestConfirmedAlertEnrichment:
     def _confirm(
-        self, tmp_path: Any, db: Any, minutes_ago: float = 60,
+        self,
+        tmp_path: Any,
+        db: Any,
+        minutes_ago: float = 60,
     ) -> None:
         strat = make_strategy(tmp_path, db=db, provider=confirming_provider())
         run(strat, CONFIRM_PRICES)
 
     def test_trade_line_has_entry_price_and_reason(
-        self, tmp_path: Any, sent_alerts: list[tuple[str, str, int]],
+        self,
+        tmp_path: Any,
+        sent_alerts: list[tuple[str, str, int]],
     ) -> None:
         db = make_db()
         insert_event(db)
@@ -1279,7 +1484,9 @@ class TestConfirmedAlertEnrichment:
         assert "Why: test" in message
 
     def test_age_line_since_first_seen(
-        self, tmp_path: Any, sent_alerts: list[tuple[str, str, int]],
+        self,
+        tmp_path: Any,
+        sent_alerts: list[tuple[str, str, int]],
     ) -> None:
         db = make_db()
         insert_event(db, minutes_ago=60)
@@ -1288,7 +1495,9 @@ class TestConfirmedAlertEnrichment:
         assert "Age: 1h since first seen" in message
 
     def test_advisory_ideas_block_clearly_separated(
-        self, tmp_path: Any, sent_alerts: list[tuple[str, str, int]],
+        self,
+        tmp_path: Any,
+        sent_alerts: list[tuple[str, str, int]],
     ) -> None:
         db = make_db()
         eid = insert_event(db)
@@ -1302,7 +1511,9 @@ class TestConfirmedAlertEnrichment:
         assert message.index("Trade: USD_CAD") < message.index("Operator ideas")
 
     def test_no_ideas_no_advisory_block(
-        self, tmp_path: Any, sent_alerts: list[tuple[str, str, int]],
+        self,
+        tmp_path: Any,
+        sent_alerts: list[tuple[str, str, int]],
     ) -> None:
         db = make_db()
         insert_event(db)
@@ -1311,7 +1522,9 @@ class TestConfirmedAlertEnrichment:
         assert "Operator ideas" not in message
 
     def test_top_idea_shows_grounded_card_when_price_resolves(
-        self, tmp_path: Any, sent_alerts: list[tuple[str, str, int]],
+        self,
+        tmp_path: Any,
+        sent_alerts: list[tuple[str, str, int]],
     ) -> None:
         # CL-jiqq: the top idea's GROUNDED card numbers surface in the
         # confirmed alert when a live price resolves. USD_CAD is in the
@@ -1319,15 +1532,26 @@ class TestConfirmedAlertEnrichment:
         # stop/target/R:R render under the idea line.
         db = make_db()
         eid = insert_event(db)
-        _add_advisory(db, eid, [{
-            "ticker": "USD_CAD", "action": "long", "direction": "bullish",
-            "confidence": 0.9, "rationale": "chokepoint reopening",
-            "time_horizon": "short", "holding_period_days": "2-6",
-            "time_stop_days": 5, "stop_loss_pct": 0.05,
-            "target_pct": [0.08, 0.15],
-            "entry_trigger": "on confirmed reopening",
-            "invalidation": "renewed blockade",
-        }])
+        _add_advisory(
+            db,
+            eid,
+            [
+                {
+                    "ticker": "USD_CAD",
+                    "action": "long",
+                    "direction": "bullish",
+                    "confidence": 0.9,
+                    "rationale": "chokepoint reopening",
+                    "time_horizon": "short",
+                    "holding_period_days": "2-6",
+                    "time_stop_days": 5,
+                    "stop_loss_pct": 0.05,
+                    "target_pct": [0.08, 0.15],
+                    "entry_trigger": "on confirmed reopening",
+                    "invalidation": "renewed blockade",
+                }
+            ],
+        )
         self._confirm(tmp_path, db)
         message = next(m for t, m, _ in sent_alerts if t == "Event confirmed")
         # long → stop below 1.0, targets above; card grounds them.
@@ -1338,20 +1562,31 @@ class TestConfirmedAlertEnrichment:
         assert "invalid if renewed blockade" in message
 
     def test_top_idea_card_lines_no_price_no_dollar_levels(
-        self, tmp_path: Any,
+        self,
+        tmp_path: Any,
     ) -> None:
         # Directly exercise the card helper: no price → no fabricated
         # dollar stop/target/strike; only price-free facts (the DTE
         # window for an option) may show. A bare STOCK idea shows nothing.
         strat = make_strategy(tmp_path, db=make_db(), provider=None)
-        opt = {"ticker": "TSM", "action": "buy_puts", "direction": "bearish",
-               "time_horizon": "short", "confidence": 0.7}
+        opt = {
+            "ticker": "TSM",
+            "action": "buy_puts",
+            "direction": "bearish",
+            "time_horizon": "short",
+            "confidence": 0.7,
+        }
         opt_lines = strat.notifier._top_idea_card_lines(opt, prices={}, now=None)
         assert opt_lines == ["  1-3 weeks to expiry"]  # DTE is price-free
         assert not any("$" in ln for ln in opt_lines)  # no fake dollars
 
-        stock = {"ticker": "TSM", "action": "short", "direction": "bearish",
-                 "time_horizon": "short", "confidence": 0.7}
+        stock = {
+            "ticker": "TSM",
+            "action": "short",
+            "direction": "bearish",
+            "time_horizon": "short",
+            "confidence": 0.7,
+        }
         assert strat.notifier._top_idea_card_lines(stock, prices={}, now=None) == []
 
 
@@ -1377,7 +1612,10 @@ class _CrossAssetProvider:
         }
 
     def get_intraday_value(
-        self, instrument: str, as_of: datetime, max_staleness_minutes: int = 15,
+        self,
+        instrument: str,
+        as_of: datetime,
+        max_staleness_minutes: int = 15,
     ) -> float | None:
         # CL-hn0t: Gate B's reference baseline now reads the intraday store,
         # so mirror get_latest_value here (ref at seen_at, moved at now).
@@ -1390,8 +1628,9 @@ class _CrossAssetProvider:
         p0, p1 = leg
         return p1 if as_of > self.seen_cutoff else p0
 
-    def get_realized_vol(self, pair: str, window: int = 20,
-                         as_of: datetime | None = None) -> float | None:
+    def get_realized_vol(
+        self, pair: str, window: int = 20, as_of: datetime | None = None
+    ) -> float | None:
         return 0.01 * math.sqrt(252.0)
 
 
@@ -1404,10 +1643,14 @@ class TestCrossAssetLine:
         # tradable long USD_CAD so Gate B can confirm via the live tick.
         _EVENT_SEQ["n"] += 1
         assessment = {
-            "core_event": "hormuz threat", "direction": "bullish",
-            "urgency": 8, "horizon": "hours", "confidence": 0.9,
-            "affected": [{"instrument": "USD_CAD", "kind": "fx",
-                          "direction": "long", "reason": "petro-fx"}],
+            "core_event": "hormuz threat",
+            "direction": "bullish",
+            "urgency": 8,
+            "horizon": "hours",
+            "confidence": 0.9,
+            "affected": [
+                {"instrument": "USD_CAD", "kind": "fx", "direction": "long", "reason": "petro-fx"}
+            ],
             "rationale": "chokepoint",
         }
         seen = (datetime.now(UTC) - timedelta(minutes=minutes_ago)).isoformat()
@@ -1419,19 +1662,22 @@ class TestCrossAssetLine:
                     "VALUES (:seen, 'gdelt', :ext, 'Hormuz closure threat', '', "
                     "'energy_chokepoint', :a, 'ASSESSED', :seen)"
                 ),
-                {"seen": seen, "ext": f"xa-{_EVENT_SEQ['n']}",
-                 "a": json.dumps(assessment)},
+                {"seen": seen, "ext": f"xa-{_EVENT_SEQ['n']}", "a": json.dumps(assessment)},
             )
             return int(conn.execute(text("SELECT max(id) FROM geo_events")).scalar())
 
     def test_confirmed_alert_shows_cross_asset_confirms(
-        self, tmp_path: Any, sent_alerts: list[tuple[str, str, int]],
+        self,
+        tmp_path: Any,
+        sent_alerts: list[tuple[str, str, int]],
     ) -> None:
         db = make_db()
         self._insert_energy(db)
         cutoff = datetime.now(UTC) - timedelta(minutes=30)
         strat = make_strategy(
-            tmp_path, db=db, provider=_CrossAssetProvider(0.99, 1.0, cutoff),
+            tmp_path,
+            db=db,
+            provider=_CrossAssetProvider(0.99, 1.0, cutoff),
         )
         run(strat, CONFIRM_PRICES)  # USD_CAD live tick 1.0 confirms Gate B
         message = next(m for t, m, _ in sent_alerts if t == "Event confirmed")
@@ -1441,7 +1687,9 @@ class TestCrossAssetLine:
         assert "confirms" in message
 
     def test_unconfigured_theme_omits_cross_asset(
-        self, tmp_path: Any, sent_alerts: list[tuple[str, str, int]],
+        self,
+        tmp_path: Any,
+        sent_alerts: list[tuple[str, str, int]],
     ) -> None:
         # The default insert_event uses theme='energy' (NOT a configured
         # cross-asset theme) → unknown → no cross-asset line.
@@ -1455,16 +1703,16 @@ class TestCrossAssetLine:
 
 class TestExpiredAlertEnrichment:
     def test_age_and_top_idea(
-        self, tmp_path: Any, sent_alerts: list[tuple[str, str, int]],
+        self,
+        tmp_path: Any,
+        sent_alerts: list[tuple[str, str, int]],
     ) -> None:
         db = make_db()
         eid = insert_event(db, minutes_ago=300, urgency=9)
         _add_advisory(db, eid, _IDEAS)
         strat = make_strategy(tmp_path, db=db, provider=confirming_provider())
         run(strat, CONFIRM_PRICES)
-        message = next(
-            m for t, m, _ in sent_alerts if t == "Event expired unconfirmed"
-        )
+        message = next(m for t, m, _ in sent_alerts if t == "Event expired unconfirmed")
         assert "Age: 5h since first seen" in message
         # Highest-confidence idea wins the single Top idea line.
         assert "Top idea: TSM buy_puts (stop 5d) — advanced-node concentration" in message
@@ -1472,15 +1720,15 @@ class TestExpiredAlertEnrichment:
         assert "No trade taken" in message
 
     def test_no_ideas_no_top_idea_line(
-        self, tmp_path: Any, sent_alerts: list[tuple[str, str, int]],
+        self,
+        tmp_path: Any,
+        sent_alerts: list[tuple[str, str, int]],
     ) -> None:
         db = make_db()
         insert_event(db, minutes_ago=300, urgency=9)
         strat = make_strategy(tmp_path, db=db, provider=confirming_provider())
         run(strat, CONFIRM_PRICES)
-        message = next(
-            m for t, m, _ in sent_alerts if t == "Event expired unconfirmed"
-        )
+        message = next(m for t, m, _ in sent_alerts if t == "Event expired unconfirmed")
         assert "Top idea" not in message
 
 
@@ -1497,8 +1745,7 @@ class _BrokerWithPositions:
         return SimpleNamespace(balance=100_000.0, equity=100_000.0, margin_used=0.0)
 
     def get_positions(self) -> list[Any]:
-        return [SimpleNamespace(symbol=s, quantity=1.0, avg_price=1.0)
-                for s in self._held]
+        return [SimpleNamespace(symbol=s, quantity=1.0, avg_price=1.0) for s in self._held]
 
 
 class _BrokerRaises:
@@ -1511,9 +1758,13 @@ class _BrokerRaises:
 
 def _pos(symbol: str, minutes_ago: float) -> EventPosition:
     return EventPosition(
-        symbol=symbol, event_id=1,
+        symbol=symbol,
+        event_id=1,
         entry_ts=datetime.now(UTC) - timedelta(minutes=minutes_ago),
-        entry_price=1.0, quantity=100.0, direction=1, stop_price=0.99,
+        entry_price=1.0,
+        quantity=100.0,
+        direction=1,
+        stop_price=0.99,
         headline="x",
     )
 
@@ -1533,8 +1784,7 @@ class TestPhantomReconciliation:
         strat = make_strategy(tmp_path)
         strat.open_positions = {"USD_NOK": _pos("USD_NOK", minutes_ago=10)}
         # Broker reports it OANDA-underscore-stripped (USDNOK); norm must match.
-        strat._reconcile_positions(
-            _BrokerWithPositions({"USDNOK"}), datetime.now(UTC))
+        strat._reconcile_positions(_BrokerWithPositions({"USDNOK"}), datetime.now(UTC))
         assert "USD_NOK" in strat.open_positions
 
     def test_grace_window_protects_fresh_position(self, tmp_path: Any) -> None:
@@ -1555,8 +1805,8 @@ class TestPhantomReconciliation:
         # Two old phantoms fill the cap=2; after reconciliation (broker holds
         # none) both are pruned, freeing the slots.
         strat = make_strategy(
-            tmp_path, max_concurrent_event_positions=2,
-            position_reconcile_grace_sec=120)
+            tmp_path, max_concurrent_event_positions=2, position_reconcile_grace_sec=120
+        )
         strat.open_positions = {
             "BCO_USD": _pos("BCO_USD", minutes_ago=10),
             "NATGAS_USD": _pos("NATGAS_USD", minutes_ago=10),
@@ -1587,7 +1837,9 @@ class TestPendingExitLifecycle:
         return strat
 
     def test_rejected_exit_reemits_and_stays_reconciler_visible(
-        self, tmp_path: Any, caplog: pytest.LogCaptureFixture,
+        self,
+        tmp_path: Any,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         # Broker STILL holds the leg next tick (exit rejected): the same
         # target-0 intent re-emits, the book is NOT flat, and the leg
@@ -1600,17 +1852,18 @@ class TestPendingExitLifecycle:
         assert [i.target_position for i in intents] == [0]
         assert intents[0].urgency == Urgency.URGENT.value
         book_view = strat.open_positions
-        assert isinstance(book_view, dict)          # reconciler contract
-        assert "USD_CAD" in book_view               # reconciler-visible
-        assert strat.book.realized_pnl == 0.0       # nothing booked yet
+        assert isinstance(book_view, dict)  # reconciler contract
+        assert "USD_CAD" in book_view  # reconciler-visible
+        assert strat.book.realized_pnl == 0.0  # nothing booked yet
         assert strat.book.closed_trades == 0
         assert any(
-            "exit for USD_CAD not confirmed, re-emitting" in r.getMessage()
-            for r in caplog.records
+            "exit for USD_CAD not confirmed, re-emitting" in r.getMessage() for r in caplog.records
         )
 
     def test_first_emission_logs_no_reemit_warning(
-        self, tmp_path: Any, caplog: pytest.LogCaptureFixture,
+        self,
+        tmp_path: Any,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         broker = _BrokerWithPositions({"USDCAD"})
         with caplog.at_level(logging.WARNING, logger="src.strategies.event_book"):
@@ -1693,8 +1946,7 @@ class _BrokerWithNetQty:
         return SimpleNamespace(balance=100_000.0, equity=100_000.0, margin_used=0.0)
 
     def get_positions(self) -> list[Any]:
-        return [SimpleNamespace(symbol=s, quantity=q, avg_price=1.0)
-                for s, q in self.net.items()]
+        return [SimpleNamespace(symbol=s, quantity=q, avg_price=1.0) for s, q in self.net.items()]
 
 
 class _RecordingSnapshotStore:
@@ -1710,25 +1962,33 @@ def _legacy_pending_state(tmp_path: Any) -> None:
     """Write a pre-CL-9dhg state file: a pending exit WITHOUT the
     trigger_broker_qty key (the persisted live format at rollout)."""
     now = datetime.now(UTC)
-    (tmp_path / "event_book_state.json").write_text(json.dumps({
-        "version": 1, "realized_pnl": 0.0, "closed_trades": 0,
-        "open_positions": {},
-        "pending_exits": {
-            "USD_CAD": {
-                "position": {
-                    "event_id": 1,
-                    "entry_ts": (now - timedelta(hours=5)).isoformat(),
-                    "entry_price": 0.99, "quantity": 50_000.0,
-                    "direction": 1, "stop_price": 0.9801,
-                    "headline": "legacy",
+    (tmp_path / "event_book_state.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "realized_pnl": 0.0,
+                "closed_trades": 0,
+                "open_positions": {},
+                "pending_exits": {
+                    "USD_CAD": {
+                        "position": {
+                            "event_id": 1,
+                            "entry_ts": (now - timedelta(hours=5)).isoformat(),
+                            "entry_price": 0.99,
+                            "quantity": 50_000.0,
+                            "direction": 1,
+                            "stop_price": 0.9801,
+                            "headline": "legacy",
+                        },
+                        "reason": "time_stop",
+                        "triggered_ts": now.isoformat(),
+                        "trigger_price": 1.0,
+                        "emit_count": 1,
+                    },
                 },
-                "reason": "time_stop",
-                "triggered_ts": now.isoformat(),
-                "trigger_price": 1.0,
-                "emit_count": 1,
-            },
-        },
-    }))
+            }
+        )
+    )
 
 
 class TestTriggerBrokerCapture:
@@ -1752,9 +2012,7 @@ class TestTriggerBrokerCapture:
         assert entry.trigger_broker_qty == pytest.approx(80_000.0)
         # The capture persists (a restart must not forget it).
         state = json.loads((tmp_path / "event_book_state.json").read_text())
-        assert state["pending_exits"]["USD_CAD"]["trigger_broker_qty"] == (
-            pytest.approx(80_000.0)
-        )
+        assert state["pending_exits"]["USD_CAD"]["trigger_broker_qty"] == (pytest.approx(80_000.0))
         # Co-holder residual remains → confirmed, P&L from trigger price.
         broker.net = {"USDCAD": 30_000.0}
         assert run(strat, {"USD_CAD": tick(1.0)}, broker) == []
@@ -1763,7 +2021,8 @@ class TestTriggerBrokerCapture:
         assert strat.book.closed_trades == 1
 
     def test_partial_fill_outside_tolerance_stays_pending(
-        self, tmp_path: Any,
+        self,
+        tmp_path: Any,
     ) -> None:
         # Net 80k at trigger; only 20k of our 50k exit filled → net 60k,
         # 30k away from the expected 30k residual (tolerance is
@@ -1780,7 +2039,9 @@ class TestTriggerBrokerCapture:
         assert strat.book.closed_trades == 0
 
     def test_phantom_leg_finalizes_without_pnl(
-        self, tmp_path: Any, caplog: pytest.LogCaptureFixture,
+        self,
+        tmp_path: Any,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         # A rejected entry inside the reconcile grace: the broker NEVER
         # held the leg (capture 0), its stop crosses, it parks pending —
@@ -1808,7 +2069,8 @@ class TestTriggerBrokerCapture:
         assert state["closed_trades"] == 0
 
     def test_legacy_pending_confirms_only_on_broker_flat(
-        self, tmp_path: Any,
+        self,
+        tmp_path: Any,
     ) -> None:
         # A persisted pre-CL-9dhg pending entry has NO trigger capture →
         # loads as None: the residual rule must never apply (a 30k net
@@ -1830,7 +2092,8 @@ class TestTriggerBrokerCapture:
         assert strat.book.closed_trades == 1
 
     def test_exit_snapshot_recorded_only_on_first_emission(
-        self, tmp_path: Any,
+        self,
+        tmp_path: Any,
     ) -> None:
         # CL-9dhg finding 10: re-emissions derive every value from the
         # trigger-time capture — one FeatureSnapshot per tick per pending
@@ -1850,9 +2113,7 @@ class TestTriggerBrokerCapture:
             assert [i.target_position for i in intents] == [0]
             assert intents[0].metadata == {}  # re-emission: no snapshot
         assert strat.book.pending_exits["USD_CAD"].emit_count == 3
-        exit_snaps = [
-            s for s in store.snapshots if s.values.get("trigger") == "exit"
-        ]
+        exit_snaps = [s for s in store.snapshots if s.values.get("trigger") == "exit"]
         assert len(exit_snaps) == 1
 
     def test_symbol_in_both_books_refuses_to_load(self, tmp_path: Any) -> None:
@@ -1862,23 +2123,36 @@ class TestTriggerBrokerCapture:
         # rule: refuse to start.
         now = datetime.now(UTC)
         pos_payload = {
-            "event_id": 1, "entry_ts": now.isoformat(), "entry_price": 1.0,
-            "quantity": 1000.0, "direction": 1, "stop_price": 0.99,
+            "event_id": 1,
+            "entry_ts": now.isoformat(),
+            "entry_price": 1.0,
+            "quantity": 1000.0,
+            "direction": 1,
+            "stop_price": 0.99,
             "headline": "dup",
         }
-        (tmp_path / "event_book_state.json").write_text(json.dumps({
-            "version": 1, "realized_pnl": 0.0, "closed_trades": 0,
-            "open_positions": {"USD_CAD": pos_payload},
-            "pending_exits": {
-                "USD_CAD": {
-                    "position": pos_payload, "reason": "hard_stop",
-                    "triggered_ts": now.isoformat(), "trigger_price": 0.99,
-                    "emit_count": 1,
-                },
-            },
-        }))
+        (tmp_path / "event_book_state.json").write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "realized_pnl": 0.0,
+                    "closed_trades": 0,
+                    "open_positions": {"USD_CAD": pos_payload},
+                    "pending_exits": {
+                        "USD_CAD": {
+                            "position": pos_payload,
+                            "reason": "hard_stop",
+                            "triggered_ts": now.isoformat(),
+                            "trigger_price": 0.99,
+                            "emit_count": 1,
+                        },
+                    },
+                }
+            )
+        )
         with pytest.raises(
-            ValueError, match="appear in more than one of open_positions",
+            ValueError,
+            match="appear in more than one of open_positions",
         ):
             make_strategy(tmp_path, db=make_db())
 
@@ -1900,14 +2174,18 @@ class TestEntryLifecycle:
     until filled), so the intended phantom is never exposed."""
 
     def _confirmed_entry_strat(
-        self, tmp_path: Any, broker: Any,
+        self,
+        tmp_path: Any,
+        broker: Any,
     ) -> tuple[EventDrivenStrategy, int]:
         """Confirm one long-USD_CAD event and run a tick against ``broker``;
         the leg lands in pending_entries at its intended 50k size."""
         db = make_db()
         eid = insert_event(db)  # long USD_CAD, confirming setup
         strat = make_strategy(
-            tmp_path, db=db, provider=confirming_provider(),
+            tmp_path,
+            db=db,
+            provider=confirming_provider(),
             per_instrument_max_pct=1.0,
         )
         intents = run(strat, CONFIRM_PRICES, broker)
@@ -1924,9 +2202,7 @@ class TestEntryLifecycle:
         # -308-vs-214 divergence that tripped reconciliation_failure.
         broker = _BrokerWithNetQty({})  # flat at submit → baseline 0
         strat, _ = self._confirmed_entry_strat(tmp_path, broker)
-        assert strat.book.pending_entries["USD_CAD"].entry_broker_qty == (
-            pytest.approx(0.0)
-        )
+        assert strat.book.pending_entries["USD_CAD"].entry_broker_qty == (pytest.approx(0.0))
         # Broker fills 30k of the 50k order.
         broker.net = {"USDCAD": 30_000.0}
         run(strat, {"USD_CAD": tick(1.0)}, broker)
@@ -1942,11 +2218,9 @@ class TestEntryLifecycle:
         broker = _BrokerWithNetQty({})
         strat, _ = self._confirmed_entry_strat(tmp_path, broker)
         broker.net = {"USDCAD": 50_000.0}  # full fill
-        promoted = strat.book.confirm_entries(broker.get_positions(),
-                                              datetime.now(UTC))
+        promoted = strat.book.confirm_entries(broker.get_positions(), datetime.now(UTC))
         assert [p.quantity for p in promoted] == [pytest.approx(50_000.0)]
-        assert strat.book.open_positions["USD_CAD"].quantity == (
-            pytest.approx(50_000.0))
+        assert strat.book.open_positions["USD_CAD"].quantity == (pytest.approx(50_000.0))
         assert strat.book.pending_entries == {}
 
     def test_rejected_entry_leaves_zero_residue(self, tmp_path: Any) -> None:
@@ -1954,13 +2228,13 @@ class TestEntryLifecycle:
         # and NOTHING is booked — no open leg, no pending, no P&L.
         broker = _BrokerWithNetQty({})  # broker flat, stays flat
         strat, _ = self._confirmed_entry_strat(
-            tmp_path, broker,
+            tmp_path,
+            broker,
         )
         # Age the submit past the grace window, then confirm.
         entry = strat.book.pending_entries["USD_CAD"]
         entry.submitted_ts = datetime.now(UTC) - timedelta(seconds=200)
-        promoted = strat.book.confirm_entries(broker.get_positions(),
-                                              datetime.now(UTC))
+        promoted = strat.book.confirm_entries(broker.get_positions(), datetime.now(UTC))
         assert promoted == []
         assert strat.book.pending_entries == {}
         assert strat.book.open_positions == {}
@@ -1972,8 +2246,7 @@ class TestEntryLifecycle:
         broker = _BrokerWithNetQty({})
         strat, _ = self._confirmed_entry_strat(tmp_path, broker)
         # Fresh submit, broker still flat → NOT rejected yet, still pending.
-        promoted = strat.book.confirm_entries(broker.get_positions(),
-                                              datetime.now(UTC))
+        promoted = strat.book.confirm_entries(broker.get_positions(), datetime.now(UTC))
         assert promoted == []
         assert "USD_CAD" in strat.book.pending_entries
         assert strat.book.open_positions == {}
@@ -1985,8 +2258,7 @@ class TestEntryLifecycle:
         # 90k - 40k = 50k, and we book 50k, NOT the 90k account total.
         broker = _BrokerWithNetQty({"USDCAD": 40_000.0})  # co-holder baseline
         strat, _ = self._confirmed_entry_strat(tmp_path, broker)
-        assert strat.book.pending_entries["USD_CAD"].entry_broker_qty == (
-            pytest.approx(40_000.0))
+        assert strat.book.pending_entries["USD_CAD"].entry_broker_qty == (pytest.approx(40_000.0))
         broker.net = {"USDCAD": 90_000.0}  # our 50k fills on top
         run(strat, {"USD_CAD": tick(1.0)}, broker)
         booked = strat.book.open_positions["USD_CAD"]
@@ -2006,12 +2278,16 @@ class TestEntryLifecycle:
         # blocked) rather than which specific symbol wins.
         db = make_db()
         eid1 = insert_event(db)  # long USD_CAD (older)
-        affected2 = [{"instrument": "BCO_USD", "kind": "oanda",
-                      "direction": "long", "reason": "second"}]
+        affected2 = [
+            {"instrument": "BCO_USD", "kind": "oanda", "direction": "long", "reason": "second"}
+        ]
         eid2 = insert_event(db, affected=affected2)  # BCO_USD (fresher)
         strat = make_strategy(
-            tmp_path, db=db, provider=confirming_provider(),
-            max_concurrent_event_positions=1, per_instrument_max_pct=1.0,
+            tmp_path,
+            db=db,
+            provider=confirming_provider(),
+            max_concurrent_event_positions=1,
+            per_instrument_max_pct=1.0,
         )
         broker = _BrokerWithNetQty({})  # never fills → first stays pending
         prices = {"USD_CAD": tick(1.0), "BCO_USD": tick(1.0)}
@@ -2027,31 +2303,44 @@ class TestEntryLifecycle:
         assert get_status(db, eid1) == "CONFIRMED"
 
     def test_pending_entry_counts_toward_concentration_cap(
-        self, tmp_path: Any,
+        self,
+        tmp_path: Any,
     ) -> None:
         # A pending entry occupies its INTENDED notional against the
         # per-instrument cap (accounting view), so a second leg in the same
         # name can't blow the cap while the first is unfilled.
         strat = make_strategy(
-            tmp_path, db=make_db(), per_instrument_max_pct=0.25,
+            tmp_path,
+            db=make_db(),
+            per_instrument_max_pct=0.25,
         )
         # Park a pending 20k BCO_USD entry (intended).
         strat.book.record_entry(
             EventPosition(
-                symbol="BCO_USD", event_id=1, entry_ts=datetime.now(UTC),
-                entry_price=1.0, quantity=20_000.0, direction=1,
-                stop_price=0.99, headline="pending",
+                symbol="BCO_USD",
+                event_id=1,
+                entry_ts=datetime.now(UTC),
+                entry_price=1.0,
+                quantity=20_000.0,
+                direction=1,
+                stop_price=0.99,
+                headline="pending",
             ),
-            [], datetime.now(UTC),
+            [],
+            datetime.now(UTC),
         )
         # 25k cap @ 100k, 20k pending → 5k headroom for a second leg.
         capped = strat._concentration_capped_size(
-            "BCO_USD", size=15_000.0, entry_price=1.0, equity=100_000.0,
+            "BCO_USD",
+            size=15_000.0,
+            entry_price=1.0,
+            equity=100_000.0,
         )
         assert capped == pytest.approx(5_000.0)
 
     def test_pending_entry_hidden_from_reconciler_until_filled(
-        self, tmp_path: Any,
+        self,
+        tmp_path: Any,
     ) -> None:
         # The reconciler-facing open_positions view values a pending entry
         # at confirmed_qty (0), NOT its intended 50k — so the phantom that
@@ -2062,22 +2351,22 @@ class TestEntryLifecycle:
         # Reconciler view: symbol present but quantity 0 (no phantom size).
         assert strat.open_positions["USD_CAD"].quantity == pytest.approx(0.0)
         # Accounting view still counts the intended magnitude for slots/caps.
-        assert strat.book.accounting_positions()["USD_CAD"].quantity == (
-            pytest.approx(50_000.0))
+        assert strat.book.accounting_positions()["USD_CAD"].quantity == (pytest.approx(50_000.0))
         broker.net = {"USDCAD": 50_000.0}
         strat.book.confirm_entries(broker.get_positions(), datetime.now(UTC))
         assert strat.open_positions["USD_CAD"].quantity == pytest.approx(50_000.0)
 
     def test_promoted_entry_is_eligible_for_time_stop(
-        self, tmp_path: Any,
+        self,
+        tmp_path: Any,
     ) -> None:
         # A promoted leg gets full stop/time-stop evaluation. A pending
         # entry does NOT (no exposure yet) — only after promotion.
         broker = _BrokerWithNetQty({})
         strat, _ = self._confirmed_entry_strat(tmp_path, broker)
         # Backdate the pending entry so it would time-stop IF it were open.
-        strat.book.pending_entries["USD_CAD"].position.entry_ts = (
-            datetime.now(UTC) - timedelta(hours=5)
+        strat.book.pending_entries["USD_CAD"].position.entry_ts = datetime.now(UTC) - timedelta(
+            hours=5
         )
         # Fill it: promotion carries the backdated entry_ts, so the SAME
         # tick's check_exits time-stops it.
@@ -2094,7 +2383,9 @@ class TestEntryLifecycle:
         db = make_db()
         insert_event(db)  # long USD_CAD
         strat = make_strategy(
-            tmp_path, db=db, provider=confirming_provider(),
+            tmp_path,
+            db=db,
+            provider=confirming_provider(),
             per_instrument_max_pct=1.0,
         )
         broker = _BrokerWithNetQty({})  # never fills
@@ -2120,28 +2411,39 @@ class TestEntryLifecycle:
         broker.net = {"USDCAD": 90_000.0}
         strat2.book.confirm_entries(broker.get_positions(), datetime.now(UTC))
         assert strat2.book.open_positions["USD_CAD"].quantity == (
-            pytest.approx(50_000.0))  # our 50k delta, not the 90k net
+            pytest.approx(50_000.0)
+        )  # our 50k delta, not the 90k net
 
     def test_legacy_state_without_pending_entries_key_loads_empty(
-        self, tmp_path: Any,
+        self,
+        tmp_path: Any,
     ) -> None:
         # The LIVE data/event_book_state.json predates pending_entries — the
         # missing key MUST default to empty, every legacy field untouched
         # (backward compat is REQUIRED: the strategy is live with state).
         state_path = tmp_path / "event_book_state.json"
-        state_path.write_text(json.dumps({
-            "version": 1, "realized_pnl": -250.0, "closed_trades": 2,
-            "open_positions": {
-                "USD_CAD": {
-                    "event_id": 7,
-                    "entry_ts": datetime.now(UTC).isoformat(),
-                    "entry_price": 1.0, "quantity": 1000.0,
-                    "direction": 1, "stop_price": 0.99, "headline": "legacy",
-                },
-            },
-            "pending_exits": {},
-            # NO pending_entries key.
-        }))
+        state_path.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "realized_pnl": -250.0,
+                    "closed_trades": 2,
+                    "open_positions": {
+                        "USD_CAD": {
+                            "event_id": 7,
+                            "entry_ts": datetime.now(UTC).isoformat(),
+                            "entry_price": 1.0,
+                            "quantity": 1000.0,
+                            "direction": 1,
+                            "stop_price": 0.99,
+                            "headline": "legacy",
+                        },
+                    },
+                    "pending_exits": {},
+                    # NO pending_entries key.
+                }
+            )
+        )
         strat = make_strategy(tmp_path, db=make_db())
         assert strat.book.pending_entries == {}
         assert strat.book.realized_pnl == pytest.approx(-250.0)
@@ -2149,35 +2451,49 @@ class TestEntryLifecycle:
         assert strat.book.open_positions["USD_CAD"].quantity == pytest.approx(1000.0)
 
     def test_symbol_in_pending_entry_and_open_refuses_to_load(
-        self, tmp_path: Any,
+        self,
+        tmp_path: Any,
     ) -> None:
         # Overlap fail-loud extends to pending_entries: a symbol in BOTH
         # pending_entries and open_positions is corrupt state → refuse.
         now = datetime.now(UTC)
         pos_payload = {
-            "event_id": 1, "entry_ts": now.isoformat(), "entry_price": 1.0,
-            "quantity": 1000.0, "direction": 1, "stop_price": 0.99,
+            "event_id": 1,
+            "entry_ts": now.isoformat(),
+            "entry_price": 1.0,
+            "quantity": 1000.0,
+            "direction": 1,
+            "stop_price": 0.99,
             "headline": "dup",
         }
-        (tmp_path / "event_book_state.json").write_text(json.dumps({
-            "version": 1, "realized_pnl": 0.0, "closed_trades": 0,
-            "open_positions": {"USD_CAD": pos_payload},
-            "pending_exits": {},
-            "pending_entries": {
-                "USD_CAD": {
-                    "position": pos_payload,
-                    "submitted_ts": now.isoformat(),
-                    "entry_broker_qty": 0.0, "confirmed_qty": 0.0,
-                },
-            },
-        }))
+        (tmp_path / "event_book_state.json").write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "realized_pnl": 0.0,
+                    "closed_trades": 0,
+                    "open_positions": {"USD_CAD": pos_payload},
+                    "pending_exits": {},
+                    "pending_entries": {
+                        "USD_CAD": {
+                            "position": pos_payload,
+                            "submitted_ts": now.isoformat(),
+                            "entry_broker_qty": 0.0,
+                            "confirmed_qty": 0.0,
+                        },
+                    },
+                }
+            )
+        )
         with pytest.raises(
-            ValueError, match="appear in more than one of open_positions",
+            ValueError,
+            match="appear in more than one of open_positions",
         ):
             make_strategy(tmp_path, db=make_db())
 
     def test_submit_confirm_window_never_flags_reconciliation(
-        self, tmp_path: Any,
+        self,
+        tmp_path: Any,
     ) -> None:
         # STEP 5 (option b): confirm_entries runs at the START of every
         # generate_intents tick from the freshest snapshot, so a normal fill
@@ -2221,8 +2537,7 @@ class TestEntryLifecycle:
 
         # --- Next strategy tick: confirm_entries promotes to the ACTUAL fill.
         run(strat, {"USD_CAD": tick(1.0)}, broker)
-        assert strat.book.open_positions["USD_CAD"].quantity == (
-            pytest.approx(50_000.0))
+        assert strat.book.open_positions["USD_CAD"].quantity == (pytest.approx(50_000.0))
 
         # --- Check #3: book 50k vs broker 50k → MATCHED → streak RESETS.
         fold(recon.check_alignment())
@@ -2276,10 +2591,13 @@ def _ca_row() -> dict[str, Any]:
 
 
 def _ca_assessment() -> dict[str, Any]:
-    return {"urgency": 8, "confidence": 0.8, "affected": [
-        {"instrument": "USD_CAD", "kind": "fx", "direction": "short",
-         "reason": "oil currency"},
-    ]}
+    return {
+        "urgency": 8,
+        "confidence": 0.8,
+        "affected": [
+            {"instrument": "USD_CAD", "kind": "fx", "direction": "short", "reason": "oil currency"},
+        ],
+    }
 
 
 _CA_PRICES = {"USD_CAD": {"bid": 1.3999, "ask": 1.4001}}
@@ -2289,19 +2607,21 @@ class TestCrossAssetGate:
     def _enter(self, tmp_path: Any, ca: Any, **cfg: Any):
         strat = make_strategy(tmp_path, cross_asset_gate_enabled=True, **cfg)
         return strat._enter_confirmed(
-            _ca_row(), _ca_assessment(), _CA_PRICES, 100_000.0,
-            datetime.now(UTC), cross_asset=ca,
+            _ca_row(),
+            _ca_assessment(),
+            _CA_PRICES,
+            100_000.0,
+            datetime.now(UTC),
+            cross_asset=ca,
         )
 
     def test_contradictory_read_vetoes_entries(self, tmp_path: Any) -> None:
-        intents, entered, skipped = self._enter(
-            tmp_path, SimpleNamespace(confirmed=False))
+        intents, entered, skipped = self._enter(tmp_path, SimpleNamespace(confirmed=False))
         assert intents == [] and entered == []
         assert skipped == [("USD_CAD", "cross_asset_veto")]
 
     def test_confirming_read_allows_entries(self, tmp_path: Any) -> None:
-        intents, entered, skipped = self._enter(
-            tmp_path, SimpleNamespace(confirmed=True))
+        intents, entered, skipped = self._enter(tmp_path, SimpleNamespace(confirmed=True))
         assert len(intents) == 1 and len(entered) == 1
 
     def test_missing_read_allows_by_default(self, tmp_path: Any) -> None:
@@ -2310,18 +2630,22 @@ class TestCrossAssetGate:
         # paths — each iteration must start with an empty book.
         for n, ca in enumerate((SimpleNamespace(confirmed=None), None)):
             strat = make_strategy(
-                tmp_path, cross_asset_gate_enabled=True,
+                tmp_path,
+                cross_asset_gate_enabled=True,
                 event_book_state_path=str(tmp_path / f"book_{n}.json"),
             )
             i, _e, _s = strat._enter_confirmed(
-                _ca_row(), _ca_assessment(), _CA_PRICES, 100_000.0,
-                datetime.now(UTC), cross_asset=ca,
+                _ca_row(),
+                _ca_assessment(),
+                _CA_PRICES,
+                100_000.0,
+                datetime.now(UTC),
+                cross_asset=ca,
             )
             assert len(i) == 1, f"blocked unexpectedly for {ca!r}"
 
     def test_missing_read_blocks_in_strict_mode(self, tmp_path: Any) -> None:
-        intents, entered, skipped = self._enter(
-            tmp_path, None, cross_asset_block_on_missing=True)
+        intents, entered, skipped = self._enter(tmp_path, None, cross_asset_block_on_missing=True)
         assert intents == []
         assert skipped == [("USD_CAD", "cross_asset_no_data")]
 
@@ -2329,8 +2653,12 @@ class TestCrossAssetGate:
         strat = make_strategy(tmp_path)  # gate off (default)
         assert strat.config.cross_asset_gate_enabled is False
         intents, entered, _ = strat._enter_confirmed(
-            _ca_row(), _ca_assessment(), _CA_PRICES, 100_000.0,
-            datetime.now(UTC), cross_asset=SimpleNamespace(confirmed=False),
+            _ca_row(),
+            _ca_assessment(),
+            _CA_PRICES,
+            100_000.0,
+            datetime.now(UTC),
+            cross_asset=SimpleNamespace(confirmed=False),
         )
         assert len(intents) == 1  # contradiction ignored when gate off
 
@@ -2342,7 +2670,8 @@ class TestCrossAssetGate:
 
 class TestUrgencyVocabulary:
     def test_event_exit_outranks_normal_intent_in_coordinator(
-        self, tmp_path: Any,
+        self,
+        tmp_path: Any,
     ) -> None:
         """Regression (review §6.1.2 / §9 item 1): event exits emitted
         urgency="high", a value the coordinator's rank map did not know —
@@ -2360,8 +2689,7 @@ class TestUrgencyVocabulary:
         assert exit_intent.urgency == Urgency.URGENT.value
 
         coord = PortfolioCoordinator(
-            strategies=[SimpleNamespace(id="event_driven"),
-                        SimpleNamespace(id="other")],
+            strategies=[SimpleNamespace(id="event_driven"), SimpleNamespace(id="other")],
             oms=SimpleNamespace(),  # aggregation never touches the OMS
             broker=PaperBroker(),
             state=SimpleNamespace(
@@ -2370,8 +2698,10 @@ class TestUrgencyVocabulary:
             ),
         )
         normal = OrderIntent(
-            strategy_id="other", symbol=exit_intent.symbol,
-            target_position=100.0, urgency=Urgency.NORMAL.value,
+            strategy_id="other",
+            symbol=exit_intent.symbol,
+            target_position=100.0,
+            urgency=Urgency.NORMAL.value,
         )
         # Aggregation keys by CANONICAL symbol since the CL-8cw1 P0 fix
         # (USD_CAD → USDCAD) — one aggregate row per economic pair.

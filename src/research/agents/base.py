@@ -109,8 +109,12 @@ class Agent:
         client = get_client(provider=agent_cfg.provider, api_key=api_key)
 
         return cls(
-            name=name, config=agent_cfg, client=client, model=model,
-            system_prompt=system_prompt, retriever=retriever,
+            name=name,
+            config=agent_cfg,
+            client=client,
+            model=model,
+            system_prompt=system_prompt,
+            retriever=retriever,
         )
 
     # ------------------------------------------------------------------

@@ -30,6 +30,7 @@ logger = logging.getLogger(__name__)
 
 def main(argv: list[str] | None = None) -> int:
     from src.dotenv_bootstrap import load_project_env  # noqa: PLC0415
+
     load_project_env()
 
     parser = argparse.ArgumentParser(description="Truth Social event study.")
@@ -43,7 +44,10 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     if os.environ.get("TRUTH_STUDY_ENABLED", "1").strip().lower() not in (
-        "1", "true", "yes", "on",
+        "1",
+        "true",
+        "yes",
+        "on",
     ):
         logger.error("TRUTH_STUDY_ENABLED is off — exiting")
         return 3
@@ -58,17 +62,27 @@ def main(argv: list[str] | None = None) -> int:
 
     def _backlogs() -> tuple[int, int]:
         with engine.connect() as conn:
-            unclassified = conn.execute(text("""
+            unclassified = (
+                conn.execute(
+                    text("""
                 SELECT COUNT(*) FROM truth_posts p
                 LEFT JOIN truth_classifications c ON c.post_id = p.post_id
                 WHERE c.post_id IS NULL
-            """)).scalar() or 0
-            unmeasured = conn.execute(text("""
+            """)
+                ).scalar()
+                or 0
+            )
+            unmeasured = (
+                conn.execute(
+                    text("""
                 SELECT COUNT(*) FROM truth_classifications c
                 WHERE c.is_market_relevant
                   AND NOT EXISTS (SELECT 1 FROM truth_market_reactions r
                                   WHERE r.post_id = c.post_id)
-            """)).scalar() or 0
+            """)
+                ).scalar()
+                or 0
+            )
         return int(unclassified), int(unmeasured)
 
     def _run() -> None:
@@ -79,11 +93,14 @@ def main(argv: list[str] | None = None) -> int:
         # Backlog watch: at 10 classifications/cycle a backlog >50 means
         # >25 min of lag — visible drift toward silently-stale labels.
         if unclassified > 50:
-            logger.warning("truth study: classification backlog %d — "
-                           "drain rate may be too slow", unclassified)
-        print(f"truth study: ingested={new} classified={labeled} "
-              f"measured={measured} backlog_unclassified={unclassified} "
-              f"backlog_unmeasured={unmeasured}")
+            logger.warning(
+                "truth study: classification backlog %d — drain rate may be too slow", unclassified
+            )
+        print(
+            f"truth study: ingested={new} classified={labeled} "
+            f"measured={measured} backlog_unclassified={unclassified} "
+            f"backlog_unmeasured={unmeasured}"
+        )
 
     if args.loop:
         logger.info("truth study: looping every %ds", args.loop)

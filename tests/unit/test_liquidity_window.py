@@ -20,6 +20,7 @@ def _ts(dow: int, hour: int) -> datetime:
     """Construct a Monday-based datetime; dow 0=Mon … 6=Sun."""
     base = datetime(2026, 4, 6, hour, 0)  # 2026-04-06 is a Monday
     from datetime import timedelta as _td
+
     return base + _td(days=dow)
 
 

@@ -113,9 +113,7 @@ class RegimeAnalysisReport:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "by_regime": {
-                r.value: s.to_dict() for r, s in self.by_regime.items()
-            },
+            "by_regime": {r.value: s.to_dict() for r, s in self.by_regime.items()},
             "edge_concentration": self.edge_concentration,
             "top_2_regime_pct": self.top_2_regime_pct,
             "is_diversified": self.is_diversified,
@@ -197,7 +195,8 @@ class RegimeEdgeAnalyzer:
 
         regimes = pd.Series(
             MarketRegime.LOW_VOL_CHOPPY.value,
-            index=prices.index, dtype=object,
+            index=prices.index,
+            dtype=object,
         )
         # Apply rules in priority order: crisis first, then quadrant.
         regimes[~crisis & high_vol & trending] = MarketRegime.HIGH_VOL_TRENDING.value
@@ -232,9 +231,7 @@ class RegimeEdgeAnalyzer:
                 continue
 
             contribution = (
-                float(regime_returns.sum() / total_return_sum)
-                if total_return_sum != 0
-                else 0.0
+                float(regime_returns.sum() / total_return_sum) if total_return_sum != 0 else 0.0
             )
 
             by_regime[regime_enum] = RegimeStats(
@@ -247,7 +244,9 @@ class RegimeEdgeAnalyzer:
                 ),
                 vol_annualized=float(
                     regime_returns.std(ddof=1) * math.sqrt(_TRADING_DAYS_PER_YEAR),
-                ) if len(regime_returns) > 1 else 0.0,
+                )
+                if len(regime_returns) > 1
+                else 0.0,
                 win_rate=float((regime_returns > 0).mean()),
                 contribution_to_total=contribution,
                 max_drawdown=_max_drawdown(regime_returns),
@@ -283,9 +282,8 @@ class RegimeEdgeAnalyzer:
                     f"in {worst_regime.value} regime",
                 )
 
-        is_diversified = (
-            max_contribution <= _CONCENTRATION_HIGH
-            and not (top_2 > _TOP2_HIGH and len(contributions) > 2)
+        is_diversified = max_contribution <= _CONCENTRATION_HIGH and not (
+            top_2 > _TOP2_HIGH and len(contributions) > 2
         )
 
         return RegimeAnalysisReport(

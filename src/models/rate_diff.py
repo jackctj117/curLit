@@ -62,7 +62,9 @@ class RateDiffModel:
     def deviation_zscore(self, df: pd.DataFrame) -> pd.Series:
         fair_value = self.predict(df)
         deviation = df["target"] - fair_value
-        return deviation / self.result["residual_std"] if self.result else pd.Series(0, index=df.index)
+        return (
+            deviation / self.result["residual_std"] if self.result else pd.Series(0, index=df.index)
+        )
 
     @property
     def quality_ok(self) -> bool:

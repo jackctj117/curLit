@@ -135,16 +135,10 @@ class LossCapConfig:
 
     def __post_init__(self) -> None:
         if self.per_market_loss_cap_usd <= 0:
-            msg = (
-                f"per_market_loss_cap_usd must be positive, got "
-                f"{self.per_market_loss_cap_usd}"
-            )
+            msg = f"per_market_loss_cap_usd must be positive, got {self.per_market_loss_cap_usd}"
             raise ValueError(msg)
         if self.per_day_loss_cap_usd <= 0:
-            msg = (
-                f"per_day_loss_cap_usd must be positive, got "
-                f"{self.per_day_loss_cap_usd}"
-            )
+            msg = f"per_day_loss_cap_usd must be positive, got {self.per_day_loss_cap_usd}"
             raise ValueError(msg)
         if self.state_path is not None and not isinstance(self.state_path, Path):
             object.__setattr__(self, "state_path", Path(self.state_path))
@@ -175,10 +169,10 @@ class TokenState:
     instances as read-only outside the tracker.
     """
 
-    qty: Decimal = Decimal("0")        # signed shares (+ = long the token)
+    qty: Decimal = Decimal("0")  # signed shares (+ = long the token)
     avg_price: Decimal = Decimal("0")  # weighted-average entry
-    realized: Decimal = Decimal("0")   # lifetime realized P&L (fees included)
-    last_mark: Decimal | None = None   # last observed price
+    realized: Decimal = Decimal("0")  # lifetime realized P&L (fees included)
+    last_mark: Decimal | None = None  # last observed price
 
     @property
     def unrealized(self) -> Decimal:
@@ -275,7 +269,8 @@ class PolymarketLossCapTracker:
             # Opening or adding — weighted-average cost.
             st.avg_price = (
                 (st.avg_price * abs(st.qty) + px * abs(signed)) / abs(new_qty)
-                if st.qty != 0 else px
+                if st.qty != 0
+                else px
             )
         elif (new_qty > 0) != (st.qty > 0):
             # Flipped through zero — remainder opens at the fill price.
@@ -291,10 +286,15 @@ class PolymarketLossCapTracker:
             self._processed_fill_ids.add(fill_id)
 
         logger.info(
-            "polymarket loss caps: fill %s %s %s @ %s fee=%s -> "
-            "qty=%s realized=%s (today=%s)",
-            side, qty, token_id, px, fee_d,
-            st.qty, st.realized, self._realized_by_day[today],
+            "polymarket loss caps: fill %s %s %s @ %s fee=%s -> qty=%s realized=%s (today=%s)",
+            side,
+            qty,
+            token_id,
+            px,
+            fee_d,
+            st.qty,
+            st.realized,
+            self._realized_by_day[today],
         )
         self._save()
         return True
@@ -354,7 +354,8 @@ class PolymarketLossCapTracker:
     def day_pnl(self) -> Decimal:
         """Realized booked today (UTC) + total current unrealized."""
         realized_today = self._realized_by_day.get(
-            self.clock().date(), Decimal("0"),
+            self.clock().date(),
+            Decimal("0"),
         )
         unrealized_total = sum(
             (st.unrealized for st in self._tokens.values()),
@@ -394,15 +395,9 @@ class PolymarketLossCapTracker:
             if (
                 st is not None
                 and st.qty != 0
-                and (
-                    (side == "sell" and st.qty > 0)
-                    or (side == "buy" and st.qty < 0)
-                )
+                and ((side == "sell" and st.qty > 0) or (side == "buy" and st.qty < 0))
             ):
-                reducing = (
-                    quantity is None
-                    or Decimal(str(quantity)) <= abs(st.qty)
-                )
+                reducing = quantity is None or Decimal(str(quantity)) <= abs(st.qty)
 
         market_key = self.market_key_fn(token_id)
         m_pnl = self.market_pnl(market_key)
@@ -412,12 +407,16 @@ class PolymarketLossCapTracker:
                 logger.warning(
                     "polymarket loss caps: market %s breached "
                     "(pnl=%s cap=%s) but order reduces position — allowed",
-                    market_key, m_pnl, m_cap,
+                    market_key,
+                    m_pnl,
+                    m_cap,
                 )
             else:
                 logger.warning(
-                    "polymarket loss caps: REFUSING order in %s — "
-                    "market pnl=%s <= -cap=%s", market_key, m_pnl, m_cap,
+                    "polymarket loss caps: REFUSING order in %s — market pnl=%s <= -cap=%s",
+                    market_key,
+                    m_pnl,
+                    m_cap,
                 )
                 raise LossCapExceededError(market_key, "market", m_pnl, m_cap)
 
@@ -428,12 +427,15 @@ class PolymarketLossCapTracker:
                 logger.warning(
                     "polymarket loss caps: daily cap breached "
                     "(pnl=%s cap=%s) but order reduces position — allowed",
-                    d_pnl, d_cap,
+                    d_pnl,
+                    d_cap,
                 )
             else:
                 logger.warning(
-                    "polymarket loss caps: REFUSING order in %s — "
-                    "day pnl=%s <= -cap=%s", market_key, d_pnl, d_cap,
+                    "polymarket loss caps: REFUSING order in %s — day pnl=%s <= -cap=%s",
+                    market_key,
+                    d_pnl,
+                    d_cap,
                 )
                 raise LossCapExceededError(market_key, "day", d_pnl, d_cap)
 
@@ -451,15 +453,11 @@ class PolymarketLossCapTracker:
                     "qty": str(st.qty),
                     "avg_price": str(st.avg_price),
                     "realized": str(st.realized),
-                    "last_mark": (
-                        str(st.last_mark) if st.last_mark is not None else None
-                    ),
+                    "last_mark": (str(st.last_mark) if st.last_mark is not None else None),
                 }
                 for tid, st in self._tokens.items()
             },
-            "realized_by_day": {
-                d.isoformat(): str(v) for d, v in self._realized_by_day.items()
-            },
+            "realized_by_day": {d.isoformat(): str(v) for d, v in self._realized_by_day.items()},
             "processed_fill_ids": sorted(self._processed_fill_ids),
         }
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -485,8 +483,7 @@ class PolymarketLossCapTracker:
                     avg_price=Decimal(body["avg_price"]),
                     realized=Decimal(body["realized"]),
                     last_mark=(
-                        Decimal(body["last_mark"])
-                        if body.get("last_mark") is not None else None
+                        Decimal(body["last_mark"]) if body.get("last_mark") is not None else None
                     ),
                 )
                 for tid, body in (raw.get("tokens") or {}).items()
@@ -509,5 +506,8 @@ class PolymarketLossCapTracker:
         logger.info(
             "polymarket loss caps: loaded state from %s "
             "(%d tokens, %d day buckets, %d processed fills)",
-            path, len(tokens), len(by_day), len(fill_ids),
+            path,
+            len(tokens),
+            len(by_day),
+            len(fill_ids),
         )

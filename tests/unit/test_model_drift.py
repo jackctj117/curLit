@@ -30,7 +30,9 @@ class TestDriftDetector:
     def test_normal_when_metrics_match(self) -> None:
         # Identical current to baseline → NORMAL.
         assessment = self.detector.evaluate(
-            "rate_diff", self.regression_baseline, self.regression_baseline,
+            "rate_diff",
+            self.regression_baseline,
+            self.regression_baseline,
         )
         assert assessment.severity == DriftSeverity.NORMAL
         assert assessment.triggers == []
@@ -71,14 +73,26 @@ class TestDriftDetector:
         # 6% drop → DEGRADED. 11% → ALARM.
         c1 = ModelMetrics(accuracy=0.79, f1=0.83)
         c2 = ModelMetrics(accuracy=0.74, f1=0.83)
-        assert self.detector.evaluate("finbert", self.classifier_baseline, c1).severity == DriftSeverity.DEGRADED
-        assert self.detector.evaluate("finbert", self.classifier_baseline, c2).severity == DriftSeverity.ALARM
+        assert (
+            self.detector.evaluate("finbert", self.classifier_baseline, c1).severity
+            == DriftSeverity.DEGRADED
+        )
+        assert (
+            self.detector.evaluate("finbert", self.classifier_baseline, c2).severity
+            == DriftSeverity.ALARM
+        )
 
     def test_classifier_f1_drop(self) -> None:
         c1 = ModelMetrics(accuracy=0.85, f1=0.77)
         c2 = ModelMetrics(accuracy=0.85, f1=0.72)
-        assert self.detector.evaluate("finbert", self.classifier_baseline, c1).severity == DriftSeverity.DEGRADED
-        assert self.detector.evaluate("finbert", self.classifier_baseline, c2).severity == DriftSeverity.ALARM
+        assert (
+            self.detector.evaluate("finbert", self.classifier_baseline, c1).severity
+            == DriftSeverity.DEGRADED
+        )
+        assert (
+            self.detector.evaluate("finbert", self.classifier_baseline, c2).severity
+            == DriftSeverity.ALARM
+        )
 
     def test_worst_severity_wins(self) -> None:
         # R² mild drop (DEGRADED) + MSE huge drop (ALARM) → ALARM.
@@ -178,28 +192,32 @@ class TestRetrainSchedule:
 
     def test_not_due_within_cadence(self) -> None:
         sched = RetrainSchedule(
-            model_id="finbert", cadence_days=30,
+            model_id="finbert",
+            cadence_days=30,
             last_retrain=datetime(2026, 4, 1),
         )
         assert sched.is_due(datetime(2026, 4, 15)) is False
 
     def test_due_after_cadence(self) -> None:
         sched = RetrainSchedule(
-            model_id="finbert", cadence_days=30,
+            model_id="finbert",
+            cadence_days=30,
             last_retrain=datetime(2026, 4, 1),
         )
         assert sched.is_due(datetime(2026, 5, 5)) is True
 
     def test_exactly_at_cadence_due(self) -> None:
         sched = RetrainSchedule(
-            model_id="rate_diff", cadence_days=90,
+            model_id="rate_diff",
+            cadence_days=90,
             last_retrain=datetime(2026, 1, 1),
         )
         assert sched.is_due(datetime(2026, 4, 1)) is True
 
     def test_days_until_due(self) -> None:
         sched = RetrainSchedule(
-            model_id="finbert", cadence_days=30,
+            model_id="finbert",
+            cadence_days=30,
             last_retrain=datetime(2026, 4, 1),
         )
         assert sched.days_until_due(datetime(2026, 4, 15)) == 16

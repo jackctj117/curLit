@@ -67,14 +67,18 @@ class TestLiveEngineConstruction:
     def test_accepts_coordinator(self) -> None:
         coord = _RecordingCoordinator()
         engine = LiveEngine(
-            strategies=[], oms=_RecordingOMS(), broker=None,  # type: ignore[arg-type]
+            strategies=[],
+            oms=_RecordingOMS(),
+            broker=None,  # type: ignore[arg-type]
             coordinator=coord,
         )
         assert engine.coordinator is coord
 
     def test_coordinator_optional(self) -> None:
         engine = LiveEngine(
-            strategies=[], oms=_RecordingOMS(), broker=None,  # type: ignore[arg-type]
+            strategies=[],
+            oms=_RecordingOMS(),
+            broker=None,  # type: ignore[arg-type]
         )
         assert engine.coordinator is None
 
@@ -89,7 +93,9 @@ class TestDispatchIntents:
         coord = _RecordingCoordinator()
         oms = _RecordingOMS()
         engine = LiveEngine(
-            strategies=[], oms=oms, broker=None,  # type: ignore[arg-type]
+            strategies=[],
+            oms=oms,
+            broker=None,  # type: ignore[arg-type]
             coordinator=coord,
         )
         intents = {
@@ -105,7 +111,9 @@ class TestDispatchIntents:
         coord = _RecordingCoordinator()
         oms = _RecordingOMS()
         engine = LiveEngine(
-            strategies=[], oms=oms, broker=None,  # type: ignore[arg-type]
+            strategies=[],
+            oms=oms,
+            broker=None,  # type: ignore[arg-type]
             coordinator=coord,
         )
         intents = {
@@ -119,7 +127,9 @@ class TestDispatchIntents:
     def test_legacy_path_routes_to_oms_directly(self) -> None:
         oms = _RecordingOMS()
         engine = LiveEngine(
-            strategies=[], oms=oms, broker=None,  # type: ignore[arg-type]
+            strategies=[],
+            oms=oms,
+            broker=None,  # type: ignore[arg-type]
             coordinator=None,
         )
         intents = {
@@ -142,7 +152,9 @@ class TestDispatchIntents:
         coord = _RaisingCoordinator()
         oms = _RecordingOMS()
         engine = LiveEngine(
-            strategies=[], oms=oms, broker=None,  # type: ignore[arg-type]
+            strategies=[],
+            oms=oms,
+            broker=None,  # type: ignore[arg-type]
             coordinator=coord,
         )
         intents = {
@@ -157,7 +169,9 @@ class TestDispatchIntents:
     def test_empty_intents_noop(self) -> None:
         coord = _RecordingCoordinator()
         engine = LiveEngine(
-            strategies=[], oms=_RecordingOMS(), broker=None,  # type: ignore[arg-type]
+            strategies=[],
+            oms=_RecordingOMS(),
+            broker=None,  # type: ignore[arg-type]
             coordinator=coord,
         )
         asyncio.run(engine._dispatch_intents({}))
@@ -183,16 +197,22 @@ class _ThreadRecordingStrategy:
         self._engine: LiveEngine | None = None  # set by the test
 
     async def generate_intents(
-        self, prices: dict[str, Any], broker: Any,
+        self,
+        prices: dict[str, Any],
+        broker: Any,
     ) -> list[OrderIntent]:
         self.call_threads.append(threading.get_ident())
         # The engine must hand strategies a loop-thread snapshot, not the
         # live _last_prices dict the price-stream task keeps mutating.
         assert self._engine is not None
         self.saw_live_prices_dict.append(prices is self._engine._last_prices)
-        return [OrderIntent(
-            strategy_id=self.id, symbol="EURUSD", target_position=100.0,
-        )]
+        return [
+            OrderIntent(
+                strategy_id=self.id,
+                symbol="EURUSD",
+                target_position=100.0,
+            )
+        ]
 
 
 def _always_in_window(ts: Any) -> bool:
@@ -208,7 +228,9 @@ class TestStrategyIoOffEventLoop:
         strategy = _ThreadRecordingStrategy()
         coord = _RecordingCoordinator()
         engine = LiveEngine(
-            strategies=[strategy], oms=_RecordingOMS(), broker=None,  # type: ignore[arg-type]
+            strategies=[strategy],
+            oms=_RecordingOMS(),
+            broker=None,  # type: ignore[arg-type]
             coordinator=coord,
         )
         strategy._engine = engine
@@ -253,7 +275,9 @@ class TestStrategyIoOffEventLoop:
 class TestRebalanceTask:
     def test_returns_immediately_when_no_coordinator(self) -> None:
         engine = LiveEngine(
-            strategies=[], oms=_RecordingOMS(), broker=None,  # type: ignore[arg-type]
+            strategies=[],
+            oms=_RecordingOMS(),
+            broker=None,  # type: ignore[arg-type]
             coordinator=None,
         )
         # Should return without blocking even though running is False.
@@ -321,8 +345,11 @@ class _RecordingKSM:
 
 def _entry(symbol: str, status: ReconciliationStatus) -> ReconciliationEntry:
     return ReconciliationEntry(
-        symbol=symbol, broker_quantity=1.0, internal_quantity=0.0,
-        contributing_strategies=[], status=status,
+        symbol=symbol,
+        broker_quantity=1.0,
+        internal_quantity=0.0,
+        contributing_strategies=[],
+        status=status,
     )
 
 
@@ -331,8 +358,11 @@ class TestHealthTickKillSwitchWiring:
         ksm = _RecordingKSM()
         builder = RiskContextBuilder(state_path=None, clock=clock)
         engine = LiveEngine(
-            strategies=[], oms=_RecordingOMS(), broker=_HealthBroker(100_000.0),
-            kill_switch_manager=ksm, risk_context_builder=builder,
+            strategies=[],
+            oms=_RecordingOMS(),
+            broker=_HealthBroker(100_000.0),
+            kill_switch_manager=ksm,
+            risk_context_builder=builder,
         )
         return engine, ksm
 
@@ -359,7 +389,9 @@ class TestHealthTickKillSwitchWiring:
 
     def test_no_kill_switch_manager_is_noop(self) -> None:
         engine = LiveEngine(
-            strategies=[], oms=_RecordingOMS(), broker=_HealthBroker(1.0),
+            strategies=[],
+            oms=_RecordingOMS(),
+            broker=_HealthBroker(1.0),
         )
         assert engine.risk_context_builder is None
         engine._health_tick()  # must not raise
@@ -368,20 +400,26 @@ class TestHealthTickKillSwitchWiring:
 class TestAlignmentStreak:
     def _engine(self) -> LiveEngine:
         return LiveEngine(
-            strategies=[], oms=_RecordingOMS(), broker=None,  # type: ignore[arg-type]
+            strategies=[],
+            oms=_RecordingOMS(),
+            broker=None,  # type: ignore[arg-type]
         )
 
     @staticmethod
     def _mismatch_report() -> ReconciliationReport:
-        return ReconciliationReport(entries=[
-            _entry("EURUSD", ReconciliationStatus.ORPHANED_BROKER),
-        ])
+        return ReconciliationReport(
+            entries=[
+                _entry("EURUSD", ReconciliationStatus.ORPHANED_BROKER),
+            ]
+        )
 
     @staticmethod
     def _clean_report() -> ReconciliationReport:
-        return ReconciliationReport(entries=[
-            _entry("EURUSD", ReconciliationStatus.MATCHED),
-        ])
+        return ReconciliationReport(
+            entries=[
+                _entry("EURUSD", ReconciliationStatus.MATCHED),
+            ]
+        )
 
     def test_single_mismatch_does_not_flag(self) -> None:
         engine = self._engine()

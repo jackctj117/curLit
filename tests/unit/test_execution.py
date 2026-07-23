@@ -40,7 +40,7 @@ class _NetTrackingBlockingBroker(Broker):
             self.first_started.set()
             self.release.wait(timeout=5.0)  # block BEFORE the fill lands
         with self._m:
-            self.net += delta                # fill lands
+            self.net += delta  # fill lands
         order.status = OrderStatus.FILLED
         return order
 
@@ -75,17 +75,21 @@ class TestOmsInflightReservation:
         oms = OrderManager(broker)
 
         def entry() -> None:
-            oms.submit_intent(OrderIntent(
-                strategy_id="s", symbol="EURUSD", target_position=1000.0,
-            ))
+            oms.submit_intent(
+                OrderIntent(
+                    strategy_id="s",
+                    symbol="EURUSD",
+                    target_position=1000.0,
+                )
+            )
 
         t1 = threading.Thread(target=entry)
         t1.start()
         assert broker.first_started.wait(timeout=5.0)  # first is mid-place
         t2 = threading.Thread(target=entry)
         t2.start()
-        time.sleep(0.15)         # let t2 block on the per-symbol reservation
-        broker.release.set()     # first fill lands, reservation releases
+        time.sleep(0.15)  # let t2 block on the per-symbol reservation
+        broker.release.set()  # first fill lands, reservation releases
         t1.join(timeout=5.0)
         t2.join(timeout=5.0)
         assert not t1.is_alive() and not t2.is_alive()
@@ -138,14 +142,19 @@ class TestRetryIdempotency:
         # position already at the target, and ABORTS instead of placing a
         # second order that would double the position.
         from src.execution.rejection import RejectionHandler
+
         broker = _FillThenTimeoutBroker()
         handler = RejectionHandler()
         handler.sleep = lambda s: None  # type: ignore[method-assign] # no real backoff
         oms = OrderManager(broker, rejection_handler=handler)
-        oms.submit_intent(OrderIntent(
-            strategy_id="s", symbol="EURUSD", target_position=1000.0,
-        ))
-        assert broker.calls == 1               # the retry was aborted
+        oms.submit_intent(
+            OrderIntent(
+                strategy_id="s",
+                symbol="EURUSD",
+                target_position=1000.0,
+            )
+        )
+        assert broker.calls == 1  # the retry was aborted
         assert broker.net == pytest.approx(1000.0)  # NOT 2000
 
 
@@ -194,7 +203,8 @@ class TestOrderManager:
         oms.halt_new_trades()
         oms.submit_intent(
             OrderIntent(
-                strategy_id="kill_switch_flatten", symbol="EURUSD",
+                strategy_id="kill_switch_flatten",
+                symbol="EURUSD",
                 target_position=0,
             ),
             bypass_halt=True,
@@ -252,7 +262,8 @@ class TestOrderManagerAsync:
             # ...but bypass_halt (risk-layer de-risking) still flows.
             await oms.submit_intent_async(
                 OrderIntent(
-                    strategy_id="kill_switch_flatten", symbol="EURUSD",
+                    strategy_id="kill_switch_flatten",
+                    symbol="EURUSD",
                     target_position=0,
                 ),
                 bypass_halt=True,
@@ -322,8 +333,7 @@ class TestOmsLockWidth:
         # Thread 1: a normal strategy submit that blocks inside place_order.
         def slow_normal() -> None:
             oms.submit_intent(
-                OrderIntent(strategy_id="strat", symbol="EURUSD",
-                            target_position=1000.0),
+                OrderIntent(strategy_id="strat", symbol="EURUSD", target_position=1000.0),
             )
 
         t_slow = threading.Thread(target=slow_normal)
@@ -336,8 +346,9 @@ class TestOmsLockWidth:
         # slow place_order, this submit would block until release.set().
         def emergency() -> None:
             oms.submit_intent(
-                OrderIntent(strategy_id="kill_switch_flatten", symbol="GBPUSD",
-                            target_position=500.0),
+                OrderIntent(
+                    strategy_id="kill_switch_flatten", symbol="GBPUSD", target_position=500.0
+                ),
                 bypass_halt=True,
             )
 
@@ -367,8 +378,7 @@ class TestOmsLockWidth:
         oms = OrderManager(broker)
         oms.halt_new_trades()
         oms.submit_intent(
-            OrderIntent(strategy_id="strat", symbol="EURUSD",
-                        target_position=1000.0),
+            OrderIntent(strategy_id="strat", symbol="EURUSD", target_position=1000.0),
         )
         assert broker.get_positions() == []  # blocked, nothing placed
 
@@ -380,8 +390,7 @@ class TestOmsLockWidth:
         broker.set_price("EURUSD", 1.1000, 1.1002)
         oms = OrderManager(broker)
         oms.submit_intent(
-            OrderIntent(strategy_id="strat", symbol="EURUSD",
-                        target_position=1000.0),
+            OrderIntent(strategy_id="strat", symbol="EURUSD", target_position=1000.0),
         )
         assert oms.has_pending() is False
 
@@ -406,15 +415,19 @@ class TestOnFill:
     def _oms_pending(self) -> tuple[OrderManager, OrderIntent]:
         oms = OrderManager(PaperBroker())
         intent = OrderIntent(strategy_id="s", symbol="EURUSD", target_position=1000.0)
-        oms._pending[intent.intent_id] = []          # simulate PENDING OANDA order
+        oms._pending[intent.intent_id] = []  # simulate PENDING OANDA order
         oms._pending_intents[intent.intent_id] = intent
         return oms, intent
 
     def _fill(self, intent_id: str, txn: str = "t1") -> dict:
         return {
-            "type": "ORDER_FILL", "transaction_id": txn, "order_id": "o1",
-            "client_order_id": intent_id, "instrument": "EURUSD",
-            "units": 1000.0, "price": 1.1,
+            "type": "ORDER_FILL",
+            "transaction_id": txn,
+            "order_id": "o1",
+            "client_order_id": intent_id,
+            "instrument": "EURUSD",
+            "units": 1000.0,
+            "price": 1.1,
         }
 
     def test_fill_clears_pending_and_returns_true(self) -> None:

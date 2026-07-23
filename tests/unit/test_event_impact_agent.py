@@ -48,10 +48,18 @@ def _valid_payload(**overrides: Any) -> dict:
         "horizon": "hours",
         "confidence": 0.8,
         "affected": [
-            {"instrument": "BCO_USD", "kind": "oanda",
-             "direction": "long", "reason": "supply risk premium"},
-            {"instrument": "FRO", "kind": "equity_watch",
-             "direction": "watch", "reason": "tanker rates"},
+            {
+                "instrument": "BCO_USD",
+                "kind": "oanda",
+                "direction": "long",
+                "reason": "supply risk premium",
+            },
+            {
+                "instrument": "FRO",
+                "kind": "equity_watch",
+                "direction": "watch",
+                "reason": "tanker rates",
+            },
         ],
         "rationale": "Chokepoint closure is the canonical oil supply shock.",
     }
@@ -167,50 +175,70 @@ class TestNormalise:
             self._norm(_valid_payload(urgency="high"))
 
     def test_equity_forced_to_watch(self) -> None:
-        payload = _valid_payload(affected=[
-            {"instrument": "FRO", "kind": "equity_watch",
-             "direction": "long", "reason": "tankers"},
-        ])
+        payload = _valid_payload(
+            affected=[
+                {
+                    "instrument": "FRO",
+                    "kind": "equity_watch",
+                    "direction": "long",
+                    "reason": "tankers",
+                },
+            ]
+        )
         out = self._norm(payload)
         assert out["affected"][0]["direction"] == "watch"
 
     def test_unreachable_tradable_dropped(self) -> None:
-        payload = _valid_payload(affected=[
-            {"instrument": "brent futures!!", "kind": "oanda",
-             "direction": "long", "reason": "x"},
-            {"instrument": "BCO_USD", "kind": "oanda",
-             "direction": "long", "reason": "ok"},
-        ])
+        payload = _valid_payload(
+            affected=[
+                {
+                    "instrument": "brent futures!!",
+                    "kind": "oanda",
+                    "direction": "long",
+                    "reason": "x",
+                },
+                {"instrument": "BCO_USD", "kind": "oanda", "direction": "long", "reason": "ok"},
+            ]
+        )
         out = self._norm(payload)
         assert [a["instrument"] for a in out["affected"]] == ["BCO_USD"]
 
     def test_unvetted_oanda_shaped_symbol_demoted_to_watch(self) -> None:
-        payload = _valid_payload(affected=[
-            {"instrument": "USD_TRY", "kind": "fx",
-             "direction": "long", "reason": "lira stress"},
-        ])
+        payload = _valid_payload(
+            affected=[
+                {
+                    "instrument": "USD_TRY",
+                    "kind": "fx",
+                    "direction": "long",
+                    "reason": "lira stress",
+                },
+            ]
+        )
         out = self._norm(payload)
         assert out["affected"][0] == {
-            "instrument": "USD_TRY", "kind": "fx",
-            "direction": "watch", "reason": "lira stress",
+            "instrument": "USD_TRY",
+            "kind": "fx",
+            "direction": "watch",
+            "reason": "lira stress",
         }
 
     def test_slash_symbol_normalised(self) -> None:
-        payload = _valid_payload(affected=[
-            {"instrument": "eur/usd", "kind": "fx",
-             "direction": "short", "reason": "x"},
-        ])
+        payload = _valid_payload(
+            affected=[
+                {"instrument": "eur/usd", "kind": "fx", "direction": "short", "reason": "x"},
+            ]
+        )
         out = self._norm(payload)
         assert out["affected"][0]["instrument"] == "EUR_USD"
         assert out["affected"][0]["direction"] == "short"  # vetted (playbooks)
 
     def test_duplicate_instruments_collapsed(self) -> None:
-        payload = _valid_payload(affected=[
-            {"instrument": "BCO_USD", "kind": "oanda",
-             "direction": "long", "reason": "a"},
-            {"instrument": "BCO_USD", "kind": "oanda",
-             "direction": "short", "reason": "b"},
-        ])
+        payload = _valid_payload(
+            affected=[
+                {"instrument": "BCO_USD", "kind": "oanda", "direction": "long", "reason": "a"},
+                {"instrument": "BCO_USD", "kind": "oanda", "direction": "short", "reason": "b"},
+            ]
+        )
         assert len(self._norm(payload)["affected"]) == 1
 
     def test_affected_not_a_list_raises(self) -> None:
@@ -245,19 +273,29 @@ class TestAssessmentModel:
     def test_round_trip_is_exact(self) -> None:
         # from_dict(to_dict) and to_dict(from_dict) both reproduce the
         # canonical dict — including advisory extras.
-        d = self._norm_dict(_valid_payload(
-            trade_ideas=[{
-                "ticker": "FRO", "action": "long", "direction": "bullish",
-                "confidence": 0.6, "rationale": "tanker rates",
-                "time_horizon": "short", "holding_period_days": "2-5",
-                "time_stop_days": 5, "stop_loss_pct": 0.07,
-                "target_pct": [0.08, 0.15],
-                "entry_trigger": "on confirmed closure",
-                "invalidation": "reopening announced",
-            }],
-            fade_candidates=[{"ticker": "SPY", "action": "fade the dip",
-                              "reason": "knee-jerk risk-off"}],
-        ))
+        d = self._norm_dict(
+            _valid_payload(
+                trade_ideas=[
+                    {
+                        "ticker": "FRO",
+                        "action": "long",
+                        "direction": "bullish",
+                        "confidence": 0.6,
+                        "rationale": "tanker rates",
+                        "time_horizon": "short",
+                        "holding_period_days": "2-5",
+                        "time_stop_days": 5,
+                        "stop_loss_pct": 0.07,
+                        "target_pct": [0.08, 0.15],
+                        "entry_trigger": "on confirmed closure",
+                        "invalidation": "reopening announced",
+                    }
+                ],
+                fade_candidates=[
+                    {"ticker": "SPY", "action": "fade the dip", "reason": "knee-jerk risk-off"}
+                ],
+            )
+        )
         model = Assessment.from_dict(d)
         assert model.to_dict() == d
         assert Assessment.from_dict(model.to_dict()) == model
@@ -271,8 +309,7 @@ class TestAssessmentModel:
     def test_from_dict_defaults_advisory_lists_for_old_rows(self) -> None:
         # Rows persisted before CL-01zt lack the advisory keys.
         d = self._norm_dict(_valid_payload())
-        legacy = {k: v for k, v in d.items()
-                  if k not in ("trade_ideas", "fade_candidates")}
+        legacy = {k: v for k, v in d.items() if k not in ("trade_ideas", "fade_candidates")}
         model = Assessment.from_dict(legacy)
         assert model.trade_ideas == []
         assert model.fade_candidates == []
@@ -280,7 +317,10 @@ class TestAssessmentModel:
 
     def test_typed_fields_match_dict_values(self) -> None:
         model = Assessment.from_llm_payload(
-            _valid_payload(), "headline", HORMUZ, FALLBACK,
+            _valid_payload(),
+            "headline",
+            HORMUZ,
+            FALLBACK,
         )
         assert model.direction == "bearish"
         assert model.urgency == 9
@@ -312,7 +352,10 @@ class TestTradeIdeas:
 
     def _norm(self, **payload_overrides: Any) -> dict:
         return normalise_assessment(
-            _valid_payload(**payload_overrides), "headline", HORMUZ, FALLBACK,
+            _valid_payload(**payload_overrides),
+            "headline",
+            HORMUZ,
+            FALLBACK,
         )
 
     def test_valid_idea_passes_through(self) -> None:
@@ -327,10 +370,12 @@ class TestTradeIdeas:
         assert {a["instrument"] for a in out["affected"]} == {"BCO_USD", "FRO"}
 
     def test_bad_action_dropped_assessment_survives(self) -> None:
-        out = self._norm(trade_ideas=[
-            self._idea(action="yolo_leaps"),
-            self._idea(ticker="BTG", action="short"),
-        ])
+        out = self._norm(
+            trade_ideas=[
+                self._idea(action="yolo_leaps"),
+                self._idea(ticker="BTG", action="short"),
+            ]
+        )
         assert [i["ticker"] for i in out["trade_ideas"]] == ["BTG"]
         assert out["direction"] == "bearish"  # whole assessment intact
 
@@ -343,26 +388,32 @@ class TestTradeIdeas:
         assert out["trade_ideas"] == []
 
     def test_confidence_clamped_and_defaulted(self) -> None:
-        out = self._norm(trade_ideas=[
-            self._idea(confidence=1.8),
-            self._idea(ticker="B", confidence="very high"),
-        ])
+        out = self._norm(
+            trade_ideas=[
+                self._idea(confidence=1.8),
+                self._idea(ticker="B", confidence="very high"),
+            ]
+        )
         assert out["trade_ideas"][0]["confidence"] == 1.0
         assert out["trade_ideas"][1]["confidence"] == 0.5
 
     def test_time_stop_defaults_by_horizon(self) -> None:
-        out = self._norm(trade_ideas=[
-            self._idea(time_stop_days=None, time_horizon="immediate"),
-            self._idea(ticker="B", time_stop_days="soon", time_horizon="medium"),
-        ])
+        out = self._norm(
+            trade_ideas=[
+                self._idea(time_stop_days=None, time_horizon="immediate"),
+                self._idea(ticker="B", time_stop_days="soon", time_horizon="medium"),
+            ]
+        )
         assert out["trade_ideas"][0]["time_stop_days"] == 3
         assert out["trade_ideas"][1]["time_stop_days"] == 20
 
     def test_direction_derived_from_action_when_invalid(self) -> None:
-        out = self._norm(trade_ideas=[
-            self._idea(direction="sideways", action="buy_calls"),
-            self._idea(ticker="B", direction="", action="short"),
-        ])
+        out = self._norm(
+            trade_ideas=[
+                self._idea(direction="sideways", action="buy_calls"),
+                self._idea(ticker="B", direction="", action="short"),
+            ]
+        )
         assert out["trade_ideas"][0]["direction"] == "bullish"
         assert out["trade_ideas"][1]["direction"] == "bearish"
 
@@ -379,12 +430,16 @@ class TestTradeIdeas:
     # -- concrete, actionable level fields (CL-jiqq) ------------------- #
 
     def test_concrete_levels_parsed(self) -> None:
-        out = self._norm(trade_ideas=[self._idea(
-            stop_loss_pct=0.07,
-            target_pct=[0.08, 0.15],
-            entry_trigger="on confirmed blockade language",
-            invalidation="official denial of the seizure",
-        )])
+        out = self._norm(
+            trade_ideas=[
+                self._idea(
+                    stop_loss_pct=0.07,
+                    target_pct=[0.08, 0.15],
+                    entry_trigger="on confirmed blockade language",
+                    invalidation="official denial of the seizure",
+                )
+            ]
+        )
         idea = out["trade_ideas"][0]
         assert idea["stop_loss_pct"] == pytest.approx(0.07)
         assert idea["target_pct"] == [0.08, 0.15]
@@ -405,19 +460,25 @@ class TestTradeIdeas:
         assert parsed["invalidation"] == ""
 
     def test_stop_loss_pct_clamped_and_bad_dropped(self) -> None:
-        out = self._norm(trade_ideas=[
-            self._idea(stop_loss_pct=5.0),          # over the 0.90 cap
-            self._idea(ticker="B", stop_loss_pct="nope"),  # unparseable
-            self._idea(ticker="C", stop_loss_pct=-0.1),    # <= 0 → unset
-        ])
+        out = self._norm(
+            trade_ideas=[
+                self._idea(stop_loss_pct=5.0),  # over the 0.90 cap
+                self._idea(ticker="B", stop_loss_pct="nope"),  # unparseable
+                self._idea(ticker="C", stop_loss_pct=-0.1),  # <= 0 → unset
+            ]
+        )
         assert out["trade_ideas"][0]["stop_loss_pct"] == pytest.approx(0.90)
         assert out["trade_ideas"][1]["stop_loss_pct"] is None
         assert out["trade_ideas"][2]["stop_loss_pct"] is None
 
     def test_targets_cleaned_sorted_capped(self) -> None:
-        out = self._norm(trade_ideas=[self._idea(
-            target_pct=[0.30, 0.05, "junk", 0.30, 5.0, -1.0, 0.15],
-        )])
+        out = self._norm(
+            trade_ideas=[
+                self._idea(
+                    target_pct=[0.30, 0.05, "junk", 0.30, 5.0, -1.0, 0.15],
+                )
+            ]
+        )
         # dedup + sort + clamp (5.0 → 3.0 cap) + drop junk/neg + cap to 2
         assert out["trade_ideas"][0]["target_pct"] == [0.05, 0.15]
 
@@ -428,24 +489,37 @@ class TestTradeIdeas:
     def test_bad_levels_never_drop_the_idea(self) -> None:
         # Malformed level fields degrade individually; the idea itself
         # (valid ticker/action/horizon) survives — levels are advisory.
-        out = self._norm(trade_ideas=[self._idea(
-            stop_loss_pct="", target_pct="all of it",
-        )])
+        out = self._norm(
+            trade_ideas=[
+                self._idea(
+                    stop_loss_pct="",
+                    target_pct="all of it",
+                )
+            ]
+        )
         assert len(out["trade_ideas"]) == 1
         assert out["trade_ideas"][0]["stop_loss_pct"] is None
         assert out["trade_ideas"][0]["target_pct"] == []
 
     def test_fade_candidates_parsed_and_bad_dropped(self) -> None:
-        out = self._norm(fade_candidates=[
-            {"ticker": "FXI", "action": "fade the spike",
-             "reason": "routine drills, knee-jerk China risk-off"},
-            {"action": "fade", "reason": "no ticker"},
-            "not a dict",
-        ])
-        assert out["fade_candidates"] == [{
-            "ticker": "FXI", "action": "fade the spike",
-            "reason": "routine drills, knee-jerk China risk-off",
-        }]
+        out = self._norm(
+            fade_candidates=[
+                {
+                    "ticker": "FXI",
+                    "action": "fade the spike",
+                    "reason": "routine drills, knee-jerk China risk-off",
+                },
+                {"action": "fade", "reason": "no ticker"},
+                "not a dict",
+            ]
+        )
+        assert out["fade_candidates"] == [
+            {
+                "ticker": "FXI",
+                "action": "fade the spike",
+                "reason": "routine drills, knee-jerk China risk-off",
+            }
+        ]
 
 
 # ---------------------------------------------------------------------- #
@@ -461,17 +535,19 @@ class MockLLMClient:
     def complete(self, messages: Any, model: str, **kwargs: Any) -> SimpleNamespace:
         self.calls.append({"messages": messages, "model": model})
         return SimpleNamespace(
-            text=self.text_out, model=model, provider="mock",
-            input_tokens=10, output_tokens=10,
-            usd_cost=0.0, elapsed_sec=0.01,
+            text=self.text_out,
+            model=model,
+            provider="mock",
+            input_tokens=10,
+            output_tokens=10,
+            usd_cost=0.0,
+            elapsed_sec=0.01,
         )
 
 
 def _shim(sql: str) -> str:
     return (
-        sql.replace("TIMESTAMPTZ", "TEXT")
-        .replace("JSONB", "TEXT")
-        .replace("BIGSERIAL", "INTEGER")
+        sql.replace("TIMESTAMPTZ", "TEXT").replace("JSONB", "TEXT").replace("BIGSERIAL", "INTEGER")
     )
 
 
@@ -480,9 +556,11 @@ def engine(tmp_path: Path) -> Engine:
     from migrations.run import _strip_sql_comments
 
     eng = create_engine(f"sqlite:///{tmp_path / 'geo.db'}")
-    sql = _shim(_strip_sql_comments(
-        Path("migrations/005_geo_events.sql").read_text(),
-    ))
+    sql = _shim(
+        _strip_sql_comments(
+            Path("migrations/005_geo_events.sql").read_text(),
+        )
+    )
     with eng.begin() as conn:
         for stmt in [s.strip() for s in sql.split(";") if s.strip()]:
             conn.execute(text(stmt))
@@ -490,24 +568,33 @@ def engine(tmp_path: Path) -> Engine:
 
 
 def _insert_event(
-    engine: Engine, external_id: str, headline: str,
-    theme: str | None = "energy_chokepoint", seen_at: str = "2026-07-14T09:30:00",
+    engine: Engine,
+    external_id: str,
+    headline: str,
+    theme: str | None = "energy_chokepoint",
+    seen_at: str = "2026-07-14T09:30:00",
 ) -> None:
     with engine.begin() as conn:
-        conn.execute(text(
-            "INSERT INTO geo_events "
-            "(seen_at, source, external_id, headline, url, theme, "
-            " status, status_updated_at) "
-            "VALUES (:seen, 'gdelt', :eid, :hl, 'https://n.test/x', :theme, "
-            "'NEW', :seen)",
-        ), {"seen": seen_at, "eid": external_id, "hl": headline, "theme": theme})
+        conn.execute(
+            text(
+                "INSERT INTO geo_events "
+                "(seen_at, source, external_id, headline, url, theme, "
+                " status, status_updated_at) "
+                "VALUES (:seen, 'gdelt', :eid, :hl, 'https://n.test/x', :theme, "
+                "'NEW', :seen)",
+            ),
+            {"seen": seen_at, "eid": external_id, "hl": headline, "theme": theme},
+        )
 
 
 def _fetch(engine: Engine, external_id: str) -> dict:
     with engine.connect() as conn:
-        row = conn.execute(text(
-            "SELECT status, assessment FROM geo_events WHERE external_id=:e",
-        ), {"e": external_id}).one()
+        row = conn.execute(
+            text(
+                "SELECT status, assessment FROM geo_events WHERE external_id=:e",
+            ),
+            {"e": external_id},
+        ).one()
     return {"status": row[0], "assessment": json.loads(row[1])}
 
 
@@ -557,7 +644,9 @@ class TestAgentRoundTrip:
     def test_limit_caps_processing(self, engine: Engine) -> None:
         for i in range(3):
             _insert_event(
-                engine, f"e{i}", f"headline {i}",
+                engine,
+                f"e{i}",
+                f"headline {i}",
                 seen_at=f"2026-07-14T09:0{i}:00",
             )
         client = MockLLMClient(json.dumps(_valid_payload()))
@@ -568,9 +657,15 @@ class TestAgentRoundTrip:
         # Newest first: e2, e1 assessed; e0 still NEW for the next cycle.
         assert {r.event_id for r in results} == {2, 3}
         with engine.connect() as conn:
-            remaining = conn.execute(text(
-                "SELECT external_id FROM geo_events WHERE status='NEW'",
-            )).scalars().all()
+            remaining = (
+                conn.execute(
+                    text(
+                        "SELECT external_id FROM geo_events WHERE status='NEW'",
+                    )
+                )
+                .scalars()
+                .all()
+            )
         assert remaining == ["e0"]
 
     def test_unmatched_theme_uses_fallback_whitelist(self, engine: Engine) -> None:
@@ -612,9 +707,16 @@ class TestPromptGuidance:
         from src.events.impact_agent import _SYSTEM_PROMPT
 
         for key in (
-            '"core_event"', '"direction"', '"urgency"', '"horizon"',
-            '"confidence"', '"affected"', '"instrument"', '"kind"',
-            '"reason"', '"rationale"',
+            '"core_event"',
+            '"direction"',
+            '"urgency"',
+            '"horizon"',
+            '"confidence"',
+            '"affected"',
+            '"instrument"',
+            '"kind"',
+            '"reason"',
+            '"rationale"',
         ):
             assert key in _SYSTEM_PROMPT
 
@@ -622,7 +724,9 @@ class TestPromptGuidance:
         # A DRC event's user prompt must carry the mine/territory notes
         # so the model can name whose assets sit in the territory.
         _insert_event(
-            engine, "e1", "Kolwezi export halt announced",
+            engine,
+            "e1",
+            "Kolwezi export halt announced",
             theme="drc_copper_cobalt",
         )
         client = MockLLMClient(json.dumps(_valid_payload()))
@@ -655,10 +759,11 @@ class TestTransportFailureRetrySemantics:
         # Row untouched in the DB — still queued, no assessment written.
         # (_fetch json.loads()es the assessment, so query raw here.)
         with engine.connect() as conn:
-            raw = conn.execute(text(
-                "SELECT status, assessment FROM geo_events "
-                "WHERE external_id='tf1'",
-            )).one()
+            raw = conn.execute(
+                text(
+                    "SELECT status, assessment FROM geo_events WHERE external_id='tf1'",
+                )
+            ).one()
         assert raw[0] == "NEW"
         assert raw[1] is None
 
@@ -672,21 +777,30 @@ class TestTransportFailureRetrySemantics:
 
 
 def _insert_x_event(
-    engine: Engine, external_id: str, headline: str, source: str,
+    engine: Engine,
+    external_id: str,
+    headline: str,
+    source: str,
     theme: str | None = "energy_chokepoint",
     seen_at: str = "2026-07-20T09:30:00",
 ) -> None:
     with engine.begin() as conn:
-        conn.execute(text(
-            "INSERT INTO geo_events "
-            "(seen_at, source, external_id, headline, url, theme, "
-            " status, status_updated_at) "
-            "VALUES (:seen, :src, :eid, :hl, 'https://x.com/x/status/1', "
-            ":theme, 'NEW', :seen)",
-        ), {
-            "seen": seen_at, "src": source, "eid": external_id,
-            "hl": headline, "theme": theme,
-        })
+        conn.execute(
+            text(
+                "INSERT INTO geo_events "
+                "(seen_at, source, external_id, headline, url, theme, "
+                " status, status_updated_at) "
+                "VALUES (:seen, :src, :eid, :hl, 'https://x.com/x/status/1', "
+                ":theme, 'NEW', :seen)",
+            ),
+            {
+                "seen": seen_at,
+                "src": source,
+                "eid": external_id,
+                "hl": headline,
+                "theme": theme,
+            },
+        )
 
 
 class TestSourceCredibilityProvenance:
@@ -705,7 +819,9 @@ class TestSourceCredibilityProvenance:
 
     def test_x_source_adds_credibility_line(self, engine: Engine) -> None:
         _insert_x_event(
-            engine, "x:1", "Iran moves to close the Strait of Hormuz",
+            engine,
+            "x:1",
+            "Iran moves to close the Strait of Hormuz",
             source="x:DeItaone",
         )
         prompt = self._prompt_for(engine, "x:1")
@@ -714,7 +830,8 @@ class TestSourceCredibilityProvenance:
         assert "unconfirmed" in prompt.lower()
 
     def test_gdelt_source_has_no_credibility_line(
-        self, engine: Engine,
+        self,
+        engine: Engine,
     ) -> None:
         _insert_event(engine, "g1", "Iran moves to close Hormuz")
         prompt = self._prompt_for(engine, "g1")
@@ -722,10 +839,13 @@ class TestSourceCredibilityProvenance:
         assert "X/@" not in prompt
 
     def test_unknown_x_handle_uses_generic_line(
-        self, engine: Engine,
+        self,
+        engine: Engine,
     ) -> None:
         _insert_x_event(
-            engine, "x:2", "Iran moves to close the Strait of Hormuz",
+            engine,
+            "x:2",
+            "Iran moves to close the Strait of Hormuz",
             source="x:SomeNewHandle",
         )
         prompt = self._prompt_for(engine, "x:2")
@@ -750,35 +870,43 @@ class _TwoTierMock:
         self.calls.append({"messages": messages, "model": model})
         out = self.triage_text if "haiku" in model else self.assess_text
         return SimpleNamespace(
-            text=out, model=model, provider="mock",
-            input_tokens=10, output_tokens=10, usd_cost=0.0, elapsed_sec=0.01,
+            text=out,
+            model=model,
+            provider="mock",
+            input_tokens=10,
+            output_tokens=10,
+            usd_cost=0.0,
+            elapsed_sec=0.01,
         )
 
 
 def _numeric_ids(engine: Engine) -> dict[str, int]:
     with engine.connect() as conn:
-        return {
-            r[0]: r[1]
-            for r in conn.execute(text("SELECT external_id, id FROM geo_events"))
-        }
+        return {r[0]: r[1] for r in conn.execute(text("SELECT external_id, id FROM geo_events"))}
 
 
 class TestTriageTier:
     def test_triage_skips_junk_and_escalates_real(self, engine: Engine) -> None:
         from src.events.triage import EventTriage
 
-        _insert_event(engine, "e1", "Iran moves to close Hormuz",
-                      seen_at="2026-07-14T10:00:00")
-        _insert_event(engine, "e2", "Opinion: why oil forecasts are usually wrong",
-                      seen_at="2026-07-14T09:00:00")
+        _insert_event(engine, "e1", "Iran moves to close Hormuz", seen_at="2026-07-14T10:00:00")
+        _insert_event(
+            engine,
+            "e2",
+            "Opinion: why oil forecasts are usually wrong",
+            seen_at="2026-07-14T09:00:00",
+        )
         ids = _numeric_ids(engine)
-        triage_arr = json.dumps([
-            {"id": ids["e1"], "relevance": 9, "tradable": True, "reason": "chokepoint"},
-            {"id": ids["e2"], "relevance": 1, "tradable": False, "reason": "opinion"},
-        ])
+        triage_arr = json.dumps(
+            [
+                {"id": ids["e1"], "relevance": 9, "tradable": True, "reason": "chokepoint"},
+                {"id": ids["e2"], "relevance": 1, "tradable": False, "reason": "opinion"},
+            ]
+        )
         client = _TwoTierMock(triage_arr, json.dumps(_valid_payload()))
         agent = EventImpactAgent(
-            engine, client=client,  # type: ignore[arg-type]
+            engine,
+            client=client,  # type: ignore[arg-type]
             triage=EventTriage(client=client, enabled=True, min_relevance=4),  # type: ignore[arg-type]
         )
         agent.assess_new_events()
@@ -810,17 +938,21 @@ class TestTriageTier:
                 if "haiku" in model:
                     raise RuntimeError("triage outage")
                 return SimpleNamespace(
-                    text=json.dumps(_valid_payload()), model=model,
-                    provider="mock", input_tokens=10, output_tokens=10,
-                    usd_cost=0.0, elapsed_sec=0.01,
+                    text=json.dumps(_valid_payload()),
+                    model=model,
+                    provider="mock",
+                    input_tokens=10,
+                    output_tokens=10,
+                    usd_cost=0.0,
+                    elapsed_sec=0.01,
                 )
 
         _insert_event(engine, "e1", "Iran moves to close Hormuz")
-        _insert_event(engine, "e2", "Some other Hormuz development",
-                      seen_at="2026-07-14T08:00:00")
+        _insert_event(engine, "e2", "Some other Hormuz development", seen_at="2026-07-14T08:00:00")
         client = _RaisingTriageClient()
         agent = EventImpactAgent(
-            engine, client=client,  # type: ignore[arg-type]
+            engine,
+            client=client,  # type: ignore[arg-type]
             triage=EventTriage(client=client, enabled=True),  # type: ignore[arg-type]
         )
         agent.assess_new_events()
@@ -829,7 +961,9 @@ class TestTriageTier:
         assert _fetch(engine, "e2")["status"] == "ASSESSED"
 
     def test_triage_disabled_by_default_no_extra_call(
-        self, engine: Engine, monkeypatch: pytest.MonkeyPatch,
+        self,
+        engine: Engine,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """With triage off (the default), behavior is exactly as before:
         one assessment call per event, no triage call."""

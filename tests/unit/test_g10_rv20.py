@@ -10,14 +10,13 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 import pytest
-from sqlalchemy import create_engine, text
-
 from scripts.compute_g10_realized_vol import (
     G10_PAIRS,
     WINDOW,
     compute_g10_rv20,
     upsert_volatility,
 )
+from sqlalchemy import create_engine, text
 
 
 @pytest.fixture
@@ -25,11 +24,13 @@ def fx_vol_engine(tmp_path):  # type: ignore[no-untyped-def]
     db_path = tmp_path / "rv20.db"
     engine = create_engine(f"sqlite:///{db_path}")
     with engine.begin() as conn:
-        conn.execute(text(
-            "CREATE TABLE fx_volatility ("
-            "  date DATE NOT NULL, index_name TEXT NOT NULL, "
-            "  value REAL NOT NULL, PRIMARY KEY (date, index_name))",
-        ))
+        conn.execute(
+            text(
+                "CREATE TABLE fx_volatility ("
+                "  date DATE NOT NULL, index_name TEXT NOT NULL, "
+                "  value REAL NOT NULL, PRIMARY KEY (date, index_name))",
+            )
+        )
     return engine
 
 
@@ -50,7 +51,8 @@ class TestComputeG10RV20:
         idx = pd.date_range("2026-01-01", periods=30, freq="D")
         # Two pairs, all flat → log returns 0 → std 0 → RV20 = 0.
         closes = pd.DataFrame(
-            {"EURUSD": [1.10] * 30, "GBPUSD": [1.30] * 30}, index=idx,
+            {"EURUSD": [1.10] * 30, "GBPUSD": [1.30] * 30},
+            index=idx,
         )
         result = compute_g10_rv20(closes)
         assert not result.empty

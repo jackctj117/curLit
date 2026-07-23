@@ -73,7 +73,8 @@ def _pricing_client(bid: str, ask: str) -> SimpleNamespace:
     payload = {"prices": [{"bids": [{"price": bid}], "asks": [{"price": ask}]}]}
     return SimpleNamespace(
         get=lambda url, params=None: SimpleNamespace(
-            json=lambda: payload, raise_for_status=lambda: None,
+            json=lambda: payload,
+            raise_for_status=lambda: None,
         ),
     )
 
@@ -91,14 +92,18 @@ def _capture_post(b: OandaBroker, monkeypatch: pytest.MonkeyPatch) -> list[dict]
 
 class TestOandaPriceBoundPayload:
     def test_buy_includes_bound_above_ask(
-        self, monkeypatch: pytest.MonkeyPatch,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         b = _broker()
         b.client = _pricing_client("1.10000", "1.10020")
         bodies = _capture_post(b, monkeypatch)
         order = Order(
-            symbol="EUR_USD", side="buy", quantity=1000,
-            order_type=OrderType.MARKET, max_slippage_bps=2.0,
+            symbol="EUR_USD",
+            side="buy",
+            quantity=1000,
+            order_type=OrderType.MARKET,
+            max_slippage_bps=2.0,
         )
         out = b.place_order(order)
         assert out.status == OrderStatus.FILLED
@@ -106,26 +111,33 @@ class TestOandaPriceBoundPayload:
         assert bound > Decimal("1.10020")  # above the ask reference
 
     def test_sell_includes_bound_below_bid(
-        self, monkeypatch: pytest.MonkeyPatch,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         b = _broker()
         b.client = _pricing_client("1.10000", "1.10020")
         bodies = _capture_post(b, monkeypatch)
         order = Order(
-            symbol="EUR_USD", side="sell", quantity=1000,
-            order_type=OrderType.MARKET, max_slippage_bps=2.0,
+            symbol="EUR_USD",
+            side="sell",
+            quantity=1000,
+            order_type=OrderType.MARKET,
+            max_slippage_bps=2.0,
         )
         b.place_order(order)
         bound = Decimal(bodies[0]["order"]["priceBound"])
         assert bound < Decimal("1.10000")  # below the bid reference
 
     def test_no_slippage_cap_means_no_bound(
-        self, monkeypatch: pytest.MonkeyPatch,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         b = _broker()
         bodies = _capture_post(b, monkeypatch)
         order = Order(
-            symbol="EUR_USD", side="buy", quantity=1000,
+            symbol="EUR_USD",
+            side="buy",
+            quantity=1000,
             order_type=OrderType.MARKET,
         )
         b.place_order(order)
@@ -143,15 +155,19 @@ class TestOandaPriceBoundPayload:
         b.client = SimpleNamespace(get=boom)
 
     def test_pricing_failure_rejects_normal_capped_order(
-        self, monkeypatch: pytest.MonkeyPatch,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         # Old behavior placed UNBOUND for every order on a /pricing hiccup.
         b = _broker()
         self._broken_pricing(b)
         bodies = _capture_post(b, monkeypatch)
         order = Order(
-            symbol="EUR_USD", side="buy", quantity=1000,
-            order_type=OrderType.MARKET, max_slippage_bps=2.0,
+            symbol="EUR_USD",
+            side="buy",
+            quantity=1000,
+            order_type=OrderType.MARKET,
+            max_slippage_bps=2.0,
         )
         out = b.place_order(order)
         assert out.status == OrderStatus.REJECTED
@@ -168,12 +184,16 @@ class TestOandaPriceBoundPayload:
         self._broken_pricing(b)
         bodies = _capture_post(b, monkeypatch)
         order = Order(
-            symbol="EUR_USD", side="sell", quantity=1000,
-            order_type=OrderType.MARKET, max_slippage_bps=2.0,
+            symbol="EUR_USD",
+            side="sell",
+            quantity=1000,
+            order_type=OrderType.MARKET,
+            max_slippage_bps=2.0,
             emergency=True,
         )
         with caplog.at_level(
-            logging.CRITICAL, logger="src.execution.oanda_broker",
+            logging.CRITICAL,
+            logger="src.execution.oanda_broker",
         ):
             out = b.place_order(order)
         assert out.status == OrderStatus.FILLED
@@ -183,14 +203,17 @@ class TestOandaPriceBoundPayload:
         assert "emergency order placed without slippage bound" in crit[0].getMessage()
 
     def test_pricing_failure_uncapped_order_unaffected(
-        self, monkeypatch: pytest.MonkeyPatch,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         # max_slippage_bps=None never consults /pricing — no reject.
         b = _broker()
         self._broken_pricing(b)
         bodies = _capture_post(b, monkeypatch)
         order = Order(
-            symbol="EUR_USD", side="buy", quantity=1000,
+            symbol="EUR_USD",
+            side="buy",
+            quantity=1000,
             order_type=OrderType.MARKET,
         )
         out = b.place_order(order)
@@ -198,7 +221,8 @@ class TestOandaPriceBoundPayload:
         assert "priceBound" not in bodies[0]["order"]
 
     def test_pricing_success_emergency_still_bounded(
-        self, monkeypatch: pytest.MonkeyPatch,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         # Emergency relaxes the FAILURE posture only — a healthy /pricing
         # still yields a bound.
@@ -206,8 +230,11 @@ class TestOandaPriceBoundPayload:
         b.client = _pricing_client("1.10000", "1.10020")
         bodies = _capture_post(b, monkeypatch)
         order = Order(
-            symbol="EUR_USD", side="buy", quantity=1000,
-            order_type=OrderType.MARKET, max_slippage_bps=2.0,
+            symbol="EUR_USD",
+            side="buy",
+            quantity=1000,
+            order_type=OrderType.MARKET,
+            max_slippage_bps=2.0,
             emergency=True,
         )
         out = b.place_order(order)
@@ -233,25 +260,33 @@ class _CountingPricingClient:
     def get(self, url: str, params: dict | None = None) -> SimpleNamespace:
         self.calls += 1
         return SimpleNamespace(
-            json=lambda: self._payload, raise_for_status=lambda: None,
+            json=lambda: self._payload,
+            raise_for_status=lambda: None,
         )
 
 
 class TestStreamedReferencePrice:
     def _seed_stream(
-        self, b: OandaBroker, oanda_sym: str, bid: str, ask: str,
+        self,
+        b: OandaBroker,
+        oanda_sym: str,
+        bid: str,
+        ask: str,
         age_sec: float,
     ) -> None:
         import time
+
         b._last_stream_price = {
             oanda_sym: {
-                "bid": bid, "ask": ask,
+                "bid": bid,
+                "ask": ask,
                 "mono": time.monotonic() - age_sec,
             },
         }
 
     def test_fresh_stream_mid_used_and_no_pricing_call(
-        self, monkeypatch: pytest.MonkeyPatch,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         b = _broker()
         pricing = _CountingPricingClient("9.99990", "9.99999")  # distinct
@@ -259,8 +294,11 @@ class TestStreamedReferencePrice:
         self._seed_stream(b, "EUR_USD", "1.10000", "1.10020", age_sec=0.1)
         bodies = _capture_post(b, monkeypatch)
         order = Order(
-            symbol="EUR_USD", side="buy", quantity=1000,
-            order_type=OrderType.MARKET, max_slippage_bps=2.0,
+            symbol="EUR_USD",
+            side="buy",
+            quantity=1000,
+            order_type=OrderType.MARKET,
+            max_slippage_bps=2.0,
         )
         out = b.place_order(order)
         assert out.status == OrderStatus.FILLED
@@ -271,7 +309,8 @@ class TestStreamedReferencePrice:
         assert bound == Decimal("1.10042")
 
     def test_sell_uses_streamed_bid(
-        self, monkeypatch: pytest.MonkeyPatch,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         b = _broker()
         pricing = _CountingPricingClient("9.0", "9.0")
@@ -279,8 +318,11 @@ class TestStreamedReferencePrice:
         self._seed_stream(b, "EUR_USD", "1.10000", "1.10020", age_sec=0.1)
         bodies = _capture_post(b, monkeypatch)
         order = Order(
-            symbol="EUR_USD", side="sell", quantity=1000,
-            order_type=OrderType.MARKET, max_slippage_bps=2.0,
+            symbol="EUR_USD",
+            side="sell",
+            quantity=1000,
+            order_type=OrderType.MARKET,
+            max_slippage_bps=2.0,
         )
         b.place_order(order)
         assert pricing.calls == 0
@@ -288,20 +330,27 @@ class TestStreamedReferencePrice:
         assert bound < Decimal("1.10000")  # below the streamed bid
 
     def test_stale_stream_falls_back_to_pricing(
-        self, monkeypatch: pytest.MonkeyPatch,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         b = _broker()
         pricing = _CountingPricingClient("1.20000", "1.20020")
         b.client = pricing
         # Streamed mid older than the max age → ignored.
         self._seed_stream(
-            b, "EUR_USD", "1.10000", "1.10020",
+            b,
+            "EUR_USD",
+            "1.10000",
+            "1.10020",
             age_sec=OandaBroker._REF_PRICE_MAX_AGE_SEC + 1.0,
         )
         bodies = _capture_post(b, monkeypatch)
         order = Order(
-            symbol="EUR_USD", side="buy", quantity=1000,
-            order_type=OrderType.MARKET, max_slippage_bps=2.0,
+            symbol="EUR_USD",
+            side="buy",
+            quantity=1000,
+            order_type=OrderType.MARKET,
+            max_slippage_bps=2.0,
         )
         b.place_order(order)
         assert pricing.calls == 1  # fell back to a fresh fetch
@@ -310,7 +359,8 @@ class TestStreamedReferencePrice:
         assert bound > Decimal("1.20020")
 
     def test_no_streamed_symbol_falls_back_to_pricing(
-        self, monkeypatch: pytest.MonkeyPatch,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         b = _broker()
         pricing = _CountingPricingClient("1.30000", "1.30020")
@@ -319,15 +369,19 @@ class TestStreamedReferencePrice:
         self._seed_stream(b, "GBP_USD", "1.10000", "1.10020", age_sec=0.1)
         bodies = _capture_post(b, monkeypatch)
         order = Order(
-            symbol="EUR_USD", side="buy", quantity=1000,
-            order_type=OrderType.MARKET, max_slippage_bps=2.0,
+            symbol="EUR_USD",
+            side="buy",
+            quantity=1000,
+            order_type=OrderType.MARKET,
+            max_slippage_bps=2.0,
         )
         b.place_order(order)
         assert pricing.calls == 1
         assert Decimal(bodies[0]["order"]["priceBound"]) > Decimal("1.30020")
 
     def test_stale_stream_and_broken_pricing_still_fails_closed(
-        self, monkeypatch: pytest.MonkeyPatch,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         # CL-8lv6 posture is intact: when the stream is stale AND /pricing
         # fails, a NORMAL capped order is REJECTED (not sent unbound).
@@ -338,13 +392,19 @@ class TestStreamedReferencePrice:
 
         b.client = SimpleNamespace(get=boom)
         self._seed_stream(
-            b, "EUR_USD", "1.10000", "1.10020",
+            b,
+            "EUR_USD",
+            "1.10000",
+            "1.10020",
             age_sec=OandaBroker._REF_PRICE_MAX_AGE_SEC + 1.0,
         )
         bodies = _capture_post(b, monkeypatch)
         order = Order(
-            symbol="EUR_USD", side="buy", quantity=1000,
-            order_type=OrderType.MARKET, max_slippage_bps=2.0,
+            symbol="EUR_USD",
+            side="buy",
+            quantity=1000,
+            order_type=OrderType.MARKET,
+            max_slippage_bps=2.0,
         )
         out = b.place_order(order)
         assert out.status == OrderStatus.REJECTED
@@ -352,7 +412,8 @@ class TestStreamedReferencePrice:
         assert bodies == []
 
     def test_fresh_stream_bypasses_broken_pricing(
-        self, monkeypatch: pytest.MonkeyPatch,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         # A fresh streamed mid means a dead /pricing endpoint is irrelevant —
         # the order still gets a bound and fills (the whole point of CL-7vn9).
@@ -365,8 +426,11 @@ class TestStreamedReferencePrice:
         self._seed_stream(b, "EUR_USD", "1.10000", "1.10020", age_sec=0.1)
         bodies = _capture_post(b, monkeypatch)
         order = Order(
-            symbol="EUR_USD", side="buy", quantity=1000,
-            order_type=OrderType.MARKET, max_slippage_bps=2.0,
+            symbol="EUR_USD",
+            side="buy",
+            quantity=1000,
+            order_type=OrderType.MARKET,
+            max_slippage_bps=2.0,
         )
         out = b.place_order(order)
         assert out.status == OrderStatus.FILLED
@@ -384,8 +448,11 @@ class TestPaperBrokerSlippage:
         # Wide book: mid 1.1000, ask 9.09 bps above mid — beyond 2 bps.
         broker.set_price("EURUSD", 1.0990, 1.1010)
         order = Order(
-            symbol="EURUSD", side="buy", quantity=1000,
-            order_type=OrderType.MARKET, max_slippage_bps=2.0,
+            symbol="EURUSD",
+            side="buy",
+            quantity=1000,
+            order_type=OrderType.MARKET,
+            max_slippage_bps=2.0,
         )
         out = broker.place_order(order)
         assert out.status == OrderStatus.REJECTED
@@ -396,8 +463,11 @@ class TestPaperBrokerSlippage:
         broker = PaperBroker()
         broker.set_price("EURUSD", 1.0990, 1.1010)
         order = Order(
-            symbol="EURUSD", side="sell", quantity=1000,
-            order_type=OrderType.MARKET, max_slippage_bps=2.0,
+            symbol="EURUSD",
+            side="sell",
+            quantity=1000,
+            order_type=OrderType.MARKET,
+            max_slippage_bps=2.0,
         )
         out = broker.place_order(order)
         assert out.status == OrderStatus.REJECTED
@@ -408,8 +478,11 @@ class TestPaperBrokerSlippage:
         # Half-spread ≈ 0.9 bps < 2 bps tolerance.
         broker.set_price("EURUSD", 1.1000, 1.1002)
         order = Order(
-            symbol="EURUSD", side="buy", quantity=1000,
-            order_type=OrderType.MARKET, max_slippage_bps=2.0,
+            symbol="EURUSD",
+            side="buy",
+            quantity=1000,
+            order_type=OrderType.MARKET,
+            max_slippage_bps=2.0,
         )
         out = broker.place_order(order)
         assert out.status == OrderStatus.FILLED
@@ -418,7 +491,9 @@ class TestPaperBrokerSlippage:
         broker = PaperBroker()
         broker.set_price("EURUSD", 1.0900, 1.1100)  # absurd spread
         order = Order(
-            symbol="EURUSD", side="buy", quantity=1000,
+            symbol="EURUSD",
+            side="buy",
+            quantity=1000,
             order_type=OrderType.MARKET,
         )
         out = broker.place_order(order)
@@ -463,10 +538,14 @@ class TestOmsSlippageWiring:
 
         broker.place_order = spy  # type: ignore[method-assign]
         oms = OrderManager(broker)
-        oms.submit_intent(OrderIntent(
-            strategy_id="s", symbol="EURUSD", target_position=500,
-            max_slippage_bps=7.5,
-        ))
+        oms.submit_intent(
+            OrderIntent(
+                strategy_id="s",
+                symbol="EURUSD",
+                target_position=500,
+                max_slippage_bps=7.5,
+            )
+        )
         assert seen and seen[0].max_slippage_bps == 7.5
 
     def test_slippage_reject_reaches_rejection_handler(self) -> None:
@@ -476,9 +555,13 @@ class TestOmsSlippageWiring:
         broker.set_price("EURUSD", 1.0990, 1.1010)  # beyond 2 bps default
         handler = _RecordingHandler()
         oms = OrderManager(broker, rejection_handler=handler)
-        oms.submit_intent(OrderIntent(
-            strategy_id="s", symbol="EURUSD", target_position=500,
-        ))
+        oms.submit_intent(
+            OrderIntent(
+                strategy_id="s",
+                symbol="EURUSD",
+                target_position=500,
+            )
+        )
         assert len(handler.exceptions) == 1
         exc = handler.exceptions[0]
         assert isinstance(exc, BrokerRejectedOrderError)

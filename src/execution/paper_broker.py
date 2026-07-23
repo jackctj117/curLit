@@ -42,12 +42,13 @@ class PaperBroker(Broker):
             # venue reject, rather than silently filling at a made-up price.
             order.status = OrderStatus.REJECTED
             order.reject_reason = (
-                f"NO_PRICE: PaperBroker has no price for {order.symbol!r} "
-                "(set_price never called)"
+                f"NO_PRICE: PaperBroker has no price for {order.symbol!r} (set_price never called)"
             )
             logger.warning(
                 "PaperBroker REJECTED %s %s x%s — no price set",
-                order.symbol, order.side, order.quantity,
+                order.symbol,
+                order.side,
+                order.quantity,
             )
             return order
         bid, ask = quote
@@ -62,9 +63,7 @@ class PaperBroker(Broker):
             mid = (bid + ask) / 2.0
             frac = order.max_slippage_bps / 10_000.0
             bound = mid * (1 + frac) if order.side == "buy" else mid * (1 - frac)
-            beyond = (
-                fill_price > bound if order.side == "buy" else fill_price < bound
-            )
+            beyond = fill_price > bound if order.side == "buy" else fill_price < bound
             if beyond:
                 order.status = OrderStatus.REJECTED
                 order.reject_reason = (
@@ -74,7 +73,9 @@ class PaperBroker(Broker):
                 )
                 logger.warning(
                     "PaperBroker REJECTED %s %s x%s: %s",
-                    order.symbol, order.side, order.quantity,
+                    order.symbol,
+                    order.side,
+                    order.quantity,
                     order.reject_reason,
                 )
                 return order
@@ -104,9 +105,7 @@ class PaperBroker(Broker):
         elif (old_qty > 0) == (delta > 0):
             # Adding to an existing position (delta == 0 degenerates to
             # one of the branches below with a no-op result).
-            avg_price = (
-                abs(old_qty) * old_avg + abs(delta) * fill_price
-            ) / abs(new_qty)
+            avg_price = (abs(old_qty) * old_avg + abs(delta) * fill_price) / abs(new_qty)
         elif abs(delta) <= abs(old_qty):
             # Partial reduce or full close: realize on the closed quantity.
             realized += abs(delta) * (fill_price - old_avg) * direction
@@ -126,14 +125,16 @@ class PaperBroker(Broker):
         )
         self._equity += realized_delta - cost
         order.status = OrderStatus.FILLED
-        self._trade_log.append({
-            "ts": datetime.now(UTC),
-            "symbol": order.symbol,
-            "side": order.side,
-            "quantity": order.quantity,
-            "fill_price": fill_price,
-            "cost": cost,
-        })
+        self._trade_log.append(
+            {
+                "ts": datetime.now(UTC),
+                "symbol": order.symbol,
+                "side": order.side,
+                "quantity": order.quantity,
+                "fill_price": fill_price,
+                "cost": cost,
+            }
+        )
         return order
 
     def cancel_order(self, order_id: str) -> bool:
@@ -170,7 +171,8 @@ class PaperBroker(Broker):
             raise KeyError(msg) from None
 
     async def stream_prices(
-        self, symbols: list[str],
+        self,
+        symbols: list[str],
     ) -> AsyncIterator[dict[str, Any]]:
         """Synthetic ticks for PRICED symbols only — fail closed (CL-8lv6 P0).
 

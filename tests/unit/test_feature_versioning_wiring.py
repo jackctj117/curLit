@@ -55,13 +55,17 @@ def broker() -> PaperBroker:
 class TestIntentMetadata:
     def test_default_is_empty_dict(self) -> None:
         intent = OrderIntent(
-            strategy_id="s1", symbol="EUR_USD", target_position=10_000,
+            strategy_id="s1",
+            symbol="EUR_USD",
+            target_position=10_000,
         )
         assert intent.metadata == {}
 
     def test_metadata_round_trip(self) -> None:
         intent = OrderIntent(
-            strategy_id="s1", symbol="EUR_USD", target_position=10_000,
+            strategy_id="s1",
+            symbol="EUR_USD",
+            target_position=10_000,
             metadata={"snapshot_id": "abc", "trigger": "entry"},
         )
         assert intent.metadata["snapshot_id"] == "abc"
@@ -80,14 +84,14 @@ class TestOMSMetadataMerge:
     ) -> None:
         oms = OrderManager(broker, journal=journal)
         intent = OrderIntent(
-            strategy_id="s1", symbol="EUR_USD", target_position=10_000,
+            strategy_id="s1",
+            symbol="EUR_USD",
+            target_position=10_000,
             metadata={"snapshot_id": "deadbeef", "trigger": "entry"},
         )
         oms.submit_intent(intent)
         rows = journal.query_by_intent(intent.intent_id)
-        intent_events = [
-            r for r in rows if r.event_type == EventType.INTENT_SUBMITTED
-        ]
+        intent_events = [r for r in rows if r.event_type == EventType.INTENT_SUBMITTED]
         assert len(intent_events) == 1
         # Standard payload keys still present.
         assert "delta" in intent_events[0].payload
@@ -102,18 +106,21 @@ class TestOMSMetadataMerge:
     ) -> None:
         oms = OrderManager(broker, journal=journal)
         intent = OrderIntent(
-            strategy_id="s1", symbol="EUR_USD", target_position=10_000,
+            strategy_id="s1",
+            symbol="EUR_USD",
+            target_position=10_000,
         )
         oms.submit_intent(intent)
         rows = journal.query_by_intent(intent.intent_id)
-        intent_events = [
-            r for r in rows if r.event_type == EventType.INTENT_SUBMITTED
-        ]
+        intent_events = [r for r in rows if r.event_type == EventType.INTENT_SUBMITTED]
         # No surprise keys leaking in.
         for event in intent_events:
             assert set(event.payload.keys()) <= {
-                "target_position", "current_position", "delta",
-                "urgency", "max_slippage_bps",
+                "target_position",
+                "current_position",
+                "delta",
+                "urgency",
+                "max_slippage_bps",
             }
 
 
@@ -133,8 +140,11 @@ class TestReconstructRoundTrip:
         from datetime import UTC, datetime
 
         feature_values = {
-            "z": 2.5, "price": 1.1001, "spread": 0.045,
-            "direction": -1, "vol": 0.08,
+            "z": 2.5,
+            "price": 1.1001,
+            "spread": 0.045,
+            "direction": -1,
+            "vol": 0.08,
         }
         snapshot = FeatureSnapshot.create(
             feature_set_name="rate_diff_mr",
@@ -149,8 +159,10 @@ class TestReconstructRoundTrip:
 
         oms = OrderManager(broker, journal=journal)
         intent = OrderIntent(
-            strategy_id="rate_diff_mr", symbol="EUR_USD",
-            target_position=10_000, metadata=meta,
+            strategy_id="rate_diff_mr",
+            symbol="EUR_USD",
+            target_position=10_000,
+            metadata=meta,
         )
         oms.submit_intent(intent)
 
@@ -170,7 +182,9 @@ class TestReconstructRoundTrip:
     ) -> None:
         oms = OrderManager(broker, journal=journal)
         intent = OrderIntent(
-            strategy_id="s1", symbol="EUR_USD", target_position=10_000,
+            strategy_id="s1",
+            symbol="EUR_USD",
+            target_position=10_000,
         )
         oms.submit_intent(intent)
         # No snapshot stored, no metadata attached → reconstruct returns None.
@@ -185,6 +199,7 @@ class TestReconstructRoundTrip:
 class TestStrategySnapshotEmit:
     def test_rate_diff_no_store_returns_empty_meta(self) -> None:
         from src.strategies.rate_diff_mean_reversion import RateDiffMRStrategy
+
         s = RateDiffMRStrategy(snapshot_store=None)
         assert s._emit_snapshot({"z": 1.0}) == {}
 
@@ -193,9 +208,9 @@ class TestStrategySnapshotEmit:
         store: FeatureSnapshotStore,
     ) -> None:
         from src.strategies.rate_diff_mean_reversion import RateDiffMRStrategy
+
         s = RateDiffMRStrategy(snapshot_store=store)
-        s._model = {"alpha": 0.95, "beta": -0.12, "residual_std": 0.03,
-                    "r_squared": 0.7}
+        s._model = {"alpha": 0.95, "beta": -0.12, "residual_std": 0.03, "r_squared": 0.7}
         meta = s._emit_snapshot({"z": 1.5, "price": 1.1, "spread": 0.04})
         assert "snapshot_id" in meta
         assert meta["feature_set_name"] == "rate_diff_mr"
@@ -206,6 +221,7 @@ class TestStrategySnapshotEmit:
 
     def test_carry_no_store_returns_empty_meta(self) -> None:
         from src.strategies.carry_vol_filter import CarryVolFilterStrategy
+
         s = CarryVolFilterStrategy(snapshot_store=None)
         assert s._emit_snapshot({"vol_z": 1.0}) == {}
 
@@ -214,6 +230,7 @@ class TestStrategySnapshotEmit:
         store: FeatureSnapshotStore,
     ) -> None:
         from src.strategies.carry_vol_filter import CarryVolFilterStrategy
+
         s = CarryVolFilterStrategy(snapshot_store=store)
         meta = s._emit_snapshot({"vol_z": -0.5, "exposure": 1.0})
         assert "snapshot_id" in meta
@@ -223,6 +240,7 @@ class TestStrategySnapshotEmit:
 
     def test_cb_sentiment_no_store_returns_empty_meta(self) -> None:
         from src.strategies.cb_sentiment_shift import CBSentimentShiftStrategy
+
         s = CBSentimentShiftStrategy(snapshot_store=None)
         assert s._emit_snapshot({"shift": 0.5}) == {}
 
@@ -231,6 +249,7 @@ class TestStrategySnapshotEmit:
         store: FeatureSnapshotStore,
     ) -> None:
         from src.strategies.cb_sentiment_shift import CBSentimentShiftStrategy
+
         s = CBSentimentShiftStrategy(snapshot_store=store)
         meta = s._emit_snapshot({"cb": "fed", "shift": 0.45, "direction": -1})
         assert "snapshot_id" in meta

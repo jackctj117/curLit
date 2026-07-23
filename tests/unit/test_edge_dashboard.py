@@ -164,9 +164,13 @@ class TestLayerSignals:
         names = {s.name for s in verdict.signals}
         # All 7 layers tracked.
         assert names == {
-            "G1_null_hypothesis", "G2_multiple_testing", "G3_live_tracker",
-            "G4_paper_live", "G5_feature_attribution",
-            "G6_regime_decomposition", "G7_decay_monitor",
+            "G1_null_hypothesis",
+            "G2_multiple_testing",
+            "G3_live_tracker",
+            "G4_paper_live",
+            "G5_feature_attribution",
+            "G6_regime_decomposition",
+            "G7_decay_monitor",
         }
 
     def test_g3_severely_maps_to_fail(self) -> None:

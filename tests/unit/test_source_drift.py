@@ -11,6 +11,7 @@ Covers:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from pathlib import Path
 
 import pytest
@@ -101,13 +102,5 @@ class TestRunForever:
             assert engine_source_drift._value.get() == 1.0  # type: ignore[attr-defined]
         finally:
             task.cancel()
-            with contextlib_suppress():
+            with contextlib.suppress(asyncio.CancelledError):
                 await task
-
-
-class contextlib_suppress:  # tiny ctx manager for async cancel cleanup
-    def __enter__(self) -> "contextlib_suppress":
-        return self
-
-    def __exit__(self, exc_type, exc, tb) -> bool:  # type: ignore[no-untyped-def]
-        return exc_type is asyncio.CancelledError

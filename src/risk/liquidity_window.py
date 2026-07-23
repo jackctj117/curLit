@@ -79,7 +79,10 @@ class LiquidityProfile:
         return self.pair_median_bps.get(key, 1.0)
 
     def size_multiplier(
-        self, symbol: str, ts: datetime, observed_spread_bps: float,
+        self,
+        symbol: str,
+        ts: datetime,
+        observed_spread_bps: float,
     ) -> float:
         """Map observed spread → multiplier in [0.0, 1.0].
 
@@ -177,9 +180,7 @@ def build_profile_from_spreads(
             median_spread_bps[key] = float(_stats.median(samples))
 
     pair_median_bps: dict[str, float] = {
-        symbol: float(_stats.median(samples))
-        for symbol, samples in pair_all.items()
-        if samples
+        symbol: float(_stats.median(samples)) for symbol, samples in pair_all.items() if samples
     }
 
     return LiquidityProfile(
@@ -191,7 +192,8 @@ def build_profile_from_spreads(
 
 
 def merge_profiles(
-    old: LiquidityProfile | None, new: LiquidityProfile,
+    old: LiquidityProfile | None,
+    new: LiquidityProfile,
 ) -> LiquidityProfile:
     """Overlay ``new`` onto ``old`` — fresh buckets win, stale buckets fill
     gaps. ``intraday_quotes`` only retains ~24h, so a single refresh sees at
@@ -240,8 +242,7 @@ def save_profile(profile: LiquidityProfile, path: str) -> None:
 
     payload = {
         "median_spread_bps": {
-            _bucket_key_to_str(k): v
-            for k, v in profile.median_spread_bps.items()
+            _bucket_key_to_str(k): v for k, v in profile.median_spread_bps.items()
         },
         "pair_median_bps": dict(profile.pair_median_bps),
         "block_threshold": profile.block_threshold,
@@ -275,13 +276,8 @@ def load_profile(path: str) -> LiquidityProfile | None:
         return None
     with open(path) as fh:
         payload = json.load(fh)
-    median = {
-        _bucket_key_from_str(k): float(v)
-        for k, v in payload["median_spread_bps"].items()
-    }
-    pair_median = {
-        str(k): float(v) for k, v in payload["pair_median_bps"].items()
-    }
+    median = {_bucket_key_from_str(k): float(v) for k, v in payload["median_spread_bps"].items()}
+    pair_median = {str(k): float(v) for k, v in payload["pair_median_bps"].items()}
     return LiquidityProfile(
         median_spread_bps=median,
         pair_median_bps=pair_median,

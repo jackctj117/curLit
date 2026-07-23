@@ -84,8 +84,7 @@ def _verify_oanda(api_key: str) -> bool:
     except httpx.HTTPError as exc:
         # Exception TYPE only (CL-8lv6 P1): httpx error text can embed the
         # request URL/params — never risk credential material in logs.
-        logger.error("OANDA verify failed: %s (exception text suppressed)",
-                     type(exc).__name__)
+        logger.error("OANDA verify failed: %s (exception text suppressed)", type(exc).__name__)
         return False
     return resp.status_code == 200
 
@@ -96,15 +95,19 @@ def _verify_fred(api_key: str) -> bool:
         resp = httpx.get(
             "https://api.stlouisfed.org/fred/series",
             params={
-                "series_id": "DFF", "api_key": api_key, "file_type": "json",
+                "series_id": "DFF",
+                "api_key": api_key,
+                "file_type": "json",
             },
             timeout=10.0,
         )
     except httpx.HTTPError as exc:
         # The FRED key rides in the URL query string, so str(exc) can contain
         # it verbatim — log the exception TYPE only (CL-8lv6 P1).
-        logger.error("FRED verify failed: %s (exception text suppressed — "
-                     "it can embed the api_key)", type(exc).__name__)
+        logger.error(
+            "FRED verify failed: %s (exception text suppressed — it can embed the api_key)",
+            type(exc).__name__,
+        )
         return False
     return resp.status_code == 200
 
@@ -122,8 +125,12 @@ def _verify_postgres(password: str) -> bool:
         # the old f-string DSN embedded it raw, so any exception carrying the
         # DSN leaked it into logs (CL-8lv6 P1).
         url = URL.create(
-            "postgresql+psycopg2", username=user, password=password,
-            host=host, port=5432, database=db,
+            "postgresql+psycopg2",
+            username=user,
+            password=password,
+            host=host,
+            port=5432,
+            database=db,
         )
         engine = create_engine(url, pool_pre_ping=True)
         with engine.connect() as conn:
@@ -135,7 +142,10 @@ def _verify_postgres(password: str) -> bool:
         logger.error(
             "Postgres verify failed: %s dsn=postgresql+psycopg2://%s:***@%s:5432/%s "
             "(exception text suppressed — it can embed the password)",
-            type(exc).__name__, user, host, db,
+            type(exc).__name__,
+            user,
+            host,
+            db,
         )
         return False
 
@@ -222,8 +232,7 @@ def rotate(targets: list[str]) -> int:
     for tname in targets:
         target = _TARGETS.get(tname)
         if target is None:
-            logger.error("Unknown target: %s (known: %s)",
-                         tname, list(_TARGETS.keys()))
+            logger.error("Unknown target: %s (known: %s)", tname, list(_TARGETS.keys()))
             return 2
         print(f"\n=== Rotating: {tname} ({target.description})")
         new = getpass.getpass(f"  New {target.key}: ")
@@ -264,9 +273,13 @@ def rotate(targets: list[str]) -> int:
     try:
         proc = subprocess.Popen(  # noqa: S603 — our own interpreter+module
             [
-                sys.executable, "-m", "scripts.initialize_vault",
-                "--plaintext", f"/dev/fd/{read_fd}",
-                "--encrypted", str(_VAULT_PATH),
+                sys.executable,
+                "-m",
+                "scripts.initialize_vault",
+                "--plaintext",
+                f"/dev/fd/{read_fd}",
+                "--encrypted",
+                str(_VAULT_PATH),
                 "--passphrase-stdin",
             ],
             stdin=subprocess.PIPE,
@@ -279,8 +292,7 @@ def rotate(targets: list[str]) -> int:
         with contextlib.suppress(OSError):
             os.close(read_fd)
     if proc.returncode != 0:
-        print("Re-seal FAILED — vault unchanged; nothing was written to disk.",
-              file=sys.stderr)
+        print("Re-seal FAILED — vault unchanged; nothing was written to disk.", file=sys.stderr)
         return 1
 
     print("Vault re-sealed. Then:")
@@ -340,9 +352,11 @@ def rotate_passphrase() -> int:
     vault_path = Path(os.environ.get("VAULT_PATH", "vault.enc"))
     salt_path = Path(os.environ.get("VAULT_SALT", "vault.salt"))
     if not vault_path.exists() or not salt_path.exists():
-        print(f"Vault files not found ({vault_path}, {salt_path}) — set "
-              "VAULT_PATH/VAULT_SALT or run from the vault directory.",
-              file=sys.stderr)
+        print(
+            f"Vault files not found ({vault_path}, {salt_path}) — set "
+            "VAULT_PATH/VAULT_SALT or run from the vault directory.",
+            file=sys.stderr,
+        )
         return 2
 
     old = getpass.getpass("Current master passphrase: ")
@@ -352,14 +366,16 @@ def rotate_passphrase() -> int:
             derive_key(old, salt_path.read_bytes()),
         )
     except Exception:
-        print("Decryption FAILED (wrong passphrase or corrupt vault) — "
-              "nothing changed.", file=sys.stderr)
+        print(
+            "Decryption FAILED (wrong passphrase or corrupt vault) — nothing changed.",
+            file=sys.stderr,
+        )
         return 1
 
-    new = getpass.getpass(
-        "New master passphrase (ENTER to generate a strong one): ")
+    new = getpass.getpass("New master passphrase (ENTER to generate a strong one): ")
     if not new:
         from scripts.initialize_vault import generate_passphrase  # noqa: PLC0415
+
         new = generate_passphrase()
         print(f"\nNEW MASTER PASSPHRASE (write it down NOW):\n  {new}\n")
         input("Press ENTER after recording it...")
@@ -374,11 +390,12 @@ def rotate_passphrase() -> int:
         print(f"{exc} — nothing changed.", file=sys.stderr)
         return 1
 
-    print("Vault re-sealed under the new passphrase (fresh salt; old files "
-          "kept as .bak-*).")
-    print("IMPORTANT: the printed recovery document still wraps the OLD "
-          "vault key — it can recover the .bak files only. Re-run recovery "
-          "setup if you rely on it, then shred the old document.")
+    print("Vault re-sealed under the new passphrase (fresh salt; old files kept as .bak-*).")
+    print(
+        "IMPORTANT: the printed recovery document still wraps the OLD "
+        "vault key — it can recover the .bak files only. Re-run recovery "
+        "setup if you rely on it, then shred the old document."
+    )
     print("Restart the vault agent so it prompts for the new passphrase.")
     with contextlib.suppress(OSError):
         _write_audit("rotate-passphrase", "master passphrase + salt replaced")
@@ -388,12 +405,14 @@ def rotate_passphrase() -> int:
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument(
-        "--only", default=None,
+        "--only",
+        default=None,
         help=f"Comma-separated subset of {','.join(_TARGETS.keys())}",
     )
     p.add_argument("--all", action="store_true", help="Rotate every target")
     p.add_argument(
-        "--rotate-passphrase", action="store_true",
+        "--rotate-passphrase",
+        action="store_true",
         help="Rotate the vault MASTER passphrase (re-seal + fresh salt)",
     )
     p.add_argument("-v", "--verbose", action="store_true")

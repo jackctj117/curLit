@@ -21,6 +21,7 @@ Protocol notes
   inputs, so the weight at bar ``t`` uses information through ``t-1``
   only. The filter threshold is fitted on the training window only.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass

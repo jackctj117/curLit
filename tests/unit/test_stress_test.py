@@ -36,7 +36,8 @@ class _LongStrategy:
 def _price_frame(start, periods=5, step=1.01):  # type: ignore[no-untyped-def]
     idx = pd.date_range(start=start, periods=periods, freq="D")
     return pd.DataFrame(
-        {"close": [100.0 * step**i for i in range(periods)]}, index=idx,
+        {"close": [100.0 * step**i for i in range(periods)]},
+        index=idx,
     )
 
 
@@ -74,10 +75,7 @@ def test_fetch_exception_skips_scenario_with_warning(caplog):  # type: ignore[no
 
     assert "gfc_2008" not in results
     assert len(results) == len(SCENARIOS) - 1
-    assert any(
-        "gfc_2008" in r.message and "fetch failed" in r.message
-        for r in caplog.records
-    )
+    assert any("gfc_2008" in r.message and "fetch failed" in r.message for r in caplog.records)
 
 
 @pytest.mark.unit
@@ -93,8 +91,7 @@ def test_missing_close_column_skips_scenario(caplog):  # type: ignore[no-untyped
 
     assert "brexit_2016" not in results
     assert any(
-        "brexit_2016" in r.message and "'close' column missing" in r.message
-        for r in caplog.records
+        "brexit_2016" in r.message and "'close' column missing" in r.message for r in caplog.records
     )
 
 

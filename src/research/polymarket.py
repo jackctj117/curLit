@@ -43,12 +43,37 @@ DEFAULT_POLYMARKET_API: str = "https://gamma-api.polymarket.com/markets"
 # filtered out at fetch time so we don't burn extractor budget on
 # sports/election-trivia/crypto markets that don't move FX.
 _FX_MACRO_KEYWORDS: tuple[str, ...] = (
-    "fed", "fomc", "rate cut", "rate hike", "inflation", "cpi", "ppi",
-    "ecb", "boj", "bank of japan", "bank of england", "boe",
-    "treasury", "yield curve", "recession", "gdp", "unemployment",
-    "nonfarm", "nfp", "jobs report", "trade deficit", "tariff",
-    "election", "central bank", "monetary policy", "interest rate",
-    "dollar", "euro", "yen", "pound", "currency",
+    "fed",
+    "fomc",
+    "rate cut",
+    "rate hike",
+    "inflation",
+    "cpi",
+    "ppi",
+    "ecb",
+    "boj",
+    "bank of japan",
+    "bank of england",
+    "boe",
+    "treasury",
+    "yield curve",
+    "recession",
+    "gdp",
+    "unemployment",
+    "nonfarm",
+    "nfp",
+    "jobs report",
+    "trade deficit",
+    "tariff",
+    "election",
+    "central bank",
+    "monetary policy",
+    "interest rate",
+    "dollar",
+    "euro",
+    "yen",
+    "pound",
+    "currency",
 )
 
 
@@ -59,9 +84,15 @@ class PolymarketFetcher:
     the rest of the pipeline (extractor → idea agent) treats them
     uniformly with arXiv papers and substack posts."""
 
-    http_get: HttpGet = field(default=lambda url: httpx.get(
-        url, timeout=30.0, follow_redirects=True,
-    ).text)
+    http_get: HttpGet = field(
+        default=lambda url: (
+            httpx.get(
+                url,
+                timeout=30.0,
+                follow_redirects=True,
+            ).text
+        )
+    )
     keywords: tuple[str, ...] = field(default=_FX_MACRO_KEYWORDS)
     max_markets: int = 50
 
@@ -75,7 +106,8 @@ class PolymarketFetcher:
         except Exception as exc:
             logger.warning(
                 "polymarket fetch failed: %s: %s",
-                type(exc).__name__, exc,
+                type(exc).__name__,
+                exc,
             )
             return []
         try:
@@ -93,7 +125,9 @@ class PolymarketFetcher:
         return self._format_markets(markets, source_label)
 
     def _format_markets(
-        self, markets: list[dict[str, Any]], source_label: str,
+        self,
+        markets: list[dict[str, Any]],
+        source_label: str,
     ) -> list[Paper]:
         out: list[Paper] = []
         for m in markets[: self.max_markets]:
@@ -114,9 +148,7 @@ class PolymarketFetcher:
             outcomes = m.get("outcomes") or []
             price_summary = self._format_outcomes(outcomes, outcome_prices)
             volume = m.get("volume") or m.get("volumeNum") or 0
-            end_date = (
-                m.get("endDate") or m.get("end_date_iso") or ""
-            )[:10]
+            end_date = (m.get("endDate") or m.get("end_date_iso") or "")[:10]
             abstract = (
                 f"Market: {title}\n"
                 f"End date: {end_date}\n"
@@ -126,19 +158,18 @@ class PolymarketFetcher:
             )
             # Polymarket's user-facing URL is /event/<slug>; the old /market/
             # path 404s (CL-7j3k).
-            url = (
-                f"https://polymarket.com/event/"
-                f"{m.get('slug', m.get('id', ''))}"
+            url = f"https://polymarket.com/event/{m.get('slug', m.get('id', ''))}"
+            out.append(
+                Paper(
+                    title=title,
+                    authors=(),
+                    year=PolymarketFetcher._year_from_iso(end_date),
+                    url=url,
+                    doi="",
+                    abstract=abstract[:4000],
+                    source_label=source_label,
+                )
             )
-            out.append(Paper(
-                title=title,
-                authors=(),
-                year=PolymarketFetcher._year_from_iso(end_date),
-                url=url,
-                doi="",
-                abstract=abstract[:4000],
-                source_label=source_label,
-            ))
         return out
 
     @staticmethod
@@ -162,10 +193,7 @@ class PolymarketFetcher:
         if len(outs) != len(prs):
             return "(price/outcome shape mismatch)"
         try:
-            pairs = [
-                f"{out}={float(pr)*100:.1f}%"
-                for out, pr in zip(outs, prs, strict=False)
-            ]
+            pairs = [f"{out}={float(pr) * 100:.1f}%" for out, pr in zip(outs, prs, strict=False)]
         except (ValueError, TypeError):
             return "(unparseable)"
         return ", ".join(pairs) if pairs else "(none)"
@@ -192,12 +220,9 @@ def register() -> None:
     """Register the Polymarket adapter under the ``polymarket`` adapter
     name so paper_streams.yaml entries can use it."""
     from src.research.ingest import _FETCHER_REGISTRY  # noqa: PLC0415
-    _FETCHER_REGISTRY["polymarket"] = (
-        lambda http_get: PolymarketFetcher(http_get=http_get)
-    )
+
+    _FETCHER_REGISTRY["polymarket"] = lambda http_get: PolymarketFetcher(http_get=http_get)
 
 
 # Self-register on import.
 register()
-
-

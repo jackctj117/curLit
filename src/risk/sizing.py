@@ -9,7 +9,10 @@ logger = logging.getLogger(__name__)
 class PositionSizer:
     @staticmethod
     def fixed_fractional(
-        capital: float, risk_pct: float, stop_distance: float, price: float,
+        capital: float,
+        risk_pct: float,
+        stop_distance: float,
+        price: float,
     ) -> float:
         """Size a position risking fixed % of capital on a stop-loss.
 
@@ -35,7 +38,10 @@ class PositionSizer:
 
     @staticmethod
     def volatility_target(
-        capital: float, target_vol: float, realized_vol: float, price: float,
+        capital: float,
+        target_vol: float,
+        realized_vol: float,
+        price: float,
     ) -> float:
         """Size a position to contribute target_vol annualized vol to portfolio.
 
@@ -56,8 +62,14 @@ class PositionSizer:
         notional = capital * target_vol / realized_vol
         size = notional / price
 
-        logger.debug("vol_target: equity=%.0f target_vol=%.2f rv=%.2f price=%.4f -> size=%.0f",
-                      capital, target_vol, realized_vol, price, size)
+        logger.debug(
+            "vol_target: equity=%.0f target_vol=%.2f rv=%.2f price=%.4f -> size=%.0f",
+            capital,
+            target_vol,
+            realized_vol,
+            price,
+            size,
+        )
         return size
 
     @staticmethod
@@ -89,7 +101,9 @@ class PositionSizer:
             return base_size
         try:
             multiplier = profile.size_multiplier(
-                symbol, ts, observed_spread_bps,
+                symbol,
+                ts,
+                observed_spread_bps,
             )
         except Exception as exc:
             # Fail CLOSED: if we can't evaluate the liquidity window we
@@ -98,7 +112,10 @@ class PositionSizer:
             logger.warning(
                 "liquidity_window: profile.size_multiplier raised for %s "
                 "(%s: %s) — cannot verify liquidity, refusing entry",
-                symbol, type(exc).__name__, exc, exc_info=True,
+                symbol,
+                type(exc).__name__,
+                exc,
+                exc_info=True,
             )
             return 0.0
         return float(base_size * multiplier)
@@ -126,6 +143,7 @@ class PositionSizer:
         full_kelly = edge - (1.0 - edge) / odds
         result = max(0.0, min(1.0, full_kelly * kelly_fraction))
 
-        logger.debug("kelly: edge=%.3f odds=%.2f full=%.3f frac=%.3f",
-                      edge, odds, full_kelly, result)
+        logger.debug(
+            "kelly: edge=%.3f odds=%.2f full=%.3f frac=%.3f", edge, odds, full_kelly, result
+        )
         return result

@@ -54,8 +54,10 @@ class TestConstruction:
         assert ClaudeCodeDriver.requires_api_key is False
 
     def test_missing_cli_raises(self) -> None:
-        with patch("shutil.which", return_value=None), \
-             pytest.raises(ValueError, match="CLI not found"):
+        with (
+            patch("shutil.which", return_value=None),
+            pytest.raises(ValueError, match="CLI not found"),
+        ):
             ClaudeCodeDriver()
 
     def test_get_client_skips_key_check(self) -> None:
@@ -89,9 +91,12 @@ class TestComplete:
 
     def test_api_credentials_stripped_from_subprocess_env(self) -> None:
         drv = _driver()
-        with patch("subprocess.run", return_value=_proc(json.dumps(_OK_PAYLOAD))) as run, \
-             patch.dict("os.environ", {"ANTHROPIC_API_KEY": "sk-live",
-                                       "ANTHROPIC_AUTH_TOKEN": "tok"}):
+        with (
+            patch("subprocess.run", return_value=_proc(json.dumps(_OK_PAYLOAD))) as run,
+            patch.dict(
+                "os.environ", {"ANTHROPIC_API_KEY": "sk-live", "ANTHROPIC_AUTH_TOKEN": "tok"}
+            ),
+        ):
             drv.complete([Message("user", "hi")], model="claude-fable-5")
         env = run.call_args.kwargs["env"]
         # The env key would OUTRANK the subscription login inside the
@@ -103,8 +108,7 @@ class TestComplete:
         drv = _driver()
         with patch("subprocess.run", return_value=_proc(json.dumps(_OK_PAYLOAD))) as run:
             drv.complete(
-                [Message("user", "a"), Message("assistant", "b"),
-                 Message("user", "c")],
+                [Message("user", "a"), Message("assistant", "b"), Message("user", "c")],
                 model="claude-fable-5",
             )
         # Flattened transcript now arrives via stdin (CL-8s2a).
@@ -117,11 +121,11 @@ class TestComplete:
         drv = _driver()
         secret_long_prompt = "SENSITIVE-" + "x" * 5000
         with patch(
-            "subprocess.run", return_value=_proc(json.dumps(_OK_PAYLOAD)),
+            "subprocess.run",
+            return_value=_proc(json.dumps(_OK_PAYLOAD)),
         ) as run:
             drv.complete(
-                [Message("system", "persona"),
-                 Message("user", secret_long_prompt)],
+                [Message("system", "persona"), Message("user", secret_long_prompt)],
                 model="claude-fable-5",
             )
         argv = run.call_args.args[0]
@@ -133,19 +137,25 @@ class TestComplete:
 
     def test_nonzero_exit_raises(self) -> None:
         drv = _driver()
-        with patch("subprocess.run", return_value=_proc("", 1, "boom")), \
-             pytest.raises(RuntimeError, match="exited 1"):
+        with (
+            patch("subprocess.run", return_value=_proc("", 1, "boom")),
+            pytest.raises(RuntimeError, match="exited 1"),
+        ):
             drv.complete([Message("user", "hi")], model="claude-fable-5")
 
     def test_error_subtype_raises(self) -> None:
         drv = _driver()
         bad = dict(_OK_PAYLOAD, is_error=True, subtype="error_during_execution")
-        with patch("subprocess.run", return_value=_proc(json.dumps(bad))), \
-             pytest.raises(RuntimeError, match="error_during_execution"):
+        with (
+            patch("subprocess.run", return_value=_proc(json.dumps(bad))),
+            pytest.raises(RuntimeError, match="error_during_execution"),
+        ):
             drv.complete([Message("user", "hi")], model="claude-fable-5")
 
     def test_non_json_output_raises(self) -> None:
         drv = _driver()
-        with patch("subprocess.run", return_value=_proc("not json")), \
-             pytest.raises(RuntimeError, match="non-JSON"):
+        with (
+            patch("subprocess.run", return_value=_proc("not json")),
+            pytest.raises(RuntimeError, match="non-JSON"),
+        ):
             drv.complete([Message("user", "hi")], model="claude-fable-5")

@@ -70,7 +70,11 @@ class TestMatching:
         paper = [_fill("o1", "EURUSD", "buy", 1000, 1.10, T0)]
         live = [
             _fill(
-                "o1", "EURUSD", "buy", 1000, 1.10011,
+                "o1",
+                "EURUSD",
+                "buy",
+                1000,
+                1.10011,
                 T0 + timedelta(milliseconds=200),
             ),
         ]
@@ -86,7 +90,11 @@ class TestMatching:
         paper = [_fill("o1", "EURUSD", "buy", 1000, 1.10, T0)]
         live = [
             _fill(
-                "o1", "EURUSD", "buy", 1000, 1.10,
+                "o1",
+                "EURUSD",
+                "buy",
+                1000,
+                1.10,
                 T0 + timedelta(seconds=90),
             ),
         ]
@@ -122,13 +130,11 @@ class TestMatching:
     def test_signal_match_rate(self) -> None:
         # 4 paper, 2 live → match_rate 0.5.
         paper = [
-            _fill(f"o{i}", "EURUSD", "buy", 1000, 1.10,
-                  T0 + timedelta(seconds=i * 5))
+            _fill(f"o{i}", "EURUSD", "buy", 1000, 1.10, T0 + timedelta(seconds=i * 5))
             for i in range(4)
         ]
         live = [
-            _fill(f"oL{i}", "EURUSD", "buy", 1000, 1.10011,
-                  T0 + timedelta(seconds=i * 5))
+            _fill(f"oL{i}", "EURUSD", "buy", 1000, 1.10011, T0 + timedelta(seconds=i * 5))
             for i in range(2)
         ]
         report = PaperLiveDivergence().compare(paper, live)
@@ -155,7 +161,11 @@ class TestFlagging:
         paper = [_fill("o1", "EURUSD", "buy", 1000, 1.10, T0)]
         live = [
             _fill(
-                "oL", "EURUSD", "buy", 1000, 1.1001,  # ~0.9 bp
+                "oL",
+                "EURUSD",
+                "buy",
+                1000,
+                1.1001,  # ~0.9 bp
                 T0 + timedelta(milliseconds=50),
             ),
         ]
@@ -167,7 +177,11 @@ class TestFlagging:
         paper = [_fill("o1", "EURUSD", "buy", 1000, 1.10, T0)]
         live = [
             _fill(
-                "oL", "EURUSD", "buy", 1000, 1.1001,  # ~0.9 bp
+                "oL",
+                "EURUSD",
+                "buy",
+                1000,
+                1.1001,  # ~0.9 bp
                 T0 + timedelta(milliseconds=50),
             ),
         ]
@@ -190,7 +204,9 @@ class TestAggregation:
         ]
         live = [
             _fill("oL1", "EURUSD", "buy", 1000, 1.09978, T0 + timedelta(milliseconds=100)),
-            _fill("oL2", "EURUSD", "buy", 1000, 1.10044, T0 + timedelta(seconds=10, milliseconds=100)),
+            _fill(
+                "oL2", "EURUSD", "buy", 1000, 1.10044, T0 + timedelta(seconds=10, milliseconds=100)
+            ),
         ]
         report = PaperLiveDivergence().compare(paper, live)
         assert report.n_matched == 2
@@ -244,9 +260,14 @@ class TestReporting:
         report = PaperLiveDivergence().compare(paper, live)
         d = report.to_dict()
         for key in (
-            "n_paper_fills", "n_live_fills", "n_matched",
-            "avg_price_diff_bps", "avg_abs_price_diff_bps",
-            "avg_latency_ms", "signal_match_rate", "n_flagged",
+            "n_paper_fills",
+            "n_live_fills",
+            "n_matched",
+            "avg_price_diff_bps",
+            "avg_abs_price_diff_bps",
+            "avg_latency_ms",
+            "signal_match_rate",
+            "n_flagged",
             "flag_threshold_bps",
         ):
             assert key in d, f"to_dict missing {key}"

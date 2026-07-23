@@ -85,7 +85,9 @@ def recv_framed(sock: socket.socket, max_size: int = MAX_FRAME_BYTES) -> bytes:
 
 
 async def send_framed_async(
-    writer: asyncio.StreamWriter, payload: bytes, max_size: int = MAX_FRAME_BYTES,
+    writer: asyncio.StreamWriter,
+    payload: bytes,
+    max_size: int = MAX_FRAME_BYTES,
 ) -> None:
     """Write one length-prefixed message to an asyncio stream."""
     writer.write(encode_frame(payload, max_size))
@@ -93,7 +95,8 @@ async def send_framed_async(
 
 
 async def recv_framed_async(
-    reader: asyncio.StreamReader, max_size: int = MAX_FRAME_BYTES,
+    reader: asyncio.StreamReader,
+    max_size: int = MAX_FRAME_BYTES,
 ) -> bytes:
     """Read one length-prefixed message from an asyncio stream.
 

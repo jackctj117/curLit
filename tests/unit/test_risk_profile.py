@@ -32,44 +32,55 @@ class TestActiveResolution:
         assert out.sizing.kelly_fraction == 0.25
 
     def test_active_field_is_default(self, tmp_path: Path) -> None:
-        path = _write_yaml(tmp_path, """
+        path = _write_yaml(
+            tmp_path,
+            """
 active: aggressive
 profiles:
   conservative: {}
   aggressive:
     sizing:
       kelly_fraction: 0.5
-""")
+""",
+        )
         out = load_active_profile(path)
         assert out.name == "aggressive"
         assert out.sizing.kelly_fraction == 0.5
 
     def test_env_var_overrides_active(self, tmp_path: Path) -> None:
-        path = _write_yaml(tmp_path, """
+        path = _write_yaml(
+            tmp_path,
+            """
 active: conservative
 profiles:
   conservative: {}
   aggressive:
     sizing:
       kelly_fraction: 0.5
-""")
+""",
+        )
         with patch.dict(os.environ, {"CURLIT_RISK_PROFILE": "aggressive"}):
             out = load_active_profile(path)
         assert out.name == "aggressive"
 
     def test_unknown_profile_falls_back(self, tmp_path: Path) -> None:
-        path = _write_yaml(tmp_path, """
+        path = _write_yaml(
+            tmp_path,
+            """
 active: brain_freeze
 profiles:
   conservative: {}
-""")
+""",
+        )
         out = load_active_profile(path)
         assert out.name == "conservative"
 
 
 class TestInheritance:
     def test_one_deep_inheritance_merges(self, tmp_path: Path) -> None:
-        path = _write_yaml(tmp_path, """
+        path = _write_yaml(
+            tmp_path,
+            """
 active: aggressive_short
 profiles:
   aggressive:
@@ -83,7 +94,8 @@ profiles:
     bias:
       long_signal_multiplier: 0.0
       short_signal_multiplier: 1.0
-""")
+""",
+        )
         out = load_active_profile(path)
         assert out.name == "aggressive_short"
         # Inherited values:
@@ -95,7 +107,9 @@ profiles:
         assert out.bias.short_signal_multiplier == 1.0
 
     def test_child_overrides_parent_within_section(self, tmp_path: Path) -> None:
-        path = _write_yaml(tmp_path, """
+        path = _write_yaml(
+            tmp_path,
+            """
 active: child
 profiles:
   parent:
@@ -106,19 +120,23 @@ profiles:
     inherits: parent
     sizing:
       kelly_fraction: 0.75   # override only this — max_position_pct unchanged
-""")
+""",
+        )
         out = load_active_profile(path)
         assert out.sizing.kelly_fraction == 0.75
         # Parent's max_position_pct survives the deep-merge.
         assert out.sizing.max_position_pct == 0.4
 
     def test_inherits_from_unknown_raises(self, tmp_path: Path) -> None:
-        path = _write_yaml(tmp_path, """
+        path = _write_yaml(
+            tmp_path,
+            """
 active: orphan
 profiles:
   orphan:
     inherits: ghost
-""")
+""",
+        )
         with pytest.raises(ValueError, match="unknown profile"):
             load_active_profile(path)
 
@@ -190,13 +208,16 @@ class TestRealConfig:
 class TestTypoTolerance:
     def test_unknown_field_in_section_ignored(self, tmp_path: Path) -> None:
         # Typo'd keys must not raise; they get silently dropped.
-        path = _write_yaml(tmp_path, """
+        path = _write_yaml(
+            tmp_path,
+            """
 active: oops
 profiles:
   oops:
     sizing:
       kelly_fraction: 0.3
       misspelled_field: 99   # should be ignored, not crash
-""")
+""",
+        )
         out = load_active_profile(path)
         assert out.sizing.kelly_fraction == 0.3

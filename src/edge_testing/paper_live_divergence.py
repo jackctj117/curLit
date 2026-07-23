@@ -161,7 +161,8 @@ class PaperLiveDivergence:
 
         # Sort live fills by ts for fast nearest-neighbor lookup.
         live_with_idx: list[tuple[int, Fill]] = sorted(
-            enumerate(live_fills), key=lambda x: x[1].timestamp,
+            enumerate(live_fills),
+            key=lambda x: x[1].timestamp,
         )
 
         unmatched_paper: list[str] = []
@@ -188,9 +189,7 @@ class PaperLiveDivergence:
             used_live_idx.add(best_idx)
             live = live_fills[best_idx]
             price_diff_bps = _price_diff_bps(paper.price, live.price, paper.side)
-            latency_ms = (
-                live.timestamp - paper.timestamp
-            ).total_seconds() * 1000.0
+            latency_ms = (live.timestamp - paper.timestamp).total_seconds() * 1000.0
             matched.append(
                 MatchedPair(
                     intent_id=paper.order_id,
@@ -208,9 +207,7 @@ class PaperLiveDivergence:
                 )
             )
 
-        unmatched_live = [
-            f.fill_id for i, f in enumerate(live_fills) if i not in used_live_idx
-        ]
+        unmatched_live = [f.fill_id for i, f in enumerate(live_fills) if i not in used_live_idx]
 
         n_paper = len(paper_fills)
         n_live = len(live_fills)
@@ -247,7 +244,11 @@ class PaperLiveDivergence:
         logger.info(
             "Paper-live divergence: %d/%d matched, avg |diff|=%.2f bps, "
             "avg latency=%.0f ms, %d flagged at >%g bps",
-            n_matched, n_paper, avg_abs_diff, avg_latency, n_flagged,
+            n_matched,
+            n_paper,
+            avg_abs_diff,
+            avg_latency,
+            n_flagged,
             self.flag_threshold_bps,
         )
         return report

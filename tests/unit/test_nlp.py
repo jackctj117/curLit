@@ -1,9 +1,7 @@
 """Unit tests — NLP: lexicon scorer, diff analyzer."""
 
-import pytest
-
-from src.nlp.lexicon_scorer import LexiconScorer
 from src.nlp.diff import StatementDiffer
+from src.nlp.lexicon_scorer import LexiconScorer
 
 
 class TestLexiconScorer:

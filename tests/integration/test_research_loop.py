@@ -105,15 +105,21 @@ class _RouteByPromptDriver(Driver):
         )
         # First fingerprint match wins.
         canned = self._lookup(sys_text)
-        type(self).calls.append({
-            "fingerprint_used": canned[0] if canned else "(no match)",
-            "model": model,
-        })
+        type(self).calls.append(
+            {
+                "fingerprint_used": canned[0] if canned else "(no match)",
+                "model": model,
+            }
+        )
         text = canned[1] if canned else "(no canned response wired)"
         return LLMResponse(
-            text=text, model=model, provider=self.name,
-            input_tokens=10, output_tokens=20,
-            usd_cost=0.0001, elapsed_sec=0.01,
+            text=text,
+            model=model,
+            provider=self.name,
+            input_tokens=10,
+            output_tokens=20,
+            usd_cost=0.0001,
+            elapsed_sec=0.01,
         )
 
     @classmethod
@@ -207,9 +213,7 @@ def _implementer_response(metrics_block: dict[str, Any]) -> str:
 
 
 def _reviewer_response(position: str) -> str:
-    return (
-        f"# REVIEW\n\nstub review.\n\n**FINAL_POSITION**: {position}\n"
-    )
+    return f"# REVIEW\n\nstub review.\n\n**FINAL_POSITION**: {position}\n"
 
 
 # --------------------------------------------------------------------------- #
@@ -277,8 +281,12 @@ def repo_paths(tmp_path: Path) -> dict[str, Path]:
         "bear_prompt": tmp_path / "bear_prompt.md",
     }
     for d in (
-        paths["extracts"], paths["hypotheses"], paths["candidates"],
-        paths["experimental"], paths["production"], paths["transcripts"],
+        paths["extracts"],
+        paths["hypotheses"],
+        paths["candidates"],
+        paths["experimental"],
+        paths["production"],
+        paths["transcripts"],
     ):
         d.mkdir(parents=True, exist_ok=True)
     paths["rules"].write_text(Path("docs/research/REVIEW_RULES.md").read_text())
@@ -290,56 +298,61 @@ def repo_paths(tmp_path: Path) -> dict[str, Path]:
     paths["bear_prompt"].write_text("Bear Reviewer — test stub")
 
     # Agent YAML wired to the route-by-prompt provider for all roles.
-    paths["agent_yaml"].write_text(yaml.safe_dump({
-        "providers": {
-            "route-by-prompt": {
-                "api_key_env": "ROUTE_KEY", "default_model": "m1",
-            },
-        },
-        "agents": {
-            "paper_extractor": {
-                "provider": "route-by-prompt",
-                "role": "paper_extractor",
-                "prompt_path": str(paths["extractor_prompt"]),
-                "max_tokens": 1024,
-            },
-            "idea_generator": {
-                "provider": "route-by-prompt",
-                "role": "idea_generator",
-                "prompt_path": str(paths["idea_prompt"]),
-                "max_tokens": 4096,
-            },
-            "implementer": {
-                "provider": "route-by-prompt",
-                "role": "implementer",
-                "prompt_path": str(paths["implementer_prompt"]),
-                "max_tokens": 8192,
-            },
-            "bull_reviewer": {
-                "provider": "route-by-prompt",
-                "role": "bull",
-                "prompt_path": str(paths["bull_prompt"]),
-                "max_tokens": 4096,
-            },
-            "bear_reviewer": {
-                "provider": "route-by-prompt",
-                "role": "bear",
-                "prompt_path": str(paths["bear_prompt"]),
-                "max_tokens": 4096,
-            },
-        },
-        "debates": {
-            "promotion_review": {
-                "participants": ["bull_reviewer", "bear_reviewer"],
-                "rules_path": str(paths["rules"]),
-                "verdict_engine": "rule_based",
-                "rounds": [
-                    {"name": "initial_positions", "type": "parallel"},
-                    {"name": "final_position", "type": "parallel"},
-                ],
-            },
-        },
-    }))
+    paths["agent_yaml"].write_text(
+        yaml.safe_dump(
+            {
+                "providers": {
+                    "route-by-prompt": {
+                        "api_key_env": "ROUTE_KEY",
+                        "default_model": "m1",
+                    },
+                },
+                "agents": {
+                    "paper_extractor": {
+                        "provider": "route-by-prompt",
+                        "role": "paper_extractor",
+                        "prompt_path": str(paths["extractor_prompt"]),
+                        "max_tokens": 1024,
+                    },
+                    "idea_generator": {
+                        "provider": "route-by-prompt",
+                        "role": "idea_generator",
+                        "prompt_path": str(paths["idea_prompt"]),
+                        "max_tokens": 4096,
+                    },
+                    "implementer": {
+                        "provider": "route-by-prompt",
+                        "role": "implementer",
+                        "prompt_path": str(paths["implementer_prompt"]),
+                        "max_tokens": 8192,
+                    },
+                    "bull_reviewer": {
+                        "provider": "route-by-prompt",
+                        "role": "bull",
+                        "prompt_path": str(paths["bull_prompt"]),
+                        "max_tokens": 4096,
+                    },
+                    "bear_reviewer": {
+                        "provider": "route-by-prompt",
+                        "role": "bear",
+                        "prompt_path": str(paths["bear_prompt"]),
+                        "max_tokens": 4096,
+                    },
+                },
+                "debates": {
+                    "promotion_review": {
+                        "participants": ["bull_reviewer", "bear_reviewer"],
+                        "rules_path": str(paths["rules"]),
+                        "verdict_engine": "rule_based",
+                        "rounds": [
+                            {"name": "initial_positions", "type": "parallel"},
+                            {"name": "final_position", "type": "parallel"},
+                        ],
+                    },
+                },
+            }
+        )
+    )
     return paths
 
 
@@ -350,6 +363,7 @@ def env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _silent_notifier(*_args: Any, **_kwargs: Any) -> Any:
     from src.research.notifications import DispatchResult
+
     return DispatchResult()
 
 
@@ -357,9 +371,7 @@ def _seed_extract(repo_paths: dict[str, Path]) -> Path:
     """Drop a single extract in the extracts dir to feed the loop."""
     extract = repo_paths["extracts"] / "abc.md"
     extract.write_text(
-        "# Stub Paper Title\n\n"
-        "- **paper_hash**: `abc`\n\n"
-        "---\n\n" + _PAPER_EXTRACT_BODY,
+        "# Stub Paper Title\n\n- **paper_hash**: `abc`\n\n---\n\n" + _PAPER_EXTRACT_BODY,
     )
     return extract
 
@@ -383,13 +395,16 @@ def _build_loop(
 
     research_config = load_config(repo_paths["agent_yaml"])
     extractor = PaperExtractor.from_config(
-        name="paper_extractor", research_config=research_config,
+        name="paper_extractor",
+        research_config=research_config,
     )
     idea = IdeaGenerator.from_config(
-        name="idea_generator", research_config=research_config,
+        name="idea_generator",
+        research_config=research_config,
     )
     impl = Implementer.from_config(
-        name="implementer", research_config=research_config,
+        name="implementer",
+        research_config=research_config,
     )
     extract_store = ExtractStore(root=repo_paths["extracts"])
     ingest_runner = IngestRunner(
@@ -397,7 +412,8 @@ def _build_loop(
         store=extract_store,
     )
     orchestrator = DebateOrchestrator(
-        research_config=research_config, debate_name="promotion_review",
+        research_config=research_config,
+        debate_name="promotion_review",
         transcript_root=repo_paths["transcripts"],
     )
 
@@ -424,7 +440,8 @@ def _build_loop(
         experimental_dir=repo_paths["experimental"],
         production_dir=repo_paths["production"],
         portfolio_yaml=repo_paths["tmp"] / "live_portfolio.yaml",
-        skip_git=True, skip_pr=True,
+        skip_git=True,
+        skip_pr=True,
     )
     # Seed minimal portfolio yaml so the registrar's YAML mutator works.
     (repo_paths["tmp"] / "live_portfolio.yaml").write_text(
@@ -438,7 +455,7 @@ def _build_loop(
         debate_orchestrator=orchestrator,
         rules_loader=lambda: parse_rules(repo_paths["rules"]),
         feed_configs=[],  # ingest will run with no feeds; we seed the
-                          # extract directly on disk
+        # extract directly on disk
         extract_store=extract_store,
         state_path=repo_paths["state"],
         runs_dir=repo_paths["runs"],
@@ -468,11 +485,14 @@ def _approve_all_pending(state_path: Path) -> int:
 @pytest.mark.usefixtures("env")
 class TestResearchLoopIntegration:
     def test_known_good_candidate_promotes(
-        self, repo_paths: dict[str, Path],
+        self,
+        repo_paths: dict[str, Path],
     ) -> None:
         loop = _build_loop(
-            repo_paths, _passing_metrics(),
-            bull_position="PROMOTE", bear_position="PROMOTE",
+            repo_paths,
+            _passing_metrics(),
+            bull_position="PROMOTE",
+            bear_position="PROMOTE",
         )
         # Pass 1: ingest (no-op feeds) + idea agent → PENDING.
         loop.run()
@@ -486,11 +506,14 @@ class TestResearchLoopIntegration:
         assert summary.verdicts_escalate == 0
 
     def test_known_bad_low_sharpe_rejects(
-        self, repo_paths: dict[str, Path],
+        self,
+        repo_paths: dict[str, Path],
     ) -> None:
         loop = _build_loop(
-            repo_paths, _failing_metrics(),
-            bull_position="PROMOTE", bear_position="PROMOTE",
+            repo_paths,
+            _failing_metrics(),
+            bull_position="PROMOTE",
+            bear_position="PROMOTE",
         )
         loop.run()
         _approve_all_pending(repo_paths["state"])
@@ -501,11 +524,14 @@ class TestResearchLoopIntegration:
         assert summary.verdicts_promote == 0
 
     def test_missing_metric_escalates(
-        self, repo_paths: dict[str, Path],
+        self,
+        repo_paths: dict[str, Path],
     ) -> None:
         loop = _build_loop(
-            repo_paths, _missing_metric(),
-            bull_position="PROMOTE", bear_position="PROMOTE",
+            repo_paths,
+            _missing_metric(),
+            bull_position="PROMOTE",
+            bear_position="PROMOTE",
         )
         loop.run()
         _approve_all_pending(repo_paths["state"])
@@ -519,16 +545,17 @@ class TestResearchLoopIntegration:
         state = load_state(repo_paths["state"])
         # Slug is derived from extract H1 ("Stub Paper Title") via
         # default_slug → "stub-paper-title".
-        assert state.debates_completed["stub-paper-title"]["verdict"] == (
-            "ESCALATE"
-        )
+        assert state.debates_completed["stub-paper-title"]["verdict"] == ("ESCALATE")
 
     def test_mixed_positions_escalate(
-        self, repo_paths: dict[str, Path],
+        self,
+        repo_paths: dict[str, Path],
     ) -> None:
         loop = _build_loop(
-            repo_paths, _passing_metrics(),
-            bull_position="PROMOTE", bear_position="REJECT",
+            repo_paths,
+            _passing_metrics(),
+            bull_position="PROMOTE",
+            bear_position="REJECT",
         )
         loop.run()
         _approve_all_pending(repo_paths["state"])

@@ -58,7 +58,10 @@ VALID_IDEA_HORIZONS = frozenset({"immediate", "short", "medium", "structural"})
 _BULLISH_IDEA_ACTIONS = frozenset({"long", "buy_calls"})
 #: Hard time-stop defaults (days) when the LLM omits one — event edge decays.
 _DEFAULT_TIME_STOP_DAYS = {
-    "immediate": 3, "short": 5, "medium": 20, "structural": 60,
+    "immediate": 3,
+    "short": 5,
+    "medium": 20,
+    "structural": 60,
 }
 MAX_TRADE_IDEAS = 8
 MAX_FADE_CANDIDATES = 5
@@ -263,14 +266,11 @@ class AssessmentResult:
     def summary_line(self) -> str:
         if self.status != "ASSESSED":
             reason = self.assessment.get("rationale", "")
-            return (
-                f"event id={self.event_id} DISMISSED ({reason[:80]}) "
-                f"| {self.headline[:70]}"
-            )
+            return f"event id={self.event_id} DISMISSED ({reason[:80]}) | {self.headline[:70]}"
         a = self.assessment
-        affected = ",".join(
-            f"{x['instrument']}:{x['direction']}" for x in a.get("affected", [])
-        ) or "-"
+        affected = (
+            ",".join(f"{x['instrument']}:{x['direction']}" for x in a.get("affected", [])) or "-"
+        )
         return (
             f"event id={self.event_id} ASSESSED theme={self.theme} "
             f"dir={a.get('direction')} urg={a.get('urgency')} "
@@ -405,26 +405,30 @@ def _normalise_trade_ideas(raw: Any) -> list[dict[str, Any]]:
         # grounds them in real prices. A malformed level never drops the
         # idea (advisory), it just goes absent → default fills later.
         stop_loss_pct = _optional_fraction(
-            entry.get("stop_loss_pct"), 0.0, MAX_STOP_LOSS_PCT,
+            entry.get("stop_loss_pct"),
+            0.0,
+            MAX_STOP_LOSS_PCT,
         )
         target_pct = _clean_targets(entry.get("target_pct"))
-        ideas.append({
-            "ticker": ticker,
-            "action": action,
-            "direction": direction,
-            "confidence": confidence,
-            "rationale": str(entry.get("rationale", "")).strip(),
-            "time_horizon": horizon,
-            "holding_period_days": str(entry.get("holding_period_days", "")).strip(),
-            "time_stop_days": time_stop,
-            "stop_loss_pct": stop_loss_pct,
-            "target_pct": target_pct,
-            "entry_trigger": str(entry.get("entry_trigger", "")).strip(),
-            "invalidation": str(entry.get("invalidation", "")).strip(),
-            "suggested_entry": str(entry.get("suggested_entry", "")).strip(),
-            "preferred_instrument": str(entry.get("preferred_instrument", "")).strip(),
-            "notes": str(entry.get("notes", "")).strip(),
-        })
+        ideas.append(
+            {
+                "ticker": ticker,
+                "action": action,
+                "direction": direction,
+                "confidence": confidence,
+                "rationale": str(entry.get("rationale", "")).strip(),
+                "time_horizon": horizon,
+                "holding_period_days": str(entry.get("holding_period_days", "")).strip(),
+                "time_stop_days": time_stop,
+                "stop_loss_pct": stop_loss_pct,
+                "target_pct": target_pct,
+                "entry_trigger": str(entry.get("entry_trigger", "")).strip(),
+                "invalidation": str(entry.get("invalidation", "")).strip(),
+                "suggested_entry": str(entry.get("suggested_entry", "")).strip(),
+                "preferred_instrument": str(entry.get("preferred_instrument", "")).strip(),
+                "notes": str(entry.get("notes", "")).strip(),
+            }
+        )
         if len(ideas) >= MAX_TRADE_IDEAS:
             break
     return ideas
@@ -442,11 +446,13 @@ def _normalise_fade_candidates(raw: Any) -> list[dict[str, str]]:
         ticker = str(entry.get("ticker", "")).strip()
         if not ticker:
             continue
-        fades.append({
-            "ticker": ticker,
-            "action": str(entry.get("action", "")).strip(),
-            "reason": str(entry.get("reason", "")).strip(),
-        })
+        fades.append(
+            {
+                "ticker": ticker,
+                "action": str(entry.get("action", "")).strip(),
+                "reason": str(entry.get("reason", "")).strip(),
+            }
+        )
         if len(fades) >= MAX_FADE_CANDIDATES:
             break
     return fades
@@ -468,9 +474,9 @@ class Assessment:
     """
 
     core_event: str
-    direction: str    # VALID_EVENT_DIRECTIONS
-    urgency: int      # 1-10
-    horizon: str      # VALID_HORIZONS
+    direction: str  # VALID_EVENT_DIRECTIONS
+    urgency: int  # 1-10
+    horizon: str  # VALID_HORIZONS
     confidence: float  # 0.0-1.0
     affected: list[dict[str, str]] = field(default_factory=list)
     rationale: str = ""
@@ -552,9 +558,7 @@ class Assessment:
             msg = "'affected' is not a list"
             raise ValueError(msg)
 
-        playbook_instruments = (
-            {i.instrument for i in playbook.instruments} if playbook else set()
-        )
+        playbook_instruments = {i.instrument for i in playbook.instruments} if playbook else set()
         affected: list[dict[str, str]] = []
         seen: set[str] = set()
         for entry in raw_affected:
@@ -583,18 +587,21 @@ class Assessment:
                 known = instrument in playbook_instruments or instrument in fallback_tradables
                 if not known and adir != "watch":
                     logger.debug(
-                        "demoting un-vetted tradable %s to watch", instrument,
+                        "demoting un-vetted tradable %s to watch",
+                        instrument,
                     )
                     adir = "watch"
             if instrument in seen:
                 continue
             seen.add(instrument)
-            affected.append({
-                "instrument": instrument,
-                "kind": kind,
-                "direction": adir,
-                "reason": reason,
-            })
+            affected.append(
+                {
+                    "instrument": instrument,
+                    "kind": kind,
+                    "direction": adir,
+                    "reason": reason,
+                }
+            )
 
         return cls(
             core_event=core_event,
@@ -625,7 +632,10 @@ def normalise_assessment(
     on unrecoverable schema violations (→ row is DISMISSED).
     """
     return Assessment.from_llm_payload(
-        payload, headline, playbook, fallback_tradables,
+        payload,
+        headline,
+        playbook,
+        fallback_tradables,
     ).to_dict()
 
 
@@ -657,10 +667,7 @@ class EventImpactAgent:
         # Shares this agent's subscription client. Disabled unless
         # EVENT_TRIAGE_ENABLED is set (opt-in), so existing callers are
         # unchanged until the operator turns it on.
-        self.triage = (
-            triage if triage is not None
-            else EventTriage(client=self.client)
-        )
+        self.triage = triage if triage is not None else EventTriage(client=self.client)
 
     # -- prompt ---------------------------------------------------------
 
@@ -681,8 +688,7 @@ class EventImpactAgent:
         ]
         for inst in pb.instruments:
             lines.append(
-                f"  - {inst.instrument} [{inst.kind}] hint={inst.direction}: "
-                f"{inst.rationale}"
+                f"  - {inst.instrument} [{inst.kind}] hint={inst.direction}: {inst.rationale}"
             )
         return "\n".join(lines)
 
@@ -731,8 +737,9 @@ class EventImpactAgent:
             )
         except Exception as exc:
             logger.warning(
-                "impact agent transport failure for event id=%s "
-                "(left NEW for retry): %s", row.get("id"), str(exc)[:200],
+                "impact agent transport failure for event id=%s (left NEW for retry): %s",
+                row.get("id"),
+                str(exc)[:200],
             )
             return AssessmentResult(
                 event_id=int(row["id"]),
@@ -747,14 +754,19 @@ class EventImpactAgent:
             # then persist its canonical dict form — byte-identical to the
             # pre-model normalise_assessment output.
             assessment = Assessment.from_llm_payload(
-                payload, row["headline"], playbook, self._fallback_tradables,
+                payload,
+                row["headline"],
+                playbook,
+                self._fallback_tradables,
             ).to_dict()
             status = "ASSESSED"
         except Exception as exc:
             # Content failure on a successful response → DISMISSED with
             # a rationale; retrying would reproduce the same output.
             logger.warning(
-                "impact agent dismissed event id=%s: %s", row.get("id"), exc,
+                "impact agent dismissed event id=%s: %s",
+                row.get("id"),
+                exc,
             )
             assessment = {
                 "rationale": f"impact agent failure: {exc}"[:500],
@@ -782,24 +794,28 @@ class EventImpactAgent:
         with self.engine.connect() as conn:
             rows = [
                 dict(r._mapping)
-                for r in conn.execute(text(
-                    "SELECT id, seen_at, headline, url, theme, source "
-                    "FROM geo_events WHERE status = 'NEW' "
-                    "ORDER BY seen_at DESC LIMIT :lim",
-                ), {"lim": limit})
+                for r in conn.execute(
+                    text(
+                        "SELECT id, seen_at, headline, url, theme, source "
+                        "FROM geo_events WHERE status = 'NEW' "
+                        "ORDER BY seen_at DESC LIMIT :lim",
+                    ),
+                    {"lim": limit},
+                )
             ]
 
         verdicts: dict[int, Any] = {}
         if self.triage is not None and self.triage.enabled and rows:
             verdicts = self.triage.score_batch(rows)
             skipped = sum(
-                1 for r in rows
-                if (v := verdicts.get(int(r["id"]))) is not None
-                and not v.escalate
+                1 for r in rows if (v := verdicts.get(int(r["id"]))) is not None and not v.escalate
             )
             logger.info(
                 "triage: %d scored, %d escalated, %d skipped (model=%s)",
-                len(rows), len(rows) - skipped, skipped, self.triage.model,
+                len(rows),
+                len(rows) - skipped,
+                skipped,
+                self.triage.model,
             )
 
         results: list[AssessmentResult] = []
@@ -809,7 +825,9 @@ class EventImpactAgent:
                 # Triaged out — cheap DISMISS, no expensive assessment call.
                 logger.debug(
                     "triaged out event id=%s (relevance=%d): %.70s",
-                    row.get("id"), verdict.relevance, row.get("headline"),
+                    row.get("id"),
+                    verdict.relevance,
+                    row.get("headline"),
                 )
                 result = AssessmentResult(
                     event_id=int(row["id"]),
@@ -818,8 +836,7 @@ class EventImpactAgent:
                     status="DISMISSED",
                     assessment={
                         "rationale": (
-                            f"triaged out (relevance={verdict.relevance}): "
-                            f"{verdict.reason}"
+                            f"triaged out (relevance={verdict.relevance}): {verdict.reason}"
                         )[:500],
                         "triaged": True,
                         "triage_relevance": verdict.relevance,
@@ -830,20 +847,23 @@ class EventImpactAgent:
                 continue
             result = self.assess_row(row)
             if result.status != "NEW":  # transport failure = no write,
-                self._persist(result)   # row stays queued for retry
+                self._persist(result)  # row stays queued for retry
             results.append(result)
         return results
 
     def _persist(self, result: AssessmentResult) -> None:
         with self.engine.begin() as conn:
-            conn.execute(text(
-                "UPDATE geo_events "
-                "SET assessment = :assessment, status = :status, "
-                "    status_updated_at = :now "
-                "WHERE id = :id AND status = 'NEW'",
-            ), {
-                "assessment": json.dumps(result.assessment),
-                "status": result.status,
-                "now": datetime.now(UTC),
-                "id": result.event_id,
-            })
+            conn.execute(
+                text(
+                    "UPDATE geo_events "
+                    "SET assessment = :assessment, status = :status, "
+                    "    status_updated_at = :now "
+                    "WHERE id = :id AND status = 'NEW'",
+                ),
+                {
+                    "assessment": json.dumps(result.assessment),
+                    "status": result.status,
+                    "now": datetime.now(UTC),
+                    "id": result.event_id,
+                },
+            )

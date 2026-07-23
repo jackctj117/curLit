@@ -65,7 +65,7 @@ class ImplementerResult:
     raw_text: str
     code_path: Path | None = None
     report_path: Path | None = None
-    reason: str = ""                               # set when REJECTED
+    reason: str = ""  # set when REJECTED
     candidate_report: dict[str, Any] = field(default_factory=dict)
 
 
@@ -84,7 +84,8 @@ BacktestRunner = Callable[[Path], dict[str, Any]]
 # A fenced ```python ... ``` block. We take the LARGEST one — agents
 # sometimes include short illustrative snippets before the main code.
 _PYTHON_FENCE_PATTERN = re.compile(
-    r"```python\s*\n(.*?)\n```", re.DOTALL,
+    r"```python\s*\n(.*?)\n```",
+    re.DOTALL,
 )
 
 
@@ -296,7 +297,8 @@ class Implementer(Agent):
                 backtest_metrics = backtest_runner(code_path)
             except Exception as exc:
                 logger.exception(
-                    "backtest_runner failed for %s", strategy_slug,
+                    "backtest_runner failed for %s",
+                    strategy_slug,
                 )
                 return ImplementerResult(
                     status=ImplementerStatus.REJECTED,
@@ -340,7 +342,8 @@ class Implementer(Agent):
         effort — the prompt asks for one paragraph after the keyword."""
         m = re.search(
             r"\*\*FINAL_POSITION\*\*\s*:\s*REJECTED\s*\n+(.+?)(?:\n\n|\Z)",
-            text, re.DOTALL | re.IGNORECASE,
+            text,
+            re.DOTALL | re.IGNORECASE,
         )
         if m:
             return m.group(1).strip()

@@ -140,10 +140,7 @@ def _row_params(
             if not instrument_reason:
                 instrument_reason = decision.reason
         if decision.action != action:
-            annotation = (
-                f"selector prefers {decision.action} "
-                f"({decision.horizon_band} horizon)"
-            )
+            annotation = f"selector prefers {decision.action} ({decision.horizon_band} horizon)"
             notes = f"{notes}; {annotation}" if notes else annotation
 
     price_info = (prices or {}).get(ticker) or {}
@@ -210,7 +207,8 @@ def persist_ideas(
         return 0
     now = now or datetime.now(UTC)
     params = [
-        p for idea in ideas
+        p
+        for idea in ideas
         if isinstance(idea, dict)
         and (p := _row_params(geo_event_id, idea, prices, now)) is not None
     ]
@@ -232,10 +230,11 @@ def expire_stale(engine: Any, now: datetime | None = None) -> int:
     the sqlite test engines. Returns rows transitioned."""
     now = now or datetime.now(UTC)
     with engine.connect() as conn:
-        rows = conn.execute(text(
-            "SELECT id, created_at, time_stop_days "
-            "FROM trade_ideas WHERE status = 'pending'",
-        )).all()
+        rows = conn.execute(
+            text(
+                "SELECT id, created_at, time_stop_days FROM trade_ideas WHERE status = 'pending'",
+            )
+        ).all()
     stale: list[int] = []
     for row_id, created_at, time_stop_days in rows:
         created = parse_ts(created_at)
@@ -291,7 +290,8 @@ def list_open_consolidated(engine: Any) -> list[dict[str, Any]]:
     order: list[tuple[str, str]] = []
     for row in rows:
         key = (
-            str(row.get("ticker") or ""), str(row.get("action") or ""),
+            str(row.get("ticker") or ""),
+            str(row.get("action") or ""),
         )
         existing = groups.get(key)
         if existing is None:

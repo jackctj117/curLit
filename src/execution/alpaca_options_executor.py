@@ -52,9 +52,7 @@ def _is_duplicate_client_order_id(exc: BaseException) -> bool:
         except Exception:
             body = ""
     hay = text + " " + body
-    return "client_order_id" in hay and (
-        "unique" in hay or "duplicate" in hay or "already" in hay
-    )
+    return "client_order_id" in hay and ("unique" in hay or "duplicate" in hay or "already" in hay)
 
 
 @dataclass(frozen=True)
@@ -107,14 +105,17 @@ def _entry_delay_active(now: datetime, delay_min: int) -> bool:
 def _default_price_fn(engine: Any) -> PriceFn:
     def _fetch(ticker: str) -> float | None:
         from src.events.prices import get_prices  # noqa: PLC0415
+
         out = get_prices([ticker], engine=engine)
         v = out.get(ticker)
         return float(v["price"]) if v and v.get("price") is not None else None
+
     return _fetch
 
 
 def fetch_executable_ideas(
-    engine: Any, cfg: OptionsExecConfig,
+    engine: Any,
+    cfg: OptionsExecConfig,
 ) -> list[dict[str, Any]]:
     """Pending buy_calls/buy_puts ideas matching the policy that haven't been
     acted on yet (highest confidence first)."""
@@ -122,8 +123,7 @@ def fetch_executable_ideas(
         "action IN ('buy_calls','buy_puts')",
         "confidence >= :min_conf",
         "status = 'pending'",
-        "NOT EXISTS (SELECT 1 FROM alpaca_option_orders a "
-        "WHERE a.idea_id = ti.idea_id)",
+        "NOT EXISTS (SELECT 1 FROM alpaca_option_orders a WHERE a.idea_id = ti.idea_id)",
     ]
     if cfg.require_niche:
         where.append("lower(notes) LIKE '%niche%'")
@@ -131,25 +131,32 @@ def fetch_executable_ideas(
         where.append("lower(notes) LIKE '%red-team%'")
     sql = (
         "SELECT idea_id, ticker, action, confidence, preferred_instrument, notes "
-        "FROM trade_ideas ti WHERE " + " AND ".join(where) +
-        " ORDER BY confidence DESC, created_at DESC"
+        "FROM trade_ideas ti WHERE "
+        + " AND ".join(where)
+        + " ORDER BY confidence DESC, created_at DESC"
     )
     with engine.connect() as conn:
-        return [dict(r._mapping) for r in conn.execute(
-            text(sql), {"min_conf": cfg.min_confidence})]
+        return [dict(r._mapping) for r in conn.execute(text(sql), {"min_conf": cfg.min_confidence})]
 
 
 def _submitted_since(engine: Any, since: datetime) -> int:
     with engine.connect() as conn:
-        return int(conn.execute(text(
-            "SELECT COUNT(*) FROM alpaca_option_orders "
-            "WHERE status = 'submitted' AND submitted_at >= :since",
-        ), {"since": since}).scalar() or 0)
+        return int(
+            conn.execute(
+                text(
+                    "SELECT COUNT(*) FROM alpaca_option_orders "
+                    "WHERE status = 'submitted' AND submitted_at >= :since",
+                ),
+                {"since": since},
+            ).scalar()
+            or 0
+        )
 
 
 def _submitted_today(engine: Any, now: datetime) -> int:
     return _submitted_since(
-        engine, now.replace(hour=0, minute=0, second=0, microsecond=0),
+        engine,
+        now.replace(hour=0, minute=0, second=0, microsecond=0),
     )
 
 
@@ -159,14 +166,17 @@ def _submitted_last_hour(engine: Any, now: datetime) -> int:
 
 def _record(engine: Any, row: dict[str, Any]) -> None:
     with engine.begin() as conn:
-        conn.execute(text("""
+        conn.execute(
+            text("""
             INSERT INTO alpaca_option_orders
                 (idea_id, ticker, occ_symbol, opt_type, qty, premium_est,
                  alpaca_order_id, status, detail, submitted_at)
             VALUES (:idea_id,:ticker,:occ_symbol,:opt_type,:qty,:premium_est,
                     :alpaca_order_id,:status,:detail,:submitted_at)
             ON CONFLICT (idea_id) DO NOTHING
-        """), row)
+        """),
+            row,
+        )
 
 
 def execute_pending_options(
@@ -185,10 +195,19 @@ def execute_pending_options(
     fetch = price_fn or _default_price_fn(engine)
     if technicals_fn is None:
         from src.events.technical_context import compute_for_ticker  # noqa: PLC0415
+
         technicals_fn = compute_for_ticker
-    counts = {"submitted": 0, "skipped_premium": 0, "no_contract": 0,
-              "no_quote": 0, "no_price": 0, "error": 0, "market_closed": 0,
-              "misaligned": 0, "entry_delayed": 0}
+    counts = {
+        "submitted": 0,
+        "skipped_premium": 0,
+        "no_contract": 0,
+        "no_quote": 0,
+        "no_price": 0,
+        "error": 0,
+        "market_closed": 0,
+        "misaligned": 0,
+        "entry_delayed": 0,
+    }
 
     # Options MARKET orders are 422-rejected outside regular hours — don't even
     # try; just wait for the next open (CL-ldd2).
@@ -204,9 +223,11 @@ def execute_pending_options(
         if day_left <= 0:
             logger.info("alpaca options: daily cap reached — no new orders")
         else:
-            logger.info("alpaca options: hourly pace reached (%d/hr) — "
-                        "%d left today, resuming next cycle", cfg.max_per_hour,
-                        day_left)
+            logger.info(
+                "alpaca options: hourly pace reached (%d/hr) — %d left today, resuming next cycle",
+                cfg.max_per_hour,
+                day_left,
+            )
         return counts
 
     delay_active = _entry_delay_active(now, cfg.entry_delay_min)
@@ -219,9 +240,7 @@ def execute_pending_options(
         # session unless the signal is extremely strong. Transient (not
         # recorded) — the idea re-evaluates on the next 5-min cycle, so a
         # 9:30 signal simply enters at ~9:45 instead.
-        if delay_active and (
-            float(idea.get("confidence") or 0.0) < cfg.entry_delay_override_conf
-        ):
+        if delay_active and (float(idea.get("confidence") or 0.0) < cfg.entry_delay_override_conf):
             counts["entry_delayed"] += 1
             continue
         right = "call" if str(idea.get("action")) == "buy_calls" else "put"
@@ -240,18 +259,23 @@ def execute_pending_options(
                 ctx = None
             if ctx is not None:
                 from src.events.technical_context import alignment_score  # noqa: PLC0415
+
                 direction = "bullish" if right == "call" else "bearish"
                 score = alignment_score(ctx, direction)
                 if score < cfg.min_alignment:
                     counts["misaligned"] += 1
                     logger.info(
                         "alpaca options: skipped %s %s — technical alignment "
-                        "%.2f < %.2f (trend=%s, %s)", ticker, idea.get("action"),
-                        score, cfg.min_alignment, ctx.trend, ctx.breakout_state,
+                        "%.2f < %.2f (trend=%s, %s)",
+                        ticker,
+                        idea.get("action"),
+                        score,
+                        cfg.min_alignment,
+                        ctx.trend,
+                        ctx.breakout_state,
                     )
                     continue
-            contract = resolve_contract(client, idea, price, now.date(),
-                                        cfg.selection)
+            contract = resolve_contract(client, idea, price, now.date(), cfg.selection)
             if not contract:
                 counts["no_contract"] += 1
                 continue
@@ -262,18 +286,28 @@ def execute_pending_options(
                 continue
             premium = ask * 100.0 * cfg.qty
             base = {
-                "idea_id": idea["idea_id"], "ticker": ticker,
-                "occ_symbol": occ, "opt_type": right, "qty": cfg.qty,
-                "premium_est": premium, "submitted_at": now,
+                "idea_id": idea["idea_id"],
+                "ticker": ticker,
+                "occ_symbol": occ,
+                "opt_type": right,
+                "qty": cfg.qty,
+                "premium_est": premium,
+                "submitted_at": now,
             }
             if premium > cfg.max_premium_usd:
-                _record(engine, {**base, "alpaca_order_id": None,
-                                 "status": "skipped_premium",
-                                 "detail": f"premium ${premium:.0f} > "
-                                           f"${cfg.max_premium_usd:.0f}"})
+                _record(
+                    engine,
+                    {
+                        **base,
+                        "alpaca_order_id": None,
+                        "status": "skipped_premium",
+                        "detail": f"premium ${premium:.0f} > ${cfg.max_premium_usd:.0f}",
+                    },
+                )
                 counts["skipped_premium"] += 1
-                logger.info("alpaca options: skipped %s (%s) premium $%.0f > cap",
-                            ticker, occ, premium)
+                logger.info(
+                    "alpaca options: skipped %s (%s) premium $%.0f > cap", ticker, occ, premium
+                )
                 continue
             # client_order_id = idea_id (review P1): the order-then-record
             # sequence could double-buy if we crashed after the fill but
@@ -282,16 +316,24 @@ def execute_pending_options(
             # resubmit fail, which we recover below as already-executed.
             try:
                 order = client.submit_option_order(
-                    occ, cfg.qty, "buy",
+                    occ,
+                    cfg.qty,
+                    "buy",
                     client_order_id=f"curlit-{idea['idea_id']}",
                 )
             except Exception as sub_exc:
                 if _is_duplicate_client_order_id(sub_exc):
-                    _record(engine, {**base, "alpaca_order_id": "recovered",
-                                     "status": "submitted",
-                                     "detail": "recovered: prior cycle already "
-                                               "bought (duplicate "
-                                               "client_order_id)"})
+                    _record(
+                        engine,
+                        {
+                            **base,
+                            "alpaca_order_id": "recovered",
+                            "status": "submitted",
+                            "detail": "recovered: prior cycle already "
+                            "bought (duplicate "
+                            "client_order_id)",
+                        },
+                    )
                     counts["recovered"] = counts.get("recovered", 0) + 1
                     logger.warning(
                         "alpaca options: idea %s was ALREADY bought by a "
@@ -300,16 +342,26 @@ def execute_pending_options(
                     )
                     continue
                 raise
-            _record(engine, {**base,
-                             "alpaca_order_id": str(order.get("id") or ""),
-                             "status": "submitted", "detail": None})
+            _record(
+                engine,
+                {
+                    **base,
+                    "alpaca_order_id": str(order.get("id") or ""),
+                    "status": "submitted",
+                    "detail": None,
+                },
+            )
             counts["submitted"] += 1
-            logger.info("alpaca options: BOUGHT %d %s (%s) ~$%.0f premium "
-                        "[idea %s]", cfg.qty, occ, ticker, premium,
-                        idea["idea_id"])
+            logger.info(
+                "alpaca options: BOUGHT %d %s (%s) ~$%.0f premium [idea %s]",
+                cfg.qty,
+                occ,
+                ticker,
+                premium,
+                idea["idea_id"],
+            )
         except Exception as exc:
             counts["error"] += 1
-            logger.warning("alpaca options: error executing %s: %s",
-                           ticker, str(exc)[:200])
+            logger.warning("alpaca options: error executing %s: %s", ticker, str(exc)[:200])
     logger.info("alpaca options: %s", counts)
     return counts

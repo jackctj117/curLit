@@ -53,6 +53,7 @@ warnings.filterwarnings("ignore", category=RuntimeWarning)
 # Config
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class SCIMomentumConfig:
     """
@@ -78,6 +79,7 @@ class SCIMomentumConfig:
         Scalar multiplier applied to the final signal. Acceptable range:
         [0.5, 2.0]. Default: 1.0.
     """
+
     vr_window: int = 6
     momentum_window: int = 20
     sci_window: int = 60
@@ -88,6 +90,7 @@ class SCIMomentumConfig:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _rolling_variance_ratio(returns: pd.Series, k: int, window: int) -> pd.Series:
     """
@@ -149,6 +152,7 @@ def _rolling_percentile_rank(series: pd.Series, window: int) -> pd.Series:
     preceding `window` observations (exclusive of t itself to avoid look-ahead).
     Returns values in [0, 1].
     """
+
     def _rank(arr: np.ndarray) -> float:
         if len(arr) < 2:
             return float(np.nan)
@@ -160,14 +164,13 @@ def _rolling_percentile_rank(series: pd.Series, window: int) -> pd.Series:
         return float(np.mean(finite <= val))
 
     # Use a rolling apply over window+1 so the last element is the current value
-    return series.rolling(window + 1, min_periods=max(10, window // 3)).apply(
-        _rank, raw=True
-    )
+    return series.rolling(window + 1, min_periods=max(10, window // 3)).apply(_rank, raw=True)
 
 
 # ---------------------------------------------------------------------------
 # Strategy
 # ---------------------------------------------------------------------------
+
 
 class Strategy:
     """
@@ -264,9 +267,7 @@ class Strategy:
         # VR > 1 → trending (good for momentum) → high score
         # We z-score using in-sample stats then map through sigmoid
         # ----------------------------------------------------------------
-        vr_raw = _rolling_variance_ratio(
-            returns, k=cfg.vr_window, window=cfg.sci_window
-        )
+        vr_raw = _rolling_variance_ratio(returns, k=cfg.vr_window, window=cfg.sci_window)
         vr_z = (vr_raw - self._vr_mean) / (self._vr_std + 1e-8)
         # Sigmoid: maps z-score to (0, 1); VR > mean → score > 0.5
         vr_score = 1.0 / (1.0 + np.exp(-vr_z))

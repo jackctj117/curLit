@@ -48,7 +48,8 @@ def _mock_chain(allowance: int = 123_000_000) -> tuple[MagicMock, MagicMock]:
     contract = w3.eth.contract.return_value
     contract.functions.allowance.return_value.call.return_value = allowance
     contract.functions.approve.return_value.build_transaction.return_value = {
-        "from": "0xSigner", "nonce": 7,
+        "from": "0xSigner",
+        "nonce": 7,
     }
     w3.eth.get_transaction_count.return_value = 7
     w3.eth.send_raw_transaction.return_value = _TX_HASH_BYTES
@@ -68,7 +69,11 @@ class TestDryRun:
         w3, acct = _mock_chain()
 
         report = run_kill_switch(
-            "amoy", dry_run=True, client=client, w3=w3, acct=acct,
+            "amoy",
+            dry_run=True,
+            client=client,
+            w3=w3,
+            acct=acct,
         )
 
         assert report.ok
@@ -82,7 +87,11 @@ class TestDryRun:
         w3, acct = _mock_chain(allowance=42_000_000)
 
         report = run_kill_switch(
-            "amoy", dry_run=True, client=client, w3=w3, acct=acct,
+            "amoy",
+            dry_run=True,
+            client=client,
+            w3=w3,
+            acct=acct,
         )
 
         assert report.open_order_ids == ["abc"]
@@ -98,7 +107,11 @@ class TestDryRun:
         w3, acct = _mock_chain()
 
         report = run_kill_switch(
-            "amoy", dry_run=True, client=client, w3=w3, acct=acct,
+            "amoy",
+            dry_run=True,
+            client=client,
+            w3=w3,
+            acct=acct,
         )
 
         assert not report.ok
@@ -111,13 +124,18 @@ class TestActionPath:
         w3, acct = _mock_chain()
 
         report = run_kill_switch(
-            "amoy", dry_run=False, client=client, w3=w3, acct=acct,
+            "amoy",
+            dry_run=False,
+            client=client,
+            w3=w3,
+            acct=acct,
         )
 
         assert report.ok, report.errors
         client.cancel_all.assert_called_once_with()
         assert report.cancel_response == {
-            "canceled": ["ord-1", "ord-2"], "not_canceled": {},
+            "canceled": ["ord-1", "ord-2"],
+            "not_canceled": {},
         }
 
     @pytest.mark.parametrize("env", ["amoy", "mainnet"])
@@ -126,23 +144,26 @@ class TestActionPath:
         w3, acct = _mock_chain()
 
         report = run_kill_switch(
-            env, dry_run=False, client=client, w3=w3, acct=acct,
+            env,
+            dry_run=False,
+            client=client,
+            w3=w3,
+            acct=acct,
         )
 
         assert report.ok, report.errors
         # The ERC-20 contract is the env's USDC.e collateral...
         assert w3.eth.contract.call_count == 1
-        assert (
-            w3.eth.contract.call_args.kwargs["address"]
-            == CONTRACTS[env].usdc_collateral
-        )
+        assert w3.eth.contract.call_args.kwargs["address"] == CONTRACTS[env].usdc_collateral
         # ...and the approval zeroed is for the env's CTFExchange.
         contract = w3.eth.contract.return_value
         contract.functions.approve.assert_called_once_with(
-            CONTRACTS[env].ctf_exchange, 0,
+            CONTRACTS[env].ctf_exchange,
+            0,
         )
         contract.functions.allowance.assert_any_call(
-            acct.address, CONTRACTS[env].ctf_exchange,
+            acct.address,
+            CONTRACTS[env].ctf_exchange,
         )
 
     def test_revoke_tx_signed_and_broadcast(self) -> None:
@@ -150,7 +171,11 @@ class TestActionPath:
         w3, acct = _mock_chain()
 
         report = run_kill_switch(
-            "amoy", dry_run=False, client=client, w3=w3, acct=acct,
+            "amoy",
+            dry_run=False,
+            client=client,
+            w3=w3,
+            acct=acct,
         )
 
         acct.sign_transaction.assert_called_once()
@@ -165,7 +190,11 @@ class TestActionPath:
         w3, acct = _mock_chain()
 
         report = run_kill_switch(
-            "amoy", dry_run=False, client=client, w3=w3, acct=acct,
+            "amoy",
+            dry_run=False,
+            client=client,
+            w3=w3,
+            acct=acct,
         )
 
         assert not report.ok
@@ -179,7 +208,11 @@ class TestActionPath:
         w3.eth.wait_for_transaction_receipt.return_value = {"status": 0}
 
         report = run_kill_switch(
-            "amoy", dry_run=False, client=client, w3=w3, acct=acct,
+            "amoy",
+            dry_run=False,
+            client=client,
+            w3=w3,
+            acct=acct,
         )
 
         assert not report.ok
@@ -196,7 +229,11 @@ class TestActionPath:
         w3, acct = _mock_chain()
 
         report = run_kill_switch(
-            "amoy", dry_run=False, client=client, w3=w3, acct=acct,
+            "amoy",
+            dry_run=False,
+            client=client,
+            w3=w3,
+            acct=acct,
         )
 
         assert not report.ok
@@ -209,7 +246,11 @@ class TestActionPath:
         w3, acct = _mock_chain()
 
         report = run_kill_switch(
-            "amoy", dry_run=False, client=client, w3=w3, acct=acct,
+            "amoy",
+            dry_run=False,
+            client=client,
+            w3=w3,
+            acct=acct,
             funder_address="0xCOLDFUNDER",
         )
 
@@ -269,4 +310,5 @@ class TestCLI:
     def test_script_shim_importable(self) -> None:
         # The operator-facing entrypoint must resolve to the module CLI.
         from scripts.polymarket_kill_switch import main as script_main
+
         assert script_main is main

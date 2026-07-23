@@ -64,7 +64,8 @@ class ChainSummary:
 
 
 def yfinance_chain_summary(
-    ticker: str, max_expiries: int = DEFAULT_MAX_EXPIRIES,
+    ticker: str,
+    max_expiries: int = DEFAULT_MAX_EXPIRIES,
 ) -> dict[str, Any] | None:
     """Aggregate the nearest expiries' chains via yfinance. Fail-soft → None.
 
@@ -74,6 +75,7 @@ def yfinance_chain_summary(
     """
     try:
         import yfinance as yf  # noqa: PLC0415 — deferred
+
         t = yf.Ticker(ticker)
         expiries = list(t.options or [])[:max_expiries]
         if not expiries:
@@ -96,13 +98,16 @@ def yfinance_chain_summary(
                 iv = float(atm["impliedVolatility"].iloc[0])
                 atm_iv = iv if iv > 0.005 else None  # degenerate off-hours IV
         return {
-            "ticker": ticker, "call_volume": cv, "put_volume": pv,
-            "call_oi": coi, "put_oi": poi, "atm_iv": atm_iv,
+            "ticker": ticker,
+            "call_volume": cv,
+            "put_volume": pv,
+            "call_oi": coi,
+            "put_oi": poi,
+            "atm_iv": atm_iv,
             "expiries_sampled": len(expiries),
         }
     except Exception:
-        logger.debug("options activity: chain fetch failed for %s", ticker,
-                     exc_info=True)
+        logger.debug("options activity: chain fetch failed for %s", ticker, exc_info=True)
         return None
 
 
@@ -114,8 +119,7 @@ def _to_summary(raw: dict[str, Any]) -> ChainSummary | None:
             put_volume=int(raw.get("put_volume") or 0),
             call_oi=int(raw.get("call_oi") or 0),
             put_oi=int(raw.get("put_oi") or 0),
-            atm_iv=(float(raw["atm_iv"]) if raw.get("atm_iv") is not None
-                    else None),
+            atm_iv=(float(raw["atm_iv"]) if raw.get("atm_iv") is not None else None),
             expiries_sampled=int(raw.get("expiries_sampled") or 0),
         )
     except (KeyError, TypeError, ValueError):
@@ -164,45 +168,58 @@ def snapshot_tickers(
             continue
         try:
             with engine.begin() as conn:
-                conn.execute(_UPSERT, {
-                    "obs_date": obs, "ticker": ticker,
-                    "cv": summary.call_volume, "pv": summary.put_volume,
-                    "coi": summary.call_oi, "poi": summary.put_oi,
-                    "pc": summary.pc_volume_ratio, "iv": summary.atm_iv,
-                    "n": summary.expiries_sampled, "now": now,
-                })
+                conn.execute(
+                    _UPSERT,
+                    {
+                        "obs_date": obs,
+                        "ticker": ticker,
+                        "cv": summary.call_volume,
+                        "pv": summary.put_volume,
+                        "coi": summary.call_oi,
+                        "poi": summary.put_oi,
+                        "pc": summary.pc_volume_ratio,
+                        "iv": summary.atm_iv,
+                        "n": summary.expiries_sampled,
+                        "now": now,
+                    },
+                )
             written += 1
         except Exception:
-            logger.warning("options activity: DB write failed for %s",
-                           ticker, exc_info=True)
+            logger.warning("options activity: DB write failed for %s", ticker, exc_info=True)
             skipped += 1
-    logger.info("options activity: %d written, %d skipped (obs %s)",
-                written, skipped, obs)
+    logger.info("options activity: %d written, %d skipped (obs %s)", written, skipped, obs)
     return {"written": written, "skipped": skipped}
 
 
 def volume_unusualness(
-    engine: Any, ticker: str, obs_date: date | None = None,
+    engine: Any,
+    ticker: str,
+    obs_date: date | None = None,
 ) -> float | None:
     """Today's total volume ÷ its prior-snapshot baseline, or None when
     fewer than MIN_BASELINE_SNAPSHOTS priors exist (no fake baselines)."""
     obs = obs_date or datetime.now(UTC).date()
     try:
         with engine.connect() as conn:
-            today = conn.execute(text(
-                "SELECT call_volume + put_volume FROM options_activity "
-                "WHERE ticker = :t AND obs_date = :d",
-            ), {"t": ticker.upper(), "d": obs}).scalar()
+            today = conn.execute(
+                text(
+                    "SELECT call_volume + put_volume FROM options_activity "
+                    "WHERE ticker = :t AND obs_date = :d",
+                ),
+                {"t": ticker.upper(), "d": obs},
+            ).scalar()
             if today is None:
                 return None
-            rows = conn.execute(text(
-                "SELECT call_volume + put_volume FROM options_activity "
-                "WHERE ticker = :t AND obs_date < :d "
-                "ORDER BY obs_date DESC LIMIT :w",
-            ), {"t": ticker.upper(), "d": obs, "w": BASELINE_WINDOW}).all()
+            rows = conn.execute(
+                text(
+                    "SELECT call_volume + put_volume FROM options_activity "
+                    "WHERE ticker = :t AND obs_date < :d "
+                    "ORDER BY obs_date DESC LIMIT :w",
+                ),
+                {"t": ticker.upper(), "d": obs, "w": BASELINE_WINDOW},
+            ).all()
     except Exception:
-        logger.debug("options activity: unusualness query failed for %s",
-                     ticker, exc_info=True)
+        logger.debug("options activity: unusualness query failed for %s", ticker, exc_info=True)
         return None
     priors = [float(r[0]) for r in rows if r[0]]
     if len(priors) < MIN_BASELINE_SNAPSHOTS:
@@ -212,7 +229,9 @@ def volume_unusualness(
 
 
 def activity_note(
-    engine: Any, ticker: str, obs_date: date | None = None,
+    engine: Any,
+    ticker: str,
+    obs_date: date | None = None,
 ) -> str | None:
     """Compact confirmation line for grounding/notes, or None when no
     snapshot exists. E.g. 'options: P/C 0.44 (call-skewed), vol 3.1x baseline'.
@@ -220,11 +239,14 @@ def activity_note(
     obs = obs_date or datetime.now(UTC).date()
     try:
         with engine.connect() as conn:
-            row = conn.execute(text(
-                "SELECT pc_volume_ratio, call_volume, put_volume, atm_iv "
-                "FROM options_activity WHERE ticker = :t "
-                "AND obs_date <= :d ORDER BY obs_date DESC LIMIT 1",
-            ), {"t": ticker.upper(), "d": obs}).fetchone()
+            row = conn.execute(
+                text(
+                    "SELECT pc_volume_ratio, call_volume, put_volume, atm_iv "
+                    "FROM options_activity WHERE ticker = :t "
+                    "AND obs_date <= :d ORDER BY obs_date DESC LIMIT 1",
+                ),
+                {"t": ticker.upper(), "d": obs},
+            ).fetchone()
     except Exception:
         return None
     if row is None:
@@ -232,8 +254,7 @@ def activity_note(
     pc = float(row[0]) if row[0] is not None else None
     skew = ""
     if pc is not None:
-        skew = " (call-skewed)" if pc < 0.7 else (
-            " (put-skewed)" if pc > 1.4 else "")
+        skew = " (call-skewed)" if pc < 0.7 else (" (put-skewed)" if pc > 1.4 else "")
     parts = [f"options: P/C {pc:.2f}{skew}" if pc is not None else "options:"]
     unusual = volume_unusualness(engine, ticker, obs)
     if unusual is not None:

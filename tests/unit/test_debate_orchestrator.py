@@ -49,6 +49,7 @@ from src.research.orchestrator import (
 # only need the registration to satisfy that check — the orchestrator never
 # actually calls the driver in these tests because we inject mock agents.
 
+
 class _NullDriver(Driver):
     name = "null"
 
@@ -61,8 +62,13 @@ class _NullDriver(Driver):
         **kwargs: Any,
     ) -> LLMResponse:
         return LLMResponse(
-            text="", model=model, provider="null",
-            input_tokens=0, output_tokens=0, usd_cost=0.0, elapsed_sec=0.0,
+            text="",
+            model=model,
+            provider="null",
+            input_tokens=0,
+            output_tokens=0,
+            usd_cost=0.0,
+            elapsed_sec=0.0,
         )
 
 
@@ -94,16 +100,14 @@ class _FakeAgent:
         context_files: dict[str, str] | None = None,
         extra_system: str | None = None,
     ) -> AgentResponse:
-        self.calls.append({
-            "user_prompt": user_prompt,
-            "context_files": dict(context_files or {}),
-            "extra_system": extra_system,
-        })
-        text = (
-            self.responses[self._idx]
-            if self._idx < len(self.responses)
-            else self.responses[-1]
+        self.calls.append(
+            {
+                "user_prompt": user_prompt,
+                "context_files": dict(context_files or {}),
+                "extra_system": extra_system,
+            }
         )
+        text = self.responses[self._idx] if self._idx < len(self.responses) else self.responses[-1]
         if self._idx < len(self.responses) - 1:
             self._idx += 1
         return AgentResponse(
@@ -143,16 +147,22 @@ def _build_config(
         providers={"null": ProviderConfig(api_key_env="UNUSED", default_model="m1")},
         agents={
             "bull": AgentConfig(
-                provider="null", role="bull",
-                prompt_path=str(rules_path), model=None,
+                provider="null",
+                role="bull",
+                prompt_path=str(rules_path),
+                model=None,
             ),
             "bear": AgentConfig(
-                provider="null", role="bear",
-                prompt_path=str(rules_path), model=None,
+                provider="null",
+                role="bear",
+                prompt_path=str(rules_path),
+                model=None,
             ),
             "resolver_agent": AgentConfig(
-                provider="null", role="resolver",
-                prompt_path=str(rules_path), model=None,
+                provider="null",
+                role="resolver",
+                prompt_path=str(rules_path),
+                model=None,
             ),
         },
         debates={
@@ -190,11 +200,13 @@ class TestConstruction:
         )
         with pytest.raises(KeyError, match="ghost"):
             DebateOrchestrator(
-                research_config=cfg, debate_name="ghost",
+                research_config=cfg,
+                debate_name="ghost",
             )
 
     def test_default_factory_uses_agent_from_config(
-        self, rules_file: Path,
+        self,
+        rules_file: Path,
     ) -> None:
         # Just verify the orchestrator wires a default factory — we don't
         # actually run a debate (would hit live API).
@@ -203,7 +215,8 @@ class TestConstruction:
             [RoundConfig(name="r1", type=RoundType.PARALLEL)],
         )
         orch = DebateOrchestrator(
-            research_config=cfg, debate_name="promotion_review",
+            research_config=cfg,
+            debate_name="promotion_review",
         )
         assert orch.debate.participants == ["bull", "bear"]
         assert orch.debate_name == "promotion_review"
@@ -216,7 +229,9 @@ class TestConstruction:
 
 class TestParallelRound:
     def test_dispatches_all_participants_with_same_prompt(
-        self, rules_file: Path, transcript_root: Path,
+        self,
+        rules_file: Path,
+        transcript_root: Path,
     ) -> None:
         bull = _FakeAgent("bull", "bull", ["**FINAL_POSITION**: PROMOTE"])
         bear = _FakeAgent("bear", "bear", ["**FINAL_POSITION**: REJECT"])
@@ -225,7 +240,8 @@ class TestParallelRound:
             [RoundConfig(name="initial_positions", type=RoundType.PARALLEL)],
         )
         orch = DebateOrchestrator(
-            research_config=cfg, debate_name="promotion_review",
+            research_config=cfg,
+            debate_name="promotion_review",
             agent_factory=_make_factory({"bull": bull, "bear": bear}),
             transcript_root=transcript_root,
         )
@@ -259,14 +275,18 @@ class TestParallelRound:
 
 class TestSequentialRound:
     def test_second_agent_sees_first_response_in_transcript(
-        self, rules_file: Path, transcript_root: Path,
+        self,
+        rules_file: Path,
+        transcript_root: Path,
     ) -> None:
         bull = _FakeAgent(
-            "bull", "bull",
+            "bull",
+            "bull",
             ["BULL_INITIAL_R1", "BULL_REBUTTAL line"],
         )
         bear = _FakeAgent(
-            "bear", "bear",
+            "bear",
+            "bear",
             ["BEAR_INITIAL_R1", "BEAR_REBUTTAL line"],
         )
         cfg = _build_config(
@@ -277,7 +297,8 @@ class TestSequentialRound:
             ],
         )
         orch = DebateOrchestrator(
-            research_config=cfg, debate_name="promotion_review",
+            research_config=cfg,
+            debate_name="promotion_review",
             agent_factory=_make_factory({"bull": bull, "bear": bear}),
             transcript_root=transcript_root,
         )
@@ -292,11 +313,9 @@ class TestSequentialRound:
         # NOT Bear's Round-2 rebuttal yet (hasn't happened)
         assert "BULL_INITIAL_R1" in bull_round2_ctx["debate_transcript_so_far"]
         assert "BEAR_INITIAL_R1" in bull_round2_ctx["debate_transcript_so_far"]
-        assert "BEAR_REBUTTAL line" not in bull_round2_ctx[
-            "debate_transcript_so_far"]
+        assert "BEAR_REBUTTAL line" not in bull_round2_ctx["debate_transcript_so_far"]
         # Bear (second) DOES see Bull's just-emitted rebuttal
-        assert "BULL_REBUTTAL line" in bear_round2_ctx[
-            "debate_transcript_so_far"]
+        assert "BULL_REBUTTAL line" in bear_round2_ctx["debate_transcript_so_far"]
 
 
 # ---------------------------------------------------------------------------
@@ -334,18 +353,24 @@ acceptance: yes
 
 class TestPerAgentAsyncRound:
     def test_human_routing_records_open_question(
-        self, rules_file: Path, transcript_root: Path,
+        self,
+        rules_file: Path,
+        transcript_root: Path,
     ) -> None:
         bull = _FakeAgent("bull", "bull", [_GOOD_QUESTION])
         bear = _FakeAgent("bear", "bear", ["No questions."])
         cfg = _build_config(
             rules_file,
-            [RoundConfig(
-                name="smart_questions", type=RoundType.PER_AGENT_ASYNC,
-            )],
+            [
+                RoundConfig(
+                    name="smart_questions",
+                    type=RoundType.PER_AGENT_ASYNC,
+                )
+            ],
         )
         orch = DebateOrchestrator(
-            research_config=cfg, debate_name="promotion_review",
+            research_config=cfg,
+            debate_name="promotion_review",
             agent_factory=_make_factory({"bull": bull, "bear": bear}),
             transcript_root=transcript_root,
         )
@@ -359,7 +384,9 @@ class TestPerAgentAsyncRound:
         assert len(result.resolved_questions) == 1
 
     def test_malformed_question_does_not_become_open_question_first_pass(
-        self, rules_file: Path, transcript_root: Path,
+        self,
+        rules_file: Path,
+        transcript_root: Path,
     ) -> None:
         # A question that fails validation gets REFORMULATE (not
         # ESCALATE). Open-question accumulation only happens on
@@ -368,12 +395,16 @@ class TestPerAgentAsyncRound:
         bear = _FakeAgent("bear", "bear", ["No questions"])
         cfg = _build_config(
             rules_file,
-            [RoundConfig(
-                name="smart_questions", type=RoundType.PER_AGENT_ASYNC,
-            )],
+            [
+                RoundConfig(
+                    name="smart_questions",
+                    type=RoundType.PER_AGENT_ASYNC,
+                )
+            ],
         )
         orch = DebateOrchestrator(
-            research_config=cfg, debate_name="promotion_review",
+            research_config=cfg,
+            debate_name="promotion_review",
             agent_factory=_make_factory({"bull": bull, "bear": bear}),
             transcript_root=transcript_root,
         )
@@ -386,37 +417,43 @@ class TestPerAgentAsyncRound:
         # But the resolution outcome is recorded
         assert len(result.resolved_questions) == 1
         from src.research.agents.resolver import ResolutionStatus
-        assert (
-            result.resolved_questions[0].result.status
-            == ResolutionStatus.REFORMULATE
-        )
+
+        assert result.resolved_questions[0].result.status == ResolutionStatus.REFORMULATE
 
     def test_other_agent_routing_calls_target_agent(
-        self, rules_file: Path, transcript_root: Path,
+        self,
+        rules_file: Path,
+        transcript_root: Path,
     ) -> None:
         # Bull asks bear via other_agent routing.
         question = _GOOD_QUESTION.replace(
-            "routing: human", "routing: other_agent",
+            "routing: human",
+            "routing: other_agent",
         )
         bull = _FakeAgent("bull", "bull", [question])
         # Iteration order: bull's emit (1 bull call) → bull's question
         # dispatched to bear via other_agent (1st bear call) → bear's
         # own emit (2nd bear call). Order the bear cans accordingly.
         bear = _FakeAgent(
-            "bear", "bear",
+            "bear",
+            "bear",
             [
                 "Bear's answer to bull's question.",  # dispatch result
-                "Bear's emit: no questions.",         # bear's own emit
+                "Bear's emit: no questions.",  # bear's own emit
             ],
         )
         cfg = _build_config(
             rules_file,
-            [RoundConfig(
-                name="smart_questions", type=RoundType.PER_AGENT_ASYNC,
-            )],
+            [
+                RoundConfig(
+                    name="smart_questions",
+                    type=RoundType.PER_AGENT_ASYNC,
+                )
+            ],
         )
         orch = DebateOrchestrator(
-            research_config=cfg, debate_name="promotion_review",
+            research_config=cfg,
+            debate_name="promotion_review",
             agent_factory=_make_factory({"bull": bull, "bear": bear}),
             transcript_root=transcript_root,
         )
@@ -428,15 +465,15 @@ class TestPerAgentAsyncRound:
         assert result.open_questions == []
         assert len(result.resolved_questions) == 1
         from src.research.agents.resolver import ResolutionStatus
-        assert (
-            result.resolved_questions[0].result.status
-            == ResolutionStatus.RESOLVED
-        )
+
+        assert result.resolved_questions[0].result.status == ResolutionStatus.RESOLVED
         # Bear's answer should be in the resolution
         assert "Bear's answer" in result.resolved_questions[0].result.answer
 
     def test_external_resolver_dispatch_restored_after_round(
-        self, rules_file: Path, transcript_root: Path,
+        self,
+        rules_file: Path,
+        transcript_root: Path,
     ) -> None:
         # The orchestrator monkeypatches resolver.agent_dispatch during
         # the per_agent_async round. It must restore the original after.
@@ -448,12 +485,16 @@ class TestPerAgentAsyncRound:
         bear = _FakeAgent("bear", "bear", ["No questions"])
         cfg = _build_config(
             rules_file,
-            [RoundConfig(
-                name="smart_questions", type=RoundType.PER_AGENT_ASYNC,
-            )],
+            [
+                RoundConfig(
+                    name="smart_questions",
+                    type=RoundType.PER_AGENT_ASYNC,
+                )
+            ],
         )
         orch = DebateOrchestrator(
-            research_config=cfg, debate_name="promotion_review",
+            research_config=cfg,
+            debate_name="promotion_review",
             agent_factory=_make_factory({"bull": bull, "bear": bear}),
             resolver=resolver,
             transcript_root=transcript_root,
@@ -469,7 +510,9 @@ class TestPerAgentAsyncRound:
 
 class TestTranscriptPersistence:
     def test_writes_md_and_jsonl_files(
-        self, rules_file: Path, transcript_root: Path,
+        self,
+        rules_file: Path,
+        transcript_root: Path,
     ) -> None:
         bull = _FakeAgent("bull", "bull", ["**FINAL_POSITION**: PROMOTE"])
         bear = _FakeAgent("bear", "bear", ["**FINAL_POSITION**: REJECT"])
@@ -478,7 +521,8 @@ class TestTranscriptPersistence:
             [RoundConfig(name="r1", type=RoundType.PARALLEL)],
         )
         orch = DebateOrchestrator(
-            research_config=cfg, debate_name="promotion_review",
+            research_config=cfg,
+            debate_name="promotion_review",
             agent_factory=_make_factory({"bull": bull, "bear": bear}),
             transcript_root=transcript_root,
         )
@@ -510,23 +554,30 @@ class TestTranscriptPersistence:
             assert "usd_cost" in row
 
     def test_open_questions_appear_in_summary_footer(
-        self, rules_file: Path, transcript_root: Path,
+        self,
+        rules_file: Path,
+        transcript_root: Path,
     ) -> None:
         bull = _FakeAgent("bull", "bull", [_GOOD_QUESTION])
         bear = _FakeAgent("bear", "bear", ["No questions"])
         cfg = _build_config(
             rules_file,
-            [RoundConfig(
-                name="smart_questions", type=RoundType.PER_AGENT_ASYNC,
-            )],
+            [
+                RoundConfig(
+                    name="smart_questions",
+                    type=RoundType.PER_AGENT_ASYNC,
+                )
+            ],
         )
         orch = DebateOrchestrator(
-            research_config=cfg, debate_name="promotion_review",
+            research_config=cfg,
+            debate_name="promotion_review",
             agent_factory=_make_factory({"bull": bull, "bear": bear}),
             transcript_root=transcript_root,
         )
         result = orch.run_debate(
-            strategy_slug="strat-008", candidate_report_text="m",
+            strategy_slug="strat-008",
+            candidate_report_text="m",
         )
         md_text = result.transcript_path.read_text()
         assert "Open questions" in md_text
@@ -540,7 +591,9 @@ class TestTranscriptPersistence:
 
 class TestCaps:
     def test_extra_rebuttal_rounds_skipped_above_cap(
-        self, rules_file: Path, transcript_root: Path,
+        self,
+        rules_file: Path,
+        transcript_root: Path,
     ) -> None:
         # Build a debate with one parallel + (cap+2) rebuttal rounds.
         rounds = [RoundConfig(name="initial", type=RoundType.PARALLEL)]
@@ -552,12 +605,14 @@ class TestCaps:
         bear = _FakeAgent("bear", "bear", ["B"])
         cfg = _build_config(rules_file, rounds)
         orch = DebateOrchestrator(
-            research_config=cfg, debate_name="promotion_review",
+            research_config=cfg,
+            debate_name="promotion_review",
             agent_factory=_make_factory({"bull": bull, "bear": bear}),
             transcript_root=transcript_root,
         )
         result = orch.run_debate(
-            strategy_slug="strat-009", candidate_report_text="m",
+            strategy_slug="strat-009",
+            candidate_report_text="m",
         )
         # Initial round + capped rebuttal rounds = 1 + MAX_REBUTTAL_ROUNDS
         # Each round produces 2 entries (one per participant).
@@ -573,7 +628,9 @@ class TestCaps:
 
 class TestFinalPositions:
     def test_only_reviewer_roles_get_positions(
-        self, rules_file: Path, transcript_root: Path,
+        self,
+        rules_file: Path,
+        transcript_root: Path,
     ) -> None:
         # Add a non-reviewer participant (role='resolver'). It must not
         # appear in final_positions.
@@ -586,14 +643,20 @@ class TestFinalPositions:
             participants=("bull", "bear", "resolver_agent"),
         )
         orch = DebateOrchestrator(
-            research_config=cfg, debate_name="promotion_review",
-            agent_factory=_make_factory({
-                "bull": bull, "bear": bear, "resolver_agent": helper,
-            }),
+            research_config=cfg,
+            debate_name="promotion_review",
+            agent_factory=_make_factory(
+                {
+                    "bull": bull,
+                    "bear": bear,
+                    "resolver_agent": helper,
+                }
+            ),
             transcript_root=transcript_root,
         )
         result = orch.run_debate(
-            strategy_slug="strat-010", candidate_report_text="m",
+            strategy_slug="strat-010",
+            candidate_report_text="m",
         )
         assert set(result.final_positions.keys()) == {"bull", "bear"}
         assert result.final_positions["bull"] == Position.PROMOTE
@@ -607,22 +670,24 @@ class TestFinalPositions:
 
 class TestSlimCandidateReport:
     def test_drops_bulk_keys(self) -> None:
-        big = json.dumps({
-            "schema_version": 1,
-            "strategy_slug": "x",
-            "oos_metrics": {"sharpe": 0.7, "n_trades": 50},
-            "sharpe_ci_95": {"low": 0.2, "high": 1.2},
-            "edge_concentration": 0.4,
-            "regime_diversified": True,
-            "decay_severity": "NONE",
-            # Bulk to drop:
-            "backtest_metrics": {"verbose": "x" * 500},
-            "fold_metrics": [{"fold_id": i} for i in range(20)],
-            "_metrics_provenance": {"all": "x" * 200},
-            "generated_at": "2026-01-01",
-            "hypothesis_path": "y",
-            "provenance": {"agent": "z" * 100},
-        })
+        big = json.dumps(
+            {
+                "schema_version": 1,
+                "strategy_slug": "x",
+                "oos_metrics": {"sharpe": 0.7, "n_trades": 50},
+                "sharpe_ci_95": {"low": 0.2, "high": 1.2},
+                "edge_concentration": 0.4,
+                "regime_diversified": True,
+                "decay_severity": "NONE",
+                # Bulk to drop:
+                "backtest_metrics": {"verbose": "x" * 500},
+                "fold_metrics": [{"fold_id": i} for i in range(20)],
+                "_metrics_provenance": {"all": "x" * 200},
+                "generated_at": "2026-01-01",
+                "hypothesis_path": "y",
+                "provenance": {"agent": "z" * 100},
+            }
+        )
         slim = _slim_candidate_report(big)
         assert "backtest_metrics" not in slim
         assert "fold_metrics" not in slim
@@ -654,7 +719,8 @@ class TestSlimTranscript:
             "## Round: rebuttal — agent: bull_reviewer (bull)\n"
             "*ts=2026-04-30T10:30:00 model=claude-sonnet-4-6 "
             "in/out_tokens=4000/2000 cost=$0.0420 elapsed=3.10s*\n\n"
-            + "This is a very verbose Bull rebuttal " * 200 + "\n"
+            + "This is a very verbose Bull rebuttal " * 200
+            + "\n"
             + "**FINAL_POSITION**: PROMOTE\n"
         )
         slim = _slim_transcript(long_block + "\n---\n" + long_block)

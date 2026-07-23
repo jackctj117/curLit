@@ -121,17 +121,24 @@ def log_path(tmp_path: Path) -> Path:
 
 class TestApplyDecisionGate1:
     def test_approve_gate1(self, state_path: Path, log_path: Path) -> None:
-        save_state(_state_with(
-            ideas={"h1": {"status": "PENDING_OPERATOR_APPROVAL", "slug": "alpha"}},
-        ), state_path)
+        save_state(
+            _state_with(
+                ideas={"h1": {"status": "PENDING_OPERATOR_APPROVAL", "slug": "alpha"}},
+            ),
+            state_path,
+        )
         result = apply_decision(
-            state_path=state_path, gate=1, slug="alpha",
-            action="APPROVE", reason="looks reasonable",
+            state_path=state_path,
+            gate=1,
+            slug="alpha",
+            action="APPROVE",
+            reason="looks reasonable",
             decisions_log=log_path,
         )
         assert result["new_status"] == "APPROVED"
         # State persisted
         from src.research.loop import load_state
+
         state = load_state(state_path)
         assert state.ideas_processed["h1"]["status"] == "APPROVED"
         # Log written
@@ -142,15 +149,22 @@ class TestApplyDecisionGate1:
         assert "looks reasonable" in log_text
 
     def test_reject_gate1(self, state_path: Path, log_path: Path) -> None:
-        save_state(_state_with(
-            ideas={"h1": {"status": "PENDING_OPERATOR_APPROVAL", "slug": "alpha"}},
-        ), state_path)
+        save_state(
+            _state_with(
+                ideas={"h1": {"status": "PENDING_OPERATOR_APPROVAL", "slug": "alpha"}},
+            ),
+            state_path,
+        )
         apply_decision(
-            state_path=state_path, gate=1, slug="alpha",
-            action="REJECT", reason="duplicates X",
+            state_path=state_path,
+            gate=1,
+            slug="alpha",
+            action="REJECT",
+            reason="duplicates X",
             decisions_log=log_path,
         )
         from src.research.loop import load_state
+
         state = load_state(state_path)
         assert state.ideas_processed["h1"]["status"] == "SKIPPED"
         assert "duplicates X" in state.ideas_processed["h1"]["reason"]
@@ -158,38 +172,53 @@ class TestApplyDecisionGate1:
 
 class TestApplyDecisionGate2:
     def test_approve_gate2(self, state_path: Path, log_path: Path) -> None:
-        save_state(_state_with(
-            debates={"alpha": {
-                "verdict": "PROMOTE",
-                "deploy_status": "PENDING_DEPLOY_CONFIRMATION",
-            }},
-        ), state_path)
+        save_state(
+            _state_with(
+                debates={
+                    "alpha": {
+                        "verdict": "PROMOTE",
+                        "deploy_status": "PENDING_DEPLOY_CONFIRMATION",
+                    }
+                },
+            ),
+            state_path,
+        )
         apply_decision(
-            state_path=state_path, gate=2, slug="alpha", action="APPROVE",
+            state_path=state_path,
+            gate=2,
+            slug="alpha",
+            action="APPROVE",
             decisions_log=log_path,
         )
         from src.research.loop import load_state
+
         state = load_state(state_path)
-        assert state.debates_completed["alpha"]["deploy_status"] == (
-            "DEPLOY_APPROVED"
-        )
+        assert state.debates_completed["alpha"]["deploy_status"] == ("DEPLOY_APPROVED")
 
     def test_reject_gate2(self, state_path: Path, log_path: Path) -> None:
-        save_state(_state_with(
-            debates={"alpha": {
-                "verdict": "PROMOTE",
-                "deploy_status": "PENDING_DEPLOY_CONFIRMATION",
-            }},
-        ), state_path)
+        save_state(
+            _state_with(
+                debates={
+                    "alpha": {
+                        "verdict": "PROMOTE",
+                        "deploy_status": "PENDING_DEPLOY_CONFIRMATION",
+                    }
+                },
+            ),
+            state_path,
+        )
         apply_decision(
-            state_path=state_path, gate=2, slug="alpha", action="REJECT",
-            reason="not yet", decisions_log=log_path,
+            state_path=state_path,
+            gate=2,
+            slug="alpha",
+            action="REJECT",
+            reason="not yet",
+            decisions_log=log_path,
         )
         from src.research.loop import load_state
+
         state = load_state(state_path)
-        assert state.debates_completed["alpha"]["deploy_status"] == (
-            "DEPLOY_REJECTED"
-        )
+        assert state.debates_completed["alpha"]["deploy_status"] == ("DEPLOY_REJECTED")
 
 
 class TestApplyDecisionErrors:
@@ -197,7 +226,10 @@ class TestApplyDecisionErrors:
         save_state(LoopState(), state_path)
         with pytest.raises(DecisionError, match="unknown gate"):
             apply_decision(
-                state_path=state_path, gate=3, slug="x", action="APPROVE",
+                state_path=state_path,
+                gate=3,
+                slug="x",
+                action="APPROVE",
                 decisions_log=log_path,
             )
 
@@ -205,55 +237,86 @@ class TestApplyDecisionErrors:
         save_state(LoopState(), state_path)
         with pytest.raises(DecisionError, match="unknown action"):
             apply_decision(
-                state_path=state_path, gate=1, slug="x", action="PONDER",
+                state_path=state_path,
+                gate=1,
+                slug="x",
+                action="PONDER",
                 decisions_log=log_path,
             )
 
     def test_no_matching_slug_gate1(
-        self, state_path: Path, log_path: Path,
+        self,
+        state_path: Path,
+        log_path: Path,
     ) -> None:
-        save_state(_state_with(
-            ideas={"h1": {"status": "PENDING_OPERATOR_APPROVAL",
-                          "slug": "other"}},
-        ), state_path)
+        save_state(
+            _state_with(
+                ideas={"h1": {"status": "PENDING_OPERATOR_APPROVAL", "slug": "other"}},
+            ),
+            state_path,
+        )
         with pytest.raises(DecisionError, match="no GATE 1 entry"):
             apply_decision(
-                state_path=state_path, gate=1, slug="ghost",
-                action="APPROVE", decisions_log=log_path,
+                state_path=state_path,
+                gate=1,
+                slug="ghost",
+                action="APPROVE",
+                decisions_log=log_path,
             )
 
     def test_already_decided_gate1(
-        self, state_path: Path, log_path: Path,
+        self,
+        state_path: Path,
+        log_path: Path,
     ) -> None:
-        save_state(_state_with(
-            ideas={"h1": {"status": "APPROVED", "slug": "alpha"}},
-        ), state_path)
+        save_state(
+            _state_with(
+                ideas={"h1": {"status": "APPROVED", "slug": "alpha"}},
+            ),
+            state_path,
+        )
         with pytest.raises(DecisionError, match="not 'PENDING_OPERATOR"):
             apply_decision(
-                state_path=state_path, gate=1, slug="alpha",
-                action="APPROVE", decisions_log=log_path,
+                state_path=state_path,
+                gate=1,
+                slug="alpha",
+                action="APPROVE",
+                decisions_log=log_path,
             )
 
     def test_no_matching_slug_gate2(
-        self, state_path: Path, log_path: Path,
+        self,
+        state_path: Path,
+        log_path: Path,
     ) -> None:
         save_state(LoopState(), state_path)
         with pytest.raises(DecisionError, match="no GATE 2"):
             apply_decision(
-                state_path=state_path, gate=2, slug="ghost",
-                action="APPROVE", decisions_log=log_path,
+                state_path=state_path,
+                gate=2,
+                slug="ghost",
+                action="APPROVE",
+                decisions_log=log_path,
             )
 
     def test_already_deployed_gate2(
-        self, state_path: Path, log_path: Path,
+        self,
+        state_path: Path,
+        log_path: Path,
     ) -> None:
-        save_state(_state_with(
-            debates={"alpha": {"verdict": "PROMOTE", "deploy_status": "DEPLOYED"}},
-        ), state_path)
+        save_state(
+            _state_with(
+                debates={"alpha": {"verdict": "PROMOTE", "deploy_status": "DEPLOYED"}},
+            ),
+            state_path,
+        )
         with pytest.raises(DecisionError, match="not 'PENDING_DEPLOY"):
             apply_decision(
-                state_path=state_path, gate=2, slug="alpha",
-                action="APPROVE", decisions_log=log_path,
+                state_path=state_path,
+                gate=2,
+                slug="alpha",
+                action="APPROVE",
+                decisions_log=log_path,
             )
 
 
@@ -264,7 +327,8 @@ class TestApplyDecisionErrors:
 
 @pytest.fixture
 def dashboard_client(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> TestClient:
     """Boot a TestClient against the soak_dashboard FastAPI app with the
     state file pointed at tmp_path. The dashboard module reads
@@ -292,30 +356,45 @@ class TestApprovalsEndpoints:
         assert resp.json() == {"pending": []}
 
     def test_list_pending(
-        self, dashboard_client: TestClient, tmp_path: Path,
+        self,
+        dashboard_client: TestClient,
+        tmp_path: Path,
     ) -> None:
         # Seed state via the dashboard's monkey-patched path
         from scripts import soak_dashboard
-        save_state(_state_with(
-            ideas={"h1": {
-                "status": "PENDING_OPERATOR_APPROVAL", "slug": "alpha",
-                "pending_since": "2026-04-28T00:00:00",
-            }},
-        ), soak_dashboard.DEFAULT_STATE_PATH)
+
+        save_state(
+            _state_with(
+                ideas={
+                    "h1": {
+                        "status": "PENDING_OPERATOR_APPROVAL",
+                        "slug": "alpha",
+                        "pending_since": "2026-04-28T00:00:00",
+                    }
+                },
+            ),
+            soak_dashboard.DEFAULT_STATE_PATH,
+        )
         resp = dashboard_client.get("/api/approvals", headers=_AUTH)
         body = resp.json()
         assert len(body["pending"]) == 1
         assert body["pending"][0]["slug"] == "alpha"
 
     def test_post_approve(
-        self, dashboard_client: TestClient,
+        self,
+        dashboard_client: TestClient,
     ) -> None:
         from scripts import soak_dashboard
-        save_state(_state_with(
-            ideas={"h1": {"status": "PENDING_OPERATOR_APPROVAL", "slug": "alpha"}},
-        ), soak_dashboard.DEFAULT_STATE_PATH)
+
+        save_state(
+            _state_with(
+                ideas={"h1": {"status": "PENDING_OPERATOR_APPROVAL", "slug": "alpha"}},
+            ),
+            soak_dashboard.DEFAULT_STATE_PATH,
+        )
         resp = dashboard_client.post(
-            "/api/approvals/alpha", headers=_AUTH,
+            "/api/approvals/alpha",
+            headers=_AUTH,
             json={"gate": 1, "action": "APPROVE", "reason": "looks good"},
         )
         assert resp.status_code == 200
@@ -325,20 +404,27 @@ class TestApprovalsEndpoints:
         assert "GATE1" in log_text and "APPROVE" in log_text
 
     def test_post_rejects_bad_secret(
-        self, dashboard_client: TestClient,
+        self,
+        dashboard_client: TestClient,
     ) -> None:
         from scripts import soak_dashboard
-        save_state(_state_with(
-            ideas={"h1": {"status": "PENDING_OPERATOR_APPROVAL", "slug": "alpha"}},
-        ), soak_dashboard.DEFAULT_STATE_PATH)
+
+        save_state(
+            _state_with(
+                ideas={"h1": {"status": "PENDING_OPERATOR_APPROVAL", "slug": "alpha"}},
+            ),
+            soak_dashboard.DEFAULT_STATE_PATH,
+        )
         resp = dashboard_client.post(
-            "/api/approvals/alpha", headers={"X-API-Key": "wrong"},
+            "/api/approvals/alpha",
+            headers={"X-API-Key": "wrong"},
             json={"gate": 1, "action": "APPROVE"},
         )
         assert resp.status_code == 403
 
     def test_post_rejects_legacy_query_param_secret(
-        self, dashboard_client: TestClient,
+        self,
+        dashboard_client: TestClient,
     ) -> None:
         """?secret= no longer authenticates anything (CL-94n2)."""
         resp = dashboard_client.post(
@@ -348,24 +434,32 @@ class TestApprovalsEndpoints:
         assert resp.status_code == 403
 
     def test_post_rejects_already_decided(
-        self, dashboard_client: TestClient,
+        self,
+        dashboard_client: TestClient,
     ) -> None:
         from scripts import soak_dashboard
-        save_state(_state_with(
-            ideas={"h1": {"status": "APPROVED", "slug": "alpha"}},
-        ), soak_dashboard.DEFAULT_STATE_PATH)
+
+        save_state(
+            _state_with(
+                ideas={"h1": {"status": "APPROVED", "slug": "alpha"}},
+            ),
+            soak_dashboard.DEFAULT_STATE_PATH,
+        )
         resp = dashboard_client.post(
-            "/api/approvals/alpha", headers=_AUTH,
+            "/api/approvals/alpha",
+            headers=_AUTH,
             json={"gate": 1, "action": "APPROVE"},
         )
         assert resp.status_code == 400
         assert "PENDING_OPERATOR" in resp.json()["detail"]
 
     def test_post_unknown_gate_returns_400(
-        self, dashboard_client: TestClient,
+        self,
+        dashboard_client: TestClient,
     ) -> None:
         resp = dashboard_client.post(
-            "/api/approvals/alpha", headers=_AUTH,
+            "/api/approvals/alpha",
+            headers=_AUTH,
             json={"gate": 9, "action": "APPROVE"},
         )
         assert resp.status_code == 400

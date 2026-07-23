@@ -80,7 +80,11 @@ class PortfolioStateStore:
                         regime  = EXCLUDED.regime
                     """
                 ),
-                {"ts": ts, "weights": json.dumps(weights), "regime": json.dumps(regime, default=str)},
+                {
+                    "ts": ts,
+                    "weights": json.dumps(weights),
+                    "regime": json.dumps(regime, default=str),
+                },
             )
 
     def record_portfolio_order(

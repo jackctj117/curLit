@@ -24,16 +24,16 @@ def tmp_env(tmp_path: Path) -> Path:
     """Write a .env with two vars, return the path."""
     env = tmp_path / ".env"
     env.write_text(
-        "# comment\n"
-        "TEST_BOOTSTRAP_NEW=fresh-value\n"
-        "TEST_BOOTSTRAP_PREEXISTING=from-file\n",
+        "# comment\nTEST_BOOTSTRAP_NEW=fresh-value\nTEST_BOOTSTRAP_PREEXISTING=from-file\n",
     )
     return env
 
 
 class TestLoadProjectEnv:
     def test_loads_when_path_given(
-        self, tmp_env: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_env: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.delenv("TEST_BOOTSTRAP_NEW", raising=False)
         result = load_project_env(env_path=tmp_env)
@@ -41,7 +41,9 @@ class TestLoadProjectEnv:
         assert os.environ.get("TEST_BOOTSTRAP_NEW") == "fresh-value"
 
     def test_does_not_override_pre_existing(
-        self, tmp_env: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_env: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         # Var pre-set in the env (e.g. by systemd) should NOT be
         # overwritten by the .env file's value.
@@ -50,7 +52,9 @@ class TestLoadProjectEnv:
         assert os.environ.get("TEST_BOOTSTRAP_PREEXISTING") == "from-shell"
 
     def test_missing_path_is_noop(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.delenv("TEST_BOOTSTRAP_NEW", raising=False)
         result = load_project_env(env_path=tmp_path / "no-such-file.env")

@@ -56,8 +56,12 @@ def _account(
     active_hours: ActiveHours | None = None,
 ) -> WatchAccount:
     return WatchAccount(
-        handle=handle, category=category, note="test", priority=priority,
-        keywords=keywords, active_hours=active_hours,
+        handle=handle,
+        category=category,
+        note="test",
+        priority=priority,
+        keywords=keywords,
+        active_hours=active_hours,
     )
 
 
@@ -87,7 +91,8 @@ class FakeApi:
             names = str(params["usernames"]).split(",")
             data = [
                 {"id": self.users[n.lower()], "username": n}
-                for n in names if n.lower() in self.users
+                for n in names
+                if n.lower() in self.users
             ]
             return XApiResponse(200, json.dumps({"data": data}))
         uid = url.rsplit("/", 2)[-2]
@@ -201,22 +206,20 @@ class TestWatchlistConfig:
             assert a.note.strip(), a.handle
 
     def test_small_traders_all_low_priority(self) -> None:
-        smalls = [
-            a for a in load_watchlist(REPO_WATCHLIST)
-            if a.category == "small_traders"
-        ]
+        smalls = [a for a in load_watchlist(REPO_WATCHLIST) if a.category == "small_traders"]
         assert len(smalls) == 6
         assert all(a.priority == "low" for a in smalls)
 
     def test_expected_high_priority_set(self) -> None:
-        highs = {
-            a.handle for a in load_watchlist(REPO_WATCHLIST)
-            if a.priority == "high"
-        }
+        highs = {a.handle for a in load_watchlist(REPO_WATCHLIST) if a.priority == "high"}
         assert highs == {
-            "unusual_whales", "DeItaone", "HindenburgRes",
-            "sentdefender", "Osinttechnical",
-            "Africa_In_EN", "robert_ivanhoe",
+            "unusual_whales",
+            "DeItaone",
+            "HindenburgRes",
+            "sentdefender",
+            "Osinttechnical",
+            "Africa_In_EN",
+            "robert_ivanhoe",
         }
 
     def test_rejects_duplicate_handle(self, tmp_path: Path) -> None:
@@ -301,12 +304,14 @@ class TestIdResolution:
 @pytest.mark.usefixtures("token_env")
 class TestSinceIdAndState:
     def test_first_poll_baselines_without_notifying(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         fake = FakeApi()
         fake.users = {"unusual_whales": "111"}
         fake.timelines["111"] = [
-            {"id": "100", "text": "old"}, {"id": "99", "text": "older"},
+            {"id": "100", "text": "old"},
+            {"id": "99", "text": "older"},
         ]
         monitor, recorder = _monitor(tmp_path, [_account()], fake)
         summary = monitor.poll_cycle()
@@ -316,7 +321,8 @@ class TestSinceIdAndState:
         assert state["since_ids"]["unusual_whales"] == "100"
 
     def test_since_id_advances_and_is_sent_to_api(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         fake = FakeApi()
         fake.users = {"unusual_whales": "111"}
@@ -328,9 +334,7 @@ class TestSinceIdAndState:
         summary = monitor.poll_cycle()
         assert summary.new_posts == 1
         assert len(recorder.sent) == 1
-        timeline_calls = [
-            c for c in fake.calls if c[0].endswith("/tweets")
-        ]
+        timeline_calls = [c for c in fake.calls if c[0].endswith("/tweets")]
         assert timeline_calls[-1][1]["since_id"] == "100"
         state = json.loads((tmp_path / "state.json").read_text())
         assert state["since_ids"]["unusual_whales"] == "101"
@@ -352,12 +356,13 @@ class TestSinceIdAndState:
         assert timeline_calls[0][1]["since_id"] == "100"
 
     def test_snowflake_ids_beyond_2_53_compare_as_ints(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         # 64-bit snowflakes lose precision as floats; must compare as
         # ints. 9007199254740993 == 2**53 + 1 (float-equal to 2**53).
-        base = str(2 ** 53)  # 9007199254740992
-        nxt = str(2 ** 53 + 1)
+        base = str(2**53)  # 9007199254740992
+        nxt = str(2**53 + 1)
         fake = FakeApi()
         fake.users = {"unusual_whales": "111"}
         fake.timelines["111"] = [{"id": base, "text": "old"}]
@@ -401,7 +406,10 @@ class TestBudgetGovernor:
         fake.timelines = {"1": []}
         clock = {"now": datetime(2026, 6, 30, 23, 0, tzinfo=UTC)}
         monitor, recorder = _monitor(
-            tmp_path, [_account("a")], fake, cap=2,
+            tmp_path,
+            [_account("a")],
+            fake,
+            cap=2,
             now_fn=lambda: clock["now"],
         )
         monitor.poll_cycle()  # spends 2 (users/by + timeline) → cap hit
@@ -417,7 +425,8 @@ class TestBudgetGovernor:
         assert not state["budget_warned"]
 
     def test_exhaustion_stops_polling_and_warns_once(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         fake = FakeApi()
         fake.users = {"a": "1"}
@@ -434,7 +443,8 @@ class TestBudgetGovernor:
         assert len(warnings) == 1  # single Telegram warning
 
     def test_mid_cycle_exhaustion_stops_remaining_accounts(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         fake = FakeApi()
         fake.users = {"a": "1", "b": "2", "c": "3"}
@@ -455,7 +465,10 @@ class TestBudgetGovernor:
         fake.timelines = {"1": []}
         clock = {"now": datetime(2026, 7, 10, 12, 0, tzinfo=UTC)}
         monitor, _ = _monitor(
-            tmp_path, [_account("a")], fake, paced=True,
+            tmp_path,
+            [_account("a")],
+            fake,
+            paced=True,
             now_fn=lambda: clock["now"],
         )
         assert not monitor.poll_cycle().paced  # first cycle runs
@@ -465,7 +478,9 @@ class TestBudgetGovernor:
         assert not monitor.poll_cycle().paced
 
     def test_cap_env_override(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setenv("X_MONITOR_MONTHLY_CAP", "123")
         config = XMonitorConfig(
@@ -489,7 +504,8 @@ class TestBudgetGovernor:
 @pytest.mark.usefixtures("token_env")
 class TestCadence:
     def test_high_every_cycle_normal_2nd_low_4th(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         fake = FakeApi()
         fake.users = {"hi": "1", "nor": "2", "lo": "3"}
@@ -516,9 +532,9 @@ class TestCadence:
 
         assert polled_per_cycle == [
             {"hi", "nor", "lo"},  # cycle 0
-            {"hi"},               # cycle 1
-            {"hi", "nor"},        # cycle 2
-            {"hi"},               # cycle 3
+            {"hi"},  # cycle 1
+            {"hi", "nor"},  # cycle 2
+            {"hi"},  # cycle 3
         ]
 
 
@@ -535,12 +551,11 @@ class TestExclusionParams:
         fake.timelines = {"111": []}
         monitor, _ = _monitor(tmp_path, [_account()], fake, **config_kw)
         monitor.poll_cycle()
-        return next(
-            params for url, params in fake.calls if url.endswith("/tweets")
-        )
+        return next(params for url, params in fake.calls if url.endswith("/tweets"))
 
     def test_default_excludes_replies_and_retweets(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         params = self._params(tmp_path)
         assert params["exclude"] == "replies,retweets"
@@ -551,7 +566,9 @@ class TestExclusionParams:
         params = self._params(tmp_path, exclude_replies=False)
         assert params["exclude"] == "retweets"
         params = self._params(
-            tmp_path, exclude_replies=False, exclude_retweets=False,
+            tmp_path,
+            exclude_replies=False,
+            exclude_retweets=False,
         )
         assert "exclude" not in params
 
@@ -611,16 +628,15 @@ class TestFormatting:
 @pytest.mark.usefixtures("token_env")
 class TestNotificationDispatch:
     def test_batching_over_threshold_sends_one_message(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         fake = FakeApi()
         fake.users = {"unusual_whales": "111"}
         fake.timelines["111"] = [{"id": "10", "text": "seed"}]
         monitor, recorder = _monitor(tmp_path, [_account()], fake)
         monitor.poll_cycle()  # baseline
-        fake.timelines["111"] += [
-            {"id": str(i), "text": f"burst {i}"} for i in range(11, 16)
-        ]
+        fake.timelines["111"] += [{"id": str(i), "text": f"burst {i}"} for i in range(11, 16)]
         summary = monitor.poll_cycle()
         assert summary.new_posts == 5
         assert len(recorder.sent) == 1  # one combined message
@@ -629,7 +645,8 @@ class TestNotificationDispatch:
         assert "— 5 new posts" in message
 
     def test_at_or_below_threshold_sends_individual_messages(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         fake = FakeApi()
         fake.users = {"unusual_whales": "111"}
@@ -637,7 +654,8 @@ class TestNotificationDispatch:
         monitor, recorder = _monitor(tmp_path, [_account()], fake)
         monitor.poll_cycle()  # baseline
         fake.timelines["111"] += [
-            {"id": "11", "text": "a"}, {"id": "12", "text": "b"},
+            {"id": "11", "text": "a"},
+            {"id": "12", "text": "b"},
         ]
         monitor.poll_cycle()
         assert len(recorder.sent) == 2
@@ -648,7 +666,8 @@ class TestNotificationDispatch:
         fake.users = {"robert_ivanhoe": "9"}
         fake.timelines["9"] = [{"id": "10", "text": "seed"}]
         account = _account(
-            "robert_ivanhoe", category="africa_mining",
+            "robert_ivanhoe",
+            category="africa_mining",
             keywords=("copper", "kamoa"),
         )
         monitor, recorder = _monitor(tmp_path, [account], fake)
@@ -701,15 +720,13 @@ class TestIdlePath:
             monitor.poll_cycle()
             monitor.poll_cycle()
         info_lines = [
-            r for r in caplog.records
-            if r.levelname == "INFO" and IDLE_LINE_API in r.getMessage()
+            r for r in caplog.records if r.levelname == "INFO" and IDLE_LINE_API in r.getMessage()
         ]
         assert len(info_lines) == 1
 
     def test_exact_idle_line_wording(self) -> None:
         assert IDLE_LINE_API == (
-            "X monitor idle: set TWITTER_BEARER_TOKEN — X API basic tier "
-            "required"
+            "X monitor idle: set TWITTER_BEARER_TOKEN — X API basic tier required"
         )
 
 
@@ -721,16 +738,22 @@ class TestIdlePath:
 @pytest.mark.usefixtures("token_env")
 class TestRateLimitBackoff:
     def test_429_sets_backoff_honoring_reset_header(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         clock = {"now": datetime(2026, 7, 10, 12, 0, tzinfo=UTC)}
         reset_ts = clock["now"].timestamp() + 3600
         fake = FakeApi()
         fake.force = XApiResponse(
-            429, "", {"X-Rate-Limit-Reset": str(int(reset_ts))},
+            429,
+            "",
+            {"X-Rate-Limit-Reset": str(int(reset_ts))},
         )
         monitor, _ = _monitor(
-            tmp_path, [_account()], fake, now_fn=lambda: clock["now"],
+            tmp_path,
+            [_account()],
+            fake,
+            now_fn=lambda: clock["now"],
         )
         summary = monitor.poll_cycle()
         assert summary.rate_limited
@@ -760,7 +783,9 @@ class TestRateLimitBackoff:
         real_call = fake.__call__
 
         def flaky(
-            url: str, headers: Mapping[str, str], params: Mapping[str, Any],
+            url: str,
+            headers: Mapping[str, str],
+            params: Mapping[str, Any],
         ) -> XApiResponse:
             if "/users/1/" in url:
                 fake.calls.append((url, dict(params)))
@@ -784,10 +809,13 @@ class TestRateLimitBackoff:
 
 class TestCliTransport:
     def test_backend_selection(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         config = XMonitorConfig(
-            state_path=tmp_path / "s.json", user_ids_path=tmp_path / "i.json",
+            state_path=tmp_path / "s.json",
+            user_ids_path=tmp_path / "i.json",
         )
         monkeypatch.delenv("X_MONITOR_BACKEND", raising=False)
         assert isinstance(build_transport(config), ApiTransport)
@@ -834,14 +862,16 @@ class TestCliTransport:
     def test_defensive_parse_field_spellings_and_malformed_skip(
         self,
     ) -> None:
-        payload = json.dumps([
-            {"id": 101, "text": "plain id+text"},
-            {"id_str": "102", "full_text": "id_str+full_text"},
-            {"rest_id": "103", "text": "rest_id"},
-            {"text": "no id — malformed, skipped"},
-            "not-a-dict",
-            {"id": "", "text": "blank id — skipped"},
-        ])
+        payload = json.dumps(
+            [
+                {"id": 101, "text": "plain id+text"},
+                {"id_str": "102", "full_text": "id_str+full_text"},
+                {"rest_id": "103", "text": "rest_id"},
+                {"text": "no id — malformed, skipped"},
+                "not-a-dict",
+                {"id": "", "text": "blank id — skipped"},
+            ]
+        )
 
         def runner(argv: list[str]) -> subprocess.CompletedProcess[str]:
             return subprocess.CompletedProcess(argv, 0, stdout=payload, stderr="")
@@ -863,7 +893,10 @@ class TestCliTransport:
     def test_nonzero_exit_raises_transport_error(self) -> None:
         def runner(argv: list[str]) -> subprocess.CompletedProcess[str]:
             return subprocess.CompletedProcess(
-                argv, 1, stdout="", stderr="Not logged in",
+                argv,
+                1,
+                stdout="",
+                stderr="Not logged in",
             )
 
         transport = CliTransport(cmd_template="x {handle}", runner=runner)
@@ -873,7 +906,10 @@ class TestCliTransport:
     def test_non_json_stdout_raises_transport_error(self) -> None:
         def runner(argv: list[str]) -> subprocess.CompletedProcess[str]:
             return subprocess.CompletedProcess(
-                argv, 0, stdout="rate limited, try later", stderr="",
+                argv,
+                0,
+                stdout="rate limited, try later",
+                stderr="",
             )
 
         transport = CliTransport(cmd_template="x {handle}", runner=runner)
@@ -881,14 +917,18 @@ class TestCliTransport:
             transport.fetch(_account(), None)
 
     def test_since_id_filtering_applied_by_monitor(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         # CLI tools don't take since_id — the monitor must filter.
         tweets = [{"id": "100", "text": "old"}, {"id": "101", "text": "mid"}]
 
         def runner(argv: list[str]) -> subprocess.CompletedProcess[str]:
             return subprocess.CompletedProcess(
-                argv, 0, stdout=json.dumps(tweets), stderr="",
+                argv,
+                0,
+                stdout=json.dumps(tweets),
+                stderr="",
             )
 
         transport = CliTransport(cmd_template="x {handle}", runner=runner)
@@ -902,13 +942,18 @@ class TestCliTransport:
         assert "status/102" in recorder.sent[0][1]
 
     def test_cli_end_to_end_with_real_subprocess(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         # Local `cat` stands in for the external tool — no network.
         fixture = tmp_path / "posts.json"
-        fixture.write_text(json.dumps([
-            {"id": "200", "text": "hello from the fixture"},
-        ]))
+        fixture.write_text(
+            json.dumps(
+                [
+                    {"id": "200", "text": "hello from the fixture"},
+                ]
+            )
+        )
         transport = CliTransport(cmd_template=f"cat {fixture}")
         posts = transport.fetch(_account(), None)
         assert posts == [Post(id="200", text="hello from the fixture")]
@@ -933,8 +978,11 @@ class TestCliPacing:
     shuffle) — NOT a detection-defeat claim; see the config note."""
 
     def _cli_monitor(
-        self, tmp_path: Path, accounts: list[WatchAccount],
-        sleeps: list[float], **cfg: Any,
+        self,
+        tmp_path: Path,
+        accounts: list[WatchAccount],
+        sleeps: list[float],
+        **cfg: Any,
     ) -> tuple[XWatchlistMonitor, Recorder]:
         payload = json.dumps([{"id": "500", "text": "hi"}])
 
@@ -949,9 +997,11 @@ class TestCliPacing:
         )
         recorder = Recorder()
         monitor = XWatchlistMonitor(
-            config=config, accounts=accounts, transport=transport,
+            config=config,
+            accounts=accounts,
+            transport=transport,
             notify=recorder,
-            sleep_fn=sleeps.append,          # record instead of sleeping
+            sleep_fn=sleeps.append,  # record instead of sleeping
             rand_fn=lambda lo, hi: (lo + hi) / 2.0,  # deterministic midpoint
         )
         # deterministic, no-op shuffle so order assertions are stable
@@ -959,13 +1009,17 @@ class TestCliPacing:
         return monitor, recorder
 
     def test_gap_between_accounts_not_before_first(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         accts = [_account("a"), _account("b"), _account("c")]
         sleeps: list[float] = []
         monitor, _ = self._cli_monitor(
-            tmp_path, accts, sleeps,
-            cli_min_gap_sec=15.0, cli_max_gap_sec=45.0,
+            tmp_path,
+            accts,
+            sleeps,
+            cli_min_gap_sec=15.0,
+            cli_max_gap_sec=45.0,
         )
         monitor.poll_cycle()
         # 3 accounts → 2 inter-account gaps (none before the first).
@@ -975,8 +1029,11 @@ class TestCliPacing:
         accts = [_account("a"), _account("b")]
         sleeps: list[float] = []
         monitor, _ = self._cli_monitor(
-            tmp_path, accts, sleeps,
-            cli_min_gap_sec=0.0, cli_max_gap_sec=0.0,
+            tmp_path,
+            accts,
+            sleeps,
+            cli_min_gap_sec=0.0,
+            cli_max_gap_sec=0.0,
         )
         monitor.poll_cycle()
         assert sleeps == []
@@ -985,8 +1042,12 @@ class TestCliPacing:
         accts = [_account("a"), _account("b")]
         sleeps: list[float] = []
         monitor, _ = self._cli_monitor(
-            tmp_path, accts, sleeps, cli_shuffle=True,
-            cli_min_gap_sec=0.0, cli_max_gap_sec=0.0,
+            tmp_path,
+            accts,
+            sleeps,
+            cli_shuffle=True,
+            cli_min_gap_sec=0.0,
+            cli_max_gap_sec=0.0,
         )
         shuffled: list[Any] = []
         monitor._shuffle = lambda seq: shuffled.append(list(seq))
@@ -1000,14 +1061,18 @@ class TestCliPacing:
 
 
 def _hours(
-    start: str, end: str, tz: str = "America/New_York",
+    start: str,
+    end: str,
+    tz: str = "America/New_York",
     days: frozenset[int] = frozenset(range(7)),
 ) -> ActiveHours:
     sh, sm = (int(x) for x in start.split(":"))
     eh, em = (int(x) for x in end.split(":"))
     return ActiveHours(
-        start=dt_time(sh, sm), end=dt_time(eh, em),
-        tz=ZoneInfo(tz), days=days,
+        start=dt_time(sh, sm),
+        end=dt_time(eh, em),
+        tz=ZoneInfo(tz),
+        days=days,
     )
 
 
@@ -1051,39 +1116,53 @@ class TestIsWithinWindow:
         assert w is not None and w.crosses_midnight
         # 23:00 EDT Mon = 03:00 UTC Tue → inside (opening leg).
         assert is_within_window(
-            acct, datetime(2026, 7, 21, 3, 0, tzinfo=UTC),
+            acct,
+            datetime(2026, 7, 21, 3, 0, tzinfo=UTC),
         )
         # 01:00 EDT Tue = 05:00 UTC Tue → inside (past-midnight leg).
         assert is_within_window(
-            acct, datetime(2026, 7, 21, 5, 0, tzinfo=UTC),
+            acct,
+            datetime(2026, 7, 21, 5, 0, tzinfo=UTC),
         )
         # 12:00 EDT Tue = 16:00 UTC → outside.
         assert not is_within_window(
-            acct, datetime(2026, 7, 21, 16, 0, tzinfo=UTC),
+            acct,
+            datetime(2026, 7, 21, 16, 0, tzinfo=UTC),
         )
 
     def test_midnight_crossing_weekday_applies_to_opening_day(self) -> None:
         # Overnight window only on Fridays (opening day). Fri 2026-07-24.
-        acct = _account(active_hours=_hours(
-            "22:00", "02:00", days=frozenset({4}),
-        ))
+        acct = _account(
+            active_hours=_hours(
+                "22:00",
+                "02:00",
+                days=frozenset({4}),
+            )
+        )
         # Fri 23:00 EDT = Sat 03:00 UTC → inside (opened Friday).
         assert is_within_window(
-            acct, datetime(2026, 7, 25, 3, 0, tzinfo=UTC),
+            acct,
+            datetime(2026, 7, 25, 3, 0, tzinfo=UTC),
         )
         # Sat 01:00 EDT = Sat 05:00 UTC → still inside (opened Friday).
         assert is_within_window(
-            acct, datetime(2026, 7, 25, 5, 0, tzinfo=UTC),
+            acct,
+            datetime(2026, 7, 25, 5, 0, tzinfo=UTC),
         )
         # Sat 23:00 EDT = Sun 03:00 UTC → outside (Saturday not allowed).
         assert not is_within_window(
-            acct, datetime(2026, 7, 26, 3, 0, tzinfo=UTC),
+            acct,
+            datetime(2026, 7, 26, 3, 0, tzinfo=UTC),
         )
 
     def test_weekday_filter_excludes_weekend(self) -> None:
-        acct = _account(active_hours=_hours(
-            "17:30", "20:30", days=frozenset({0, 1, 2, 3, 4}),
-        ))
+        acct = _account(
+            active_hours=_hours(
+                "17:30",
+                "20:30",
+                days=frozenset({0, 1, 2, 3, 4}),
+            )
+        )
         # 2026-07-25 is a Saturday. 18:00 ET local, inside time-of-day.
         sat = datetime(2026, 7, 25, 22, 0, tzinfo=UTC)  # 18:00 EDT Sat
         assert not is_within_window(acct, sat)
@@ -1097,7 +1176,8 @@ class TestIsWithinWindow:
         # 18:00 UTC would be inside a naive UTC read, but it is 14:00 EDT
         # — outside the ET window. Confirms tz conversion actually runs.
         assert not is_within_window(
-            acct, datetime(2026, 7, 20, 18, 0, tzinfo=UTC),
+            acct,
+            datetime(2026, 7, 20, 18, 0, tzinfo=UTC),
         )
 
     def test_dst_boundary_sanity_winter_vs_summer(self) -> None:
@@ -1105,16 +1185,19 @@ class TestIsWithinWindow:
         acct = _account(active_hours=_hours("17:30", "20:30"))
         # Summer (EDT, UTC-4): 18:00 EDT = 22:00 UTC.
         assert is_within_window(
-            acct, datetime(2026, 7, 20, 22, 0, tzinfo=UTC),
+            acct,
+            datetime(2026, 7, 20, 22, 0, tzinfo=UTC),
         )
         # Winter (EST, UTC-5): 18:00 EST = 23:00 UTC. zoneinfo shifts the
         # offset, so the SAME 22:00 UTC is now 17:00 EST — before the
         # window — while 23:00 UTC is inside. 2026-01-20 is a Tuesday.
         assert not is_within_window(
-            acct, datetime(2026, 1, 20, 22, 0, tzinfo=UTC),
+            acct,
+            datetime(2026, 1, 20, 22, 0, tzinfo=UTC),
         )
         assert is_within_window(
-            acct, datetime(2026, 1, 20, 23, 0, tzinfo=UTC),
+            acct,
+            datetime(2026, 1, 20, 23, 0, tzinfo=UTC),
         )
 
     def test_naive_datetime_assumed_utc(self) -> None:
@@ -1126,7 +1209,8 @@ class TestIsWithinWindow:
 @pytest.mark.usefixtures("token_env")
 class TestPollCycleWindowFilter:
     def test_out_of_window_account_dropped_windowless_kept(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         fake = FakeApi()
         fake.users = {"news": "1", "trader": "2"}
@@ -1135,16 +1219,21 @@ class TestPollCycleWindowFilter:
         clock = {"now": datetime(2026, 7, 20, 12, 0, tzinfo=UTC)}
         news = _account("news", priority="high")
         trader = _account(
-            "trader", category="small_traders", priority="high",
+            "trader",
+            category="small_traders",
+            priority="high",
             active_hours=_hours("17:30", "20:30"),
         )
         monitor, _ = _monitor(
-            tmp_path, [news, trader], fake, now_fn=lambda: clock["now"],
+            tmp_path,
+            [news, trader],
+            fake,
+            now_fn=lambda: clock["now"],
         )
         monitor.poll_cycle()
         timeline_calls = [c for c in fake.calls if c[0].endswith("/tweets")]
         polled_uids = {c[0].rsplit("/", 2)[-2] for c in timeline_calls}
-        assert "1" in polled_uids   # windowless news polled
+        assert "1" in polled_uids  # windowless news polled
         assert "2" not in polled_uids  # out-of-window trader skipped
 
     def test_in_window_account_is_polled(self, tmp_path: Path) -> None:
@@ -1154,11 +1243,16 @@ class TestPollCycleWindowFilter:
         # 22:00 UTC = 18:00 EDT — inside 17:30-20:30 ET.
         clock = {"now": datetime(2026, 7, 20, 22, 0, tzinfo=UTC)}
         trader = _account(
-            "trader", category="small_traders", priority="high",
+            "trader",
+            category="small_traders",
+            priority="high",
             active_hours=_hours("17:30", "20:30"),
         )
         monitor, _ = _monitor(
-            tmp_path, [trader], fake, now_fn=lambda: clock["now"],
+            tmp_path,
+            [trader],
+            fake,
+            now_fn=lambda: clock["now"],
         )
         monitor.poll_cycle()
         timeline_calls = [c for c in fake.calls if c[0].endswith("/tweets")]
@@ -1172,31 +1266,40 @@ class TestPollCycleWindowFilter:
         clock = {"now": datetime(2026, 7, 20, 8, 0, tzinfo=UTC)}
         accts = [_account("a"), _account("b")]  # both windowless
         monitor, _ = _monitor(
-            tmp_path, accts, fake, now_fn=lambda: clock["now"],
+            tmp_path,
+            accts,
+            fake,
+            now_fn=lambda: clock["now"],
         )
         monitor.poll_cycle()
         timeline_calls = [c for c in fake.calls if c[0].endswith("/tweets")]
         assert len(timeline_calls) == 2  # both all-day accounts polled
 
     def test_skip_logged_at_debug(
-        self, tmp_path: Path, caplog: pytest.LogCaptureFixture,
+        self,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         fake = FakeApi()
         fake.users = {"trader": "2"}
         fake.timelines = {"2": []}
         clock = {"now": datetime(2026, 7, 20, 12, 0, tzinfo=UTC)}  # closed
         trader = _account(
-            "trader", category="small_traders", priority="high",
+            "trader",
+            category="small_traders",
+            priority="high",
             active_hours=_hours("17:30", "20:30"),
         )
         monitor, _ = _monitor(
-            tmp_path, [trader], fake, now_fn=lambda: clock["now"],
+            tmp_path,
+            [trader],
+            fake,
+            now_fn=lambda: clock["now"],
         )
         with caplog.at_level("DEBUG"):
             monitor.poll_cycle()
         assert any(
-            "active-hours" in r.getMessage() and "@trader" in r.getMessage()
-            for r in caplog.records
+            "active-hours" in r.getMessage() and "@trader" in r.getMessage() for r in caplog.records
         )
 
 
@@ -1210,8 +1313,7 @@ class TestActiveHoursParsing:
         p = tmp_path / "w.yaml"
         p.write_text(
             "categories:\n  small_traders:\n    accounts:\n"
-            "      - handle: t\n        note: x\n        priority: low\n"
-            + active_hours_block,
+            "      - handle: t\n        note: x\n        priority: low\n" + active_hours_block,
         )
         accts = load_watchlist(p)
         assert len(accts) == 1
@@ -1222,8 +1324,8 @@ class TestActiveHoursParsing:
             tmp_path,
             "        active_hours:\n"
             "          days: weekdays\n"
-            "          start: \"17:30\"\n"
-            "          end: \"20:30\"\n"
+            '          start: "17:30"\n'
+            '          end: "20:30"\n'
             "          tz: America/New_York\n",
         )
         w = acct.active_hours
@@ -1237,8 +1339,8 @@ class TestActiveHoursParsing:
         acct = self._load_one(
             tmp_path,
             "        active_hours:\n"
-            "          start: \"09:00\"\n"
-            "          end: \"17:00\"\n"
+            '          start: "09:00"\n'
+            '          end: "17:00"\n'
             "          tz: UTC\n",
         )
         assert acct.active_hours is not None
@@ -1249,8 +1351,8 @@ class TestActiveHoursParsing:
             tmp_path,
             "        active_hours:\n"
             "          days: [Mon, wednesday, FRI]\n"
-            "          start: \"09:00\"\n"
-            "          end: \"17:00\"\n"
+            '          start: "09:00"\n'
+            '          end: "17:00"\n'
             "          tz: UTC\n",
         )
         assert acct.active_hours is not None
@@ -1265,8 +1367,8 @@ class TestActiveHoursParsing:
             self._load_one(
                 tmp_path,
                 "        active_hours:\n"
-                "          start: \"09:00\"\n"
-                "          end: \"17:00\"\n"
+                '          start: "09:00"\n'
+                '          end: "17:00"\n'
                 "          tz: Mars/Olympus_Mons\n",
             )
 
@@ -1275,8 +1377,8 @@ class TestActiveHoursParsing:
             self._load_one(
                 tmp_path,
                 "        active_hours:\n"
-                "          start: \"9am\"\n"
-                "          end: \"17:00\"\n"
+                '          start: "9am"\n'
+                '          end: "17:00"\n'
                 "          tz: UTC\n",
             )
 
@@ -1285,8 +1387,8 @@ class TestActiveHoursParsing:
             self._load_one(
                 tmp_path,
                 "        active_hours:\n"
-                "          start: \"25:00\"\n"
-                "          end: \"17:00\"\n"
+                '          start: "25:00"\n'
+                '          end: "17:00"\n'
                 "          tz: UTC\n",
             )
 
@@ -1294,18 +1396,14 @@ class TestActiveHoursParsing:
         with pytest.raises(ValueError, match="both 'start' and 'end'"):
             self._load_one(
                 tmp_path,
-                "        active_hours:\n"
-                "          start: \"09:00\"\n"
-                "          tz: UTC\n",
+                '        active_hours:\n          start: "09:00"\n          tz: UTC\n',
             )
 
     def test_missing_tz_fails_loud(self, tmp_path: Path) -> None:
         with pytest.raises(ValueError, match="needs 'tz'"):
             self._load_one(
                 tmp_path,
-                "        active_hours:\n"
-                "          start: \"09:00\"\n"
-                "          end: \"17:00\"\n",
+                '        active_hours:\n          start: "09:00"\n          end: "17:00"\n',
             )
 
     def test_bad_weekday_name_fails_loud(self, tmp_path: Path) -> None:
@@ -1314,8 +1412,8 @@ class TestActiveHoursParsing:
                 tmp_path,
                 "        active_hours:\n"
                 "          days: [Mon, Funday]\n"
-                "          start: \"09:00\"\n"
-                "          end: \"17:00\"\n"
+                '          start: "09:00"\n'
+                '          end: "17:00"\n'
                 "          tz: UTC\n",
             )
 
@@ -1324,8 +1422,8 @@ class TestActiveHoursParsing:
             self._load_one(
                 tmp_path,
                 "        active_hours:\n"
-                "          start: \"09:00\"\n"
-                "          end: \"09:00\"\n"
+                '          start: "09:00"\n'
+                '          end: "09:00"\n'
                 "          tz: UTC\n",
             )
 
@@ -1337,8 +1435,12 @@ class TestRepoWatchlistWindows:
         accts = load_watchlist(REPO_WATCHLIST)
         windowed = [a for a in accts if a.active_hours is not None]
         assert {a.handle for a in windowed} == {
-            "Fun_Trades1", "timeframeking", "prosperousguy",
-            "StocksniperTeam", "Simply0DTE", "TT_stocks_",
+            "Fun_Trades1",
+            "timeframeking",
+            "prosperousguy",
+            "StocksniperTeam",
+            "Simply0DTE",
+            "TT_stocks_",
         }
         assert all(a.category == "small_traders" for a in windowed)
 
@@ -1355,8 +1457,7 @@ class TestRepoWatchlistWindows:
     def test_seeded_trader_windows_match_operator_table(self) -> None:
         accts = {a.handle: a for a in load_watchlist(REPO_WATCHLIST)}
         et = ZoneInfo("America/New_York")
-        for h in ("timeframeking", "prosperousguy", "StocksniperTeam",
-                  "TT_stocks_"):
+        for h in ("timeframeking", "prosperousguy", "StocksniperTeam", "TT_stocks_"):
             w = accts[h].active_hours
             assert w is not None, h
             assert w.tz == et
@@ -1390,15 +1491,23 @@ class _IngestSpy:
         self.calls: list[dict[str, Any]] = []
 
     def __call__(
-        self, engine: Any, account: Any, posts: list[Post],
-        playbooks: Any, cap: int = 10,
+        self,
+        engine: Any,
+        account: Any,
+        posts: list[Post],
+        playbooks: Any,
+        cap: int = 10,
     ) -> Any:
         from src.events.x_ingest import IngestResult
 
-        self.calls.append({
-            "engine": engine, "account": account, "posts": list(posts),
-            "cap": cap,
-        })
+        self.calls.append(
+            {
+                "engine": engine,
+                "account": account,
+                "posts": list(posts),
+                "cap": cap,
+            }
+        )
         return IngestResult(ingested=len(posts))
 
 
@@ -1412,22 +1521,29 @@ class TestPipelineWiring:
         fake.timelines["111"] = [{"id": "100", "text": "baseline"}]
 
     def _new_post(
-        self, fake: FakeApi,
+        self,
+        fake: FakeApi,
         text_in: str = "Iran closes the Strait of Hormuz",
     ) -> None:
         fake.timelines["111"].append({"id": "101", "text": text_in})
 
     def test_ingest_called_when_enabled(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         spy = _IngestSpy()
         monkeypatch.setattr("src.events.x_ingest.ingest_posts", spy)
         fake = FakeApi()
         self._fresh_account(fake)
         monitor, recorder = _monitor(
-            tmp_path, [_account()], fake,
-            x_ingest_enabled=True, x_forward_enabled=False,
-            engine=_SpyEngine(), playbooks={},
+            tmp_path,
+            [_account()],
+            fake,
+            x_ingest_enabled=True,
+            x_forward_enabled=False,
+            engine=_SpyEngine(),
+            playbooks={},
         )
         monitor.poll_cycle()  # baseline — no ingest, no forward
         assert spy.calls == []
@@ -1443,7 +1559,9 @@ class TestPipelineWiring:
         assert recorder.sent == []
 
     def test_forward_suppressed_by_default(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         spy = _IngestSpy()
         monkeypatch.setattr("src.events.x_ingest.ingest_posts", spy)
@@ -1451,9 +1569,13 @@ class TestPipelineWiring:
         self._fresh_account(fake)
         # Production defaults: ingest on, forward off.
         monitor, recorder = _monitor(
-            tmp_path, [_account()], fake,
-            x_ingest_enabled=True, x_forward_enabled=False,
-            engine=_SpyEngine(), playbooks={},
+            tmp_path,
+            [_account()],
+            fake,
+            x_ingest_enabled=True,
+            x_forward_enabled=False,
+            engine=_SpyEngine(),
+            playbooks={},
         )
         monitor.poll_cycle()
         self._new_post(fake)
@@ -1466,8 +1588,11 @@ class TestPipelineWiring:
         fake = FakeApi()
         self._fresh_account(fake)
         monitor, recorder = _monitor(
-            tmp_path, [_account()], fake,
-            x_ingest_enabled=False, x_forward_enabled=True,
+            tmp_path,
+            [_account()],
+            fake,
+            x_ingest_enabled=False,
+            x_forward_enabled=True,
         )
         assert monitor._ingest_engine is None
         monitor.poll_cycle()
@@ -1477,7 +1602,9 @@ class TestPipelineWiring:
         assert summary.ingested == 0
 
     def test_both_toggle_independently(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         # Both on: ingest AND forward.
         spy = _IngestSpy()
@@ -1485,9 +1612,13 @@ class TestPipelineWiring:
         fake = FakeApi()
         self._fresh_account(fake)
         monitor, recorder = _monitor(
-            tmp_path, [_account()], fake,
-            x_ingest_enabled=True, x_forward_enabled=True,
-            engine=_SpyEngine(), playbooks={},
+            tmp_path,
+            [_account()],
+            fake,
+            x_ingest_enabled=True,
+            x_forward_enabled=True,
+            engine=_SpyEngine(),
+            playbooks={},
         )
         monitor.poll_cycle()
         self._new_post(fake)
@@ -1496,16 +1627,22 @@ class TestPipelineWiring:
         assert len(recorder.sent) == 1
 
     def test_baseline_silent_no_ingest_no_forward(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         spy = _IngestSpy()
         monkeypatch.setattr("src.events.x_ingest.ingest_posts", spy)
         fake = FakeApi()
         self._fresh_account(fake)
         monitor, recorder = _monitor(
-            tmp_path, [_account()], fake,
-            x_ingest_enabled=True, x_forward_enabled=True,
-            engine=_SpyEngine(), playbooks={},
+            tmp_path,
+            [_account()],
+            fake,
+            x_ingest_enabled=True,
+            x_forward_enabled=True,
+            engine=_SpyEngine(),
+            playbooks={},
         )
         summary = monitor.poll_cycle()  # first sighting = baseline
         assert spy.calls == []
@@ -1516,7 +1653,9 @@ class TestPipelineWiring:
         assert state["since_ids"]["unusual_whales"] == "100"
 
     def test_db_absent_is_safe(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         # Ingestion enabled but no engine (DB unreachable) → no crash,
         # no ingest attempt; monitor still polls (and could forward).
@@ -1525,9 +1664,13 @@ class TestPipelineWiring:
         fake = FakeApi()
         self._fresh_account(fake)
         monitor, recorder = _monitor(
-            tmp_path, [_account()], fake,
-            x_ingest_enabled=True, x_forward_enabled=True,
-            engine=None, playbooks={},
+            tmp_path,
+            [_account()],
+            fake,
+            x_ingest_enabled=True,
+            x_forward_enabled=True,
+            engine=None,
+            playbooks={},
         )
         # No engine was injected and none could be lazily built in the
         # test env for a definitely-unreachable DB is possible, so force
@@ -1542,7 +1685,9 @@ class TestPipelineWiring:
         assert len(recorder.sent) == 1
 
     def test_ingest_failure_never_breaks_loop(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         def _boom(*_a: Any, **_k: Any) -> Any:
             raise RuntimeError("ingest exploded")
@@ -1551,9 +1696,13 @@ class TestPipelineWiring:
         fake = FakeApi()
         self._fresh_account(fake)
         monitor, recorder = _monitor(
-            tmp_path, [_account()], fake,
-            x_ingest_enabled=True, x_forward_enabled=True,
-            engine=_SpyEngine(), playbooks={},
+            tmp_path,
+            [_account()],
+            fake,
+            x_ingest_enabled=True,
+            x_forward_enabled=True,
+            engine=_SpyEngine(),
+            playbooks={},
         )
         monitor.poll_cycle()
         self._new_post(fake)
@@ -1563,7 +1712,9 @@ class TestPipelineWiring:
         assert len(recorder.sent) == 1  # forwarding still happened
 
     def test_small_traders_full_post_list_offered(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         # The monitor offers ALL new posts to ingest_posts (the category
         # / theme gate lives inside ingest_posts, not the monitor). Verify
@@ -1574,9 +1725,13 @@ class TestPipelineWiring:
         self._fresh_account(fake)
         acct = _account(keywords=("hormuz",))
         monitor, _ = _monitor(
-            tmp_path, [acct], fake,
-            x_ingest_enabled=True, x_forward_enabled=False,
-            engine=_SpyEngine(), playbooks={},
+            tmp_path,
+            [acct],
+            fake,
+            x_ingest_enabled=True,
+            x_forward_enabled=False,
+            engine=_SpyEngine(),
+            playbooks={},
         )
         monitor.poll_cycle()
         fake.timelines["111"].append({"id": "101", "text": "unrelated chatter"})
@@ -1599,7 +1754,8 @@ class TestIngestEngineDbUrl:
     POSTGRES_* URL shape."""
 
     def test_uses_shared_build_db_url(
-        self, monkeypatch: pytest.MonkeyPatch,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         from src.data import db_env
         from src.data.x_monitor import monitor as monitor_mod
@@ -1616,7 +1772,8 @@ class TestIngestEngineDbUrl:
         assert str(engine.url) == "sqlite://"
 
     def test_database_url_override_wins(
-        self, monkeypatch: pytest.MonkeyPatch,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         from src.data.x_monitor import monitor as monitor_mod
 
@@ -1626,13 +1783,18 @@ class TestIngestEngineDbUrl:
         assert str(engine.url) == "sqlite://"
 
     def test_default_url_shape_unchanged(
-        self, monkeypatch: pytest.MonkeyPatch,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         from src.data.x_monitor import monitor as monitor_mod
 
         for var in (
-            "DATABASE_URL", "POSTGRES_USER", "POSTGRES_PASSWORD",
-            "POSTGRES_HOST", "POSTGRES_PORT", "POSTGRES_DB",
+            "DATABASE_URL",
+            "POSTGRES_USER",
+            "POSTGRES_PASSWORD",
+            "POSTGRES_HOST",
+            "POSTGRES_PORT",
+            "POSTGRES_DB",
         ):
             monkeypatch.delenv(var, raising=False)
         engine = monitor_mod._build_ingest_engine()

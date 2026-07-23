@@ -60,9 +60,13 @@ app = FastAPI(title="curLit Soak Dashboard", version="0.1.0")
 #: Known-default secrets that must NEVER authenticate (same fail-closed
 #: policy as src/web/api.py). "curlit-dev" was the old hardcoded fallback;
 #: "change-me..." ships in .env.example.
-_FORBIDDEN_SECRETS = frozenset({
-    "", "curlit-dev", "change-me-to-a-random-string",
-})
+_FORBIDDEN_SECRETS = frozenset(
+    {
+        "",
+        "curlit-dev",
+        "change-me-to-a-random-string",
+    }
+)
 
 
 def _secret_is_forbidden(secret: str) -> bool:
@@ -89,8 +93,8 @@ def require_api_key(x_api_key: str | None = Header(default=None)) -> None:
         raise HTTPException(
             status_code=503,
             detail="WEB_API_SECRET is unset or a known default — the "
-                   "dashboard refuses to serve until a real secret is "
-                   "configured (see .env.example).",
+            "dashboard refuses to serve until a real secret is "
+            "configured (see .env.example).",
         )
     supplied = x_api_key or ""
     if not hmac.compare_digest(
@@ -157,10 +161,7 @@ def _engine_runtime(pid: int) -> dict[str, Any]:
                 "cpu_pct": round(proc.cpu_percent(interval=0.0), 1),
                 "uptime_sec": int(time.time() - proc.create_time()),
                 "n_threads": proc.num_threads(),
-                "n_fds": (
-                    proc.num_fds() if hasattr(proc, "num_fds")
-                    else len(proc.open_files())
-                ),
+                "n_fds": (proc.num_fds() if hasattr(proc, "num_fds") else len(proc.open_files())),
             }
     except Exception as exc:
         return {"error": f"{type(exc).__name__}: {exc}"}
@@ -211,7 +212,8 @@ def _engine_api_get(path: str) -> Any:
     try:
         r = httpx.get(
             f"http://127.0.0.1:8200{path}",
-            headers={"X-API-Key": secret}, timeout=2.0,
+            headers={"X-API-Key": secret},
+            timeout=2.0,
         )
         if r.status_code != 200:
             return None
@@ -298,15 +300,17 @@ def _recent_trades(n: int = 15) -> list[dict[str, Any]]:
                 matched = summary.get("matched", 0)
                 total = sum(summary.values())
                 detail_bits.append(f"{matched}/{total} matched")
-        out.append({
-            "seq": seq,
-            "ts": ts.isoformat() if hasattr(ts, "isoformat") else str(ts),
-            "event_type": etype,
-            "intent_id": (iid[:8] + "…") if iid else "",
-            "strategy_id": sid or "",
-            "symbol": sym or "",
-            "detail": " ".join(detail_bits),
-        })
+        out.append(
+            {
+                "seq": seq,
+                "ts": ts.isoformat() if hasattr(ts, "isoformat") else str(ts),
+                "event_type": etype,
+                "intent_id": (iid[:8] + "…") if iid else "",
+                "strategy_id": sid or "",
+                "symbol": sym or "",
+                "detail": " ".join(detail_bits),
+            }
+        )
     return out
 
 
@@ -325,10 +329,11 @@ def _db_counts() -> dict[str, Any]:
                     out[table] = None
             # Most recent journal event type — proves the audit trail is moving.
             try:
-                row = conn.execute(text(
-                    "SELECT event_type, ts FROM trade_journal_events "
-                    "ORDER BY seq DESC LIMIT 1"
-                )).fetchone()
+                row = conn.execute(
+                    text(
+                        "SELECT event_type, ts FROM trade_journal_events ORDER BY seq DESC LIMIT 1"
+                    )
+                ).fetchone()
                 if row is not None:
                     out["latest_event"] = {
                         "type": row[0],
@@ -353,7 +358,7 @@ def _verdict(
         return {"status": "YELLOW", "reason": "no soak samples yet"}
     if monitor_age_sec > 1500:  # 25 min
         return {"status": "RED", "reason": f"monitor stale {int(monitor_age_sec)}s"}
-    if monitor_age_sec > 900:   # 15 min
+    if monitor_age_sec > 900:  # 15 min
         return {"status": "YELLOW", "reason": f"monitor stale {int(monitor_age_sec)}s"}
     if len(samples) >= 2:
         first = samples[0].get("memory_mb", 0)
@@ -361,7 +366,7 @@ def _verdict(
         if first > 0 and last > first * 2:
             return {"status": "RED", "reason": f"memory doubled ({first}→{last} MB)"}
         if first > 0 and last > first * 1.5:
-            return {"status": "YELLOW", "reason": f"memory +{int((last/first - 1) * 100)}%"}
+            return {"status": "YELLOW", "reason": f"memory +{int((last / first - 1) * 100)}%"}
     return {"status": "GREEN", "reason": "all signals nominal"}
 
 
@@ -376,16 +381,11 @@ def soak_health(_: None = Depends(require_api_key)) -> dict[str, Any]:
     runtime = _engine_runtime(pid) if pid else {}
 
     samples = _read_samples()
-    monitor_age = (
-        time.time() - SOAK_LOG.stat().st_mtime
-        if SOAK_LOG.exists() else None
-    )
+    monitor_age = time.time() - SOAK_LOG.stat().st_mtime if SOAK_LOG.exists() else None
     sample_age = None
     if samples:
         try:
-            last_ts = datetime.fromisoformat(
-                samples[-1]["ts"].replace("Z", "+00:00")
-            )
+            last_ts = datetime.fromisoformat(samples[-1]["ts"].replace("Z", "+00:00"))
             sample_age = (datetime.now(UTC) - last_ts).total_seconds()
         except Exception:
             pass
@@ -417,10 +417,7 @@ def soak_health(_: None = Depends(require_api_key)) -> dict[str, Any]:
             "sample_age_sec": int(sample_age) if sample_age is not None else None,
             "n_samples": len(samples),
         },
-        "memory_history": [
-            {"ts": s["ts"], "mb": s.get("memory_mb")}
-            for s in samples[-100:]
-        ],
+        "memory_history": [{"ts": s["ts"], "mb": s.get("memory_mb")} for s in samples[-100:]],
         "latest_sample": samples[-1] if samples else None,
         "db": db,
         "recent_errors": errors,
@@ -800,7 +797,10 @@ def api_apply_decision(
     try:
         return apply_decision(
             state_path=DEFAULT_STATE_PATH,
-            gate=gate, slug=slug, action=action, reason=reason,
+            gate=gate,
+            slug=slug,
+            action=action,
+            reason=reason,
             decisions_log=_DECISIONS_LOG,
         )
     except DecisionError as exc:
@@ -816,6 +816,7 @@ def main() -> None:
     # Auto-load .env so WEB_API_SECRET / Postgres creds are available
     # without first sourcing the file. Explicit env vars still win.
     from src.dotenv_bootstrap import load_project_env  # noqa: PLC0415
+
     load_project_env()
     _require_boot_secret()
     port = int(os.environ.get("SOAK_DASHBOARD_PORT", "8201"))

@@ -19,5 +19,6 @@ def deploy(model_source: Path, target: Path = Path("models/cb-sentiment-v1/final
 
 if __name__ == "__main__":
     import sys
+
     src = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("training/output")
     deploy(src)

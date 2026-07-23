@@ -29,8 +29,9 @@ OCC_NEAR = "RTX260724C00105000"  # expires 2026-07-24 → 2 DTE from NOW
 
 
 class _FakeClient:
-    def __init__(self, positions: list[dict[str, Any]] | None = None,
-                 market_open: bool = True) -> None:
+    def __init__(
+        self, positions: list[dict[str, Any]] | None = None, market_open: bool = True
+    ) -> None:
         self._positions = positions or []
         self._market_open = market_open
         self.orders: list[Any] = []
@@ -42,8 +43,9 @@ class _FakeClient:
     def list_option_positions(self) -> list[dict[str, Any]]:
         return self._positions
 
-    def submit_option_order(self, occ: str, qty: int, side: str = "buy",
-                            client_order_id: str | None = None) -> dict[str, Any]:
+    def submit_option_order(
+        self, occ: str, qty: int, side: str = "buy", client_order_id: str | None = None
+    ) -> dict[str, Any]:
         self.orders.append((occ, qty, side))
         self.cids.append(client_order_id)
         return {"id": f"ord-{len(self.orders)}", "status": "accepted"}
@@ -55,69 +57,109 @@ def engine(tmp_path):  # type: ignore[no-untyped-def]
 
     eng = create_engine(f"sqlite:///{tmp_path / 'a.db'}")
     with eng.begin() as conn:
-        conn.execute(text("""
+        conn.execute(
+            text("""
             CREATE TABLE trade_ideas (
                 idea_id TEXT PRIMARY KEY, geo_event_id INTEGER, ticker TEXT,
                 action TEXT, confidence FLOAT, time_stop_days INTEGER,
                 notes TEXT, status TEXT DEFAULT 'pending',
                 status_updated_at TEXT, created_at TEXT)
-        """))
-        conn.execute(text(
-            "CREATE TABLE geo_events (id INTEGER PRIMARY KEY, status TEXT)"))
-        for mig in ("014_alpaca_option_orders.sql",
-                    "016_alpaca_option_exits.sql"):
+        """)
+        )
+        conn.execute(text("CREATE TABLE geo_events (id INTEGER PRIMARY KEY, status TEXT)"))
+        for mig in ("014_alpaca_option_orders.sql", "016_alpaca_option_exits.sql"):
             sql = _strip_sql_comments(Path("migrations", mig).read_text())
-            sql = (sql.replace("TIMESTAMPTZ", "TEXT")
-                      .replace("NUMERIC", "FLOAT")
-                      .replace("ADD COLUMN IF NOT EXISTS", "ADD COLUMN"))
+            sql = (
+                sql.replace("TIMESTAMPTZ", "TEXT")
+                .replace("NUMERIC", "FLOAT")
+                .replace("ADD COLUMN IF NOT EXISTS", "ADD COLUMN")
+            )
             for stmt in [s.strip() for s in sql.split(";") if s.strip()]:
                 conn.execute(text(stmt))
     return eng
 
 
-def _seed(engine, idea_id, *, occ=OCC, ticker="RTX", submitted_at="2026-07-20",
-          time_stop_days=10, idea_status="pending", event_status="TRADED",
-          exit_status=None, exit_reason=None):
+def _seed(
+    engine,
+    idea_id,
+    *,
+    occ=OCC,
+    ticker="RTX",
+    submitted_at="2026-07-20",
+    time_stop_days=10,
+    idea_status="pending",
+    event_status="TRADED",
+    exit_status=None,
+    exit_reason=None,
+):
     with engine.begin() as conn:
-        conn.execute(text("""
+        conn.execute(
+            text("""
             INSERT INTO geo_events (status) VALUES (:es)
-        """), {"es": event_status})
+        """),
+            {"es": event_status},
+        )
         gid = conn.execute(text("SELECT max(id) FROM geo_events")).scalar()
-        conn.execute(text("""
+        conn.execute(
+            text("""
             INSERT INTO trade_ideas (idea_id, geo_event_id, ticker, action,
                 confidence, time_stop_days, status, status_updated_at,
                 created_at)
             VALUES (:i,:g,:t,'buy_calls',0.6,:ts,:st,:sa,:sa)
-        """), {"i": idea_id, "g": gid, "t": ticker, "ts": time_stop_days,
-               "st": idea_status, "sa": submitted_at})
-        conn.execute(text("""
+        """),
+            {
+                "i": idea_id,
+                "g": gid,
+                "t": ticker,
+                "ts": time_stop_days,
+                "st": idea_status,
+                "sa": submitted_at,
+            },
+        )
+        conn.execute(
+            text("""
             INSERT INTO alpaca_option_orders (idea_id, ticker, occ_symbol,
                 opt_type, qty, premium_est, alpaca_order_id, status, detail,
                 submitted_at, exit_status, exit_reason)
             VALUES (:i,:t,:o,'call',1,200.0,'ord-x','submitted',NULL,:sa,
                     :xs,:xr)
-        """), {"i": idea_id, "t": ticker, "o": occ, "sa": submitted_at,
-               "xs": exit_status, "xr": exit_reason})
+        """),
+            {
+                "i": idea_id,
+                "t": ticker,
+                "o": occ,
+                "sa": submitted_at,
+                "xs": exit_status,
+                "xr": exit_reason,
+            },
+        )
 
 
 def _pos(occ=OCC, qty="1", avg="2.0", cur="2.1", plpc=None):
-    return {"symbol": occ, "asset_class": "us_option", "qty": qty,
-            "avg_entry_price": avg, "current_price": cur,
-            "unrealized_plpc": plpc}
+    return {
+        "symbol": occ,
+        "asset_class": "us_option",
+        "qty": qty,
+        "avg_entry_price": avg,
+        "current_price": cur,
+        "unrealized_plpc": plpc,
+    }
 
 
 def _row(engine, idea_id):
     with engine.connect() as c:
-        return dict(c.execute(text(
-            "SELECT * FROM alpaca_option_orders WHERE idea_id=:i"),
-            {"i": idea_id}).one()._mapping)
+        return dict(
+            c.execute(text("SELECT * FROM alpaca_option_orders WHERE idea_id=:i"), {"i": idea_id})
+            .one()
+            ._mapping
+        )
 
 
 def _idea_status(engine, idea_id):
     with engine.connect() as c:
-        return c.execute(text(
-            "SELECT status FROM trade_ideas WHERE idea_id=:i"),
-            {"i": idea_id}).scalar()
+        return c.execute(
+            text("SELECT status FROM trade_ideas WHERE idea_id=:i"), {"i": idea_id}
+        ).scalar()
 
 
 # --------------------------------------------------------------------------- #
@@ -127,6 +169,7 @@ def _idea_status(engine, idea_id):
 
 def test_occ_expiry_parses():
     from datetime import date
+
     assert occ_expiry("RTX260821C00105000") == date(2026, 8, 21)
     assert occ_expiry("ULCC260821P00005000") == date(2026, 8, 21)
     assert occ_expiry("not-an-occ") is None
@@ -245,10 +288,10 @@ def test_extreme_valve_suppressed_during_settle_window(engine):
 def _detail_of_last_eval(engine, idea_id):
     # detail lives only in the log; assert via evaluate_exit directly.
     from src.execution.alpaca_options_exit import OptionsExitConfig, evaluate_exit
+
     row = _row(engine, idea_id)
     row["idea_status"], row["event_status"] = "pending", "TRADED"
-    reason, detail = evaluate_exit(row, _pos(avg="2.0", cur="0.7"),
-                                   OptionsExitConfig(), NOW)
+    reason, detail = evaluate_exit(row, _pos(avg="2.0", cur="0.7"), OptionsExitConfig(), NOW)
     return detail
 
 
@@ -280,11 +323,14 @@ def test_final_day_closes_regardless_of_profit(engine):
 
 
 def test_evaluate_priority_time_stop_over_stop_loss():
-    row = {"occ_symbol": OCC, "submitted_at": "2026-07-01",
-           "time_stop_days": 10, "idea_status": "pending",
-           "event_status": "TRADED"}
-    reason, _ = evaluate_exit(row, _pos(avg="2.0", cur="1.0"),
-                              OptionsExitConfig(), NOW)
+    row = {
+        "occ_symbol": OCC,
+        "submitted_at": "2026-07-01",
+        "time_stop_days": 10,
+        "idea_status": "pending",
+        "event_status": "TRADED",
+    }
+    reason, _ = evaluate_exit(row, _pos(avg="2.0", cur="1.0"), OptionsExitConfig(), NOW)
     assert reason == ExitReason.TIME_STOP  # not stop_loss
 
 
@@ -351,10 +397,8 @@ def test_duplicate_exit_cid_recovers(engine):
     _seed(engine, "dup", submitted_at="2026-07-01")
 
     class _DupClient(_FakeClient):
-        def submit_option_order(self, occ, qty, side="buy",
-                                client_order_id=None):
-            raise RuntimeError(
-                "422 client_order_id must be unique: order already exists")
+        def submit_option_order(self, occ, qty, side="buy", client_order_id=None):
+            raise RuntimeError("422 client_order_id must be unique: order already exists")
 
     counts = manage_option_exits(engine, _DupClient([_pos()]), now=NOW)
     assert counts["recovered"] == 1 and counts["error"] == 0

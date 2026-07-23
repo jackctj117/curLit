@@ -251,7 +251,10 @@ class TradeJournal:
         )
         logger.debug(
             "Trade journal: appended %s seq=%d intent=%s symbol=%s",
-            event_type.value, next_seq, intent_id, symbol,
+            event_type.value,
+            next_seq,
+            intent_id,
+            symbol,
         )
         return event
 
@@ -290,7 +293,9 @@ class TradeJournal:
         return [self._row_to_event(r) for r in rows]
 
     def query_fills_in_range(
-        self, start: datetime, end: datetime,
+        self,
+        start: datetime,
+        end: datetime,
     ) -> list[JournalEvent]:
         with self.engine.connect() as conn:
             rows = conn.execute(
@@ -321,12 +326,14 @@ class TradeJournal:
             if event.seq != prev_seq + 1:
                 logger.error(
                     "Journal chain gap: expected seq %d got %d",
-                    prev_seq + 1, event.seq,
+                    prev_seq + 1,
+                    event.seq,
                 )
                 return False, event.seq
             if event.prev_hash != prev_hash:
                 logger.error(
-                    "Journal prev_hash mismatch at seq %d", event.seq,
+                    "Journal prev_hash mismatch at seq %d",
+                    event.seq,
                 )
                 return False, event.seq
             recomputed = _compute_row_hash(

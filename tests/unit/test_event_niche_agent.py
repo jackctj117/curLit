@@ -49,8 +49,13 @@ class MockLLMClient:
     def complete(self, messages: Any, model: str, **kwargs: Any) -> SimpleNamespace:
         self.calls.append({"messages": messages, "model": model})
         return SimpleNamespace(
-            text=self.text_out, model=model, provider="mock",
-            input_tokens=10, output_tokens=10, usd_cost=0.0, elapsed_sec=0.01,
+            text=self.text_out,
+            model=model,
+            provider="mock",
+            input_tokens=10,
+            output_tokens=10,
+            usd_cost=0.0,
+            elapsed_sec=0.01,
         )
 
 
@@ -70,8 +75,13 @@ class MultiResponseClient:
         idx = min(len(self.calls), len(self.texts) - 1)
         self.calls.append({"messages": messages, "model": model})
         return SimpleNamespace(
-            text=self.texts[idx], model=model, provider="mock",
-            input_tokens=10, output_tokens=10, usd_cost=0.0, elapsed_sec=0.01,
+            text=self.texts[idx],
+            model=model,
+            provider="mock",
+            input_tokens=10,
+            output_tokens=10,
+            usd_cost=0.0,
+            elapsed_sec=0.01,
         )
 
 
@@ -97,10 +107,18 @@ class FakeUniverse:
 
     def __init__(self, symbols: dict[str, dict[str, Any]] | None = None) -> None:
         self._symbols = symbols or {
-            "REAL": {"symbol": "REAL", "security_name": "Real Co Inc",
-                     "exchange": "NASDAQ", "is_etf": False},
-            "FRO": {"symbol": "FRO", "security_name": "Frontline Ltd",
-                    "exchange": "NYSE", "is_etf": False},
+            "REAL": {
+                "symbol": "REAL",
+                "security_name": "Real Co Inc",
+                "exchange": "NASDAQ",
+                "is_etf": False,
+            },
+            "FRO": {
+                "symbol": "FRO",
+                "security_name": "Frontline Ltd",
+                "exchange": "NYSE",
+                "is_etf": False,
+            },
         }
 
     def exists(self, ticker: str) -> bool:
@@ -117,7 +135,8 @@ class FakeUniverse:
         if not q:
             return []
         out = [
-            row for row in self._symbols.values()
+            row
+            for row in self._symbols.values()
             if row["security_name"] and q in row["security_name"].lower()
         ]
         return out[:limit]
@@ -175,10 +194,14 @@ def _payload(*ideas: dict[str, Any]) -> str:
 
 def _idea_dict(**over: Any) -> dict[str, Any]:
     base = {
-        "ticker": "REAL", "company_name": "Real Co Inc",
-        "action": "buy_calls", "direction": "bullish", "hop_count": 4,
+        "ticker": "REAL",
+        "company_name": "Real Co Inc",
+        "action": "buy_calls",
+        "direction": "bullish",
+        "hop_count": 4,
         "torque_reason": "single-asset junior, high operating leverage",
-        "rationale": "hop1 obvious -> hop2 supplier -> REAL", "confidence": 0.6,
+        "rationale": "hop1 obvious -> hop2 supplier -> REAL",
+        "confidence": 0.6,
     }
     base.update(over)
     return base
@@ -202,23 +225,29 @@ class TestParse:
         assert ideas[0].direction == "bullish"
 
     def test_bad_action_dropped_individually(self) -> None:
-        ideas = parse_niche_ideas(_payload(
-            _idea_dict(action="hodl"),           # invalid → dropped
-            _idea_dict(ticker="FRO", action="short"),  # valid
-        ))
+        ideas = parse_niche_ideas(
+            _payload(
+                _idea_dict(action="hodl"),  # invalid → dropped
+                _idea_dict(ticker="FRO", action="short"),  # valid
+            )
+        )
         assert [i.ticker for i in ideas] == ["FRO"]
 
     def test_missing_ticker_and_company_dropped(self) -> None:
-        ideas = parse_niche_ideas(_payload(
-            _idea_dict(ticker="", company_name=""),
-            _idea_dict(ticker="FRO"),
-        ))
+        ideas = parse_niche_ideas(
+            _payload(
+                _idea_dict(ticker="", company_name=""),
+                _idea_dict(ticker="FRO"),
+            )
+        )
         assert [i.ticker for i in ideas] == ["FRO"]
 
     def test_direction_inferred_from_action(self) -> None:
-        ideas = parse_niche_ideas(_payload(
-            _idea_dict(action="buy_puts", direction="garbage"),
-        ))
+        ideas = parse_niche_ideas(
+            _payload(
+                _idea_dict(action="buy_puts", direction="garbage"),
+            )
+        )
         assert ideas[0].direction == "bearish"
 
     def test_no_json_returns_empty(self) -> None:
@@ -246,9 +275,11 @@ class TestVerification:
 
     def test_wrong_ticker_corrected_via_company_name(self) -> None:
         # Ticker "XXXX" doesn't exist, but "Frontline" resolves to FRO.
-        ideas = parse_niche_ideas(_payload(
-            _idea_dict(ticker="XXXX", company_name="Frontline"),
-        ))
+        ideas = parse_niche_ideas(
+            _payload(
+                _idea_dict(ticker="XXXX", company_name="Frontline"),
+            )
+        )
         surv = verify_ideas(ideas, FakeUniverse())
         assert len(surv) == 1
         assert surv[0].ticker == "FRO"
@@ -257,18 +288,22 @@ class TestVerification:
 
     def test_hallucinated_ticker_dropped(self) -> None:
         # Neither the ticker nor the company resolves → DROPPED.
-        ideas = parse_niche_ideas(_payload(
-            _idea_dict(ticker="ZZZQ", company_name="Fictional Vapor Mining"),
-        ))
+        ideas = parse_niche_ideas(
+            _payload(
+                _idea_dict(ticker="ZZZQ", company_name="Fictional Vapor Mining"),
+            )
+        )
         surv = verify_ideas(ideas, FakeUniverse())
         assert surv == []  # NO unverified ticker survives
 
     def test_no_unverified_survives_in_mixed_batch(self) -> None:
-        ideas = parse_niche_ideas(_payload(
-            _idea_dict(ticker="REAL"),                                   # keep
-            _idea_dict(ticker="XXXX", company_name="Frontline"),         # correct
-            _idea_dict(ticker="ZZZQ", company_name="Fictional Mining"),  # drop
-        ))
+        ideas = parse_niche_ideas(
+            _payload(
+                _idea_dict(ticker="REAL"),  # keep
+                _idea_dict(ticker="XXXX", company_name="Frontline"),  # correct
+                _idea_dict(ticker="ZZZQ", company_name="Fictional Mining"),  # drop
+            )
+        )
         surv = verify_ideas(ideas, FakeUniverse())
         tickers = {i.ticker for i in surv}
         assert tickers == {"REAL", "FRO"}
@@ -295,18 +330,21 @@ class TestTorque:
 class TestAsymmetryScoring:
     def _idea(self, **over: Any) -> NicheIdea:
         d = {
-            "ticker": "AAA", "company_name": "Alpha", "action": "buy_calls",
-            "direction": "bullish", "hop_count": 4,
+            "ticker": "AAA",
+            "company_name": "Alpha",
+            "action": "buy_calls",
+            "direction": "bullish",
+            "hop_count": 4,
             "torque_reason": "single-asset junior, high operating leverage",
-            "rationale": "chain", "confidence": 0.6,
+            "rationale": "chain",
+            "confidence": 0.6,
         }
         d.update(over)
         return NicheIdea(**d)
 
     def test_liquid_smallcap_high_torque_scores_high(self) -> None:
         i = self._idea()
-        asymmetry_score(i, {"AAA": {"market_cap": 200e6,
-                                    "avg_dollar_volume": 5e6}})
+        asymmetry_score(i, {"AAA": {"market_cap": 200e6, "avg_dollar_volume": 5e6}})
         assert i.asymmetry_score is not None and i.asymmetry_score > 0.8
         assert i.liquidity_flag is False
 
@@ -348,7 +386,8 @@ class TestAsymmetryScoring:
     def test_thin_shell_hard_dropped(self) -> None:
         i = self._idea()
         asymmetry_score(
-            i, {"AAA": {"market_cap": 50e6, "avg_dollar_volume": 100_000}},
+            i,
+            {"AAA": {"market_cap": 50e6, "avg_dollar_volume": 100_000}},
         )
         assert i.asymmetry_score == 0.0
         assert i.dropped_reason is not None
@@ -364,7 +403,9 @@ class TestAsymmetryScoring:
     def test_threshold_gates_surfacing(self) -> None:
         # A low-torque obvious megacap should be logged, not surfaced.
         obvious = self._idea(
-            ticker="MMM", hop_count=1, torque_reason="large diversified",
+            ticker="MMM",
+            hop_count=1,
+            torque_reason="large diversified",
         )
         niche = self._idea(ticker="AAA")
         surviving, logged = score_and_gate(
@@ -405,40 +446,52 @@ class TestAsymmetryScoring:
 
 def _mock_market_data(values: dict[str, dict[str, Any]]):
     def _fn(tickers: list[str]) -> dict[str, dict[str, Any]]:
-        return {t: values.get(t, {"market_cap": None, "avg_dollar_volume": None})
-                for t in tickers}
+        return {t: values.get(t, {"market_cap": None, "avg_dollar_volume": None}) for t in tickers}
+
     return _fn
 
 
 class TestAgentRun:
     def test_run_verifies_scores_and_surfaces(self) -> None:
-        client = MockLLMClient(_payload(
-            _idea_dict(ticker="REAL"),                          # verified, liquid
-            _idea_dict(ticker="ZZZQ", company_name="Fictional"),  # hallucination
-        ))
+        client = MockLLMClient(
+            _payload(
+                _idea_dict(ticker="REAL"),  # verified, liquid
+                _idea_dict(ticker="ZZZQ", company_name="Fictional"),  # hallucination
+            )
+        )
         agent = NicheAgent(
             universe=FakeUniverse(),
             client=client,  # type: ignore[arg-type]
-            market_data_fn=_mock_market_data({
-                "REAL": {"market_cap": 200e6, "avg_dollar_volume": 5e6},
-            }),
+            market_data_fn=_mock_market_data(
+                {
+                    "REAL": {"market_cap": 200e6, "avg_dollar_volume": 5e6},
+                }
+            ),
         )
-        ideas = agent.run({"id": 1, "headline": "China restricts rare-earth exports",
-                           "theme": "critical_minerals", "assessment": {}})
+        ideas = agent.run(
+            {
+                "id": 1,
+                "headline": "China restricts rare-earth exports",
+                "theme": "critical_minerals",
+                "assessment": {},
+            }
+        )
         assert [i.ticker for i in ideas] == ["REAL"]  # hallucination dropped
         assert ideas[0].asymmetry_score is not None
         assert client.calls  # the LLM was actually called
 
     def test_run_drops_all_when_all_hallucinated(self) -> None:
-        client = MockLLMClient(_payload(
-            _idea_dict(ticker="ZZZQ", company_name="Fictional Vapor"),
-        ))
+        client = MockLLMClient(
+            _payload(
+                _idea_dict(ticker="ZZZQ", company_name="Fictional Vapor"),
+            )
+        )
         agent = NicheAgent(
-            universe=FakeUniverse(), client=client,  # type: ignore[arg-type]
+            universe=FakeUniverse(),
+            client=client,  # type: ignore[arg-type]
             market_data_fn=_mock_market_data({}),
         )
-        assert agent.run({"id": 1, "headline": "x", "theme": None,
-                          "assessment": {}}) == []
+        assert agent.run({"id": 1, "headline": "x", "theme": None, "assessment": {}}) == []
 
     def test_run_fail_soft_on_transport_error(self) -> None:
         agent = NicheAgent(
@@ -446,8 +499,7 @@ class TestAgentRun:
             client=_RaisingLLMClient(),  # type: ignore[arg-type]
             market_data_fn=_mock_market_data({}),
         )
-        assert agent.run({"id": 1, "headline": "x", "theme": None,
-                          "assessment": {}}) == []
+        assert agent.run({"id": 1, "headline": "x", "theme": None, "assessment": {}}) == []
 
     def test_run_fail_soft_on_market_data_error(self) -> None:
         def _boom(tickers: list[str]) -> dict[str, Any]:
@@ -455,12 +507,12 @@ class TestAgentRun:
 
         client = MockLLMClient(_payload(_idea_dict(ticker="REAL")))
         agent = NicheAgent(
-            universe=FakeUniverse(), client=client,  # type: ignore[arg-type]
+            universe=FakeUniverse(),
+            client=client,  # type: ignore[arg-type]
             market_data_fn=_boom,
         )
         # Data-free scoring still surfaces the verified idea (no crash).
-        ideas = agent.run({"id": 1, "headline": "x", "theme": None,
-                           "assessment": {}})
+        ideas = agent.run({"id": 1, "headline": "x", "theme": None, "assessment": {}})
         assert [i.ticker for i in ideas] == ["REAL"]
 
 
@@ -480,10 +532,12 @@ class TestMerge:
                 {"ticker": "REAL", "action": "buy_calls"},  # already present
             ],
         }
-        i1 = NicheIdea("REAL", "Real Co", "buy_calls", "bullish", 4,
-                       "junior", "chain", 0.6)  # dup → skipped
-        i2 = NicheIdea("FRO", "Frontline", "long", "bullish", 3,
-                       "levered tanker", "chain", 0.5)  # new → merged
+        i1 = NicheIdea(
+            "REAL", "Real Co", "buy_calls", "bullish", 4, "junior", "chain", 0.6
+        )  # dup → skipped
+        i2 = NicheIdea(
+            "FRO", "Frontline", "long", "bullish", 3, "levered tanker", "chain", 0.5
+        )  # new → merged
         i2.asymmetry_score = 0.7
         added = agent.merge_into_assessment(assessment, [i1, i2])
         assert added == 1
@@ -502,8 +556,7 @@ class TestMerge:
         )
         assessment: dict[str, Any] = {"trade_ideas": []}
         ideas = [
-            NicheIdea(f"T{i}", f"Co{i}", "long", "bullish", 3, "x", "y", 0.5)
-            for i in range(10)
+            NicheIdea(f"T{i}", f"Co{i}", "long", "bullish", 3, "x", "y", 0.5) for i in range(10)
         ]
         added = agent.merge_into_assessment(assessment, ideas, max_total=3)
         assert added == 3
@@ -517,13 +570,18 @@ class TestMerge:
 
 class TestIterativeHopping:
     def _event(self) -> dict[str, Any]:
-        return {"id": 1, "headline": "China restricts rare-earth exports",
-                "theme": None, "assessment": {}}
+        return {
+            "id": 1,
+            "headline": "China restricts rare-earth exports",
+            "theme": None,
+            "assessment": {},
+        }
 
     def test_default_is_single_cycle(self) -> None:
         client = MockLLMClient(_payload(_idea_dict(ticker="REAL")))
         agent = NicheAgent(
-            universe=FakeUniverse(), client=client,  # type: ignore[arg-type]
+            universe=FakeUniverse(),
+            client=client,  # type: ignore[arg-type]
             market_data_fn=_liquid_md,
         )
         assert agent.max_cycles == 1
@@ -532,12 +590,13 @@ class TestIterativeHopping:
 
     def test_accumulates_new_names_across_cycles(self) -> None:
         c1 = _payload(_idea_dict(ticker="REAL", company_name="Real Co Inc"))
-        c2 = _payload(_idea_dict(ticker="FRO", company_name="Frontline Ltd",
-                                 hop_count=5))
+        c2 = _payload(_idea_dict(ticker="FRO", company_name="Frontline Ltd", hop_count=5))
         client = MultiResponseClient([c1, c2])
         agent = NicheAgent(
-            universe=FakeUniverse(), client=client,  # type: ignore[arg-type]
-            market_data_fn=_liquid_md, max_cycles=2,
+            universe=FakeUniverse(),
+            client=client,  # type: ignore[arg-type]
+            market_data_fn=_liquid_md,
+            max_cycles=2,
         )
         ideas = agent.run(self._event())
         assert {i.ticker for i in ideas} == {"REAL", "FRO"}
@@ -547,8 +606,10 @@ class TestIterativeHopping:
         same = _payload(_idea_dict(ticker="REAL"))
         client = MultiResponseClient([same])  # every call returns REAL
         agent = NicheAgent(
-            universe=FakeUniverse(), client=client,  # type: ignore[arg-type]
-            market_data_fn=_liquid_md, max_cycles=3,
+            universe=FakeUniverse(),
+            client=client,  # type: ignore[arg-type]
+            market_data_fn=_liquid_md,
+            max_cycles=3,
         )
         ideas = agent.run(self._event())
         assert {i.ticker for i in ideas} == {"REAL"}
@@ -565,16 +626,22 @@ class TestIterativeHopping:
                 self.calls.append(1)
                 if len(self.calls) == 1:
                     return SimpleNamespace(
-                        text=self.first, model=model, provider="mock",
-                        input_tokens=10, output_tokens=10, usd_cost=0.0,
+                        text=self.first,
+                        model=model,
+                        provider="mock",
+                        input_tokens=10,
+                        output_tokens=10,
+                        usd_cost=0.0,
                         elapsed_sec=0.01,
                     )
                 raise RuntimeError("cycle 2 transport down")
 
         client = _FailSecond(_payload(_idea_dict(ticker="REAL")))
         agent = NicheAgent(
-            universe=FakeUniverse(), client=client,  # type: ignore[arg-type]
-            market_data_fn=_liquid_md, max_cycles=2,
+            universe=FakeUniverse(),
+            client=client,  # type: ignore[arg-type]
+            market_data_fn=_liquid_md,
+            max_cycles=2,
         )
         ideas = agent.run(self._event())
         assert {i.ticker for i in ideas} == {"REAL"}  # cycle-1 result survives
@@ -583,11 +650,14 @@ class TestIterativeHopping:
         c1 = _payload(_idea_dict(ticker="REAL", company_name="Real Co Inc"))
         client = MultiResponseClient([c1, _payload()])  # cycle 2 empty
         agent = NicheAgent(
-            universe=FakeUniverse(), client=client,  # type: ignore[arg-type]
-            market_data_fn=_liquid_md, max_cycles=2,
+            universe=FakeUniverse(),
+            client=client,  # type: ignore[arg-type]
+            market_data_fn=_liquid_md,
+            max_cycles=2,
         )
-        agent.run({"id": 1, "headline": "Rare-earth ban",
-                   "theme": "sanctions_trade", "assessment": {}})
+        agent.run(
+            {"id": 1, "headline": "Rare-earth ban", "theme": "sanctions_trade", "assessment": {}}
+        )
         followup = client.calls[1]["messages"][1].content
         # It feeds back what was found and pushes the tree-of-thought branches.
         assert "Real Co Inc" in followup and "REAL" in followup
@@ -597,15 +667,22 @@ class TestIterativeHopping:
     def test_max_cycles_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("NICHE_MAX_CYCLES", "3")
         agent = NicheAgent(
-            universe=FakeUniverse(), client=MockLLMClient("{}"),  # type: ignore[arg-type]
+            universe=FakeUniverse(),
+            client=MockLLMClient("{}"),  # type: ignore[arg-type]
         )
         assert agent.max_cycles == 3
 
     def test_max_cycles_clamped(self) -> None:
-        hi = NicheAgent(FakeUniverse(), client=MockLLMClient("{}"),  # type: ignore[arg-type]
-                        max_cycles=99)
-        lo = NicheAgent(FakeUniverse(), client=MockLLMClient("{}"),  # type: ignore[arg-type]
-                        max_cycles=0)
+        hi = NicheAgent(
+            FakeUniverse(),
+            client=MockLLMClient("{}"),  # type: ignore[arg-type]
+            max_cycles=99,
+        )
+        lo = NicheAgent(
+            FakeUniverse(),
+            client=MockLLMClient("{}"),  # type: ignore[arg-type]
+            max_cycles=0,
+        )
         assert hi.max_cycles == 5
         assert lo.max_cycles == 1
 
@@ -617,8 +694,12 @@ class TestIterativeHopping:
 
 class TestToolAugmentedHopping:
     def _event(self) -> dict[str, Any]:
-        return {"id": 1, "headline": "China restricts rare-earth exports",
-                "theme": None, "assessment": {}}
+        return {
+            "id": 1,
+            "headline": "China restricts rare-earth exports",
+            "theme": None,
+            "assessment": {},
+        }
 
     def test_tools_ground_the_next_cycle(self) -> None:
         c1 = _payload(_idea_dict(ticker="REAL", company_name="Real Co Inc"))
@@ -626,8 +707,11 @@ class TestToolAugmentedHopping:
         client = MultiResponseClient([c1, c2])
         tools = FakeTools()
         agent = NicheAgent(
-            universe=FakeUniverse(), client=client,  # type: ignore[arg-type]
-            market_data_fn=_liquid_md, max_cycles=2, tools=tools,
+            universe=FakeUniverse(),
+            client=client,  # type: ignore[arg-type]
+            market_data_fn=_liquid_md,
+            max_cycles=2,
+            tools=tools,
         )
         agent.run(self._event())
         # Cycle-1's REAL (a valid ticker) was enriched before cycle 2...
@@ -645,8 +729,11 @@ class TestToolAugmentedHopping:
         client = MultiResponseClient([c1, _payload()])
         tools = FakeTools()
         agent = NicheAgent(
-            universe=FakeUniverse(), client=client,  # type: ignore[arg-type]
-            market_data_fn=_liquid_md, max_cycles=2, tools=tools,
+            universe=FakeUniverse(),
+            client=client,  # type: ignore[arg-type]
+            market_data_fn=_liquid_md,
+            max_cycles=2,
+            tools=tools,
             tools_max_entities=1,
         )
         agent.run(self._event())
@@ -656,8 +743,10 @@ class TestToolAugmentedHopping:
         c1 = _payload(_idea_dict(ticker="REAL"))
         client = MultiResponseClient([c1, _payload()])
         agent = NicheAgent(
-            universe=FakeUniverse(), client=client,  # type: ignore[arg-type]
-            market_data_fn=_liquid_md, max_cycles=2,  # tools default off
+            universe=FakeUniverse(),
+            client=client,  # type: ignore[arg-type]
+            market_data_fn=_liquid_md,
+            max_cycles=2,  # tools default off
         )
         assert agent.tools is None
         agent.run(self._event())  # no crash, no grounding
@@ -682,8 +771,11 @@ class TestToolAugmentedHopping:
         c2 = _payload(_idea_dict(ticker="FRO", company_name="Frontline Ltd"))
         client = MultiResponseClient([c1, c2])
         agent = NicheAgent(
-            universe=FakeUniverse(), client=client,  # type: ignore[arg-type]
-            market_data_fn=_liquid_md, max_cycles=2, tools=_BoomTools(),
+            universe=FakeUniverse(),
+            client=client,  # type: ignore[arg-type]
+            market_data_fn=_liquid_md,
+            max_cycles=2,
+            tools=_BoomTools(),
         )
         ideas = agent.run(self._event())
         # Enrichment blew up but the run still completes with both names.
@@ -697,8 +789,12 @@ class TestToolAugmentedHopping:
 
 class TestKimiToolAgentDelegation:
     def _event(self) -> dict[str, Any]:
-        return {"id": 1, "headline": "China restricts rare-earth exports",
-                "theme": None, "assessment": {}}
+        return {
+            "id": 1,
+            "headline": "China restricts rare-earth exports",
+            "theme": None,
+            "assessment": {},
+        }
 
     def test_tool_agent_replaces_cycles(self) -> None:
         payload = _payload(_idea_dict(ticker="REAL", company_name="Real Co Inc"))
@@ -706,19 +802,22 @@ class TestKimiToolAgentDelegation:
         client = MockLLMClient(_payload(_idea_dict(ticker="FRO")))
         tool_agent = FakeToolAgent(payload)
         agent = NicheAgent(
-            universe=FakeUniverse(), client=client,  # type: ignore[arg-type]
-            market_data_fn=_liquid_md, tool_agent=tool_agent,
+            universe=FakeUniverse(),
+            client=client,  # type: ignore[arg-type]
+            market_data_fn=_liquid_md,
+            tool_agent=tool_agent,
         )
         ideas = agent.run(self._event())
         assert {i.ticker for i in ideas} == {"REAL"}
-        assert tool_agent.calls == [1]      # the Kimi agent did the discovery
-        assert client.calls == []           # cycles path was bypassed
+        assert tool_agent.calls == [1]  # the Kimi agent did the discovery
+        assert client.calls == []  # cycles path was bypassed
 
     def test_tool_agent_empty_yields_nothing(self) -> None:
         agent = NicheAgent(
             universe=FakeUniverse(),
             client=MockLLMClient("{}"),  # type: ignore[arg-type]
-            market_data_fn=_liquid_md, tool_agent=FakeToolAgent(""),
+            market_data_fn=_liquid_md,
+            tool_agent=FakeToolAgent(""),
         )
         assert agent.run(self._event()) == []
 
@@ -728,7 +827,8 @@ class TestKimiToolAgentDelegation:
         agent = NicheAgent(
             universe=FakeUniverse(),
             client=MockLLMClient("{}"),  # type: ignore[arg-type]
-            market_data_fn=_liquid_md, tool_agent=FakeToolAgent(payload),
+            market_data_fn=_liquid_md,
+            tool_agent=FakeToolAgent(payload),
         )
         assert agent.run(self._event()) == []  # FAKE not in universe → dropped
 
@@ -742,7 +842,8 @@ class TestKimiToolAgentDelegation:
         assert agent.tool_agent is not None
 
     def test_tool_agent_env_without_key_stays_off(
-        self, monkeypatch: pytest.MonkeyPatch,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setenv("NICHE_TOOL_AGENT_ENABLED", "1")
         monkeypatch.delenv("MOONSHOT_API_KEY", raising=False)
@@ -760,8 +861,7 @@ class TestKimiToolAgentDelegation:
 
 class TestRedTeamCritic:
     def _event(self) -> dict[str, Any]:
-        return {"id": 1, "headline": "rare-earth ban", "theme": None,
-                "assessment": {}}
+        return {"id": 1, "headline": "rare-earth ban", "theme": None, "assessment": {}}
 
     def test_critic_drops_refuted_ideas(self) -> None:
         c1 = _payload(
@@ -770,8 +870,10 @@ class TestRedTeamCritic:
         )
         critic = FakeCritic(refute={"FRO"})
         agent = NicheAgent(
-            universe=FakeUniverse(), client=MockLLMClient(c1),  # type: ignore[arg-type]
-            market_data_fn=_liquid_md, critic=critic,
+            universe=FakeUniverse(),
+            client=MockLLMClient(c1),  # type: ignore[arg-type]
+            market_data_fn=_liquid_md,
+            critic=critic,
         )
         ideas = agent.run(self._event())
         assert {i.ticker for i in ideas} == {"REAL"}  # FRO refuted
@@ -783,7 +885,8 @@ class TestRedTeamCritic:
             _idea_dict(ticker="FRO", company_name="Frontline Ltd"),
         )
         agent = NicheAgent(
-            universe=FakeUniverse(), client=MockLLMClient(c1),  # type: ignore[arg-type]
+            universe=FakeUniverse(),
+            client=MockLLMClient(c1),  # type: ignore[arg-type]
             market_data_fn=_liquid_md,  # critic off by default
         )
         assert agent.critic is None

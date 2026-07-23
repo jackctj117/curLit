@@ -133,19 +133,15 @@ def _validate_check(theme: str, entry: Any) -> CrossAssetCheck:
     try:
         weight = float(raw_weight)
     except (TypeError, ValueError) as exc:
-        msg = (
-            f"cross_asset theme {theme!r} / {instrument}: weight {raw_weight!r} "
-            f"is not a number"
-        )
+        msg = f"cross_asset theme {theme!r} / {instrument}: weight {raw_weight!r} is not a number"
         raise ValueError(msg) from exc
     if weight <= 0.0:
-        msg = (
-            f"cross_asset theme {theme!r} / {instrument}: weight must be > 0, "
-            f"got {weight}"
-        )
+        msg = f"cross_asset theme {theme!r} / {instrument}: weight must be > 0, got {weight}"
         raise ValueError(msg)
     return CrossAssetCheck(
-        instrument=instrument, expected_direction=direction, weight=weight,
+        instrument=instrument,
+        expected_direction=direction,
+        weight=weight,
     )
 
 
@@ -154,9 +150,9 @@ class InstrumentMove:
     """Per-instrument cross-asset vote outcome."""
 
     instrument: str
-    expected: str                       # "up" | "down"
-    actual_move_pct: float | None       # % move since `since` (None = no data)
-    agrees: bool | None                 # None when there was no data to vote
+    expected: str  # "up" | "down"
+    actual_move_pct: float | None  # % move since `since` (None = no data)
+    agrees: bool | None  # None when there was no data to vote
 
 
 @dataclass
@@ -196,7 +192,10 @@ def _price_at(data_provider: Any, instrument: str, as_of: datetime) -> float | N
     except Exception as exc:
         logger.debug(
             "cross_asset price lookup failed for %s @ %s: %s: %s",
-            instrument, as_of, type(exc).__name__, exc,
+            instrument,
+            as_of,
+            type(exc).__name__,
+            exc,
         )
         return None
     if value is None:
@@ -249,21 +248,25 @@ def cross_asset_confirmation(
         p0 = _price_at(data_provider, check.instrument, since)
         p1 = _price_at(data_provider, check.instrument, now)
         if p0 is None or p1 is None or p0 <= 0.0:
-            details.append(InstrumentMove(
-                instrument=check.instrument,
-                expected=check.expected_direction,
-                actual_move_pct=None,
-                agrees=None,
-            ))
+            details.append(
+                InstrumentMove(
+                    instrument=check.instrument,
+                    expected=check.expected_direction,
+                    actual_move_pct=None,
+                    agrees=None,
+                )
+            )
             continue
         move_pct = (p1 - p0) / p0 * 100.0
         agrees = _move_agrees(move_pct, check.expected_direction)
-        details.append(InstrumentMove(
-            instrument=check.instrument,
-            expected=check.expected_direction,
-            actual_move_pct=move_pct,
-            agrees=agrees,
-        ))
+        details.append(
+            InstrumentMove(
+                instrument=check.instrument,
+                expected=check.expected_direction,
+                actual_move_pct=move_pct,
+                agrees=agrees,
+            )
+        )
         voting_weight += check.weight
         if agrees:
             agree_weight += check.weight

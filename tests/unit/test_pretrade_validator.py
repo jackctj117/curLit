@@ -54,6 +54,7 @@ class _FakeState:
 
     def load_strategy_returns_history(self, *args: Any, **kwargs: Any) -> Any:
         import pandas as pd
+
         return pd.DataFrame()
 
 
@@ -159,7 +160,9 @@ class TestPerPairConcentration:
         broker = _make_broker(capital=100_000)
         validator = PreTradeValidator(broker, PortfolioConstraints())
         intent = OrderIntent(
-            strategy_id="s1", symbol="EURUSD", target_position=50_000 / 1.10,
+            strategy_id="s1",
+            symbol="EURUSD",
+            target_position=50_000 / 1.10,
         )
         rejection = validator.validate(intent, current_positions=[])
         assert rejection is not None
@@ -169,7 +172,9 @@ class TestPerPairConcentration:
         broker = _make_broker(capital=100_000)
         validator = PreTradeValidator(broker, PortfolioConstraints())
         intent = OrderIntent(
-            strategy_id="s1", symbol="EURUSD", target_position=10_000 / 1.10,
+            strategy_id="s1",
+            symbol="EURUSD",
+            target_position=10_000 / 1.10,
         )
         rejection = validator.validate(intent, current_positions=[])
         # Could fail other checks but not concentration.
@@ -192,7 +197,9 @@ class TestMargin:
         validator = PreTradeValidator(broker, constraints, margin_requirement_pct=0.05)
         # 10k notional → 500 required margin > 100 equity.
         intent = OrderIntent(
-            strategy_id="s1", symbol="EURUSD", target_position=10_000 / 1.10,
+            strategy_id="s1",
+            symbol="EURUSD",
+            target_position=10_000 / 1.10,
         )
         rejection = validator.validate(intent, current_positions=[])
         assert rejection is not None
@@ -212,7 +219,9 @@ class TestPostTradeLeverage:
         validator = PreTradeValidator(broker, constraints)
         # New 200k USDJPY long.
         intent = OrderIntent(
-            strategy_id="s1", symbol="USDJPY", target_position=200_000 / 150.0,
+            strategy_id="s1",
+            symbol="USDJPY",
+            target_position=200_000 / 150.0,
         )
         rejection = validator.validate(intent)
         assert rejection is not None
@@ -224,7 +233,9 @@ class TestPostTradeLeverage:
         # gross 210k < 300k cap. So only net breaches.
         broker = _make_broker(capital=100_000)
         existing = Position(
-            symbol="EURUSD", quantity=100_000 / 1.10, avg_price=1.10,
+            symbol="EURUSD",
+            quantity=100_000 / 1.10,
+            avg_price=1.10,
         )
         broker._positions[existing.symbol] = existing  # type: ignore[attr-defined]
         constraints = PortfolioConstraints(
@@ -234,7 +245,9 @@ class TestPostTradeLeverage:
         validator = PreTradeValidator(broker, constraints)
         # 110k USDJPY long → push past net 200k.
         intent = OrderIntent(
-            strategy_id="s1", symbol="USDJPY", target_position=110_000 / 150.0,
+            strategy_id="s1",
+            symbol="USDJPY",
+            target_position=110_000 / 150.0,
         )
         rejection = validator.validate(intent)
         assert rejection is not None
@@ -249,7 +262,9 @@ class TestCurrencyExposure:
         broker = _make_broker(capital=100_000, eurusd_mid=1.10)
         broker.set_price("EURJPY", 162.95, 162.99)
         existing = Position(
-            symbol="EURUSD", quantity=30_000 / 1.10, avg_price=1.10,
+            symbol="EURUSD",
+            quantity=30_000 / 1.10,
+            avg_price=1.10,
         )
         broker._positions[existing.symbol] = existing  # type: ignore[attr-defined]
         constraints = PortfolioConstraints(
@@ -259,7 +274,9 @@ class TestCurrencyExposure:
         )
         validator = PreTradeValidator(broker, constraints)
         intent = OrderIntent(
-            strategy_id="s1", symbol="EURJPY", target_position=30_000 / 162.97,
+            strategy_id="s1",
+            symbol="EURJPY",
+            target_position=30_000 / 162.97,
         )
         rejection = validator.validate(intent)
         assert rejection is not None
@@ -307,7 +324,8 @@ class TestCoordinatorWithValidator:
             pre_trade_validator=validator,
         )
         coord.allocations["s1"] = StrategyAllocation(
-            strategy_id="s1", target_weight=1.0,
+            strategy_id="s1",
+            target_weight=1.0,
         )
         # USDJPY is not in whitelist → rejection.
         raw = {
@@ -336,12 +354,14 @@ class TestCoordinatorWithValidator:
             pre_trade_validator=validator,
         )
         coord.allocations["s1"] = StrategyAllocation(
-            strategy_id="s1", target_weight=1.0,
+            strategy_id="s1",
+            target_weight=1.0,
         )
         raw = {
             "s1": [
                 OrderIntent(
-                    strategy_id="s1", symbol="EURUSD",
+                    strategy_id="s1",
+                    symbol="EURUSD",
                     target_position=5_000 / 1.10,  # small, well under all caps
                 ),
             ],
@@ -365,15 +385,17 @@ def _evaluator_with_event(
 ) -> BlackoutEvaluator:
     """Build a BlackoutEvaluator whose calendar has one upcoming event."""
     when = datetime.now(UTC) + timedelta(minutes=minutes_until)
-    cal = EconomicCalendar([
-        EconomicEvent(
-            ts=when,
-            event_type="NFP",
-            severity_tier=tier,
-            description="test",
-            currency=currency,
-        ),
-    ])
+    cal = EconomicCalendar(
+        [
+            EconomicEvent(
+                ts=when,
+                event_type="NFP",
+                severity_tier=tier,
+                description="test",
+                currency=currency,
+            ),
+        ]
+    )
     return BlackoutEvaluator(cal)
 
 
@@ -471,7 +493,8 @@ class TestBlackoutWindow:
         # treats event currency as a hard match if both filter and event are set;
         # this is the documented behavior.
         evaluator = _evaluator_with_event(
-            minutes_until=5, currency="USD",
+            minutes_until=5,
+            currency="USD",
         )
         validator, *_ = _make_validator(blackout_evaluator=evaluator)
         intent = OrderIntent(strategy_id="s1", symbol="EURJPY", target_position=1_000)

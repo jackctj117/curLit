@@ -59,10 +59,12 @@ def make_w3(env: str) -> tuple[Any, Any]:
 
     creds = load_polymarket_creds(env)
 
-    w3 = Web3(Web3.HTTPProvider(
-        creds.rpc_url,
-        request_kwargs={"timeout": _DEFAULT_RPC_TIMEOUT_SEC},
-    ))
+    w3 = Web3(
+        Web3.HTTPProvider(
+            creds.rpc_url,
+            request_kwargs={"timeout": _DEFAULT_RPC_TIMEOUT_SEC},
+        )
+    )
     if not w3.is_connected():
         msg = f"polymarket RPC unreachable at {creds.rpc_url}"
         raise AssertionError(msg)
@@ -70,15 +72,17 @@ def make_w3(env: str) -> tuple[Any, Any]:
     chain_id = w3.eth.chain_id
     if chain_id != creds.chain_id:
         msg = (
-            f"polymarket RPC returned chain_id={chain_id}, "
-            f"expected {creds.chain_id} for env={env}"
+            f"polymarket RPC returned chain_id={chain_id}, expected {creds.chain_id} for env={env}"
         )
         raise AssertionError(msg)
 
     acct = Account.from_key(creds.signer_pk)
     logger.info(
         "polymarket chain ready: env=%s chain_id=%d signer=%s funder=%s",
-        env, chain_id, acct.address, creds.funder_address,
+        env,
+        chain_id,
+        acct.address,
+        creds.funder_address,
     )
     return w3, acct
 

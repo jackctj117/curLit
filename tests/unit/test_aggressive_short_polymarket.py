@@ -85,7 +85,10 @@ class TestTimeGate:
         s = AggressiveShortPolymarketStrategy(config=cfg)
         # Build panel with current ts so bar_ts is well within horizon.
         idx = pd.date_range(
-            "2026-05-14", periods=5, freq="D", tz="UTC",
+            "2026-05-14",
+            periods=5,
+            freq="D",
+            tz="UTC",
         )
         panel = pd.DataFrame({"POLY:demo": [0.70] * 5}, index=idx)
         out = s.generate_signals(panel, now=now)
@@ -149,12 +152,16 @@ class TestNOBias:
         s = AggressiveShortPolymarketStrategy(config=cfg)
 
         yes = PolySizeDecision(
-            shares=Decimal("100"), cost_usdc=Decimal("50"),
-            fraction_of_bankroll=Decimal("0.04"), rationale="...",
+            shares=Decimal("100"),
+            cost_usdc=Decimal("50"),
+            fraction_of_bankroll=Decimal("0.04"),
+            rationale="...",
         )
         no = PolySizeDecision(
-            shares=Decimal("100"), cost_usdc=Decimal("50"),
-            fraction_of_bankroll=Decimal("0.03"), rationale="...",
+            shares=Decimal("100"),
+            cost_usdc=Decimal("50"),
+            fraction_of_bankroll=Decimal("0.03"),
+            rationale="...",
         )
         # NO has smaller edge but the bias wins → NO chosen.
         result = s._choose_side(yes, no)
@@ -168,12 +175,14 @@ class TestNOBias:
         s = AggressiveShortPolymarketStrategy(config=cfg)
 
         yes = PolySizeDecision(
-            shares=Decimal("100"), cost_usdc=Decimal("50"),
+            shares=Decimal("100"),
+            cost_usdc=Decimal("50"),
             fraction_of_bankroll=Decimal("0.04"),  # bigger
             rationale="...",
         )
         no = PolySizeDecision(
-            shares=Decimal("100"), cost_usdc=Decimal("50"),
+            shares=Decimal("100"),
+            cost_usdc=Decimal("50"),
             fraction_of_bankroll=Decimal("0.03"),
             rationale="...",
         )

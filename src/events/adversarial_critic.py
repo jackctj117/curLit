@@ -102,18 +102,21 @@ class AdversarialCritic:
             self.client = client
         else:
             from src.research.llm import get_client  # noqa: PLC0415
+
             self.client = get_client("claude-code")
         self.model = model or os.environ.get(
-            "NICHE_CRITIC_MODEL", DEFAULT_CRITIC_MODEL,
+            "NICHE_CRITIC_MODEL",
+            DEFAULT_CRITIC_MODEL,
         )
         self.enabled = (
-            enabled if enabled is not None
-            else env_flag("NICHE_CRITIC_ENABLED", default=False)
+            enabled if enabled is not None else env_flag("NICHE_CRITIC_ENABLED", default=False)
         )
         self.max_tokens = max_tokens
 
     def _user_prompt(
-        self, ideas: list[Any], event_row: Mapping[str, Any],
+        self,
+        ideas: list[Any],
+        event_row: Mapping[str, Any],
     ) -> str:
         lines = [
             f"EVENT: {event_row.get('headline')}",
@@ -131,7 +134,9 @@ class AdversarialCritic:
         return "\n".join(lines)
 
     def critique(
-        self, ideas: list[Any], event_row: Mapping[str, Any],
+        self,
+        ideas: list[Any],
+        event_row: Mapping[str, Any],
     ) -> dict[str, CritiqueVerdict]:
         """One batched red-team call → ``{ticker: CritiqueVerdict}``.
 
@@ -144,8 +149,7 @@ class AdversarialCritic:
             resp = self.client.complete(
                 messages=[
                     Message(role="system", content=_SYSTEM_PROMPT),
-                    Message(role="user",
-                            content=self._user_prompt(ideas, event_row)),
+                    Message(role="user", content=self._user_prompt(ideas, event_row)),
                 ],
                 model=self.model,
                 max_tokens=self.max_tokens,
@@ -154,7 +158,8 @@ class AdversarialCritic:
         except Exception as exc:
             logger.warning(
                 "red-team critic failed — failing OPEN (all %d survive): %s",
-                len(ideas), str(exc)[:200],
+                len(ideas),
+                str(exc)[:200],
             )
             return {}
 
@@ -186,7 +191,9 @@ class AdversarialCritic:
         return verdicts
 
     def apply(
-        self, ideas: list[Any], event_row: Mapping[str, Any],
+        self,
+        ideas: list[Any],
+        event_row: Mapping[str, Any],
     ) -> list[Any]:
         """Critique ``ideas`` and return the survivors, mutated in place:
         refuted ideas are dropped; weakened/confirmed survivors carry the
@@ -208,7 +215,9 @@ class AdversarialCritic:
                 dropped += 1
                 logger.info(
                     "red-team: REFUTED %s (%s) — %s",
-                    idea.ticker, idea.company_name, v.strongest_attack[:100],
+                    idea.ticker,
+                    idea.company_name,
+                    v.strongest_attack[:100],
                 )
                 continue
             idea.red_team_note = v.strongest_attack
@@ -218,6 +227,9 @@ class AdversarialCritic:
             survivors.append(idea)
         logger.info(
             "red-team: event id=%s — %d critiqued, %d survived, %d refuted",
-            event_row.get("id"), len(ideas), len(survivors), dropped,
+            event_row.get("id"),
+            len(ideas),
+            len(survivors),
+            dropped,
         )
         return survivors

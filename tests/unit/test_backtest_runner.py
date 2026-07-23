@@ -47,14 +47,16 @@ class _FakeProvider:
     def get_aligned_series(
         self,
         symbols: list[str],  # noqa: ARG002
-        start: object,        # noqa: ARG002
-        end: object,          # noqa: ARG002
+        start: object,  # noqa: ARG002
+        end: object,  # noqa: ARG002
     ) -> pd.DataFrame:
         return self.data
 
 
 def _synth_ohlcv(
-    n: int = 1500, seed: int = 42, symbol: str = "EURUSD",
+    n: int = 1500,
+    seed: int = 42,
+    symbol: str = "EURUSD",
 ) -> pd.DataFrame:
     """Random-walk close prices with a daily index, returned as a wide
     DataFrame with one column named ``symbol`` (matches what
@@ -152,7 +154,8 @@ class MyStrategy:
             _find_strategy_class(module)
 
     def test_falls_back_to_first_class_when_no_protocol_match(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         # No class has fit + generate_signals — pick the first one
         module = _import_strategy_module(
@@ -166,11 +169,13 @@ class TestReadSymbols:
     def test_class_level_list(self) -> None:
         class A:
             symbols = ["EURUSD", "USDJPY"]
+
         assert _read_symbols(A) == ["EURUSD", "USDJPY"]
 
     def test_default_when_missing(self) -> None:
         class B:
             pass
+
         assert _read_symbols(B) == ["EURUSD"]
 
 
@@ -209,9 +214,11 @@ class TestReadExecutionSymbol:
 
 class TestEdgeConcentration:
     def test_all_in_one_fold_returns_one(self) -> None:
-        fm = pd.DataFrame({
-            "test_sharpe": [2.0, 0.0, 0.0, 0.0],
-        })
+        fm = pd.DataFrame(
+            {
+                "test_sharpe": [2.0, 0.0, 0.0, 0.0],
+            }
+        )
         assert _compute_edge_concentration(fm) == pytest.approx(1.0)
 
     def test_evenly_split_returns_one_over_n(self) -> None:
@@ -239,25 +246,57 @@ class TestRegimeDiversified:
 
 class TestDecaySeverity:
     def test_strong_decay(self) -> None:
-        fm = pd.DataFrame({"test_sharpe": [
-            1.0, 1.0, 1.0,    # oldest third (positive)
-            0.5, 0.0, 0.0,    # middle
-            -0.8, -0.8, -0.8,  # newest third (negative, > 50% of oldest)
-        ]})
+        fm = pd.DataFrame(
+            {
+                "test_sharpe": [
+                    1.0,
+                    1.0,
+                    1.0,  # oldest third (positive)
+                    0.5,
+                    0.0,
+                    0.0,  # middle
+                    -0.8,
+                    -0.8,
+                    -0.8,  # newest third (negative, > 50% of oldest)
+                ]
+            }
+        )
         assert _compute_decay_severity(fm) == "STRONG"
 
     def test_moderate_decay(self) -> None:
-        fm = pd.DataFrame({"test_sharpe": [
-            1.0, 1.0, 1.0,    # oldest
-            0.5, 0.5, 0.0,
-            -0.1, -0.1, -0.1,  # newest sign-flipped but mild
-        ]})
+        fm = pd.DataFrame(
+            {
+                "test_sharpe": [
+                    1.0,
+                    1.0,
+                    1.0,  # oldest
+                    0.5,
+                    0.5,
+                    0.0,
+                    -0.1,
+                    -0.1,
+                    -0.1,  # newest sign-flipped but mild
+                ]
+            }
+        )
         assert _compute_decay_severity(fm) == "MODERATE"
 
     def test_no_decay(self) -> None:
-        fm = pd.DataFrame({"test_sharpe": [
-            0.5, 0.5, 0.5, 0.6, 0.7, 0.6, 0.7, 0.8, 0.7,
-        ]})
+        fm = pd.DataFrame(
+            {
+                "test_sharpe": [
+                    0.5,
+                    0.5,
+                    0.5,
+                    0.6,
+                    0.7,
+                    0.6,
+                    0.7,
+                    0.8,
+                    0.7,
+                ]
+            }
+        )
         assert _compute_decay_severity(fm) == "NONE"
 
     def test_too_few_folds(self) -> None:
@@ -272,7 +311,8 @@ class TestDecaySeverity:
 
 class TestRunnerEndToEnd:
     def test_returns_metrics_dict_with_threshold_paths(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         strat_path = _write_strategy(tmp_path, _VALID_STRATEGY, name="stub_e2e")
         provider = _FakeProvider(data=_synth_ohlcv(n=1500))
@@ -285,15 +325,21 @@ class TestRunnerEndToEnd:
         # resolvable.
         assert "oos_metrics" in metrics
         for k in (
-            "sharpe", "n_trades", "hit_rate", "max_drawdown", "profit_factor",
+            "sharpe",
+            "n_trades",
+            "hit_rate",
+            "max_drawdown",
+            "profit_factor",
         ):
             assert k in metrics["oos_metrics"], f"missing oos_metrics.{k}"
         assert "sharpe_ci_95" in metrics
         for k in ("low", "high"):
             assert k in metrics["sharpe_ci_95"]
         for top in (
-            "is_oos_sharpe_ratio", "edge_concentration",
-            "regime_diversified", "decay_severity",
+            "is_oos_sharpe_ratio",
+            "edge_concentration",
+            "regime_diversified",
+            "decay_severity",
         ):
             assert top in metrics, f"missing top-level {top}"
         # Provenance documents what's a proxy
@@ -311,21 +357,25 @@ class TestRunnerEndToEnd:
             runner(strat_path)
 
     def test_raises_when_execution_symbol_column_missing(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         strat_path = _write_strategy(tmp_path, _VALID_STRATEGY, name="stub_nocol")
         # DataFrame with neither 'close' nor a column matching the
         # strategy's execution_symbol (defaults to symbols[0] = EURUSD)
-        provider = _FakeProvider(data=pd.DataFrame(
-            {"foo": [1.0, 2.0]},
-            index=pd.date_range("2018-01-01", periods=2),
-        ))
+        provider = _FakeProvider(
+            data=pd.DataFrame(
+                {"foo": [1.0, 2.0]},
+                index=pd.date_range("2018-01-01", periods=2),
+            )
+        )
         runner = make_backtest_runner(
             data_provider=provider,  # type: ignore[arg-type]
             bootstrap_n=100,
         )
         with pytest.raises(
-            ValueError, match="missing execution_symbol column",
+            ValueError,
+            match="missing execution_symbol column",
         ):
             runner(strat_path)
 
@@ -350,7 +400,9 @@ class TestLoopWiring:
     such that compute_verdict can resolve every threshold path."""
 
     def test_implementer_spreads_top_level(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """The Implementer's _build_report should spread the runner's
         keys at top level so verdict.compute_verdict reads them
@@ -380,16 +432,20 @@ class TestLoopWiring:
 
             def complete(
                 self,
-                messages: object,        # noqa: ARG002
+                messages: object,  # noqa: ARG002
                 model: str,
                 max_tokens: int = 4096,  # noqa: ARG002
                 temperature: float = 0.0,  # noqa: ARG002
                 **kwargs: object,
             ) -> LLMResponse:
                 return LLMResponse(
-                    text=self.canned_text, model=model, provider=self.name,
-                    input_tokens=10, output_tokens=20,
-                    usd_cost=0.001, elapsed_sec=0.01,
+                    text=self.canned_text,
+                    model=model,
+                    provider=self.name,
+                    input_tokens=10,
+                    output_tokens=20,
+                    usd_cost=0.001,
+                    elapsed_sec=0.01,
                 )
 
         register_driver("runner-canned", _RunnerCanned)
@@ -397,13 +453,20 @@ class TestLoopWiring:
         prompt = tmp_path / "p.md"
         prompt.write_text("stub")
         cfg = ResearchConfig(
-            providers={"runner-canned": ProviderConfig(
-                api_key_env="RUNNER_KEY", default_model="m",
-            )},
-            agents={"implementer": AgentConfig(
-                provider="runner-canned", role="implementer",
-                prompt_path=str(prompt), model=None,
-            )},
+            providers={
+                "runner-canned": ProviderConfig(
+                    api_key_env="RUNNER_KEY",
+                    default_model="m",
+                )
+            },
+            agents={
+                "implementer": AgentConfig(
+                    provider="runner-canned",
+                    role="implementer",
+                    prompt_path=str(prompt),
+                    model=None,
+                )
+            },
             debates={},  # type: ignore[arg-type]
         )
         impl = Implementer.from_config(name="implementer", research_config=cfg)
@@ -411,8 +474,13 @@ class TestLoopWiring:
         hyp.write_text("# stub\n")
 
         canned_metrics = {
-            "oos_metrics": {"sharpe": 0.7, "n_trades": 50, "hit_rate": 0.6,
-                            "max_drawdown": -0.1, "profit_factor": 1.5},
+            "oos_metrics": {
+                "sharpe": 0.7,
+                "n_trades": 50,
+                "hit_rate": 0.6,
+                "max_drawdown": -0.1,
+                "profit_factor": 1.5,
+            },
             "sharpe_ci_95": {"low": 0.2, "high": 1.2},
             "is_oos_sharpe_ratio": 1.4,
             "edge_concentration": 0.3,
@@ -424,13 +492,15 @@ class TestLoopWiring:
             return canned_metrics
 
         result = impl.implement(
-            hypothesis_path=hyp, strategy_slug="t",
+            hypothesis_path=hyp,
+            strategy_slug="t",
             backtest_runner=fake_runner,
             code_dir=tmp_path / "exp",
             report_dir=tmp_path / "rep",
         )
         assert result.report_path is not None
         import json
+
         report = json.loads(result.report_path.read_text())
         # Top-level paths the verdict engine reads
         assert report["oos_metrics"]["sharpe"] == 0.7

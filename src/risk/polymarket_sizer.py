@@ -107,9 +107,7 @@ def size_polymarket_order(
         msg = f"kelly_fraction must be in (0, 1], got {kelly_fraction}"
         raise ValueError(msg)
     if max_market_fraction <= 0 or max_market_fraction > Decimal("1"):
-        msg = (
-            f"max_market_fraction must be in (0, 1], got {max_market_fraction}"
-        )
+        msg = f"max_market_fraction must be in (0, 1], got {max_market_fraction}"
         raise ValueError(msg)
 
     p, q = market_price, model_prob

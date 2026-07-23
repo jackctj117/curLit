@@ -40,7 +40,10 @@ logger = logging.getLogger(__name__)
 
 # 4-label scheme used by gtfintechlab stance models.
 _GTFINTECHLAB_LABELS: dict[int, str] = {
-    0: "neutral", 1: "hawkish", 2: "dovish", 3: "irrelevant",
+    0: "neutral",
+    1: "hawkish",
+    2: "dovish",
+    3: "irrelevant",
 }
 # 3-label scheme used by the legacy locally-fine-tuned FinBERT.
 _LEGACY_LABELS: dict[int, str] = {0: "dovish", 1: "neutral", 2: "hawkish"}
@@ -51,21 +54,21 @@ _LEGACY_LABELS: dict[int, str] = {0: "dovish", 1: "neutral", 2: "hawkish"}
 # generalize reasonably to other English-speaking CBs because the
 # vocabulary of monetary-policy text is highly stylized.
 CB_MODEL_REGISTRY: dict[str, str] = {
-    "fed":   "gtfintechlab/model_federal_reserve_system_stance_label",
-    "ecb":   "gtfintechlab/model_european_central_bank_stance_label",
-    "pboc":  "gtfintechlab/model_peoples_bank_of_china_stance_label",
-    "snb":   "gtfintechlab/model_swiss_national_bank_stance_label",
-    "rba":   "gtfintechlab/model_reserve_bank_of_australia_stance_label",
-    "rbi":   "gtfintechlab/model_reserve_bank_of_india_stance_label",
-    "mas":   "gtfintechlab/model_monetary_authority_of_singapore_stance_label",
-    "nbp":   "gtfintechlab/model_national_bank_of_poland_stance_label",
+    "fed": "gtfintechlab/model_federal_reserve_system_stance_label",
+    "ecb": "gtfintechlab/model_european_central_bank_stance_label",
+    "pboc": "gtfintechlab/model_peoples_bank_of_china_stance_label",
+    "snb": "gtfintechlab/model_swiss_national_bank_stance_label",
+    "rba": "gtfintechlab/model_reserve_bank_of_australia_stance_label",
+    "rbi": "gtfintechlab/model_reserve_bank_of_india_stance_label",
+    "mas": "gtfintechlab/model_monetary_authority_of_singapore_stance_label",
+    "nbp": "gtfintechlab/model_national_bank_of_poland_stance_label",
     # No dedicated model — fall back to Fed. (BoE / BoJ / BoC speak
     # similar policy English; calibration is good-enough for v1, and
     # CL-v1x9-followup can fine-tune dedicated models on each CB's
     # archive once we have enough labeled samples.)
-    "boe":   "gtfintechlab/model_federal_reserve_system_stance_label",
-    "boj":   "gtfintechlab/model_federal_reserve_system_stance_label",
-    "boc":   "gtfintechlab/model_federal_reserve_system_stance_label",
+    "boe": "gtfintechlab/model_federal_reserve_system_stance_label",
+    "boj": "gtfintechlab/model_federal_reserve_system_stance_label",
+    "boc": "gtfintechlab/model_federal_reserve_system_stance_label",
 }
 
 # Default model when no CB context is supplied — the broadest
@@ -105,7 +108,9 @@ class CBSentimentModel:
         # (do_lower_case + do_basic_tokenize). Local 3-label models
         # ignore them gracefully.
         self.tokenizer = AutoTokenizer.from_pretrained(
-            resolved, do_lower_case=True, do_basic_tokenize=True,
+            resolved,
+            do_lower_case=True,
+            do_basic_tokenize=True,
         )
 
         # num_labels lets transformers re-shape the head to match
@@ -144,7 +149,9 @@ class CBSentimentModel:
 
     @torch.no_grad()
     def predict(
-        self, sentences: list[str], batch_size: int = 32,
+        self,
+        sentences: list[str],
+        batch_size: int = 32,
     ) -> list[dict[str, Any]]:
         """Per-sentence prediction. Returns one dict per input sentence.
 
@@ -157,8 +164,11 @@ class CBSentimentModel:
         for i in range(0, len(sentences), batch_size):
             batch = sentences[i : i + batch_size]
             enc = self.tokenizer(
-                batch, padding=True, truncation=True,
-                max_length=256, return_tensors="pt",
+                batch,
+                padding=True,
+                truncation=True,
+                max_length=256,
+                return_tensors="pt",
             ).to(self.device)
             logits = self.model(**enc).logits
             probs = torch.softmax(logits / self.temperature, dim=-1).cpu().numpy()
@@ -173,21 +183,21 @@ class CBSentimentModel:
                 # way so the caller doesn't have to know whether this
                 # is a 3-label or 4-label model.
                 row["probs"] = {
-                    label_name: float(p[idx])
-                    for idx, label_name in self.labels.items()
+                    label_name: float(p[idx]) for idx, label_name in self.labels.items()
                 }
                 # Hawkish score in [-1, +1]. "irrelevant" doesn't
                 # contribute (4-label) — we just compare hawkish vs dovish.
-                row["hawkish_score"] = (
-                    row["probs"].get("hawkish", 0.0)
-                    - row["probs"].get("dovish", 0.0)
+                row["hawkish_score"] = row["probs"].get("hawkish", 0.0) - row["probs"].get(
+                    "dovish", 0.0
                 )
                 results.append(row)
         return results
 
     @torch.no_grad()
     def predict_document(
-        self, sentences: list[str], drop_irrelevant: bool = True,
+        self,
+        sentences: list[str],
+        drop_irrelevant: bool = True,
     ) -> dict[str, Any]:
         """Document-level aggregation. Confidence-weighted average of
         per-sentence hawkish_score, irrelevant sentences dropped (4-
@@ -210,9 +220,7 @@ class CBSentimentModel:
             }
 
         total_weight = sum(r["confidence"] for r in scoring) or 1.0
-        weighted = sum(
-            r["hawkish_score"] * r["confidence"] for r in scoring
-        ) / total_weight
+        weighted = sum(r["hawkish_score"] * r["confidence"] for r in scoring) / total_weight
 
         counts = {label: 0 for label in self.labels.values()}
         for r in per_sentence:
@@ -240,6 +248,7 @@ def for_cb(cb_name: str, device: str | None = None) -> CBSentimentModel:
         logger.warning(
             "No dedicated stance model for CB '%s'; falling back to Fed model. "
             "Add a mapping to CB_MODEL_REGISTRY when a dedicated "
-            "model becomes available.", cb_name,
+            "model becomes available.",
+            cb_name,
         )
     return CBSentimentModel(cb_name=cb_name, device=device)

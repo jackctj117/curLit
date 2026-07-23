@@ -61,8 +61,7 @@ class CarryVolBacktestResult:
     @property
     def sharpe_improvement(self) -> float:
         return float(
-            self.filtered.metrics.get("sharpe", 0.0)
-            - self.unfiltered.metrics.get("sharpe", 0.0)
+            self.filtered.metrics.get("sharpe", 0.0) - self.unfiltered.metrics.get("sharpe", 0.0)
         )
 
     @property
@@ -137,9 +136,7 @@ class CarryVolBacktester:
         common_index = rates_df.index.intersection(fx_returns_df.index)
         if vol_series is not None and not vol_series.empty:
             common_index = common_index.intersection(vol_series.index)
-        assert len(common_index) >= 60, (
-            f"need >=60 overlapping days, got {len(common_index)}"
-        )
+        assert len(common_index) >= 60, f"need >=60 overlapping days, got {len(common_index)}"
 
         rates = rates_df.reindex(common_index).ffill()
         fx_returns = fx_returns_df.reindex(common_index).ffill().fillna(0.0)
@@ -150,10 +147,18 @@ class CarryVolBacktester:
         )
 
         filtered = self._simulate(
-            rates, fx_returns, vol, with_vol_filter=True, label="filtered",
+            rates,
+            fx_returns,
+            vol,
+            with_vol_filter=True,
+            label="filtered",
         )
         unfiltered = self._simulate(
-            rates, fx_returns, vol, with_vol_filter=False, label="unfiltered",
+            rates,
+            fx_returns,
+            vol,
+            with_vol_filter=False,
+            label="unfiltered",
         )
 
         result = CarryVolBacktestResult(
@@ -220,10 +225,13 @@ class CarryVolBacktester:
         ret_series = pd.Series(daily_returns, index=rates.index, name=f"ret_{label}")
         equity = (1.0 + ret_series).cumprod()
         exposure_series = pd.Series(
-            exposure_history, index=rates.index, name=f"exposure_{label}",
+            exposure_history,
+            index=rates.index,
+            name=f"exposure_{label}",
         )
         metrics = PerformanceAnalytics.metrics(
-            ret_series, periods_per_year=_TRADING_DAYS_PER_YEAR,
+            ret_series,
+            periods_per_year=_TRADING_DAYS_PER_YEAR,
         )
         return BacktestRun(
             label=label,

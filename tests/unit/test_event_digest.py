@@ -58,8 +58,10 @@ def _res(
 
 def _aff(instrument: str, kind: str = "oanda", direction: str = "long") -> dict[str, str]:
     return {
-        "instrument": instrument, "kind": kind,
-        "direction": direction, "reason": "why",
+        "instrument": instrument,
+        "kind": kind,
+        "direction": direction,
+        "reason": "why",
     }
 
 
@@ -68,12 +70,17 @@ def notify_recorder(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
     """Record src.events.digest.notify_operator calls; no network."""
     calls: list[dict[str, Any]] = []
 
-    def fake_notify(title: str, message: str, priority: int = 0,
-                    *, html: bool = False) -> DispatchResult:
-        calls.append({
-            "title": title, "message": message,
-            "priority": priority, "html": html,
-        })
+    def fake_notify(
+        title: str, message: str, priority: int = 0, *, html: bool = False
+    ) -> DispatchResult:
+        calls.append(
+            {
+                "title": title,
+                "message": message,
+                "priority": priority,
+                "html": html,
+            }
+        )
         return DispatchResult(telegram_attempted=True, telegram_succeeded=True)
 
     monkeypatch.setattr("src.events.digest.notify_operator", fake_notify)
@@ -94,8 +101,11 @@ class TestThreshold:
 
     def test_dismissed_events_excluded(self) -> None:
         dismissed = AssessmentResult(
-            event_id=9, headline="junk", theme=None,
-            status="DISMISSED", assessment={"rationale": "parse failure"},
+            event_id=9,
+            headline="junk",
+            theme=None,
+            status="DISMISSED",
+            assessment={"rationale": "parse failure"},
         )
         assert build_digest([dismissed]) is None
 
@@ -105,8 +115,7 @@ class TestThreshold:
         assert "<b>5/10</b>" in built[1]
 
     def test_custom_threshold_filters(self) -> None:
-        results = [_res(event_id=1, urgency=6), _res(event_id=2, urgency=8,
-                                                     headline="big one")]
+        results = [_res(event_id=1, urgency=6), _res(event_id=2, urgency=8, headline="big one")]
         built = build_digest(results, min_urgency=7)
         assert built is not None
         title, message = built
@@ -118,7 +127,8 @@ class TestThreshold:
         assert build_digest([_res(urgency="high")]) is None
 
     def test_send_digest_silent_on_empty(
-        self, notify_recorder: list[dict[str, Any]],
+        self,
+        notify_recorder: list[dict[str, Any]],
     ) -> None:
         assert send_digest([]) is None
         assert send_digest([_res(urgency=2)]) is None
@@ -133,11 +143,12 @@ class TestThreshold:
 class TestFormatting:
     def test_header_counts_events_and_tradables(self) -> None:
         results = [
-            _res(event_id=1, urgency=7,
-                 affected=[_aff("BCO_USD"), _aff("XAU_USD")]),
-            _res(event_id=2, urgency=6,
-                 affected=[_aff("BCO_USD"), _aff("NVDA", kind="equity_watch",
-                                                 direction="watch")]),
+            _res(event_id=1, urgency=7, affected=[_aff("BCO_USD"), _aff("XAU_USD")]),
+            _res(
+                event_id=2,
+                urgency=6,
+                affected=[_aff("BCO_USD"), _aff("NVDA", kind="equity_watch", direction="watch")],
+            ),
         ]
         built = build_digest(results)
         assert built is not None
@@ -146,12 +157,9 @@ class TestFormatting:
 
     def test_groups_by_theme_with_urgency_lines(self) -> None:
         results = [
-            _res(event_id=1, theme="energy_chokepoint", urgency=9,
-                 headline="Hormuz shut"),
-            _res(event_id=2, theme="cb_surprise", urgency=6,
-                 headline="SNB shock cut"),
-            _res(event_id=3, theme="energy_chokepoint", urgency=5,
-                 headline="Tanker seized"),
+            _res(event_id=1, theme="energy_chokepoint", urgency=9, headline="Hormuz shut"),
+            _res(event_id=2, theme="cb_surprise", urgency=6, headline="SNB shock cut"),
+            _res(event_id=3, theme="energy_chokepoint", urgency=5, headline="Tanker seized"),
         ]
         built = build_digest(results)
         assert built is not None
@@ -175,16 +183,16 @@ class TestFormatting:
         built = build_digest([_res(headline=long_headline)])
         assert built is not None
         _, message = built
-        event_line = next(
-            ln for ln in message.split("\n") if ln.startswith("<b>7/10</b>")
-        )
+        event_line = next(ln for ln in message.split("\n") if ln.startswith("<b>7/10</b>"))
         assert len(event_line) < 120
         assert event_line.endswith("…")
 
     def test_hostile_headline_html_escaped(self) -> None:
-        built = build_digest([
-            _res(headline='<script>alert("pwn")</script> oil & gas <b>up</b>'),
-        ])
+        built = build_digest(
+            [
+                _res(headline='<script>alert("pwn")</script> oil & gas <b>up</b>'),
+            ]
+        )
         assert built is not None
         _, message = built
         assert "<script>" not in message
@@ -193,9 +201,11 @@ class TestFormatting:
         assert "oil &amp; gas" in message
 
     def test_hostile_theme_and_instrument_escaped(self) -> None:
-        built = build_digest([
-            _res(theme="a<&>b", affected=[_aff("EUR<USD", direction="long")]),
-        ])
+        built = build_digest(
+            [
+                _res(theme="a<&>b", affected=[_aff("EUR<USD", direction="long")]),
+            ]
+        )
         assert built is not None
         _, message = built
         assert "<i>a&lt;&amp;&gt;b</i>" in message
@@ -205,18 +215,20 @@ class TestFormatting:
 class TestInstrumentLines:
     def test_tradable_line_deduped_with_arrows(self) -> None:
         results = [
-            _res(event_id=1, urgency=7,
-                 affected=[_aff("BCO_USD", direction="long"),
-                           _aff("USD_JPY", kind="fx", direction="short")]),
-            _res(event_id=2, urgency=6,
-                 affected=[_aff("BCO_USD", direction="long")]),
+            _res(
+                event_id=1,
+                urgency=7,
+                affected=[
+                    _aff("BCO_USD", direction="long"),
+                    _aff("USD_JPY", kind="fx", direction="short"),
+                ],
+            ),
+            _res(event_id=2, urgency=6, affected=[_aff("BCO_USD", direction="long")]),
         ]
         built = build_digest(results)
         assert built is not None
         _, message = built
-        tradable_line = next(
-            ln for ln in message.split("\n") if ln.startswith("<b>Tradable:</b>")
-        )
+        tradable_line = next(ln for ln in message.split("\n") if ln.startswith("<b>Tradable:</b>"))
         assert tradable_line == "<b>Tradable:</b> BCO_USD↑ USD_JPY↓"
         assert tradable_line.count("BCO_USD") == 1
 
@@ -231,28 +243,33 @@ class TestInstrumentLines:
 
     def test_watch_line_unions_watch_only_instruments(self) -> None:
         results = [
-            _res(event_id=1, urgency=7, affected=[
-                _aff("FRO", kind="equity_watch", direction="watch"),
-                _aff("STNG", kind="equity_watch", direction="watch"),
-                _aff("EUR_NOK", kind="fx", direction="watch"),  # demoted tradable
-            ]),
-            _res(event_id=2, urgency=6, affected=[
-                _aff("FRO", kind="equity_watch", direction="watch"),
-            ]),
+            _res(
+                event_id=1,
+                urgency=7,
+                affected=[
+                    _aff("FRO", kind="equity_watch", direction="watch"),
+                    _aff("STNG", kind="equity_watch", direction="watch"),
+                    _aff("EUR_NOK", kind="fx", direction="watch"),  # demoted tradable
+                ],
+            ),
+            _res(
+                event_id=2,
+                urgency=6,
+                affected=[
+                    _aff("FRO", kind="equity_watch", direction="watch"),
+                ],
+            ),
         ]
         built = build_digest(results)
         assert built is not None
         _, message = built
-        watch_line = next(
-            ln for ln in message.split("\n") if ln.startswith("<b>Watch:</b>")
-        )
+        watch_line = next(ln for ln in message.split("\n") if ln.startswith("<b>Watch:</b>"))
         assert watch_line == "<b>Watch:</b> FRO STNG EUR_NOK"
 
     def test_tradable_wins_over_watch_for_same_instrument(self) -> None:
         results = [
             _res(event_id=1, urgency=7, affected=[_aff("XAU_USD", direction="long")]),
-            _res(event_id=2, urgency=6,
-                 affected=[_aff("XAU_USD", direction="watch")]),
+            _res(event_id=2, urgency=6, affected=[_aff("XAU_USD", direction="watch")]),
         ]
         built = build_digest(results)
         assert built is not None
@@ -284,9 +301,7 @@ class TestCap:
         built = build_digest(results)
         assert built is not None
         title, message = built
-        event_lines = [
-            ln for ln in message.split("\n") if ln.startswith("<b>") and "/10</b>" in ln
-        ]
+        event_lines = [ln for ln in message.split("\n") if ln.startswith("<b>") and "/10</b>" in ln]
         assert len(event_lines) == MAX_EVENTS
         assert f"+4 more above urgency {DEFAULT_MIN_URGENCY}" in message
         # Header still counts every qualifying event.
@@ -295,13 +310,14 @@ class TestCap:
     def test_instrument_union_covers_elided_events(self) -> None:
         # The lowest-urgency event is elided from the lines but its
         # ticker still makes the Tradable feed.
-        results = [
-            _res(event_id=i, urgency=9, headline=f"e{i}")
-            for i in range(MAX_EVENTS)
-        ]
+        results = [_res(event_id=i, urgency=9, headline=f"e{i}") for i in range(MAX_EVENTS)]
         results.append(
-            _res(event_id=99, urgency=5, headline="elided",
-                 affected=[_aff("NATGAS_USD", direction="long")]),
+            _res(
+                event_id=99,
+                urgency=5,
+                headline="elided",
+                affected=[_aff("NATGAS_USD", direction="long")],
+            ),
         )
         built = build_digest(results)
         assert built is not None
@@ -353,9 +369,14 @@ class TestPriceAnnotations:
 
     def test_watch_token_price_and_rvol_mark(self) -> None:
         built = build_digest(
-            [_res(urgency=7, affected=[
-                _aff("FRO", kind="equity_watch", direction="watch"),
-            ])],
+            [
+                _res(
+                    urgency=7,
+                    affected=[
+                        _aff("FRO", kind="equity_watch", direction="watch"),
+                    ],
+                )
+            ],
             volume_marks={"FRO": 3.2},
             prices={"FRO": {"price": 24.1, "change_pct": 3.2}},
         )
@@ -364,8 +385,15 @@ class TestPriceAnnotations:
 
     def test_unpriced_ticker_renders_bare(self) -> None:
         built = build_digest(
-            [_res(urgency=7, affected=[_aff("BCO_USD", direction="long"),
-                                       _aff("XAU_USD", direction="short")])],
+            [
+                _res(
+                    urgency=7,
+                    affected=[
+                        _aff("BCO_USD", direction="long"),
+                        _aff("XAU_USD", direction="short"),
+                    ],
+                )
+            ],
             prices={"BCO_USD": {"price": 78.4, "change_pct": 2.08}},
         )
         assert built is not None
@@ -380,9 +408,7 @@ class TestPriceAnnotations:
         built = build_digest([_res(urgency=7, affected=affected)])
         assert built is not None
         lines = built[1].split("\n")
-        watch_idx = next(
-            i for i, ln in enumerate(lines) if ln.startswith("<b>Watch:</b>")
-        )
+        watch_idx = next(i for i, ln in enumerate(lines) if ln.startswith("<b>Watch:</b>"))
         assert lines[watch_idx].count(" ") == TOKENS_PER_LINE  # label + 6 tokens
         assert lines[watch_idx + 1] == f"T{TOKENS_PER_LINE} T{TOKENS_PER_LINE + 1}"
 
@@ -430,13 +456,11 @@ class TestIdeasSection:
             prices={"TSM": {"price": 172.4, "change_pct": -1.8}},
         )
         assert "<b>Ideas:</b>" in message
-        head = next(
-            ln for ln in message.split("\n") if ln.startswith("<b>TSM</b>")
-        )
+        head = next(ln for ln in message.split("\n") if ln.startswith("<b>TSM</b>"))
         assert head.startswith("<b>TSM</b> $172.40 (-1.8%) — BUY PUTS 1-3wk")
         assert "entry: on confirmed blockade" in message
-        assert "stop $186" in message            # 172.4 × 1.08 (option underlying)
-        assert "tgt $155/$141" in message         # 172.4 × 0.90 / 0.82
+        assert "stop $186" in message  # 172.4 × 1.08 (option underlying)
+        assert "tgt $155/$141" in message  # 172.4 × 0.90 / 0.82
         assert "R:R" in message
         assert "5d stop" in message
 
@@ -445,11 +469,9 @@ class TestIdeasSection:
         # time stop still render (the honest %-only card). Multi-line
         # block: bold ticker + action on line 1, segments on line 3.
         message = self._with_ideas(_idea())
-        head = next(
-            ln for ln in message.split("\n") if ln.startswith("<b>TSM</b>")
-        )
+        head = next(ln for ln in message.split("\n") if ln.startswith("<b>TSM</b>"))
         assert head.startswith("<b>TSM</b> — BUY PUTS 1-3wk")
-        assert "stop $" not in message            # no price → no dollar stop
+        assert "stop $" not in message  # no price → no dollar stop
         assert "5d stop" in message
 
     def test_rh_proxy_subline_commodity(self) -> None:
@@ -496,9 +518,12 @@ class TestIdeasSection:
         assert "…" not in message
 
     def test_hostile_idea_fields_escaped(self) -> None:
-        message = self._with_ideas(_idea(
-            ticker="<TSM&>", entry_trigger='<script>alert("x")</script>',
-        ))
+        message = self._with_ideas(
+            _idea(
+                ticker="<TSM&>",
+                entry_trigger='<script>alert("x")</script>',
+            )
+        )
         assert "<script>" not in message
         assert "&lt;TSM&amp;&gt;" in message
         assert "&lt;script&gt;" in message
@@ -507,8 +532,7 @@ class TestIdeasSection:
         r1 = _res(event_id=1, urgency=9)
         r1.assessment["trade_ideas"] = [_idea(ticker="DUP")]
         r2 = _res(event_id=2, urgency=6)
-        r2.assessment["trade_ideas"] = [_idea(ticker="DUP"),
-                                        _idea(ticker="OTHER")]
+        r2.assessment["trade_ideas"] = [_idea(ticker="DUP"), _idea(ticker="OTHER")]
         built = build_digest([r1, r2])
         assert built is not None
         message = built[1]
@@ -536,10 +560,14 @@ class TestNicheTag(TestIdeasSection):
 
     def _niche_idea(self, **over: Any) -> dict[str, Any]:
         idea = _idea(
-            ticker="ABC", action="buy_calls", direction="bullish",
-            niche=True, hop_count=4,
+            ticker="ABC",
+            action="buy_calls",
+            direction="bullish",
+            niche=True,
+            hop_count=4,
             torque_reason="single-asset junior, high operating leverage",
-            asymmetry_score=0.71, liquidity_flag=False,
+            asymmetry_score=0.71,
+            liquidity_flag=False,
         )
         idea.update(over)
         return idea
@@ -585,10 +613,17 @@ class TestNicheConsolidation(TestIdeasSection):
 
     def test_niche_idea_consolidates_across_events(self) -> None:
         niche = {
-            "ticker": "ABC", "action": "buy_calls", "direction": "bullish",
-            "niche": True, "hop_count": 3, "torque_reason": "sole supplier",
-            "asymmetry_score": 0.68, "liquidity_flag": False,
-            "rationale": "chain", "time_horizon": "short", "time_stop_days": 10,
+            "ticker": "ABC",
+            "action": "buy_calls",
+            "direction": "bullish",
+            "niche": True,
+            "hop_count": 3,
+            "torque_reason": "sole supplier",
+            "asymmetry_score": 0.68,
+            "liquidity_flag": False,
+            "rationale": "chain",
+            "time_horizon": "short",
+            "time_stop_days": 10,
         }
         r1 = _res(event_id=1, urgency=8, theme="critical_minerals")
         r1.assessment["trade_ideas"] = [dict(niche)]
@@ -610,8 +645,11 @@ class TestCorroboration:
 
     def _gold_idea(self, **kw: Any) -> dict[str, Any]:
         return _idea(
-            ticker="XAU_USD", action="long", direction="bullish",
-            rationale="risk-off bid", **kw,
+            ticker="XAU_USD",
+            action="long",
+            direction="bullish",
+            rationale="risk-off bid",
+            **kw,
         )
 
     def test_two_events_same_idea_corroborated_note(self) -> None:
@@ -664,12 +702,10 @@ class TestConcentrationNote:
     variant. Additive display only; never removes/hides an idea."""
 
     def _gold(self, action: str = "long") -> dict[str, Any]:
-        return _idea(ticker="XAU_USD", action=action, direction="bullish",
-                     rationale="risk-off")
+        return _idea(ticker="XAU_USD", action=action, direction="bullish", rationale="risk-off")
 
     def _silver(self) -> dict[str, Any]:
-        return _idea(ticker="XAG_USD", action="long", direction="bullish",
-                     rationale="risk-off")
+        return _idea(ticker="XAG_USD", action="long", direction="bullish", rationale="risk-off")
 
     # ---- general per-instrument note (now fires for ANY instrument) ----
 
@@ -685,10 +721,7 @@ class TestConcentrationNote:
         built = build_digest([r1, r2])
         assert built is not None
         message = built[1]
-        assert (
-            "⚠️ already exposed to BCO_USD via 2 ideas — watch concentration"
-            in message
-        )
+        assert "⚠️ already exposed to BCO_USD via 2 ideas — watch concentration" in message
         # Rendered once, in the Ideas section, before the idea blocks.
         assert message.count("watch concentration") == 1
         assert message.index("watch concentration") < message.index("<b>BCO_USD</b>")
@@ -790,8 +823,7 @@ class TestFadeSection:
     def test_fade_lines(self) -> None:
         r = _res(urgency=7)
         r.assessment["fade_candidates"] = [
-            {"ticker": "NVDA", "action": "fade the spike",
-             "reason": "routine drills, priced in"},
+            {"ticker": "NVDA", "action": "fade the spike", "reason": "routine drills, priced in"},
         ]
         built = build_digest([r])
         assert built is not None
@@ -819,10 +851,10 @@ class TestFadeSection:
 
 class TestSendDigestEnrichmentForwarding:
     def test_prices_and_seen_ats_reach_the_message(
-        self, notify_recorder: list[dict[str, Any]],
+        self,
+        notify_recorder: list[dict[str, Any]],
     ) -> None:
-        r = _res(event_id=5, urgency=7,
-                 affected=[_aff("BCO_USD", direction="long")])
+        r = _res(event_id=5, urgency=7, affected=[_aff("BCO_USD", direction="long")])
         result = send_digest(
             [r],
             prices={"BCO_USD": {"price": 78.4, "change_pct": 2.08}},
@@ -841,11 +873,14 @@ class TestSendDigestEnrichmentForwarding:
 
 class TestSendDigest:
     def test_sends_html_via_notify_operator(
-        self, notify_recorder: list[dict[str, Any]],
+        self,
+        notify_recorder: list[dict[str, Any]],
     ) -> None:
-        result = send_digest([
-            _res(urgency=7, affected=[_aff("BCO_USD", direction="long")]),
-        ])
+        result = send_digest(
+            [
+                _res(urgency=7, affected=[_aff("BCO_USD", direction="long")]),
+            ]
+        )
         assert result is not None and result.telegram_succeeded
         assert len(notify_recorder) == 1
         call = notify_recorder[0]
@@ -855,7 +890,8 @@ class TestSendDigest:
         assert "<b>Tradable:</b> BCO_USD↑" in call["message"]
 
     def test_min_urgency_forwarded(
-        self, notify_recorder: list[dict[str, Any]],
+        self,
+        notify_recorder: list[dict[str, Any]],
     ) -> None:
         assert send_digest([_res(urgency=6)], min_urgency=7) is None
         assert notify_recorder == []
@@ -894,10 +930,12 @@ def pipeline_mod(monkeypatch: pytest.MonkeyPatch) -> Any:
     from scripts import event_pipeline as mod
 
     monkeypatch.setattr(
-        "src.events.impact_agent.EventImpactAgent", _FakeAgent,
+        "src.events.impact_agent.EventImpactAgent",
+        _FakeAgent,
     )
     monkeypatch.setattr(
-        "src.scanners.relative_volume.RelativeVolumeScanner", _NoopScanner,
+        "src.scanners.relative_volume.RelativeVolumeScanner",
+        _NoopScanner,
     )
     monkeypatch.setattr("sqlalchemy.create_engine", lambda _url: None)
     # The niche pass (CL-u2ph, default-on) burns a live LLM call — no-op
@@ -928,25 +966,33 @@ class TestPipelineWiring:
         assert args.digest_min_urgency == 8
 
     def test_resolve_min_urgency_cli_beats_env(
-        self, pipeline_mod: Any, monkeypatch: pytest.MonkeyPatch,
+        self,
+        pipeline_mod: Any,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setenv("EVENT_DIGEST_MIN_URGENCY", "3")
         assert pipeline_mod._resolve_digest_min_urgency(8) == 8
 
     def test_resolve_min_urgency_env(
-        self, pipeline_mod: Any, monkeypatch: pytest.MonkeyPatch,
+        self,
+        pipeline_mod: Any,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setenv("EVENT_DIGEST_MIN_URGENCY", "3")
         assert pipeline_mod._resolve_digest_min_urgency(None) == 3
 
     def test_resolve_min_urgency_default(
-        self, pipeline_mod: Any, monkeypatch: pytest.MonkeyPatch,
+        self,
+        pipeline_mod: Any,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.delenv("EVENT_DIGEST_MIN_URGENCY", raising=False)
         assert pipeline_mod._resolve_digest_min_urgency(None) == DEFAULT_MIN_URGENCY
 
     def test_resolve_min_urgency_garbage_env_falls_back(
-        self, pipeline_mod: Any, monkeypatch: pytest.MonkeyPatch,
+        self,
+        pipeline_mod: Any,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setenv("EVENT_DIGEST_MIN_URGENCY", "loud")
         assert pipeline_mod._resolve_digest_min_urgency(None) == DEFAULT_MIN_URGENCY
@@ -974,29 +1020,39 @@ class TestPipelineWiring:
         return sent
 
     def test_assess_cycle_calls_send_digest(
-        self, pipeline_mod: Any, monkeypatch: pytest.MonkeyPatch,
+        self,
+        pipeline_mod: Any,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.delenv("EVENT_DIGEST_MIN_URGENCY", raising=False)
         results = [_res(urgency=7)]
         sent = self._run_cycle(
-            pipeline_mod, monkeypatch,
-            ["--assess", "--digest-min-urgency", "6"], results,
+            pipeline_mod,
+            monkeypatch,
+            ["--assess", "--digest-min-urgency", "6"],
+            results,
         )
         assert len(sent) == 1
         assert sent[0]["results"] == results
         assert sent[0]["min_urgency"] == 6
 
     def test_no_digest_skips_send(
-        self, pipeline_mod: Any, monkeypatch: pytest.MonkeyPatch,
+        self,
+        pipeline_mod: Any,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         sent = self._run_cycle(
-            pipeline_mod, monkeypatch,
-            ["--assess", "--no-digest"], [_res(urgency=9)],
+            pipeline_mod,
+            monkeypatch,
+            ["--assess", "--no-digest"],
+            [_res(urgency=9)],
         )
         assert sent == []
 
     def test_digest_failure_does_not_crash_cycle(
-        self, pipeline_mod: Any, monkeypatch: pytest.MonkeyPatch,
+        self,
+        pipeline_mod: Any,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         _FakeAgent.results = [_res(urgency=9)]
 
@@ -1020,8 +1076,9 @@ class TestPipelineIdeaWiring:
             calls["price_tickers"] = sorted(tickers)
             return {"TSM": {"price": 172.4, "change_pct": -1.8}}
 
-        def fake_persist(engine: Any, eid: int, assessment: Any,
-                         prices: Any = None, now: Any = None) -> int:
+        def fake_persist(
+            engine: Any, eid: int, assessment: Any, prices: Any = None, now: Any = None
+        ) -> int:
             calls["persist"].append((eid, prices))
             return 1
 
@@ -1040,15 +1097,16 @@ class TestPipelineIdeaWiring:
         return calls
 
     def _result_with_idea(self, event_id: int = 7) -> AssessmentResult:
-        r = _res(event_id=event_id, urgency=7,
-                 affected=[_aff("BCO_USD", direction="long")])
+        r = _res(event_id=event_id, urgency=7, affected=[_aff("BCO_USD", direction="long")])
         r.assessment["trade_ideas"] = [
             {"ticker": "TSM", "action": "buy_puts", "time_stop_days": 5},
         ]
         return r
 
     def test_assessed_events_persisted_with_batch_prices(
-        self, pipeline_mod: Any, monkeypatch: pytest.MonkeyPatch,
+        self,
+        pipeline_mod: Any,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         calls = self._wire(monkeypatch)
         _FakeAgent.results = [self._result_with_idea()]
@@ -1066,13 +1124,20 @@ class TestPipelineIdeaWiring:
         }
 
     def test_dismissed_events_not_persisted(
-        self, pipeline_mod: Any, monkeypatch: pytest.MonkeyPatch,
+        self,
+        pipeline_mod: Any,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         calls = self._wire(monkeypatch)
-        _FakeAgent.results = [AssessmentResult(
-            event_id=9, headline="junk", theme=None,
-            status="DISMISSED", assessment={"rationale": "parse failure"},
-        )]
+        _FakeAgent.results = [
+            AssessmentResult(
+                event_id=9,
+                headline="junk",
+                theme=None,
+                status="DISMISSED",
+                assessment={"rationale": "parse failure"},
+            )
+        ]
         args = pipeline_mod._build_parser().parse_args(["--assess"])
         args.digest_min_urgency = 5
         pipeline_mod._cycle(args)
@@ -1080,7 +1145,9 @@ class TestPipelineIdeaWiring:
         assert calls["expire"] == 1
 
     def test_ledger_failure_never_kills_cycle_or_digest(
-        self, pipeline_mod: Any, monkeypatch: pytest.MonkeyPatch,
+        self,
+        pipeline_mod: Any,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         calls = self._wire(monkeypatch)
 
@@ -1109,13 +1176,17 @@ class TestPipelineNicheWiring:
         assert args.niche is False
 
     def test_resolve_niche_min_urgency_env(
-        self, pipeline_mod: Any, monkeypatch: pytest.MonkeyPatch,
+        self,
+        pipeline_mod: Any,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setenv("NICHE_MIN_URGENCY", "9")
         assert pipeline_mod._resolve_niche_min_urgency() == 9
 
     def test_resolve_niche_min_urgency_default(
-        self, pipeline_mod: Any, monkeypatch: pytest.MonkeyPatch,
+        self,
+        pipeline_mod: Any,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         from src.events.niche_agent import DEFAULT_MIN_URGENCY as NICHE_DEFAULT
 
@@ -1158,34 +1229,49 @@ class TestPipelineNicheWiring:
         return ran_on
 
     def test_niche_runs_on_high_urgency_assessed(
-        self, pipeline_mod: Any, monkeypatch: pytest.MonkeyPatch,
+        self,
+        pipeline_mod: Any,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         ran = self._run_niche_step(
-            pipeline_mod, monkeypatch, [_res(event_id=1, urgency=8)],
+            pipeline_mod,
+            monkeypatch,
+            [_res(event_id=1, urgency=8)],
         )
         assert ran == [1]
 
     def test_niche_skips_low_urgency(
-        self, pipeline_mod: Any, monkeypatch: pytest.MonkeyPatch,
+        self,
+        pipeline_mod: Any,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         # urgency 5 < min 7 → the niche pass never touches it (quota gate).
         ran = self._run_niche_step(
-            pipeline_mod, monkeypatch, [_res(event_id=2, urgency=5)],
+            pipeline_mod,
+            monkeypatch,
+            [_res(event_id=2, urgency=5)],
         )
         assert ran == []
 
     def test_niche_skips_dismissed(
-        self, pipeline_mod: Any, monkeypatch: pytest.MonkeyPatch,
+        self,
+        pipeline_mod: Any,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         dismissed = AssessmentResult(
-            event_id=3, headline="junk", theme=None,
-            status="DISMISSED", assessment={"urgency": 9},
+            event_id=3,
+            headline="junk",
+            theme=None,
+            status="DISMISSED",
+            assessment={"urgency": 9},
         )
         ran = self._run_niche_step(pipeline_mod, monkeypatch, [dismissed])
         assert ran == []
 
     def test_niche_failure_never_kills_cycle(
-        self, pipeline_mod: Any, monkeypatch: pytest.MonkeyPatch,
+        self,
+        pipeline_mod: Any,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         # _niche_step raising must be swallowed by _cycle's try/except.
         # The generic fixture already no-ops _niche_step, so re-point it
@@ -1197,7 +1283,8 @@ class TestPipelineNicheWiring:
         monkeypatch.setattr(
             "src.events.digest.send_digest",
             lambda *_a, **_kw: DispatchResult(
-                telegram_attempted=True, telegram_succeeded=True,
+                telegram_attempted=True,
+                telegram_succeeded=True,
             ),
         )
         _FakeAgent.results = [_res(event_id=1, urgency=9)]
@@ -1224,14 +1311,17 @@ class _FakePolySignal:
 
 class TestPolyCorroboration:
     def test_line_rendered_for_theme(self) -> None:
-        poly = _FakePolySignal({
-            "energy_chokepoint": {
-                "hormuz-closure-2026": {
-                    "question": "Hormuz closed?", "yes_prob": 0.18,
-                    "rising": True,
+        poly = _FakePolySignal(
+            {
+                "energy_chokepoint": {
+                    "hormuz-closure-2026": {
+                        "question": "Hormuz closed?",
+                        "yes_prob": 0.18,
+                        "rising": True,
+                    },
                 },
-            },
-        })
+            }
+        )
         built = build_digest([_res(urgency=7)], poly_signal=poly)
         assert built is not None
         _, msg = built
@@ -1239,31 +1329,37 @@ class TestPolyCorroboration:
         assert "hormuz-closure-2026 18% ↑" in msg
 
     def test_falling_arrow(self) -> None:
-        poly = _FakePolySignal({
-            "energy_chokepoint": {
-                "s": {"question": "q", "yes_prob": 0.40, "rising": False},
-            },
-        })
+        poly = _FakePolySignal(
+            {
+                "energy_chokepoint": {
+                    "s": {"question": "q", "yes_prob": 0.40, "rising": False},
+                },
+            }
+        )
         _, msg = build_digest([_res(urgency=7)], poly_signal=poly)  # type: ignore[misc]
         assert "s 40% ↓" in msg
 
     def test_no_arrow_when_direction_unknown(self) -> None:
-        poly = _FakePolySignal({
-            "energy_chokepoint": {
-                "s": {"question": "q", "yes_prob": 0.25, "rising": None},
-            },
-        })
+        poly = _FakePolySignal(
+            {
+                "energy_chokepoint": {
+                    "s": {"question": "q", "yes_prob": 0.25, "rising": None},
+                },
+            }
+        )
         _, msg = build_digest([_res(urgency=7)], poly_signal=poly)  # type: ignore[misc]
         assert "s 25%" in msg
         assert "s 25% ↑" not in msg and "s 25% ↓" not in msg
 
     def test_highest_prob_market_cited(self) -> None:
-        poly = _FakePolySignal({
-            "energy_chokepoint": {
-                "low": {"question": "q", "yes_prob": 0.10, "rising": None},
-                "high": {"question": "q", "yes_prob": 0.55, "rising": True},
-            },
-        })
+        poly = _FakePolySignal(
+            {
+                "energy_chokepoint": {
+                    "low": {"question": "q", "yes_prob": 0.10, "rising": None},
+                    "high": {"question": "q", "yes_prob": 0.55, "rising": True},
+                },
+            }
+        )
         _, msg = build_digest([_res(urgency=7)], poly_signal=poly)  # type: ignore[misc]
         assert "high 55%" in msg
         assert "low 10%" not in msg

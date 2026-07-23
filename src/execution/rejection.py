@@ -87,9 +87,7 @@ class ClassPolicy:
     backoff_multiplier: float = _RETRY_BACKOFF_MULTIPLIER
 
     def __post_init__(self) -> None:
-        assert self.max_attempts >= 1, (
-            f"max_attempts must be >= 1, got {self.max_attempts}"
-        )
+        assert self.max_attempts >= 1, f"max_attempts must be >= 1, got {self.max_attempts}"
         assert self.initial_sleep_sec >= 0, "initial_sleep_sec must be non-negative"
         assert self.backoff_multiplier >= 1.0, "backoff_multiplier must be >= 1.0"
 
@@ -174,11 +172,20 @@ _CLASSIFICATION_PATTERNS: list[tuple[re.Pattern[str], RejectionClass]] = [
     (re.compile(r"margin[_\s]+(call|exhausted|insufficient)", re.I), RejectionClass.MARGIN),
     (re.compile(r"liquidity|fok\b|fill[_\s]+or[_\s]+kill", re.I), RejectionClass.LIQUIDITY),
     (re.compile(r"no[_\s]+liquidity|not[_\s]+enough[_\s]+units", re.I), RejectionClass.LIQUIDITY),
-    (re.compile(r"halt|closed|trading[_\s]+suspended|market[_\s]+closed", re.I), RejectionClass.HALT),
+    (
+        re.compile(r"halt|closed|trading[_\s]+suspended|market[_\s]+closed", re.I),
+        RejectionClass.HALT,
+    ),
     (re.compile(r"instrument[_\s]+(halted|unavailable|disabled)", re.I), RejectionClass.HALT),
-    (re.compile(r"timeout|connection[_\s]+(reset|refused|aborted)", re.I), RejectionClass.TRANSIENT),
+    (
+        re.compile(r"timeout|connection[_\s]+(reset|refused|aborted)", re.I),
+        RejectionClass.TRANSIENT,
+    ),
     (re.compile(r"5\d\d|service[_\s]+unavailable|gateway", re.I), RejectionClass.TRANSIENT),
-    (re.compile(r"(400|422|bad[_\s]+request|invalid[_\s]+(json|payload|param))", re.I), RejectionClass.MALFORMED),
+    (
+        re.compile(r"(400|422|bad[_\s]+request|invalid[_\s]+(json|payload|param))", re.I),
+        RejectionClass.MALFORMED,
+    ),
 ]
 
 
@@ -276,9 +283,13 @@ class RejectionHandler:
 
         logger.warning(
             "Order reject %s symbol=%s class=%s resolution=%s attempt=%d/%d detail=%s",
-            intent.intent_id, intent.symbol, cls.value,
+            intent.intent_id,
+            intent.symbol,
+            cls.value,
             class_policy.resolution.value,
-            attempt, class_policy.max_attempts, exc,
+            attempt,
+            class_policy.max_attempts,
+            exc,
         )
 
         # Audit the rejection. Journal failures must not propagate — trading
@@ -311,9 +322,7 @@ class RejectionHandler:
             # Out of retries — abort (or halt strategy if class demands it).
             return HandlerOutcome(
                 should_retry=False,
-                halt_strategy=(
-                    class_policy.resolution == RejectionResolution.ABORT_HALT_STRATEGY
-                ),
+                halt_strategy=(class_policy.resolution == RejectionResolution.ABORT_HALT_STRATEGY),
                 final_resolution=class_policy.resolution,
             )
 
@@ -330,7 +339,7 @@ class RejectionHandler:
 
         if class_policy.resolution == RejectionResolution.RETRY_SMALLER:
             # Each attempt halves size: attempt 1 → 1.0, attempt 2 → 0.5, etc.
-            next_fraction = _SIZE_REDUCTION_FACTOR ** attempt
+            next_fraction = _SIZE_REDUCTION_FACTOR**attempt
             if next_fraction < _MIN_SIZE_FRACTION:
                 # Don't bother going below the minimum useful fraction.
                 return HandlerOutcome(
@@ -347,9 +356,7 @@ class RejectionHandler:
         # ABORT or ABORT_HALT_STRATEGY: no retry.
         return HandlerOutcome(
             should_retry=False,
-            halt_strategy=(
-                class_policy.resolution == RejectionResolution.ABORT_HALT_STRATEGY
-            ),
+            halt_strategy=(class_policy.resolution == RejectionResolution.ABORT_HALT_STRATEGY),
             final_resolution=class_policy.resolution,
         )
 

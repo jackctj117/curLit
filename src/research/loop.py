@@ -102,8 +102,13 @@ ERROR_RETRY_ATTEMPT_CAP: int = 3
 
 #: Exception-type-name fragments that mark a failure as transient.
 _TRANSIENT_NAME_FRAGMENTS: tuple[str, ...] = (
-    "timeout", "connection", "unavailable", "ratelimit", "rate_limit",
-    "toomanyrequests", "serviceunavailable",
+    "timeout",
+    "connection",
+    "unavailable",
+    "ratelimit",
+    "rate_limit",
+    "toomanyrequests",
+    "serviceunavailable",
 )
 
 
@@ -133,7 +138,9 @@ def _should_retry(entry: dict[str, Any] | None) -> bool:
 
 
 def _error_entry(
-    exc: BaseException, prev: dict[str, Any] | None, **extra: Any,
+    exc: BaseException,
+    prev: dict[str, Any] | None,
+    **extra: Any,
 ) -> dict[str, Any]:
     """Build an ERROR entry carrying transient/attempts retry metadata."""
     try:
@@ -147,6 +154,7 @@ def _error_entry(
         "attempts": prev_attempts + 1,
         **extra,
     }
+
 
 # GATE 2: pre-deploy operator confirmation (CL-yta6).
 #
@@ -341,9 +349,7 @@ class ResearchLoop:
         # Never set in production — the gates exist for a reason.
         self.auto_approve = auto_approve
         # Injected clock so tests can simulate the timeout window.
-        self._clock: Callable[[], datetime] = clock or (
-            lambda: datetime.now(UTC)
-        )
+        self._clock: Callable[[], datetime] = clock or (lambda: datetime.now(UTC))
 
     # ------------------------------------------------------------------ #
     # Top-level entry
@@ -419,7 +425,8 @@ class ResearchLoop:
             if prev is not None:
                 logger.info(
                     "retrying transient-ERROR extract %s (attempt %d)",
-                    extract_hash, int(prev.get("attempts", 1)) + 1,
+                    extract_hash,
+                    int(prev.get("attempts", 1)) + 1,
                 )
             try:
                 result = self.idea_agent.ideate(
@@ -428,14 +435,15 @@ class ResearchLoop:
                 )
             except Exception as exc:
                 logger.exception(
-                    "idea agent failed for extract %s", extract_hash,
+                    "idea agent failed for extract %s",
+                    extract_hash,
                 )
                 state.ideas_processed[extract_hash] = _error_entry(
-                    exc, prev, slug=None,
+                    exc,
+                    prev,
+                    slug=None,
                 )
-                summary.errors.append(
-                    f"idea/{extract_hash}: {type(exc).__name__}: {exc}"
-                )
+                summary.errors.append(f"idea/{extract_hash}: {type(exc).__name__}: {exc}")
                 continue
             if result.status == IdeaStatus.PROPOSED:
                 summary.ideas_proposed += 1
@@ -448,8 +456,7 @@ class ResearchLoop:
                     "reason": "",
                     "pending_since": pending_since,
                     "hypothesis_path": (
-                        str(result.hypothesis_path)
-                        if result.hypothesis_path else None
+                        str(result.hypothesis_path) if result.hypothesis_path else None
                     ),
                 }
                 if self.notifier.notify_gate1(result, extract_hash):
@@ -486,15 +493,16 @@ class ResearchLoop:
             except ValueError:
                 logger.warning(
                     "ideas_processed[%s].pending_since malformed: %r",
-                    extract_hash, pending_since_str,
+                    extract_hash,
+                    pending_since_str,
                 )
                 continue
             elapsed = (now - pending_since).total_seconds()
             if elapsed > self.gate1_timeout_sec:
                 entry["status"] = GATE1_SKIPPED_STATUS
                 entry["reason"] = (
-                    f"auto-SKIPPED: pending {elapsed/86400:.1f}d > "
-                    f"{self.gate1_timeout_sec/86400:.1f}d operator timeout"
+                    f"auto-SKIPPED: pending {elapsed / 86400:.1f}d > "
+                    f"{self.gate1_timeout_sec / 86400:.1f}d operator timeout"
                 )
                 summary.gate1_auto_skipped_expired += 1
                 logger.info(
@@ -523,13 +531,15 @@ class ResearchLoop:
             if prev is not None:
                 logger.info(
                     "retrying transient-ERROR candidate %s (attempt %d)",
-                    slug, int(prev.get("attempts", 1)) + 1,
+                    slug,
+                    int(prev.get("attempts", 1)) + 1,
                 )
             hyp_path = self.hypothesis_dir / f"{slug}.md"
             if not hyp_path.exists():
                 logger.warning(
                     "hypothesis file %s missing for slug %s — skipping",
-                    hyp_path, slug,
+                    hyp_path,
+                    slug,
                 )
                 state.candidates_processed[slug] = {
                     "status": "ERROR",
@@ -549,32 +559,27 @@ class ResearchLoop:
             except Exception as exc:
                 logger.exception("implementer failed for slug %s", slug)
                 state.candidates_processed[slug] = _error_entry(
-                    exc, prev, code_path=None, report_path=None,
+                    exc,
+                    prev,
+                    code_path=None,
+                    report_path=None,
                 )
-                summary.errors.append(
-                    f"implement/{slug}: {type(exc).__name__}: {exc}"
-                )
+                summary.errors.append(f"implement/{slug}: {type(exc).__name__}: {exc}")
                 continue
             if result.status == ImplementerStatus.IMPLEMENTED:
                 summary.candidates_implemented += 1
                 state.candidates_processed[slug] = {
                     "status": "IMPLEMENTED",
                     "reason": "",
-                    "code_path": (
-                        str(result.code_path) if result.code_path else None
-                    ),
-                    "report_path": (
-                        str(result.report_path) if result.report_path else None
-                    ),
+                    "code_path": (str(result.code_path) if result.code_path else None),
+                    "report_path": (str(result.report_path) if result.report_path else None),
                 }
             else:
                 summary.candidates_rejected += 1
                 state.candidates_processed[slug] = {
                     "status": "REJECTED",
                     "reason": result.reason,
-                    "code_path": (
-                        str(result.code_path) if result.code_path else None
-                    ),
+                    "code_path": (str(result.code_path) if result.code_path else None),
                     "report_path": None,
                 }
 
@@ -596,14 +601,16 @@ class ResearchLoop:
             report_path_s = entry.get("report_path")
             if not report_path_s:
                 logger.warning(
-                    "candidate %s missing report_path — skipping debate", slug,
+                    "candidate %s missing report_path — skipping debate",
+                    slug,
                 )
                 continue
             report_path = Path(report_path_s)
             if not report_path.exists():
                 logger.warning(
                     "candidate %s report file %s missing — skipping debate",
-                    slug, report_path,
+                    slug,
+                    report_path,
                 )
                 continue
             try:
@@ -611,7 +618,8 @@ class ResearchLoop:
                 debate_result = self.debate_orchestrator.run_debate(
                     strategy_slug=slug,
                     candidate_report_text=json.dumps(
-                        candidate_report_dict, indent=2,
+                        candidate_report_dict,
+                        indent=2,
                     ),
                 )
                 bull_pos = debate_result.final_positions.get(
@@ -636,9 +644,7 @@ class ResearchLoop:
                     "bull": "",
                     "bear": "",
                 }
-                summary.errors.append(
-                    f"debate/{slug}: {type(exc).__name__}: {exc}"
-                )
+                summary.errors.append(f"debate/{slug}: {type(exc).__name__}: {exc}")
                 continue
             summary.debates_run += 1
             self._tally_verdict(summary, verdict)
@@ -658,7 +664,8 @@ class ResearchLoop:
                 )
                 new_entry["candidate_report_path"] = str(report_path)
                 if self.notifier.notify_gate2(
-                    slug, new_entry,
+                    slug,
+                    new_entry,
                     code_path=state.candidates_processed.get(slug, {}).get(
                         "code_path",
                     ),
@@ -670,7 +677,8 @@ class ResearchLoop:
             # notification fires exactly once per escalated candidate.
             elif verdict.verdict == Verdict.ESCALATE:
                 if self.notifier.notify_escalate(
-                    slug=slug, verdict=verdict,
+                    slug=slug,
+                    verdict=verdict,
                     candidate_report_path=report_path,
                     transcript_path=debate_result.transcript_path,
                     candidate_report=candidate_report_dict,
@@ -692,9 +700,7 @@ class ResearchLoop:
         for entry in state.debates_completed.values():
             if entry.get("deploy_status") == GATE2_PENDING_STATUS:
                 entry["deploy_status"] = GATE2_APPROVED_STATUS
-                entry["deploy_reason"] = (
-                    "auto-approved (--auto-approve / dry-run)"
-                )
+                entry["deploy_reason"] = "auto-approved (--auto-approve / dry-run)"
 
     @staticmethod
     def _tally_verdict(summary: RunSummary, verdict: VerdictResult) -> None:
@@ -712,14 +718,14 @@ class ResearchLoop:
     def _phase_gate2(self, state: LoopState, summary: RunSummary) -> None:
         """Two responsibilities:
 
-          1. Auto-REJECT pending entries older than the timeout. Note
-             this is the OPPOSITE default from GATE 1 — silence on a
-             deploy decision means "no", not "yes". A skipped deploy
-             can always be re-promoted later; an erroneous deploy is
-             harder to undo even at allocation=0.
-          2. Run the PROMOTE registrar for entries the operator has
-             marked DEPLOY_APPROVED. Records DEPLOYED on success or
-             DEPLOY_FAILED with the registrar's error.
+        1. Auto-REJECT pending entries older than the timeout. Note
+           this is the OPPOSITE default from GATE 1 — silence on a
+           deploy decision means "no", not "yes". A skipped deploy
+           can always be re-promoted later; an erroneous deploy is
+           harder to undo even at allocation=0.
+        2. Run the PROMOTE registrar for entries the operator has
+           marked DEPLOY_APPROVED. Records DEPLOYED on success or
+           DEPLOY_FAILED with the registrar's error.
         """
         now = self._clock()
         for slug, entry in state.debates_completed.items():
@@ -733,19 +739,21 @@ class ResearchLoop:
                 except ValueError:
                     logger.warning(
                         "debates_completed[%s].pending_since malformed: %r",
-                        slug, pending_since_str,
+                        slug,
+                        pending_since_str,
                     )
                     continue
                 elapsed = (now - pending_since).total_seconds()
                 if elapsed > self.gate2_timeout_sec:
                     entry["deploy_status"] = GATE2_REJECTED_STATUS
                     entry["deploy_reason"] = (
-                        f"auto-REJECTED: pending {elapsed/86400:.1f}d > "
-                        f"{self.gate2_timeout_sec/86400:.1f}d operator timeout"
+                        f"auto-REJECTED: pending {elapsed / 86400:.1f}d > "
+                        f"{self.gate2_timeout_sec / 86400:.1f}d operator timeout"
                     )
                     summary.gate2_auto_rejected_expired += 1
                     logger.info(
-                        "GATE 2 auto-rejected expired pending deploy %s", slug,
+                        "GATE 2 auto-rejected expired pending deploy %s",
+                        slug,
                     )
             elif deploy_status == GATE2_APPROVED_STATUS:
                 self._run_registrar(slug, entry, summary)
@@ -775,9 +783,7 @@ class ResearchLoop:
             entry["deploy_status"] = GATE2_DEPLOYED_STATUS
             entry["pr_url"] = result.pr_url
             entry["branch_name"] = result.branch_name
-            entry["deploy_reason"] = (
-                f"steps: {','.join(result.steps_completed)}"
-            )
+            entry["deploy_reason"] = f"steps: {','.join(result.steps_completed)}"
             summary.deployments_succeeded += 1
         else:
             entry["deploy_status"] = GATE2_DEPLOY_FAILED_STATUS

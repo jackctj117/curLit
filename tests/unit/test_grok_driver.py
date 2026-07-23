@@ -81,7 +81,8 @@ class TestGrokSmoke:
         """Real network call against api.x.ai. Gated on XAI_API_KEY so
         only operators with credentials hit this; CI runs without."""
         client = get_client(
-            provider="grok", api_key=os.environ["XAI_API_KEY"],
+            provider="grok",
+            api_key=os.environ["XAI_API_KEY"],
         )
         resp = client.complete(
             messages=[

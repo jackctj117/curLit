@@ -83,8 +83,7 @@ def test_open_vault_reads_legacy_v1_schema(vault_env, monkeypatch):
     open historical vaults exactly like the agent does."""
     vault_path, key = vault_env
     sealed = seal(json.dumps({"OLD": "y"}).encode(), key)
-    legacy = {"v": 1, "nonce": sealed["nonce"], "ct": sealed["ciphertext"],
-              "tag": sealed["tag"]}
+    legacy = {"v": 1, "nonce": sealed["nonce"], "ct": sealed["ciphertext"], "tag": sealed["tag"]}
     vault_path.write_text(json.dumps(legacy))
     _feed_getpass(monkeypatch, [PASS])
 

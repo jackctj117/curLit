@@ -77,7 +77,9 @@ def _select_promotable_papers(engine: Any, limit: int) -> list[dict[str, Any]]:
         ).fetchall()
     return [
         {
-            "paper_id": r[0], "title": r[1], "source": r[2],
+            "paper_id": r[0],
+            "title": r[1],
+            "source": r[2],
             "relevance_score": float(r[3] or 0),
             "implementation_priority": int(r[4] or 0),
         }
@@ -134,7 +136,9 @@ def _fetch_paper_row(engine: Any, paper_id: str) -> dict[str, Any] | None:
 
 
 def _synthesize_extract(
-    paper_id: str, paper_row: dict[str, Any], extract_root: Path,
+    paper_id: str,
+    paper_row: dict[str, Any],
+    extract_root: Path,
 ) -> Path:
     """Build a minimal extract markdown from DB fields and write it.
 
@@ -203,23 +207,25 @@ def _synthesize_extract(
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument(
-        "--max-papers", type=int, default=_DEFAULT_MAX_PAPERS_PER_RUN,
+        "--max-papers",
+        type=int,
+        default=_DEFAULT_MAX_PAPERS_PER_RUN,
         help="Max papers to promote per run (cost ceiling)",
     )
     p.add_argument(
-        "--extract-root", default="data/research/extracts",
+        "--extract-root",
+        default="data/research/extracts",
         help="Where the ExtractStore writes paper extracts",
     )
     p.add_argument(
-        "--hypothesis-dir", default="docs/research/hypotheses",
+        "--hypothesis-dir",
+        default="docs/research/hypotheses",
         help="Where IdeaGenerator writes accepted hypothesis briefs",
     )
     p.add_argument(
-        "--dry-run", action="store_true",
-        help=(
-            "List promotable papers without calling the LLM or "
-            "transitioning state"
-        ),
+        "--dry-run",
+        action="store_true",
+        help=("List promotable papers without calling the LLM or transitioning state"),
     )
     p.add_argument("-v", "--verbose", action="store_true")
     args = p.parse_args(argv)
@@ -230,9 +236,11 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     from src.dotenv_bootstrap import load_project_env
+
     load_project_env()
 
     from src.runtime.run_engine import _build_db_engine
+
     engine = _build_db_engine()
     extract_root = Path(args.extract_root)
 
@@ -243,7 +251,8 @@ def main(argv: list[str] | None = None) -> int:
 
     logger.info(
         "Promoting %d papers (cap=%d): %s",
-        len(promotable), args.max_papers,
+        len(promotable),
+        args.max_papers,
         ", ".join(p["paper_id"][:8] for p in promotable),
     )
 
@@ -263,9 +272,13 @@ def main(argv: list[str] | None = None) -> int:
     from src.research.config import load_config
 
     research_cfg = load_config("configs/research_agents.yaml")
-    idea_agent = cast(IdeaGenerator, IdeaGenerator.from_config(
-        name="idea_generator", research_config=research_cfg,
-    ))
+    idea_agent = cast(
+        IdeaGenerator,
+        IdeaGenerator.from_config(
+            name="idea_generator",
+            research_config=research_cfg,
+        ),
+    )
 
     n_proposed = 0
     n_declined = 0
@@ -283,25 +296,27 @@ def main(argv: list[str] | None = None) -> int:
             db_row = _fetch_paper_row(engine, paper_id)
             if db_row is None:
                 logger.warning(
-                    "[%s] DB row vanished between SELECT and synthesis — "
-                    "skipping", paper_id[:8],
+                    "[%s] DB row vanished between SELECT and synthesis — skipping",
+                    paper_id[:8],
                 )
                 n_skipped += 1
                 continue
             extract = _synthesize_extract(paper_id, db_row, extract_root)
             logger.info(
                 "[%s] no extract on disk — synthesized %s from DB row",
-                paper_id[:8], extract,
+                paper_id[:8],
+                extract,
             )
 
         try:
             result = idea_agent.ideate(
-                extract, hypothesis_dir=args.hypothesis_dir,
+                extract,
+                hypothesis_dir=args.hypothesis_dir,
             )
         except Exception:
             logger.exception(
-                "[%s] IdeaGenerator raised — leaving status unchanged "
-                "for retry next run", paper_id[:8],
+                "[%s] IdeaGenerator raised — leaving status unchanged for retry next run",
+                paper_id[:8],
             )
             n_skipped += 1
             continue
@@ -311,19 +326,23 @@ def main(argv: list[str] | None = None) -> int:
             n_proposed += 1
             logger.info(
                 "[%s] PROPOSED → %s (status=in_pipeline)",
-                paper_id[:8], result.hypothesis_path,
+                paper_id[:8],
+                result.hypothesis_path,
             )
         else:  # DECLINED
             _set_status(engine, paper_id, "idea_declined")
             n_declined += 1
             logger.info(
                 "[%s] DECLINED — %s (status=idea_declined)",
-                paper_id[:8], result.reason[:120],
+                paper_id[:8],
+                result.reason[:120],
             )
 
     logger.info(
         "Promotion summary: proposed=%d declined=%d skipped=%d",
-        n_proposed, n_declined, n_skipped,
+        n_proposed,
+        n_declined,
+        n_skipped,
     )
     return 0
 

@@ -138,7 +138,8 @@ def equity_watch_universe(playbooks: dict[str, Playbook]) -> tuple[str, ...]:
             if not _TICKER_RE.match(ticker):
                 logger.debug(
                     "universe: skipping non-ticker equity_watch entry %r (theme %s)",
-                    ticker, pb.key,
+                    ticker,
+                    pb.key,
                 )
                 continue
             universe.add(ticker)
@@ -157,7 +158,9 @@ def _env_float(name: str, default: float) -> float:
 
 
 def _yf_download(
-    tickers: Sequence[str], start: datetime, end: datetime,
+    tickers: Sequence[str],
+    start: datetime,
+    end: datetime,
 ) -> pd.DataFrame:
     """Default downloader: one batched yfinance daily-bars request."""
     import yfinance as yf  # deferred — keep import cheap for non-scan callers
@@ -243,7 +246,10 @@ class RelativeVolumeScanner:
     # ------------------------------------------------------------- #
 
     def _compute_row(
-        self, ticker: str, frame: pd.DataFrame, scanned_at: datetime,
+        self,
+        ticker: str,
+        frame: pd.DataFrame,
+        scanned_at: datetime,
     ) -> VolumeScanRow | None:
         """RVOL for one ticker from its daily-bars frame, or ``None``
         when the data is unusable (too new, all-NaN, zero baseline)."""
@@ -276,18 +282,14 @@ class RelativeVolumeScanner:
         except (IndexError, TypeError, ValueError):
             price_change_pct = None
 
-        is_unusual = (
-            rvol >= self.rvol_threshold and avg_volume >= self.min_avg_volume
-        )
+        is_unusual = rvol >= self.rvol_threshold and avg_volume >= self.min_avg_volume
         return VolumeScanRow(
             ticker=ticker,
             scanned_at=scanned_at,
             rvol=round(rvol, 4),
             volume=int(today_volume),
             avg_volume_20d=round(avg_volume, 2),
-            price_change_pct=(
-                round(price_change_pct, 4) if price_change_pct is not None else None
-            ),
+            price_change_pct=(round(price_change_pct, 4) if price_change_pct is not None else None),
             is_unusual=is_unusual,
         )
 
@@ -308,9 +310,9 @@ class RelativeVolumeScanner:
             cached = self._recent_cached_rows(self.min_rescan_interval)
             if cached is not None:
                 logger.info(
-                    "rvol scan: reusing %d cached rows (< %s old); "
-                    "skipping yfinance re-download",
-                    len(cached), self.min_rescan_interval,
+                    "rvol scan: reusing %d cached rows (< %s old); skipping yfinance re-download",
+                    len(cached),
+                    self.min_rescan_interval,
                 )
                 return cached
 
@@ -354,12 +356,17 @@ class RelativeVolumeScanner:
         unusual = sum(1 for r in rows if r.is_unusual)
         logger.info(
             "rvol scan: %d/%d tickers scanned, %d unusual (threshold %.2f, floor %.0f)",
-            len(rows), len(tickers), unusual, self.rvol_threshold, self.min_avg_volume,
+            len(rows),
+            len(tickers),
+            unusual,
+            self.rvol_threshold,
+            self.min_avg_volume,
         )
         return rows
 
     def _recent_cached_rows(
-        self, max_age: timedelta,
+        self,
+        max_age: timedelta,
     ) -> list[VolumeScanRow] | None:
         """Return the most-recent scan's rows if it is younger than
         ``max_age``, else ``None`` (caller then does a real scan).
@@ -372,9 +379,11 @@ class RelativeVolumeScanner:
         cutoff = datetime.now(UTC) - max_age
         try:
             with self.engine.connect() as conn:
-                latest = conn.execute(text(
-                    "SELECT MAX(scanned_at) FROM volume_spikes",
-                )).scalar()
+                latest = conn.execute(
+                    text(
+                        "SELECT MAX(scanned_at) FROM volume_spikes",
+                    )
+                ).scalar()
                 if latest is None:
                     return None
                 latest_ts = pd.Timestamp(latest)
@@ -382,11 +391,14 @@ class RelativeVolumeScanner:
                     latest_ts = latest_ts.tz_localize("UTC")
                 if latest_ts < pd.Timestamp(cutoff):
                     return None
-                result = conn.execute(text(
-                    "SELECT ticker, scanned_at, rvol, volume, "
-                    "avg_volume_20d, price_change_pct, is_unusual, source "
-                    "FROM volume_spikes WHERE scanned_at = :ts",
-                ), {"ts": latest}).all()
+                result = conn.execute(
+                    text(
+                        "SELECT ticker, scanned_at, rvol, volume, "
+                        "avg_volume_20d, price_change_pct, is_unusual, source "
+                        "FROM volume_spikes WHERE scanned_at = :ts",
+                    ),
+                    {"ts": latest},
+                ).all()
         except Exception:
             logger.debug(
                 "rvol scan: cache-freshness check failed; running real scan",
@@ -400,20 +412,18 @@ class RelativeVolumeScanner:
             scanned_dt = (
                 scanned.tz_localize("UTC") if scanned.tzinfo is None else scanned
             ).to_pydatetime()
-            rows.append(VolumeScanRow(
-                ticker=str(r[0]),
-                scanned_at=scanned_dt,
-                rvol=float(r[2]),
-                volume=int(r[3]) if r[3] is not None else None,
-                avg_volume_20d=(
-                    float(r[4]) if r[4] is not None else None
-                ),
-                price_change_pct=(
-                    float(r[5]) if r[5] is not None else None
-                ),
-                is_unusual=bool(r[6]),
-                source=str(r[7]) if r[7] is not None else "yfinance",
-            ))
+            rows.append(
+                VolumeScanRow(
+                    ticker=str(r[0]),
+                    scanned_at=scanned_dt,
+                    rvol=float(r[2]),
+                    volume=int(r[3]) if r[3] is not None else None,
+                    avg_volume_20d=(float(r[4]) if r[4] is not None else None),
+                    price_change_pct=(float(r[5]) if r[5] is not None else None),
+                    is_unusual=bool(r[6]),
+                    source=str(r[7]) if r[7] is not None else "yfinance",
+                )
+            )
         return rows
 
     def _persist(self, rows: list[VolumeScanRow]) -> None:

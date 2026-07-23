@@ -34,7 +34,9 @@ class EventBacktester:
         for idx, event in events.iterrows():
             pair = event.get("pair", "EURUSD")
             direction = event.get("direction", 1)
-            entry_price = event.get("entry_price", prices.loc[idx, pair] if idx in prices.index else None)
+            entry_price = event.get(
+                "entry_price", prices.loc[idx, pair] if idx in prices.index else None
+            )
             if entry_price is None:
                 continue
 
@@ -81,18 +83,20 @@ class EventBacktester:
             pnl_dollars = equity * net_pnl_pct
             equity += pnl_dollars
 
-            trades.append({
-                "entry_ts": idx,
-                "pair": pair,
-                "direction": direction,
-                "entry_price": entry_price,
-                "exit_price": exit_price,
-                "exit_reason": exit_reason,
-                "gross_pnl_pct": gross_pnl_pct,
-                "net_pnl_pct": net_pnl_pct,
-                "pnl_dollars": pnl_dollars,
-                "equity_after": equity,
-            })
+            trades.append(
+                {
+                    "entry_ts": idx,
+                    "pair": pair,
+                    "direction": direction,
+                    "entry_price": entry_price,
+                    "exit_price": exit_price,
+                    "exit_reason": exit_reason,
+                    "gross_pnl_pct": gross_pnl_pct,
+                    "net_pnl_pct": net_pnl_pct,
+                    "pnl_dollars": pnl_dollars,
+                    "equity_after": equity,
+                }
+            )
 
         trades_df = pd.DataFrame(trades)
         equity_curve = pd.Series(
@@ -102,7 +106,9 @@ class EventBacktester:
         metrics = self._compute_metrics(trades_df, starting_equity, equity)
         return EventBacktestResult(trades_df, equity_curve, metrics)
 
-    def _compute_metrics(self, trades: pd.DataFrame, start_eq: float, end_eq: float) -> dict[str, Any]:
+    def _compute_metrics(
+        self, trades: pd.DataFrame, start_eq: float, end_eq: float
+    ) -> dict[str, Any]:
         if len(trades) == 0:
             return {"n_trades": 0}
         years = max((trades["entry_ts"].max() - trades["entry_ts"].min()).days / 365.25, 0.01)

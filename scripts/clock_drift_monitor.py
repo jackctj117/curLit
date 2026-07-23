@@ -93,15 +93,20 @@ def main(argv: list[str] | None = None) -> int:
         description="Monitor system clock drift vs NTP server.",
     )
     p.add_argument(
-        "--interval", type=int, default=_DEFAULT_INTERVAL_SEC,
+        "--interval",
+        type=int,
+        default=_DEFAULT_INTERVAL_SEC,
         help="Seconds between checks (default 60)",
     )
     p.add_argument(
-        "--threshold", type=float, default=_DEFAULT_THRESHOLD_SEC,
+        "--threshold",
+        type=float,
+        default=_DEFAULT_THRESHOLD_SEC,
         help="Drift threshold in seconds for WARNING (default 0.1)",
     )
     p.add_argument(
-        "--ntp-server", default=_DEFAULT_NTP_SERVER,
+        "--ntp-server",
+        default=_DEFAULT_NTP_SERVER,
         help="NTP server hostname (default pool.ntp.org)",
     )
     p.add_argument("-v", "--verbose", action="store_true")
@@ -118,7 +123,9 @@ def main(argv: list[str] | None = None) -> int:
 
     logger.info(
         "Clock drift monitor: server=%s interval=%ds threshold=%.3fs",
-        args.ntp_server, args.interval, args.threshold,
+        args.ntp_server,
+        args.interval,
+        args.threshold,
     )
 
     while True:
@@ -128,14 +135,17 @@ def main(argv: list[str] | None = None) -> int:
             if abs(offset) >= args.threshold:
                 logger.warning(
                     "Clock drift %.3fs exceeds threshold %.3fs (server=%s)",
-                    offset, args.threshold, args.ntp_server,
+                    offset,
+                    args.threshold,
+                    args.ntp_server,
                 )
             else:
                 logger.debug("Clock drift %.4fs (within threshold)", offset)
         except Exception as exc:
             logger.warning(
                 "NTP query failed: %s: %s — will retry next interval",
-                type(exc).__name__, exc,
+                type(exc).__name__,
+                exc,
             )
         time.sleep(args.interval)
 

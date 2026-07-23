@@ -35,12 +35,16 @@ from src.data.polymarket import (
 class TestLoadMarketConfig:
     def test_parses_yaml(self, tmp_path: Path) -> None:
         cfg = tmp_path / "p.yaml"
-        cfg.write_text(yaml.safe_dump({
-            "markets": [
-                {"slug": "fed-cut", "token_id": "tok1", "fx_relevance": "high"},
-                {"slug": "cpi", "token_id": "tok2"},
-            ],
-        }))
+        cfg.write_text(
+            yaml.safe_dump(
+                {
+                    "markets": [
+                        {"slug": "fed-cut", "token_id": "tok1", "fx_relevance": "high"},
+                        {"slug": "cpi", "token_id": "tok2"},
+                    ],
+                }
+            )
+        )
         out = load_market_config(cfg)
         assert len(out) == 2
         assert out[0]["slug"] == "fed-cut"
@@ -56,17 +60,22 @@ class TestLoadMarketConfig:
             load_market_config(cfg)
 
     def test_skips_entries_without_token_id_or_slug(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         cfg = tmp_path / "p.yaml"
-        cfg.write_text(yaml.safe_dump({
-            "markets": [
-                {"slug": "good", "token_id": "tok"},
-                {"slug": "missing-token"},  # skipped
-                {"token_id": "missing-slug"},  # skipped
-                {},  # skipped
-            ],
-        }))
+        cfg.write_text(
+            yaml.safe_dump(
+                {
+                    "markets": [
+                        {"slug": "good", "token_id": "tok"},
+                        {"slug": "missing-token"},  # skipped
+                        {"token_id": "missing-slug"},  # skipped
+                        {},  # skipped
+                    ],
+                }
+            )
+        )
         out = load_market_config(cfg)
         assert len(out) == 1
         assert out[0]["slug"] == "good"
@@ -150,9 +159,14 @@ class TestFetch:
         def flaky_http(url: str, params: dict[str, str]) -> dict[str, Any]:
             if params["market"] == "broken":
                 raise ConnectionError("api down")
-            return _canned_history([(
-                int(datetime(2026, 4, 1, tzinfo=UTC).timestamp()), 0.5,
-            )])
+            return _canned_history(
+                [
+                    (
+                        int(datetime(2026, 4, 1, tzinfo=UTC).timestamp()),
+                        0.5,
+                    )
+                ]
+            )
 
         ingester = PolymarketHistoryIngester(
             db_url=db_url,
@@ -189,11 +203,11 @@ class TestFetch:
         def http(url: str, params: dict[str, str]) -> dict[str, Any]:
             return {
                 "history": [
-                    {"t": 1700000000, "p": 0.5},      # ok
-                    {"t": "not-an-int", "p": 0.6},    # skip — bad ts
-                    {"t": 1700000001, "p": "junk"},   # skip — bad price
-                    {"t": None, "p": 0.7},            # skip
-                    None,                              # skip
+                    {"t": 1700000000, "p": 0.5},  # ok
+                    {"t": "not-an-int", "p": 0.6},  # skip — bad ts
+                    {"t": 1700000001, "p": "junk"},  # skip — bad price
+                    {"t": None, "p": 0.7},  # skip
+                    None,  # skip
                 ],
             }
 
@@ -223,14 +237,23 @@ class TestTransform:
             markets=[{"slug": "x", "token_id": "t"}],
             http_get_json=lambda u, p: {},
         )
-        raw = pd.DataFrame({
-            "ts": [datetime(2026, 4, 1, tzinfo=UTC)],
-            "symbol": ["POLY:fed-cut"],
-            "close": [0.65],
-        })
+        raw = pd.DataFrame(
+            {
+                "ts": [datetime(2026, 4, 1, tzinfo=UTC)],
+                "symbol": ["POLY:fed-cut"],
+                "close": [0.65],
+            }
+        )
         out = ingester.transform(raw)
         assert list(out.columns) == [
-            "ts", "symbol", "source", "open", "high", "low", "close", "volume",
+            "ts",
+            "symbol",
+            "source",
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume",
         ]
         assert out.iloc[0]["source"] == "polymarket"
         assert out.iloc[0]["close"] == 0.65
@@ -239,7 +262,8 @@ class TestTransform:
     def test_empty_df_passes_through(self, tmp_path: Path) -> None:
         db_url = f"sqlite:///{tmp_path / 'test.db'}"
         ingester = PolymarketHistoryIngester(
-            db_url=db_url, markets=[],
+            db_url=db_url,
+            markets=[],
             http_get_json=lambda u, p: {},
         )
         out = ingester.transform(pd.DataFrame())
@@ -254,7 +278,8 @@ class TestEndToEnd:
         db_url = f"sqlite:///{db_path}"
         engine = create_engine(db_url)
         with engine.begin() as conn:
-            conn.execute(text("""
+            conn.execute(
+                text("""
                 CREATE TABLE prices (
                     ts TIMESTAMP,
                     symbol VARCHAR(64),
@@ -266,7 +291,8 @@ class TestEndToEnd:
                     volume FLOAT,
                     PRIMARY KEY (ts, symbol)
                 )
-            """))
+            """)
+            )
 
         ts = int(datetime(2026, 4, 1, tzinfo=UTC).timestamp())
         ingester = PolymarketHistoryIngester(

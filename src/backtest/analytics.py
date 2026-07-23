@@ -7,7 +7,8 @@ import pandas as pd
 class PerformanceAnalytics:
     @staticmethod
     def metrics(
-        returns: pd.Series, periods_per_year: int = 252,
+        returns: pd.Series,
+        periods_per_year: int = 252,
     ) -> dict[str, float | int]:
         if len(returns) == 0:
             return {}
@@ -17,12 +18,15 @@ class PerformanceAnalytics:
         years = len(returns) / ann_factor
         cagr = (1 + total_return) ** (1 / years) - 1 if years > 0 else 0.0
         vol = returns.std() * np.sqrt(ann_factor)
-        sharpe = (returns.mean() / returns.std()) * np.sqrt(ann_factor) if returns.std() > 0 else 0.0
+        sharpe = (
+            (returns.mean() / returns.std()) * np.sqrt(ann_factor) if returns.std() > 0 else 0.0
+        )
 
         downside = returns[returns < 0]
         sortino = (
             (returns.mean() / downside.std()) * np.sqrt(ann_factor)
-            if len(downside) > 0 and downside.std() > 0 else 0.0
+            if len(downside) > 0 and downside.std() > 0
+            else 0.0
         )
 
         equity = (1 + returns).cumprod()
@@ -49,12 +53,15 @@ class PerformanceAnalytics:
             avg_win = float(wins.mean()) if len(wins) > 0 else 0.0
             avg_loss = float(losses.mean()) if len(losses) > 0 else 0.0
             profit_factor = (
-                float(wins.sum() / abs(losses.sum()))
-                if len(losses) > 0 else float("inf")
+                float(wins.sum() / abs(losses.sum())) if len(losses) > 0 else float("inf")
             )
 
         var_95 = float(np.percentile(returns, 5))
-        es_95 = float(returns[returns <= var_95].mean()) if len(returns[returns <= var_95]) > 0 else var_95
+        es_95 = (
+            float(returns[returns <= var_95].mean())
+            if len(returns[returns <= var_95]) > 0
+            else var_95
+        )
 
         return {
             "total_return": float(total_return),
@@ -77,23 +84,23 @@ class PerformanceAnalytics:
 
     @staticmethod
     def regime_metrics(
-        returns: pd.Series, regime: pd.Series,
+        returns: pd.Series,
+        regime: pd.Series,
     ) -> pd.DataFrame:
         df = pd.DataFrame({"returns": returns, "regime": regime})
         grouped = df.groupby("regime")["returns"]
         sharpe_fn = lambda x: (x.mean() / x.std() * np.sqrt(252)) if x.std() > 0 else 0.0  # noqa: E731
-        return pd.DataFrame({
-            "mean_ret": grouped.mean() * 252,
-            "sharpe": grouped.apply(sharpe_fn),
-            "count": grouped.count(),
-        })
+        return pd.DataFrame(
+            {
+                "mean_ret": grouped.mean() * 252,
+                "sharpe": grouped.apply(sharpe_fn),
+                "count": grouped.count(),
+            }
+        )
 
     @staticmethod
     def rolling_sharpe(
-        returns: pd.Series, window: int = 63,
+        returns: pd.Series,
+        window: int = 63,
     ) -> pd.Series:
-        return (
-            returns.rolling(window).mean()
-            / returns.rolling(window).std()
-            * np.sqrt(252)
-        )
+        return returns.rolling(window).mean() / returns.rolling(window).std() * np.sqrt(252)

@@ -30,40 +30,73 @@ def engine(tmp_path):  # type: ignore[no-untyped-def]
     eng = create_engine(f"sqlite:///{tmp_path / 'o.db'}")
     with eng.begin() as conn:
         conn.execute(text("CREATE TABLE geo_events (id INTEGER PRIMARY KEY, theme TEXT)"))
-        conn.execute(text("""
+        conn.execute(
+            text("""
             CREATE TABLE trade_ideas (
                 idea_id TEXT PRIMARY KEY, geo_event_id INTEGER, ticker TEXT,
                 action TEXT, direction TEXT, confidence FLOAT, time_horizon TEXT,
                 time_stop_days INTEGER, price_at_signal FLOAT, created_at TEXT,
                 notes TEXT, status TEXT DEFAULT 'pending')
-        """))
+        """)
+        )
         sql = _strip_sql_comments(Path("migrations/013_idea_outcomes.sql").read_text())
-        sql = (sql.replace("TIMESTAMPTZ", "TEXT").replace("NUMERIC", "FLOAT")
-               .replace("DEFAULT FALSE", "DEFAULT 0"))
+        sql = (
+            sql.replace("TIMESTAMPTZ", "TEXT")
+            .replace("NUMERIC", "FLOAT")
+            .replace("DEFAULT FALSE", "DEFAULT 0")
+        )
         for stmt in [s.strip() for s in sql.split(";") if s.strip()]:
             conn.execute(text(stmt))
     return eng
 
 
-def _seed(engine, idea_id, ticker, action, direction, entry, days_ago,
-          theme="sanctions_trade", time_stop_days=10, notes="", geo_id=1):
+def _seed(
+    engine,
+    idea_id,
+    ticker,
+    action,
+    direction,
+    entry,
+    days_ago,
+    theme="sanctions_trade",
+    time_stop_days=10,
+    notes="",
+    geo_id=1,
+):
     created = (NOW - timedelta(days=days_ago)).isoformat()
     with engine.begin() as conn:
-        conn.execute(text("INSERT OR IGNORE INTO geo_events (id, theme) VALUES (:i,:t)"),
-                     {"i": geo_id, "t": theme})
-        conn.execute(text("""
+        conn.execute(
+            text("INSERT OR IGNORE INTO geo_events (id, theme) VALUES (:i,:t)"),
+            {"i": geo_id, "t": theme},
+        )
+        conn.execute(
+            text("""
             INSERT INTO trade_ideas (idea_id, geo_event_id, ticker, action,
                 direction, confidence, time_horizon, time_stop_days,
                 price_at_signal, created_at, notes)
             VALUES (:id,:g,:tk,:ac,:d,0.6,'short',:tsd,:px,:ca,:n)
-        """), {"id": idea_id, "g": geo_id, "tk": ticker, "ac": action, "d": direction,
-               "tsd": time_stop_days, "px": entry, "ca": created, "n": notes})
+        """),
+            {
+                "id": idea_id,
+                "g": geo_id,
+                "tk": ticker,
+                "ac": action,
+                "d": direction,
+                "tsd": time_stop_days,
+                "px": entry,
+                "ca": created,
+                "n": notes,
+            },
+        )
 
 
 def _outcome(engine, idea_id):
     with engine.connect() as conn:
-        return dict(conn.execute(text(
-            "SELECT * FROM idea_outcomes WHERE idea_id=:i"), {"i": idea_id}).mappings().one())
+        return dict(
+            conn.execute(text("SELECT * FROM idea_outcomes WHERE idea_id=:i"), {"i": idea_id})
+            .mappings()
+            .one()
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -113,6 +146,7 @@ def test_contradictory_action_wins_over_direction(engine):
 
 def test_idea_sign_precedence():
     from src.events.outcome_tracker import _idea_is_bullish
+
     # action wins over direction
     assert _idea_is_bullish("buy_puts", "bullish") is False
     assert _idea_is_bullish("buy_calls", "bearish") is True
@@ -142,7 +176,7 @@ def test_open_before_horizon(engine):
     counts = score_open_ideas(engine, price_fn=lambda t: {"MP": 130.0}, now=NOW)
     assert counts["open"] == 1
     o = _outcome(engine, "o1")
-    assert o["outcome"] == "open"          # not finalised yet
+    assert o["outcome"] == "open"  # not finalised yet
     assert o["return_pct"] == pytest.approx(0.30)  # but return is tracked
 
 
@@ -156,10 +190,11 @@ def test_no_data_when_unpriced(engine):
 def test_mfe_mae_tracked_across_scorings(engine):
     _seed(engine, "m1", "MP", "long", "bullish", 100.0, days_ago=2)
     score_open_ideas(engine, price_fn=lambda t: {"MP": 120.0}, now=NOW)  # +20%
-    score_open_ideas(engine, price_fn=lambda t: {"MP": 95.0},
-                     now=NOW + timedelta(hours=6))  # round-trips to −5%
+    score_open_ideas(
+        engine, price_fn=lambda t: {"MP": 95.0}, now=NOW + timedelta(hours=6)
+    )  # round-trips to −5%
     o = _outcome(engine, "m1")
-    assert o["max_favorable_pct"] == pytest.approx(0.20)   # remembered the peak
+    assert o["max_favorable_pct"] == pytest.approx(0.20)  # remembered the peak
     assert o["max_adverse_pct"] == pytest.approx(-0.05)
     assert o["scored_count"] == 2
 
@@ -168,15 +203,22 @@ def test_finalised_idea_not_rescored(engine):
     _seed(engine, "w1", "MP", "long", "bullish", 100.0, days_ago=20)
     score_open_ideas(engine, price_fn=lambda t: {"MP": 120.0}, now=NOW)  # win
     # A later move must NOT change a finalised outcome.
-    counts = score_open_ideas(engine, price_fn=lambda t: {"MP": 60.0},
-                              now=NOW + timedelta(days=1))
+    counts = score_open_ideas(engine, price_fn=lambda t: {"MP": 60.0}, now=NOW + timedelta(days=1))
     assert counts == {"open": 0, "win": 0, "loss": 0, "flat": 0, "no_data": 0}
     assert _outcome(engine, "w1")["outcome"] == "win"  # unchanged
 
 
 def test_denormalises_niche_and_red_team(engine):
-    _seed(engine, "d1", "IDR", "long", "bullish", 100.0, days_ago=2,
-          notes="[niche 4hop asym0.55] junior | ⚠ survived red-team; top risk: crowded")
+    _seed(
+        engine,
+        "d1",
+        "IDR",
+        "long",
+        "bullish",
+        100.0,
+        days_ago=2,
+        notes="[niche 4hop asym0.55] junior | ⚠ survived red-team; top risk: crowded",
+    )
     score_open_ideas(engine, price_fn=lambda t: {"IDR": 105.0}, now=NOW)
     o = _outcome(engine, "d1")
     assert bool(o["is_niche"]) is True
@@ -187,6 +229,7 @@ def test_denormalises_niche_and_red_team(engine):
 
 def test_win_threshold_configurable(engine):
     _seed(engine, "c1", "MP", "long", "bullish", 100.0, days_ago=20)
-    score_open_ideas(engine, price_fn=lambda t: {"MP": 103.0}, now=NOW,
-                     config=OutcomeConfig(win_threshold=0.02))  # +3% ≥ 2% → win
+    score_open_ideas(
+        engine, price_fn=lambda t: {"MP": 103.0}, now=NOW, config=OutcomeConfig(win_threshold=0.02)
+    )  # +3% ≥ 2% → win
     assert _outcome(engine, "c1")["outcome"] == "win"

@@ -42,19 +42,27 @@ def playbooks_yaml(tmp_path: Path) -> Path:
                 "name": "Theme A",
                 "description": "d",
                 "watch_terms": ["strait of hormuz", "tanker"],
-                "instruments": [{
-                    "instrument": "BCO_USD", "kind": "oanda",
-                    "direction": "long", "rationale": "r",
-                }],
+                "instruments": [
+                    {
+                        "instrument": "BCO_USD",
+                        "kind": "oanda",
+                        "direction": "long",
+                        "rationale": "r",
+                    }
+                ],
             },
             "theme_b": {
                 "name": "Theme B",
                 "description": "d",
                 "watch_terms": ["opec emergency"],
-                "instruments": [{
-                    "instrument": "WTICO_USD", "kind": "oanda",
-                    "direction": "long", "rationale": "r",
-                }],
+                "instruments": [
+                    {
+                        "instrument": "WTICO_USD",
+                        "kind": "oanda",
+                        "direction": "long",
+                        "rationale": "r",
+                    }
+                ],
             },
         },
     }
@@ -79,9 +87,11 @@ def sqlite_db_url(tmp_path: Path) -> str:
 
     db_url = f"sqlite:///{tmp_path / 'geo.db'}"
     engine = create_engine(db_url)
-    sql = _shim_pg_types_for_sqlite(_strip_sql_comments(
-        Path("migrations/005_geo_events.sql").read_text(),
-    ))
+    sql = _shim_pg_types_for_sqlite(
+        _strip_sql_comments(
+            Path("migrations/005_geo_events.sql").read_text(),
+        )
+    )
     with engine.begin() as conn:
         for stmt in [s.strip() for s in sql.split(";") if s.strip()]:
             conn.execute(text(stmt))
@@ -90,7 +100,9 @@ def sqlite_db_url(tmp_path: Path) -> str:
 
 class _FakeResponse:
     def __init__(
-        self, payload: dict | None = None, body: str = "",
+        self,
+        payload: dict | None = None,
+        body: str = "",
         status_code: int = 200,
     ) -> None:
         self._payload = payload
@@ -109,8 +121,11 @@ class _FakeResponse:
 
 def _article(url: str, title: str, seendate: str = "20260714T093000Z") -> dict:
     return {
-        "url": url, "title": title, "seendate": seendate,
-        "domain": "example.com", "language": "English",
+        "url": url,
+        "title": title,
+        "seendate": seendate,
+        "domain": "example.com",
+        "language": "English",
     }
 
 
@@ -161,7 +176,8 @@ class TestRealConfigQueries:
         assert q.endswith(") sourcelang:english")
 
     def test_all_theme_queries_under_gdelt_length_ceiling(
-        self, real_playbooks: dict,
+        self,
+        real_playbooks: dict,
     ) -> None:
         # GDELT's Doc API rejects long queries with an HTTP-200
         # plain-text "query was too short or too long" (observed live at
@@ -197,17 +213,27 @@ class TestRealConfigQueries:
 
 class TestFetch:
     def test_parses_artlist_and_tags_theme(
-        self, monkeypatch: pytest.MonkeyPatch,
-        playbooks_yaml: Path, sqlite_db_url: str,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        playbooks_yaml: Path,
+        sqlite_db_url: str,
     ) -> None:
         def fake_get(url: str, params: dict, timeout: float) -> _FakeResponse:
             if "hormuz" in params["query"]:
-                return _FakeResponse({"articles": [
-                    _article("https://n.test/1", "Hormuz headline"),
-                ]})
-            return _FakeResponse({"articles": [
-                _article("https://n.test/2", "OPEC headline"),
-            ]})
+                return _FakeResponse(
+                    {
+                        "articles": [
+                            _article("https://n.test/1", "Hormuz headline"),
+                        ]
+                    }
+                )
+            return _FakeResponse(
+                {
+                    "articles": [
+                        _article("https://n.test/2", "OPEC headline"),
+                    ]
+                }
+            )
 
         monkeypatch.setattr(gdelt_mod.httpx, "get", fake_get)
         ing = GdeltIngester(sqlite_db_url, playbooks_yaml, pause_sec=0)
@@ -216,15 +242,21 @@ class TestFetch:
         assert set(raw["theme"]) == {"theme_a", "theme_b"}
 
     def test_one_failing_theme_does_not_kill_run(
-        self, monkeypatch: pytest.MonkeyPatch,
-        playbooks_yaml: Path, sqlite_db_url: str,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        playbooks_yaml: Path,
+        sqlite_db_url: str,
     ) -> None:
         def fake_get(url: str, params: dict, timeout: float) -> _FakeResponse:
             if "hormuz" in params["query"]:
                 raise ConnectionError("gdelt hiccup")
-            return _FakeResponse({"articles": [
-                _article("https://n.test/2", "OPEC headline"),
-            ]})
+            return _FakeResponse(
+                {
+                    "articles": [
+                        _article("https://n.test/2", "OPEC headline"),
+                    ]
+                }
+            )
 
         monkeypatch.setattr(gdelt_mod.httpx, "get", fake_get)
         ing = GdeltIngester(sqlite_db_url, playbooks_yaml, pause_sec=0)
@@ -232,7 +264,8 @@ class TestFetch:
         assert list(raw["theme"]) == ["theme_b"]
 
     def test_429_retried_once_after_cooloff(
-        self, monkeypatch: pytest.MonkeyPatch,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         from src.data.gdelt import GdeltDocProvider
 
@@ -254,9 +287,11 @@ class TestFetch:
         from src.data.gdelt import GdeltDocProvider
 
         monkeypatch.setattr(
-            gdelt_mod.httpx, "get",
+            gdelt_mod.httpx,
+            "get",
             lambda url, params, timeout: _FakeResponse(
-                body="rate limited", status_code=429,
+                body="rate limited",
+                status_code=429,
             ),
         )
         provider = GdeltDocProvider(rate_limit_cooloff_sec=0.01)
@@ -264,8 +299,10 @@ class TestFetch:
             provider.fetch_articles("(q)", START, END)
 
     def test_adaptive_pause_credits_fetch_time(
-        self, monkeypatch: pytest.MonkeyPatch,
-        playbooks_yaml: Path, sqlite_db_url: str,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        playbooks_yaml: Path,
+        sqlite_db_url: str,
     ) -> None:
         """CL-7vn9: the inter-theme pause is a cadence, not a blind sleep.
         A fetch that already burned >= pause_sec of wall-clock must sleep
@@ -283,9 +320,13 @@ class TestFetch:
 
         def fake_get(url: str, params: dict, timeout: float) -> _FakeResponse:
             clock[0] += 10.0  # each fetch "takes" 10s — longer than pause
-            return _FakeResponse({"articles": [
-                _article("https://n.test/x", "h"),
-            ]})
+            return _FakeResponse(
+                {
+                    "articles": [
+                        _article("https://n.test/x", "h"),
+                    ]
+                }
+            )
 
         monkeypatch.setattr(gdelt_mod.time, "monotonic", fake_monotonic)
         monkeypatch.setattr(gdelt_mod.time, "sleep", fake_sleep)
@@ -297,8 +338,10 @@ class TestFetch:
         assert sleeps == []
 
     def test_adaptive_pause_tops_up_when_fetch_fast(
-        self, monkeypatch: pytest.MonkeyPatch,
-        playbooks_yaml: Path, sqlite_db_url: str,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        playbooks_yaml: Path,
+        sqlite_db_url: str,
     ) -> None:
         """A fast (near-instant) fetch still sleeps the full cadence to
         stay polite — spacing between request starts stays >= pause_sec."""
@@ -311,9 +354,13 @@ class TestFetch:
 
         def fake_get(url: str, params: dict, timeout: float) -> _FakeResponse:
             clock[0] += 0.01  # near-instant fetch
-            return _FakeResponse({"articles": [
-                _article("https://n.test/x", "h"),
-            ]})
+            return _FakeResponse(
+                {
+                    "articles": [
+                        _article("https://n.test/x", "h"),
+                    ]
+                }
+            )
 
         monkeypatch.setattr(gdelt_mod.time, "monotonic", lambda: clock[0])
         monkeypatch.setattr(gdelt_mod.time, "sleep", fake_sleep)
@@ -326,11 +373,14 @@ class TestFetch:
         assert sleeps[0] == pytest.approx(6.0 - 0.01, abs=0.02)
 
     def test_non_json_body_treated_as_empty(
-        self, monkeypatch: pytest.MonkeyPatch,
-        playbooks_yaml: Path, sqlite_db_url: str,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        playbooks_yaml: Path,
+        sqlite_db_url: str,
     ) -> None:
         monkeypatch.setattr(
-            gdelt_mod.httpx, "get",
+            gdelt_mod.httpx,
+            "get",
             lambda url, params, timeout: _FakeResponse(
                 body="Your query was too short or too long.",
             ),
@@ -349,15 +399,23 @@ class TestTransform:
         return GdeltIngester(sqlite_db_url, playbooks_yaml, pause_sec=0)
 
     def test_maps_to_geo_events_schema(
-        self, playbooks_yaml: Path, sqlite_db_url: str,
+        self,
+        playbooks_yaml: Path,
+        sqlite_db_url: str,
     ) -> None:
         import pandas as pd
 
         ing = self._ingester(playbooks_yaml, sqlite_db_url)
-        raw = pd.DataFrame([{
-            "theme": "theme_a", "url": "https://n.test/1",
-            "title": "Hormuz headline", "seendate": "20260714T093000Z",
-        }])
+        raw = pd.DataFrame(
+            [
+                {
+                    "theme": "theme_a",
+                    "url": "https://n.test/1",
+                    "title": "Hormuz headline",
+                    "seendate": "20260714T093000Z",
+                }
+            ]
+        )
         df = ing.transform(raw)
         row = df.iloc[0]
         assert row["source"] == "gdelt"
@@ -368,29 +426,41 @@ class TestTransform:
         assert row["status_updated_at"] is not None
 
     def test_drops_rows_missing_url_or_title(
-        self, playbooks_yaml: Path, sqlite_db_url: str,
+        self,
+        playbooks_yaml: Path,
+        sqlite_db_url: str,
     ) -> None:
         import pandas as pd
 
         ing = self._ingester(playbooks_yaml, sqlite_db_url)
-        raw = pd.DataFrame([
-            {"theme": "t", "url": None, "title": "no url", "seendate": None},
-            {"theme": "t", "url": "https://n.test/x", "title": "", "seendate": None},
-            {"theme": "t", "url": "https://n.test/y", "title": "ok", "seendate": None},
-        ])
+        raw = pd.DataFrame(
+            [
+                {"theme": "t", "url": None, "title": "no url", "seendate": None},
+                {"theme": "t", "url": "https://n.test/x", "title": "", "seendate": None},
+                {"theme": "t", "url": "https://n.test/y", "title": "ok", "seendate": None},
+            ]
+        )
         df = ing.transform(raw)
         assert list(df["headline"]) == ["ok"]
 
     def test_bad_seendate_falls_back_to_now(
-        self, playbooks_yaml: Path, sqlite_db_url: str,
+        self,
+        playbooks_yaml: Path,
+        sqlite_db_url: str,
     ) -> None:
         import pandas as pd
 
         ing = self._ingester(playbooks_yaml, sqlite_db_url)
-        raw = pd.DataFrame([{
-            "theme": "t", "url": "https://n.test/1",
-            "title": "h", "seendate": "garbage",
-        }])
+        raw = pd.DataFrame(
+            [
+                {
+                    "theme": "t",
+                    "url": "https://n.test/1",
+                    "title": "h",
+                    "seendate": "garbage",
+                }
+            ]
+        )
         df = ing.transform(raw)
         assert pd.notna(df.iloc[0]["seen_at"])
 
@@ -402,20 +472,30 @@ class TestTransform:
 
 class TestEndToEnd:
     def test_run_inserts_then_dedups_on_rerun(
-        self, monkeypatch: pytest.MonkeyPatch,
-        playbooks_yaml: Path, sqlite_db_url: str,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        playbooks_yaml: Path,
+        sqlite_db_url: str,
     ) -> None:
         def fake_get(url: str, params: dict, timeout: float) -> _FakeResponse:
             if "hormuz" in params["query"]:
-                return _FakeResponse({"articles": [
-                    _article("https://n.test/1", "Hormuz headline"),
-                    _article("https://n.test/shared", "Shared story"),
-                ]})
-            return _FakeResponse({"articles": [
-                _article("https://n.test/2", "OPEC headline"),
-                # Same URL matched by both themes — must collapse to one
-                _article("https://n.test/shared", "Shared story"),
-            ]})
+                return _FakeResponse(
+                    {
+                        "articles": [
+                            _article("https://n.test/1", "Hormuz headline"),
+                            _article("https://n.test/shared", "Shared story"),
+                        ]
+                    }
+                )
+            return _FakeResponse(
+                {
+                    "articles": [
+                        _article("https://n.test/2", "OPEC headline"),
+                        # Same URL matched by both themes — must collapse to one
+                        _article("https://n.test/shared", "Shared story"),
+                    ]
+                }
+            )
 
         monkeypatch.setattr(gdelt_mod.httpx, "get", fake_get)
         ing = GdeltIngester(sqlite_db_url, playbooks_yaml, pause_sec=0)
@@ -425,9 +505,7 @@ class TestEndToEnd:
         engine = create_engine(sqlite_db_url)
         with engine.connect() as conn:
             n = conn.execute(text("SELECT COUNT(*) FROM geo_events")).scalar()
-            statuses = {
-                r[0] for r in conn.execute(text("SELECT status FROM geo_events"))
-            }
+            statuses = {r[0] for r in conn.execute(text("SELECT status FROM geo_events"))}
         assert n == 3
         assert statuses == {"NEW"}
 

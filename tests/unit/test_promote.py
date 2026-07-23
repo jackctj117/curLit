@@ -33,15 +33,22 @@ def repo(tmp_path: Path) -> dict[str, Path]:
     production.mkdir(parents=True, exist_ok=True)
     yaml_path = tmp_path / "configs" / "live_portfolio.yaml"
     yaml_path.parent.mkdir(parents=True)
-    yaml_path.write_text(yaml.safe_dump({
-        "engine": {"practice": True, "starting_equity": 100000},
-        "strategies": [
-            {"id": "existing_strat",
-             "class": "src.strategies.existing.ExistingStrategy",
-             "config": {}},
-        ],
-        "initial_weights": {"existing_strat": 0.5},
-    }, sort_keys=False))
+    yaml_path.write_text(
+        yaml.safe_dump(
+            {
+                "engine": {"practice": True, "starting_equity": 100000},
+                "strategies": [
+                    {
+                        "id": "existing_strat",
+                        "class": "src.strategies.existing.ExistingStrategy",
+                        "config": {},
+                    },
+                ],
+                "initial_weights": {"existing_strat": 0.5},
+            },
+            sort_keys=False,
+        )
+    )
     return {
         "experimental": experimental,
         "production": production,
@@ -71,9 +78,7 @@ class TestExtractFirstClass:
     def test_picks_first_top_level_class(self, tmp_path: Path) -> None:
         f = tmp_path / "x.py"
         f.write_text(
-            "import os\n"
-            "class FirstClass:\n    pass\n"
-            "class SecondClass:\n    pass\n",
+            "import os\nclass FirstClass:\n    pass\nclass SecondClass:\n    pass\n",
         )
         assert extract_first_class_name(f) == "FirstClass"
 
@@ -113,14 +118,21 @@ class TestAddStrategyToYaml:
         assert slugs.count("existing_strat") == 1
 
     def test_creates_initial_weights_when_missing(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         yaml_path = tmp_path / "p.yaml"
-        yaml_path.write_text(yaml.safe_dump({
-            "strategies": [],
-        }))
+        yaml_path.write_text(
+            yaml.safe_dump(
+                {
+                    "strategies": [],
+                }
+            )
+        )
         add_strategy_to_portfolio_yaml(
-            yaml_path, "new", "src.strategies.new.New",
+            yaml_path,
+            "new",
+            "src.strategies.new.New",
         )
         raw = yaml.safe_load(yaml_path.read_text())
         assert raw["initial_weights"] == {"new": 0.0}
@@ -161,7 +173,10 @@ class TestRegister:
         assert result.succeeded
         assert result.error == ""
         assert result.steps_completed == [
-            "move_file", "portfolio_yaml", "git", "pr",
+            "move_file",
+            "portfolio_yaml",
+            "git",
+            "pr",
         ]
         # File moved
         assert (repo["production"] / "alpha.py").exists()
@@ -204,7 +219,8 @@ class TestRegister:
         assert (repo["production"] / "alpha.py").exists()
 
     def test_missing_experimental_file_fails(
-        self, repo: dict[str, Path],
+        self,
+        repo: dict[str, Path],
     ) -> None:
         # No file seeded
         reg = PromoteRegistrar(
@@ -223,7 +239,8 @@ class TestRegister:
         assert "FileNotFoundError" in result.error
 
     def test_existing_production_file_refuses(
-        self, repo: dict[str, Path],
+        self,
+        repo: dict[str, Path],
     ) -> None:
         # File in BOTH places — refuse to clobber
         _seed_strategy(repo["experimental"], "alpha")
@@ -292,7 +309,8 @@ class TestRegister:
         assert gh_calls == []
 
     def test_pr_body_contains_provenance(
-        self, repo: dict[str, Path],
+        self,
+        repo: dict[str, Path],
     ) -> None:
         _seed_strategy(repo["experimental"], "alpha")
         gh_args_captured: list[list[str]] = []
@@ -331,42 +349,41 @@ class TestRegister:
 class TestPRUrlExtraction:
     def test_extracts_canonical_url(self) -> None:
         from src.research.promote import _extract_pr_url
+
         out = "https://github.com/user/repo/pull/42\n"
-        assert _extract_pr_url(out, "x") == (
-            "https://github.com/user/repo/pull/42"
-        )
+        assert _extract_pr_url(out, "x") == ("https://github.com/user/repo/pull/42")
 
     def test_finds_url_when_gh_emits_extra_lines(self) -> None:
         # Real failure mode: gh emits a deprecation notice / login
         # prompt AFTER the URL. The old "last line" parse breaks; the
         # regex finds the URL anywhere.
         from src.research.promote import _extract_pr_url
+
         out = (
             "https://github.com/user/repo/pull/42\n"
             "warning: gh CLI version 2.x is deprecated; upgrade soon\n"
         )
-        assert _extract_pr_url(out, "x") == (
-            "https://github.com/user/repo/pull/42"
-        )
+        assert _extract_pr_url(out, "x") == ("https://github.com/user/repo/pull/42")
 
     def test_falls_back_to_last_line_when_no_url(self) -> None:
         from src.research.promote import _extract_pr_url
+
         out = "Created draft PR\nDone\n"
         # No canonical URL → fallback to last non-empty line
         assert _extract_pr_url(out, "x") == "Done"
 
     def test_empty_stdout_returns_empty(self) -> None:
         from src.research.promote import _extract_pr_url
+
         assert _extract_pr_url("", "x") == ""
         assert _extract_pr_url("   \n\n  ", "x") == ""
 
     def test_picks_first_canonical_url_when_multiple(self) -> None:
         from src.research.promote import _extract_pr_url
+
         out = (
             "Found related PR: https://github.com/user/repo/pull/40\n"
             "https://github.com/user/repo/pull/42\n"
         )
         # Regex match returns the first URL found
-        assert _extract_pr_url(out, "x") == (
-            "https://github.com/user/repo/pull/40"
-        )
+        assert _extract_pr_url(out, "x") == ("https://github.com/user/repo/pull/40")

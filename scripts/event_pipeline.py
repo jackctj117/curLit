@@ -61,59 +61,78 @@ def _build_parser() -> argparse.ArgumentParser:
     mode = p.add_mutually_exclusive_group()
     mode.add_argument("--once", action="store_true", help="Run one cycle (default)")
     mode.add_argument(
-        "--loop", type=int, metavar="SECONDS", default=None,
+        "--loop",
+        type=int,
+        metavar="SECONDS",
+        default=None,
         help="Repeat every N seconds until interrupted",
     )
     p.add_argument(
-        "--lookback-minutes", type=int, default=60,
+        "--lookback-minutes",
+        type=int,
+        default=60,
         help="GDELT ingest window ending now (default 60; overlap dedups away)",
     )
     p.add_argument(
-        "--limit", type=int, default=20,
+        "--limit",
+        type=int,
+        default=20,
         help="Max NEW rows assessed per cycle (default 20)",
     )
     p.add_argument(
-        "--playbooks", default="configs/event_playbooks.yaml",
+        "--playbooks",
+        default="configs/event_playbooks.yaml",
         help="Path to the event playbook config",
     )
     p.add_argument(
-        "--model", default=os.environ.get("EVENT_IMPACT_MODEL", ""),
+        "--model",
+        default=os.environ.get("EVENT_IMPACT_MODEL", ""),
         help="Impact agent model override (default: agent default)",
     )
     p.add_argument(
-        "--digest", action=argparse.BooleanOptionalAction, default=True,
+        "--digest",
+        action=argparse.BooleanOptionalAction,
+        default=True,
         help="Send a Telegram digest of urgent events after each assess "
-             "cycle (default on; --no-digest to disable)",
+        "cycle (default on; --no-digest to disable)",
     )
     p.add_argument(
-        "--scan", action=argparse.BooleanOptionalAction, default=True,
+        "--scan",
+        action=argparse.BooleanOptionalAction,
+        default=True,
         help="Run the relative-volume scanner over the equity watch "
-             "universe each cycle, before the digest (default on; "
-             "--no-scan to disable)",
+        "universe each cycle, before the digest (default on; "
+        "--no-scan to disable)",
     )
     p.add_argument(
-        "--poly", action=argparse.BooleanOptionalAction, default=True,
+        "--poly",
+        action=argparse.BooleanOptionalAction,
+        default=True,
         help="Poll tracked geopolitical Polymarket markets each cycle, "
-             "persist YES probs, and Telegram-alert on rapid shifts "
-             "(default on; --no-poly to disable)",
+        "persist YES probs, and Telegram-alert on rapid shifts "
+        "(default on; --no-poly to disable)",
     )
     p.add_argument(
-        "--niche", action=argparse.BooleanOptionalAction, default=True,
+        "--niche",
+        action=argparse.BooleanOptionalAction,
+        default=True,
         help="Run the multi-hop niche/asymmetry pass (CL-u2ph) on "
-             "high-urgency ASSESSED events (urgency >= $NICHE_MIN_URGENCY, "
-             "default 7) — surfaces verified, liquidity-gated under-followed "
-             "names, merged into trade_ideas (default on; --no-niche to "
-             "disable; it burns one extra LLM call per qualifying event)",
+        "high-urgency ASSESSED events (urgency >= $NICHE_MIN_URGENCY, "
+        "default 7) — surfaces verified, liquidity-gated under-followed "
+        "names, merged into trade_ideas (default on; --no-niche to "
+        "disable; it burns one extra LLM call per qualifying event)",
     )
     p.add_argument(
-        "--poly-config", default="configs/polymarket_geo_markets.yaml",
-        help="Path to the theme-tagged geo markets config polled by "
-             "the --poly step",
+        "--poly-config",
+        default="configs/polymarket_geo_markets.yaml",
+        help="Path to the theme-tagged geo markets config polled by the --poly step",
     )
     p.add_argument(
-        "--digest-min-urgency", type=int, metavar="N", default=None,
-        help="Digest urgency threshold 1-10 (default: "
-             "$EVENT_DIGEST_MIN_URGENCY or 5)",
+        "--digest-min-urgency",
+        type=int,
+        metavar="N",
+        default=None,
+        help="Digest urgency threshold 1-10 (default: $EVENT_DIGEST_MIN_URGENCY or 5)",
     )
     p.add_argument("-v", "--verbose", action="store_true", help="DEBUG logging")
     return p
@@ -132,7 +151,8 @@ def _resolve_digest_min_urgency(cli_value: int | None) -> int:
     except ValueError:
         logger.warning(
             "EVENT_DIGEST_MIN_URGENCY=%r is not an int; using %d",
-            raw, DEFAULT_MIN_URGENCY,
+            raw,
+            DEFAULT_MIN_URGENCY,
         )
         return DEFAULT_MIN_URGENCY
 
@@ -148,7 +168,8 @@ def _resolve_niche_min_urgency() -> int:
     except ValueError:
         logger.warning(
             "NICHE_MIN_URGENCY=%r is not an int; using %d",
-            raw, DEFAULT_MIN_URGENCY,
+            raw,
+            DEFAULT_MIN_URGENCY,
         )
         return DEFAULT_MIN_URGENCY
 
@@ -180,8 +201,7 @@ def _niche_step(engine: object, results: list, min_urgency: int) -> int:
             return 0
 
     qualifying = [
-        r for r in results
-        if getattr(r, "status", "") == "ASSESSED" and _urgency(r) >= min_urgency
+        r for r in results if getattr(r, "status", "") == "ASSESSED" and _urgency(r) >= min_urgency
     ]
     if not qualifying:
         logger.info("niche: no ASSESSED events at urgency >= %d; skipped", min_urgency)
@@ -209,17 +229,22 @@ def _niche_step(engine: object, results: list, min_urgency: int) -> int:
                 # Re-persist the enriched assessment so the merged niche
                 # ideas survive into the ledger/digest and the DB row.
                 with engine.begin() as conn:  # type: ignore[attr-defined]
-                    conn.execute(text(
-                        "UPDATE geo_events SET assessment = :a "
-                        "WHERE id = :id AND status = 'ASSESSED'",
-                    ), {"a": _json.dumps(r.assessment), "id": r.event_id})
+                    conn.execute(
+                        text(
+                            "UPDATE geo_events SET assessment = :a "
+                            "WHERE id = :id AND status = 'ASSESSED'",
+                        ),
+                        {"a": _json.dumps(r.assessment), "id": r.event_id},
+                    )
         except Exception:
             logger.exception(
-                "niche pass failed for event id=%s; continuing", r.event_id,
+                "niche pass failed for event id=%s; continuing",
+                r.event_id,
             )
     logger.info(
         "niche: %d qualifying event(s), %d niche idea(s) surfaced+merged",
-        len(qualifying), surfaced,
+        len(qualifying),
+        surfaced,
     )
     return surfaced
 
@@ -260,12 +285,18 @@ def _enrich_and_persist(engine: object, results: list) -> tuple[dict, dict]:
         persisted = 0
         for r in assessed:
             persisted += persist_ideas(
-                engine, r.event_id, r.assessment, prices=prices,
+                engine,
+                r.event_id,
+                r.assessment,
+                prices=prices,
             )
         expired = expire_stale(engine)
         logger.info(
             "ideas: %d persisted, %d auto-expired (prices for %d/%d tickers)",
-            persisted, expired, len(prices), len(tickers),
+            persisted,
+            expired,
+            len(prices),
+            len(tickers),
         )
     except Exception:
         logger.exception("idea ledger / price enrichment failed; continuing")
@@ -280,7 +311,8 @@ def _enrich_and_persist(engine: object, results: list) -> tuple[dict, dict]:
                 seen_ats = {
                     int(row_id): seen_at
                     for row_id, seen_at in conn.execute(
-                        stmt, {"ids": [r.event_id for r in assessed]},
+                        stmt,
+                        {"ids": [r.event_id for r in assessed]},
                     )
                 }
         except Exception:
@@ -353,12 +385,14 @@ def _cycle(args: argparse.Namespace) -> None:
             )
 
             scanner = RelativeVolumeScanner(
-                build_db_url(), playbooks_path=args.playbooks,
+                build_db_url(),
+                playbooks_path=args.playbooks,
             )
             scan_rows = scanner.scan()
             logger.info(
                 "scan: %d tickers, %d unusual",
-                len(scan_rows), sum(1 for r in scan_rows if r.is_unusual),
+                len(scan_rows),
+                sum(1 for r in scan_rows if r.is_unusual),
             )
         except Exception:
             logger.exception("volume scan failed; continuing")
@@ -389,7 +423,9 @@ def _cycle(args: argparse.Namespace) -> None:
         assessed = sum(1 for r in results if r.status == "ASSESSED")
         logger.info(
             "assess: %d processed (%d assessed, %d dismissed)",
-            len(results), assessed, len(results) - assessed,
+            len(results),
+            assessed,
+            len(results) - assessed,
         )
 
         # Multi-hop niche/asymmetry pass (CL-u2ph) BEFORE enrichment so
@@ -433,8 +469,11 @@ def _cycle(args: argparse.Namespace) -> None:
                 # without ×rvol annotations.
                 marks = fetch_volume_marks(engine)
                 disp = send_digest(
-                    results, min_urgency=args.digest_min_urgency,
-                    volume_marks=marks, prices=prices, seen_ats=seen_ats,
+                    results,
+                    min_urgency=args.digest_min_urgency,
+                    volume_marks=marks,
+                    prices=prices,
+                    seen_ats=seen_ats,
                     poly_signal=poly_signal,
                 )
             except Exception:
@@ -476,6 +515,7 @@ def main(argv: list[str] | None = None) -> int:
         _build_parser().error("nothing to do: pass --ingest and/or --assess")
 
     from src.dotenv_bootstrap import load_project_env  # noqa: PLC0415
+
     load_project_env()
     args.digest_min_urgency = _resolve_digest_min_urgency(args.digest_min_urgency)
     args.niche_min_urgency = _resolve_niche_min_urgency()

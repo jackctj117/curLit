@@ -105,7 +105,9 @@ class TestIvRank:
         # The honesty contract: identical output with iv_rank omitted —
         # no fake IV default sneaks in anywhere.
         assert choose_instrument("bearish", 3) == choose_instrument(
-            "bearish", 3, iv_rank=None,
+            "bearish",
+            3,
+            iv_rank=None,
         )
 
     def test_low_iv_keeps_options(self) -> None:
@@ -160,15 +162,18 @@ class TestParseHoldingDays:
 
 class TestDecisionForIdea:
     def test_uses_holding_period_midpoint(self) -> None:
-        idea = {"direction": "bearish", "holding_period_days": "2-6",
-                "time_stop_days": 60, "time_horizon": "structural"}
+        idea = {
+            "direction": "bearish",
+            "holding_period_days": "2-6",
+            "time_stop_days": 60,
+            "time_horizon": "structural",
+        }
         d = decision_for_idea(idea)
         assert d is not None
         assert d.horizon_band == "short"  # midpoint 4 wins over the rest
 
     def test_falls_back_to_time_stop_days(self) -> None:
-        idea = {"direction": "bullish", "holding_period_days": "",
-                "time_stop_days": 20}
+        idea = {"direction": "bullish", "holding_period_days": "", "time_stop_days": 20}
         d = decision_for_idea(idea)
         assert d is not None
         assert d.horizon_band == "medium"

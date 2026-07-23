@@ -11,7 +11,6 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import MagicMock, patch
 
-import numpy as np
 import pytest
 import torch
 
@@ -39,10 +38,12 @@ def _mock_tokenizer() -> Any:
     def _call(batch: list[str], **_kw: Any) -> Any:
         result = MagicMock()
         # Return something with `.to(device)` -> self.
-        result.to = MagicMock(return_value={
-            "input_ids": torch.zeros(len(batch), 8, dtype=torch.long),
-            "attention_mask": torch.ones(len(batch), 8, dtype=torch.long),
-        })
+        result.to = MagicMock(
+            return_value={
+                "input_ids": torch.zeros(len(batch), 8, dtype=torch.long),
+                "attention_mask": torch.ones(len(batch), 8, dtype=torch.long),
+            }
+        )
         return result
 
     tok.side_effect = _call
@@ -71,6 +72,7 @@ class Test4LabelGtfintechlab:
         MT.from_pretrained.return_value = _mock_tokenizer()
 
         from src.nlp.inference import CBSentimentModel
+
         model = CBSentimentModel(cb_name="fed", device="cpu")
 
         assert model.labels == {0: "neutral", 1: "hawkish", 2: "dovish", 3: "irrelevant"}
@@ -85,6 +87,7 @@ class Test4LabelGtfintechlab:
         MT.from_pretrained.return_value = _mock_tokenizer()
 
         from src.nlp.inference import CBSentimentModel
+
         model = CBSentimentModel(cb_name="fed", device="cpu")
         out = model.predict(["The Committee will raise rates aggressively."])
 
@@ -99,14 +102,15 @@ class Test4LabelGtfintechlab:
         MM.from_pretrained.return_value = _mock_model(
             num_labels=4,
             batch_logits=[
-                [0.1, 5.0, 0.2, 0.1],   # hawkish
-                [0.1, 0.2, 5.0, 0.1],   # dovish
-                [0.1, 0.2, 0.1, 5.0],   # irrelevant
+                [0.1, 5.0, 0.2, 0.1],  # hawkish
+                [0.1, 0.2, 5.0, 0.1],  # dovish
+                [0.1, 0.2, 0.1, 5.0],  # irrelevant
             ],
         )
         MT.from_pretrained.return_value = _mock_tokenizer()
 
         from src.nlp.inference import CBSentimentModel
+
         model = CBSentimentModel(cb_name="fed", device="cpu")
         out = model.predict_document(["a", "b", "c"], drop_irrelevant=True)
 
@@ -128,6 +132,7 @@ class Test3LabelLegacy:
         MT.from_pretrained.return_value = _mock_tokenizer()
 
         from src.nlp.inference import CBSentimentModel
+
         # Pass model_path explicitly so we don't hit the registry.
         model = CBSentimentModel(model_path="some/local/path", device="cpu")
         assert model.labels == {0: "dovish", 1: "neutral", 2: "hawkish"}
@@ -148,7 +153,8 @@ class TestRegistry:
             patch("src.nlp.inference.AutoTokenizer") as MT,
         ):
             MM.from_pretrained.return_value = _mock_model(
-                num_labels=4, batch_logits=[[0.0]*4],
+                num_labels=4,
+                batch_logits=[[0.0] * 4],
             )
             MT.from_pretrained.return_value = _mock_tokenizer()
             with caplog.at_level("WARNING"):
@@ -176,5 +182,6 @@ class TestUnsupportedNumLabels:
         MT.from_pretrained.return_value = _mock_tokenizer()
 
         from src.nlp.inference import CBSentimentModel
+
         with pytest.raises(ValueError, match="num_labels=5"):
             CBSentimentModel(cb_name="fed", device="cpu")

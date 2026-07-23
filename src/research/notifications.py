@@ -63,12 +63,7 @@ def html_escape(text: str) -> str:
     (slug, headline, reason, path) MUST pass through this before being
     embedded next to formatting tags.
     """
-    return (
-        str(text)
-        .replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-    )
+    return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
 _TAG_RE = re.compile(r"</?[a-zA-Z][^<>]*>")
@@ -142,10 +137,7 @@ def _dispatch_telegram(
     # underscores are literal — only &/</> need escaping, which the
     # message builders do via html_escape(). Legacy callers (html=False)
     # keep plain text: smallest safe surface, zero escaping needed.
-    full = (
-        f"<b>{html_escape(title)}</b>\n\n{message}"
-        if html else f"{title}\n\n{message}"
-    )
+    full = f"<b>{html_escape(title)}</b>\n\n{message}" if html else f"{title}\n\n{message}"
     # Split over-long bodies so Telegram's 4096-char cap can't silently
     # 400 a busy digest (CL-frn7 follow-up: un-truncated ideas made
     # digests long enough to hit this).
@@ -164,18 +156,21 @@ def _dispatch_telegram(
         # to a tag-stripped plain-text send once.
         if html:
             logger.warning(
-                "Telegram HTML dispatch failed (%s: %s); retrying as "
-                "plain text",
-                type(exc).__name__, _scrub_token(str(exc), token),
+                "Telegram HTML dispatch failed (%s: %s); retrying as plain text",
+                type(exc).__name__,
+                _scrub_token(str(exc), token),
             )
             try:
                 plain = f"{title}\n\n{_html_to_plain(message)}"
                 for i, chunk in enumerate(_split_for_telegram(plain)):
                     prefix = "" if i == 0 else f"(cont. {i + 1})\n"
-                    _telegram_send(token, {
-                        "chat_id": chat_id,
-                        "text": f"{prefix}{chunk}",
-                    })
+                    _telegram_send(
+                        token,
+                        {
+                            "chat_id": chat_id,
+                            "text": f"{prefix}{chunk}",
+                        },
+                    )
                 result.telegram_succeeded = True
                 return
             except Exception as retry_exc:
@@ -186,7 +181,9 @@ def _dispatch_telegram(
         # don't leak credentials.
         sanitized = _scrub_token(str(exc), token)
         logger.warning(
-            "Telegram dispatch failed: %s: %s", type(exc).__name__, sanitized,
+            "Telegram dispatch failed: %s: %s",
+            type(exc).__name__,
+            sanitized,
         )
         result.telegram_error = f"{type(exc).__name__}: {sanitized}"
 

@@ -52,8 +52,8 @@ _QUESTION_RESOLVED_ABI: dict[str, Any] = {
     "name": "QuestionResolved",
     "type": "event",
     "inputs": [
-        {"indexed": True,  "name": "questionID", "type": "bytes32"},
-        {"indexed": False, "name": "outcome",    "type": "uint256"},
+        {"indexed": True, "name": "questionID", "type": "bytes32"},
+        {"indexed": False, "name": "outcome", "type": "uint256"},
         {"indexed": False, "name": "settlementPrice", "type": "int256"},
     ],
 }
@@ -63,7 +63,7 @@ _QUESTION_INITIALIZED_ABI: dict[str, Any] = {
     "name": "QuestionInitialized",
     "type": "event",
     "inputs": [
-        {"indexed": True,  "name": "questionID", "type": "bytes32"},
+        {"indexed": True, "name": "questionID", "type": "bytes32"},
         {"indexed": False, "name": "requestTimestamp", "type": "uint256"},
         {"indexed": False, "name": "ancillaryData", "type": "bytes"},
     ],
@@ -99,7 +99,8 @@ def watch_resolutions(
       Number of matching events delivered.
     """
     contract = w3.eth.contract(
-        address=adapter_address, abi=[_QUESTION_RESOLVED_ABI],
+        address=adapter_address,
+        abi=[_QUESTION_RESOLVED_ABI],
     )
 
     last_block = w3.eth.block_number
@@ -108,7 +109,8 @@ def watch_resolutions(
 
     logger.info(
         "polymarket oracle monitor: watching %d questions starting at block %d",
-        len(our_question_ids), last_block,
+        len(our_question_ids),
+        last_block,
     )
 
     while True:
@@ -118,12 +120,15 @@ def watch_resolutions(
                 end = min(start + chunk_size - 1, latest)
                 try:
                     logs = contract.events.QuestionResolved.get_logs(
-                        from_block=start, to_block=end,
+                        from_block=start,
+                        to_block=end,
                     )
                 except Exception:
                     logger.warning(
-                        "oracle monitor: log fetch failed for blocks "
-                        "%d-%d", start, end, exc_info=True,
+                        "oracle monitor: log fetch failed for blocks %d-%d",
+                        start,
+                        end,
+                        exc_info=True,
                     )
                     continue
 

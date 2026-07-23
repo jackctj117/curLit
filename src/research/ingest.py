@@ -107,7 +107,7 @@ class FeedConfig:
     """One entry from configs/paper_streams.yaml."""
 
     name: str
-    adapter: str        # 'arxiv' | (future: 'ssrn', 'nber', ...)
+    adapter: str  # 'arxiv' | (future: 'ssrn', 'nber', ...)
     query_url: str
     source_label: str
 
@@ -126,12 +126,14 @@ def load_feed_configs(path: Path | str) -> list[FeedConfig]:
         if not isinstance(cfg, dict):
             msg = f"feed {name!r} is not a mapping"
             raise ValueError(msg)
-        feeds.append(FeedConfig(
-            name=name,
-            adapter=str(cfg["adapter"]),
-            query_url=str(cfg["query_url"]).strip(),
-            source_label=str(cfg.get("source_label", name)),
-        ))
+        feeds.append(
+            FeedConfig(
+                name=name,
+                adapter=str(cfg["adapter"]),
+                query_url=str(cfg["query_url"]).strip(),
+                source_label=str(cfg.get("source_label", name)),
+            )
+        )
     return feeds
 
 
@@ -177,14 +179,18 @@ class ArxivFetcher:
         except Exception as exc:
             logger.warning(
                 "feed %r fetch failed: %s: %s",
-                feed.name, type(exc).__name__, exc,
+                feed.name,
+                type(exc).__name__,
+                exc,
             )
             return []
         try:
             return self._parse(body, source_label=feed.source_label)
         except ET.ParseError as exc:
             logger.warning(
-                "feed %r XML parse failed: %s", feed.name, exc,
+                "feed %r XML parse failed: %s",
+                feed.name,
+                exc,
             )
             return []
 
@@ -208,15 +214,17 @@ class ArxivFetcher:
             year = ArxivFetcher._extract_year(
                 published_elem.text if published_elem is not None else None,
             )
-            out.append(Paper(
-                title=" ".join(title.split()).strip(),
-                authors=tuple(a for a in authors if a),
-                year=year,
-                url=url.strip(),
-                doi="",  # arXiv entries usually don't carry DOI in the feed
-                abstract=" ".join(abstract.split()).strip(),
-                source_label=source_label,
-            ))
+            out.append(
+                Paper(
+                    title=" ".join(title.split()).strip(),
+                    authors=tuple(a for a in authors if a),
+                    year=year,
+                    url=url.strip(),
+                    doi="",  # arXiv entries usually don't carry DOI in the feed
+                    abstract=" ".join(abstract.split()).strip(),
+                    source_label=source_label,
+                )
+            )
         return out
 
     @staticmethod
@@ -257,14 +265,18 @@ class RSSFetcher:
         except Exception as exc:
             logger.warning(
                 "feed %r fetch failed: %s: %s",
-                feed.name, type(exc).__name__, exc,
+                feed.name,
+                type(exc).__name__,
+                exc,
             )
             return []
         try:
             return self._parse(body, source_label=feed.source_label)
         except ET.ParseError as exc:
             logger.warning(
-                "feed %r XML parse failed: %s", feed.name, exc,
+                "feed %r XML parse failed: %s",
+                feed.name,
+                exc,
             )
             return []
 
@@ -297,20 +309,29 @@ class RSSFetcher:
             # stripped of HTML tags.
             description = (item.findtext("description") or "").strip()
             if not description:
-                content = item.findtext(
-                    "content:encoded", default="", namespaces=ns,
-                ) or ""
+                content = (
+                    item.findtext(
+                        "content:encoded",
+                        default="",
+                        namespaces=ns,
+                    )
+                    or ""
+                )
                 description = re.sub(r"<[^>]+>", " ", content).strip()
             description = re.sub(r"\s+", " ", description)
-            out.append(Paper(
-                title=title,
-                authors=(author,) if author else (),
-                year=RSSFetcher._extract_year(pub_date),
-                url=link,
-                doi="",
-                abstract=description[:4000],  # cap so paper_hash is stable + extract size bounded
-                source_label=source_label,
-            ))
+            out.append(
+                Paper(
+                    title=title,
+                    authors=(author,) if author else (),
+                    year=RSSFetcher._extract_year(pub_date),
+                    url=link,
+                    doi="",
+                    abstract=description[
+                        :4000
+                    ],  # cap so paper_hash is stable + extract size bounded
+                    source_label=source_label,
+                )
+            )
         return out
 
     @staticmethod
@@ -334,6 +355,7 @@ def _browser_http_get(url: str) -> str:
     catch-and-log turns into a skipped feed, not a dead run.
     """
     from src.research.browser_transport import browser_http_get  # noqa: PLC0415
+
     return browser_http_get(url)
 
 
@@ -365,7 +387,9 @@ class SSRNFetcher:
         except Exception as exc:
             logger.warning(
                 "feed %r fetch failed: %s: %s",
-                feed.name, type(exc).__name__, exc,
+                feed.name,
+                type(exc).__name__,
+                exc,
             )
             return []
         return self._parse(body, source_label=feed.source_label)
@@ -373,6 +397,7 @@ class SSRNFetcher:
     @staticmethod
     def _parse(html: str, source_label: str) -> list[Paper]:
         from bs4 import BeautifulSoup
+
         soup = BeautifulSoup(html, "html.parser")
         out: list[Paper] = []
         # Current SSRN markup (verified 2026-07-14): the listing is a
@@ -388,8 +413,7 @@ class SSRNFetcher:
         # fallback in the selector union so an SSRN rollback doesn't
         # silently break parsing.
         rows = soup.select(
-            "#network-papers ol li div.paper, div.trow, "
-            ".description-text, .abstractContent",
+            "#network-papers ol li div.paper, div.trow, .description-text, .abstractContent",
         )
         for row in rows:
             title_el = row.select_one(
@@ -404,9 +428,7 @@ class SSRNFetcher:
             abstract_el = row.select_one(
                 "div.abstract, .abstractText, .description-text",
             )
-            abstract = (
-                abstract_el.get_text(strip=True)[:4000] if abstract_el else ""
-            )
+            abstract = abstract_el.get_text(strip=True)[:4000] if abstract_el else ""
             authors = SSRNFetcher._parse_authors(row)
             # Year appears in the stats line ("Posted 14 Jul 2026" /
             # "Last revised: <date>"). The SPA concatenates spans with
@@ -416,18 +438,21 @@ class SSRNFetcher:
             # tokens like "abstract2026" match — and never an adjacent
             # digit (runs inside longer numbers).
             year_match = re.search(
-                r"(?<![0-9A-Za-z])(20\d\d)(?!\d)", row.get_text(),
+                r"(?<![0-9A-Za-z])(20\d\d)(?!\d)",
+                row.get_text(),
             )
             year = int(year_match.group(1)) if year_match else None
-            out.append(Paper(
-                title=title,
-                authors=authors,
-                year=year,
-                url=url,
-                doi="",
-                abstract=abstract,
-                source_label=source_label,
-            ))
+            out.append(
+                Paper(
+                    title=title,
+                    authors=authors,
+                    year=year,
+                    url=url,
+                    doi="",
+                    abstract=abstract,
+                    source_label=source_label,
+                )
+            )
         return out
 
     @staticmethod
@@ -443,14 +468,10 @@ class SSRNFetcher:
         # New markup: nested <a> per author.
         links = authors_el.select("a")
         if links:
-            return tuple(
-                a.get_text(strip=True) for a in links if a.get_text(strip=True)
-            )
+            return tuple(a.get_text(strip=True) for a in links if a.get_text(strip=True))
         # Legacy markup: comma/semicolon/ampersand-separated string.
         authors_str = authors_el.get_text(strip=True)
-        return tuple(
-            a.strip() for a in re.split(r"[,;&]", authors_str) if a.strip()
-        )
+        return tuple(a.strip() for a in re.split(r"[,;&]", authors_str) if a.strip())
 
 
 _FETCHER_REGISTRY: dict[str, Callable[[HttpGet], Any]] = {
@@ -475,10 +496,7 @@ def build_fetcher(adapter: str, http_get: HttpGet | None = None) -> Any:
     plain httpx for most feeds, the Playwright browser transport for
     bot-gated ones (currently just ssrn)."""
     if adapter not in _FETCHER_REGISTRY:
-        msg = (
-            f"unknown feed adapter {adapter!r}; "
-            f"registered: {sorted(_FETCHER_REGISTRY)}"
-        )
+        msg = f"unknown feed adapter {adapter!r}; registered: {sorted(_FETCHER_REGISTRY)}"
         raise KeyError(msg)
     factory = _FETCHER_REGISTRY[adapter]
     if http_get is None:
@@ -592,7 +610,9 @@ class IngestRunSummary:
 
 
 def _insert_paper_row(
-    engine: Any, paper: Paper, relevance_scorer: Any | None = None,
+    engine: Any,
+    paper: Paper,
+    relevance_scorer: Any | None = None,
 ) -> bool:
     """Insert one paper into ``research_papers``. Returns True if a new
     row was added (False on conflict — already there).
@@ -665,7 +685,8 @@ def _insert_paper_row(
             # operator can re-score later via a backfill script.
             logger.warning(
                 "relevance scoring failed for %s — row inserted with default score",
-                pid, exc_info=True,
+                pid,
+                exc_info=True,
             )
     return inserted
 
@@ -711,7 +732,8 @@ class IngestRunner:
             except KeyError:
                 logger.warning(
                     "feed %r adapter %r unknown — skipping",
-                    feed.name, feed.adapter,
+                    feed.name,
+                    feed.adapter,
                 )
                 summary.feeds_failed += 1
                 continue
@@ -730,13 +752,16 @@ class IngestRunner:
                 if self.db_engine is not None:
                     try:
                         if _insert_paper_row(
-                            self.db_engine, paper, self.relevance_scorer,
+                            self.db_engine,
+                            paper,
+                            self.relevance_scorer,
                         ):
                             summary.papers_db_inserted += 1
                     except Exception:
                         logger.exception(
                             "DB insert error for %r from %r",
-                            paper.title, feed.name,
+                            paper.title,
+                            feed.name,
                         )
                         summary.papers_db_failed += 1
 
@@ -748,7 +773,8 @@ class IngestRunner:
                 except Exception:
                     logger.exception(
                         "extraction failed for paper %r from %r",
-                        paper.title, feed.name,
+                        paper.title,
+                        feed.name,
                     )
                     summary.papers_extract_failed += 1
                     continue

@@ -92,10 +92,15 @@ class TestFit:
 
 class TestDiagnose:
     def _stub_result(
-        self, rhat_max: float, ess_min: float, divergences: int,
-        n_draws: int = 1000, n_chains: int = 4,
+        self,
+        rhat_max: float,
+        ess_min: float,
+        divergences: int,
+        n_draws: int = 1000,
+        n_chains: int = 4,
     ):  # type: ignore[no-untyped-def]
         from src.models.bayesian_rate_diff import BayesianFitResult
+
         return BayesianFitResult(
             pair_names=["EURUSD"],
             beta_summary=pd.DataFrame(),
@@ -130,7 +135,11 @@ class TestDiagnose:
 
     def test_fail_when_divergences_high(self) -> None:
         # 4000 total draws × 1% = 40 divergences threshold; 50 > 40.
-        diag = diagnose(self._stub_result(
-            rhat_max=1.0, ess_min=2000, divergences=50,
-        ))
+        diag = diagnose(
+            self._stub_result(
+                rhat_max=1.0,
+                ess_min=2000,
+                divergences=50,
+            )
+        )
         assert diag["verdict"] == "fail"

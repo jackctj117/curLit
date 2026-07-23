@@ -7,7 +7,6 @@ from datetime import date
 import pandas as pd
 
 from src.backtest.instrument_metadata import (
-    DEFAULT_REGISTRY,
     InstrumentMetadata,
     TradabilityFilter,
 )

@@ -161,9 +161,7 @@ def risk_parity_weights(
     assert not returns.empty, "returns must be non-empty"
     assert returns.shape[1] >= 1, "need at least one strategy column"
     assert bounds[0] >= 0, f"lower bound must be non-negative, got {bounds[0]}"
-    assert bounds[1] > bounds[0], (
-        f"upper bound {bounds[1]} must exceed lower bound {bounds[0]}"
-    )
+    assert bounds[1] > bounds[0], f"upper bound {bounds[1]} must exceed lower bound {bounds[0]}"
     if target_total_vol is not None:
         assert target_total_vol > 0, "target_total_vol must be positive"
 
@@ -187,12 +185,10 @@ def risk_parity_weights(
 
     # Feasibility: sum-to-1 requires bounds to span 1.0 collectively.
     assert n * bounds[1] >= 1.0, (
-        f"upper bound {bounds[1]} × {n} strategies = "
-        f"{n * bounds[1]:.2f} < 1.0; sum-to-1 infeasible"
+        f"upper bound {bounds[1]} × {n} strategies = {n * bounds[1]:.2f} < 1.0; sum-to-1 infeasible"
     )
     assert n * bounds[0] <= 1.0, (
-        f"lower bound {bounds[0]} × {n} strategies = "
-        f"{n * bounds[0]:.2f} > 1.0; sum-to-1 infeasible"
+        f"lower bound {bounds[0]} × {n} strategies = {n * bounds[0]:.2f} > 1.0; sum-to-1 infeasible"
     )
 
     # Solve unbounded risk parity via robust iterative algorithm, then project
@@ -316,10 +312,12 @@ def rolling_risk_parity_weights(
             target_total_vol=target_vol,
         )
 
-        weights_history.append({
-            "date": returns.index[end_idx - 1],
-            **weights.to_dict(),
-        })
+        weights_history.append(
+            {
+                "date": returns.index[end_idx - 1],
+                **weights.to_dict(),
+            }
+        )
 
     if not weights_history:
         return pd.DataFrame(columns=returns.columns)

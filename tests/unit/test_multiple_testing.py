@@ -118,10 +118,7 @@ def _build_random_strategies(
         index=pd.date_range("2020-01-01", periods=n_periods, freq="B"),
         name="bench",
     )
-    cols = {
-        f"strat_{i}": rng.normal(0.0001, 0.01, n_periods)
-        for i in range(n_strategies)
-    }
+    cols = {f"strat_{i}": rng.normal(0.0001, 0.01, n_periods) for i in range(n_strategies)}
     df = pd.DataFrame(cols, index=bench.index)
     return df, bench
 
@@ -142,8 +139,14 @@ def _build_one_winning_strategy(
     cols: dict[str, np.ndarray] = {}
     for i in range(n_strategies):
         if i == 0:
-            cols[f"strat_{i}"] = bench.values + edge_per_period + rng.normal(
-                0, 0.005, n_periods,
+            cols[f"strat_{i}"] = (
+                bench.values
+                + edge_per_period
+                + rng.normal(
+                    0,
+                    0.005,
+                    n_periods,
+                )
             )
         else:
             cols[f"strat_{i}"] = rng.normal(0.0001, 0.01, n_periods)
@@ -158,20 +161,17 @@ class TestWhitesRealityCheck:
         df, bench = _build_random_strategies(n_strategies=5, seed=10)
         result = whites_reality_check(df, bench, n_bootstrap=500, seed=11)
         # No real edge → expect p well above alpha; allow some bootstrap noise.
-        assert result.p_value > 0.10, (
-            f"random strategies fluked p={result.p_value:.3f}"
-        )
+        assert result.p_value > 0.10, f"random strategies fluked p={result.p_value:.3f}"
 
     def test_winning_strategy_yields_low_p(self) -> None:
         # Edge of 0.003/period is roughly 8 standard errors over 800 periods —
         # decisively detectable above the noise from 9 random competitors.
         df, bench = _build_one_winning_strategy(
-            seed=20, edge_per_period=0.003,
+            seed=20,
+            edge_per_period=0.003,
         )
         result = whites_reality_check(df, bench, n_bootstrap=500, seed=21)
-        assert result.p_value < 0.05, (
-            f"winning strategy missed; p={result.p_value:.3f}"
-        )
+        assert result.p_value < 0.05, f"winning strategy missed; p={result.p_value:.3f}"
         # Winner should be strat_0 (the engineered one).
         assert result.best_strategy == "strat_0"
 
@@ -194,9 +194,7 @@ class TestWhitesRealityCheck:
             {"winner": winner.values, "r1": rng.normal(0.0001, 0.01, n)},
             index=bench.index,
         )
-        large_extra = {
-            f"r{i}": rng.normal(0.0001, 0.01, n) for i in range(2, 30)
-        }
+        large_extra = {f"r{i}": rng.normal(0.0001, 0.01, n) for i in range(2, 30)}
         large = pd.concat([small, pd.DataFrame(large_extra, index=bench.index)], axis=1)
         p_small = whites_reality_check(small, bench, n_bootstrap=300, seed=31).p_value
         p_large = whites_reality_check(large, bench, n_bootstrap=300, seed=31).p_value
@@ -207,7 +205,10 @@ class TestWhitesRealityCheck:
     def test_empty_returns_rejected(self) -> None:
         with pytest.raises(AssertionError):
             whites_reality_check(
-                pd.DataFrame(), pd.Series(dtype=float), n_bootstrap=100, seed=0,
+                pd.DataFrame(),
+                pd.Series(dtype=float),
+                n_bootstrap=100,
+                seed=0,
             )
 
     def test_low_bootstrap_rejected(self) -> None:

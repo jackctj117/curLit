@@ -59,7 +59,8 @@ class TestAppend:
         assert ev2.prev_hash == ev1.row_hash
 
     def test_payload_with_complex_types_serializes(
-        self, journal: TradeJournal,
+        self,
+        journal: TradeJournal,
     ) -> None:
         # Datetimes inside payloads are serialized via default=str.
         ts = datetime(2026, 4, 25, 12, 0, 0, tzinfo=UTC)
@@ -100,7 +101,8 @@ class TestQuery:
             )
         # Query middle window
         fills = journal.query_fills_in_range(
-            t0 + timedelta(hours=12), t0 + timedelta(days=2, hours=12),
+            t0 + timedelta(hours=12),
+            t0 + timedelta(days=2, hours=12),
         )
         assert len(fills) == 2
 
@@ -158,10 +160,20 @@ class TestVerifyChain:
 class TestFifoMatching:
     def test_simple_long_open_close(self) -> None:
         fills = [
-            {"symbol": "EURUSD", "ts": datetime(2026, 1, 1, tzinfo=UTC),
-             "quantity": 1000.0, "price": 1.10, "intent_id": "open"},
-            {"symbol": "EURUSD", "ts": datetime(2026, 1, 5, tzinfo=UTC),
-             "quantity": -1000.0, "price": 1.12, "intent_id": "close"},
+            {
+                "symbol": "EURUSD",
+                "ts": datetime(2026, 1, 1, tzinfo=UTC),
+                "quantity": 1000.0,
+                "price": 1.10,
+                "intent_id": "open",
+            },
+            {
+                "symbol": "EURUSD",
+                "ts": datetime(2026, 1, 5, tzinfo=UTC),
+                "quantity": -1000.0,
+                "price": 1.12,
+                "intent_id": "close",
+            },
         ]
         lots = match_fifo(fills)
         assert len(lots) == 1
@@ -173,10 +185,20 @@ class TestFifoMatching:
 
     def test_short_open_close(self) -> None:
         fills = [
-            {"symbol": "EURUSD", "ts": datetime(2026, 1, 1, tzinfo=UTC),
-             "quantity": -1000.0, "price": 1.12, "intent_id": "open"},
-            {"symbol": "EURUSD", "ts": datetime(2026, 1, 5, tzinfo=UTC),
-             "quantity": 1000.0, "price": 1.10, "intent_id": "close"},
+            {
+                "symbol": "EURUSD",
+                "ts": datetime(2026, 1, 1, tzinfo=UTC),
+                "quantity": -1000.0,
+                "price": 1.12,
+                "intent_id": "open",
+            },
+            {
+                "symbol": "EURUSD",
+                "ts": datetime(2026, 1, 5, tzinfo=UTC),
+                "quantity": 1000.0,
+                "price": 1.10,
+                "intent_id": "close",
+            },
         ]
         lots = match_fifo(fills)
         assert len(lots) == 1
@@ -186,10 +208,20 @@ class TestFifoMatching:
 
     def test_partial_close_leaves_open_lot(self) -> None:
         fills = [
-            {"symbol": "EURUSD", "ts": datetime(2026, 1, 1, tzinfo=UTC),
-             "quantity": 1000.0, "price": 1.10, "intent_id": "open"},
-            {"symbol": "EURUSD", "ts": datetime(2026, 1, 5, tzinfo=UTC),
-             "quantity": -400.0, "price": 1.12, "intent_id": "close1"},
+            {
+                "symbol": "EURUSD",
+                "ts": datetime(2026, 1, 1, tzinfo=UTC),
+                "quantity": 1000.0,
+                "price": 1.10,
+                "intent_id": "open",
+            },
+            {
+                "symbol": "EURUSD",
+                "ts": datetime(2026, 1, 5, tzinfo=UTC),
+                "quantity": -400.0,
+                "price": 1.12,
+                "intent_id": "close1",
+            },
         ]
         lots = match_fifo(fills)
         assert len(lots) == 1
@@ -199,12 +231,27 @@ class TestFifoMatching:
     def test_fifo_oldest_first_when_multiple_open(self) -> None:
         # Two long lots at different prices; close one's worth.
         fills = [
-            {"symbol": "EURUSD", "ts": datetime(2026, 1, 1, tzinfo=UTC),
-             "quantity": 1000.0, "price": 1.10, "intent_id": "open1"},
-            {"symbol": "EURUSD", "ts": datetime(2026, 1, 2, tzinfo=UTC),
-             "quantity": 1000.0, "price": 1.15, "intent_id": "open2"},
-            {"symbol": "EURUSD", "ts": datetime(2026, 1, 5, tzinfo=UTC),
-             "quantity": -1000.0, "price": 1.20, "intent_id": "close1"},
+            {
+                "symbol": "EURUSD",
+                "ts": datetime(2026, 1, 1, tzinfo=UTC),
+                "quantity": 1000.0,
+                "price": 1.10,
+                "intent_id": "open1",
+            },
+            {
+                "symbol": "EURUSD",
+                "ts": datetime(2026, 1, 2, tzinfo=UTC),
+                "quantity": 1000.0,
+                "price": 1.15,
+                "intent_id": "open2",
+            },
+            {
+                "symbol": "EURUSD",
+                "ts": datetime(2026, 1, 5, tzinfo=UTC),
+                "quantity": -1000.0,
+                "price": 1.20,
+                "intent_id": "close1",
+            },
         ]
         lots = match_fifo(fills)
         assert len(lots) == 1
@@ -216,10 +263,20 @@ class TestFifoMatching:
     def test_reversal_creates_new_open_lot(self) -> None:
         # Long 1000 then sell 1500 = close 1000 + open short 500.
         fills = [
-            {"symbol": "EURUSD", "ts": datetime(2026, 1, 1, tzinfo=UTC),
-             "quantity": 1000.0, "price": 1.10, "intent_id": "open"},
-            {"symbol": "EURUSD", "ts": datetime(2026, 1, 5, tzinfo=UTC),
-             "quantity": -1500.0, "price": 1.12, "intent_id": "reversal"},
+            {
+                "symbol": "EURUSD",
+                "ts": datetime(2026, 1, 1, tzinfo=UTC),
+                "quantity": 1000.0,
+                "price": 1.10,
+                "intent_id": "open",
+            },
+            {
+                "symbol": "EURUSD",
+                "ts": datetime(2026, 1, 5, tzinfo=UTC),
+                "quantity": -1500.0,
+                "price": 1.12,
+                "intent_id": "reversal",
+            },
         ]
         lots = match_fifo(fills)
         assert len(lots) == 1  # Only the close → 1000 lot is closed
@@ -261,7 +318,9 @@ class TestAnnualExport:
         assert df.iloc[0]["symbol"] == "EURUSD"
 
     def test_export_to_parquet(
-        self, journal: TradeJournal, tmp_path: Path,
+        self,
+        journal: TradeJournal,
+        tmp_path: Path,
     ) -> None:
         journal.record(
             EventType.ORDER_FILLED,

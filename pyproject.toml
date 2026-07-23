@@ -162,10 +162,13 @@ known-first-party = ["src"]
 # in code that mirrors academic notation.
 "src/rates/ois_curve.py" = ["N806"]
 "src/strategies/rate_diff_mean_reversion.py" = ["N806"]
-"src/strategies/_experimental/*" = ["N806"]
+# Kalman-filter notation: Z observation matrix, R measurement-noise cov.
+"src/strategies/_experimental/*" = ["N806", "N803"]
 "src/models/rate_diff.py" = ["N806"]
 "src/models/gp_rate_diff.py" = ["N806"]
 "src/models/hmm_regime.py" = ["N806"]
+# Confusion-matrix notation in the stance-model test (MM/MT counts).
+"tests/unit/test_cb_stance_model.py" = ["N806"]
 
 [tool.mypy]
 python_version = "3.11"

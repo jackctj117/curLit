@@ -182,16 +182,12 @@ def evaluate_exit(
     # Grace period runs on the NY calendar date — "entry day" means the
     # trading session the position was opened in, not a UTC window.
     is_entry_day = (
-        entered is not None
-        and entered.astimezone(_NY).date() == now.astimezone(_NY).date()
+        entered is not None and entered.astimezone(_NY).date() == now.astimezone(_NY).date()
     )
     # Minutes since the buy — used to suppress premium stops until the
     # indicative quote settles (CL-h02l). Unknown entry time → treat as
     # settled (don't hold a position hostage to a missing timestamp).
-    mins_held = (
-        (now - entered).total_seconds() / 60.0 if entered is not None
-        else None
-    )
+    mins_held = (now - entered).total_seconds() / 60.0 if entered is not None else None
     settled = mins_held is None or mins_held >= cfg.entry_settle_min
 
     # 1. Thesis invalidated — the desk ACTIVELY no longer believes the
@@ -209,8 +205,7 @@ def evaluate_exit(
     # 2. Hard time stop — the idea's own deadline (pipeline auto-expiry of
     #    the idea is the same clock, observed from the other side).
     if days_held is not None and days_held >= time_stop:
-        return (ExitReason.TIME_STOP,
-                f"held {days_held}d >= time stop {time_stop}d")
+        return (ExitReason.TIME_STOP, f"held {days_held}d >= time stop {time_stop}d")
     if str(row.get("idea_status") or "") == "expired":
         return (ExitReason.TIME_STOP, "idea auto-expired by pipeline")
 
@@ -223,18 +218,18 @@ def evaluate_exit(
             # inside it, a cheap contract's spread masquerades as a −60%+
             # loss and would sell on noise, not a real move.
             if settled and pnl <= -cfg.entry_day_extreme_stop_pct:
-                return (ExitReason.STOP_LOSS,
-                        f"extreme adverse move {pnl:+.0%} on entry day "
-                        f"(<= -{cfg.entry_day_extreme_stop_pct:.0%} valve, "
-                        f"{mins_held:.0f}min held)")
+                return (
+                    ExitReason.STOP_LOSS,
+                    f"extreme adverse move {pnl:+.0%} on entry day "
+                    f"(<= -{cfg.entry_day_extreme_stop_pct:.0%} valve, "
+                    f"{mins_held:.0f}min held)",
+                )
         elif pnl <= -cfg.stop_loss_pct:
-            return (ExitReason.STOP_LOSS,
-                    f"premium {pnl:+.0%} <= -{cfg.stop_loss_pct:.0%}")
+            return (ExitReason.STOP_LOSS, f"premium {pnl:+.0%} <= -{cfg.stop_loss_pct:.0%}")
 
     # 4. Profit target on premium.
     if pnl is not None and pnl >= cfg.profit_target_pct:
-        return (ExitReason.PROFIT_TARGET,
-                f"premium {pnl:+.0%} >= +{cfg.profit_target_pct:.0%}")
+        return (ExitReason.PROFIT_TARGET, f"premium {pnl:+.0%} >= +{cfg.profit_target_pct:.0%}")
 
     # 5. Expiration protection. Final-day backstop closes REGARDLESS of
     #    P&L (never ride into expiration without a decision); inside the
@@ -242,19 +237,16 @@ def evaluate_exit(
     #    so missing quotes (pnl None) still close — bad data can't hold.
     if dte is not None:
         if dte <= cfg.final_day_dte:
-            return (ExitReason.EXPIRY_PROTECT,
-                    f"{dte}d to expiry — final-day close")
-        if dte <= cfg.expiry_protect_days and (
-            pnl is None or pnl < cfg.expiry_protect_min_profit
-        ):
-            return (ExitReason.EXPIRY_PROTECT,
-                    f"{dte}d to expiry <= {cfg.expiry_protect_days}d, "
-                    f"not meaningfully profitable")
+            return (ExitReason.EXPIRY_PROTECT, f"{dte}d to expiry — final-day close")
+        if dte <= cfg.expiry_protect_days and (pnl is None or pnl < cfg.expiry_protect_min_profit):
+            return (
+                ExitReason.EXPIRY_PROTECT,
+                f"{dte}d to expiry <= {cfg.expiry_protect_days}d, not meaningfully profitable",
+            )
 
     # 6. Stale safety net (normally unreachable past rule 2).
     if days_held is not None and days_held >= time_stop + cfg.stale_grace_days:
-        return (ExitReason.STALE,
-                f"held {days_held}d > time stop + {cfg.stale_grace_days}d")
+        return (ExitReason.STALE, f"held {days_held}d > time stop + {cfg.stale_grace_days}d")
 
     return None
 
@@ -299,7 +291,8 @@ def _mark_exit(
     COALESCE keeps first-write values (e.g. the reason recorded at sell
     submit survives the later fill confirmation)."""
     with engine.begin() as conn:
-        conn.execute(text("""
+        conn.execute(
+            text("""
             UPDATE alpaca_option_orders SET
                 exit_status   = :es,
                 exit_reason   = COALESCE(exit_reason, :er),
@@ -308,19 +301,34 @@ def _mark_exit(
                 pnl_pct       = COALESCE(pnl_pct, :pp),
                 exited_at     = COALESCE(exited_at, :ea)
             WHERE idea_id = :i
-        """), {"es": exit_status, "er": exit_reason, "eo": exit_order_id,
-               "ep": exit_premium, "pp": pnl_pct, "ea": now, "i": idea_id})
+        """),
+            {
+                "es": exit_status,
+                "er": exit_reason,
+                "eo": exit_order_id,
+                "ep": exit_premium,
+                "pp": pnl_pct,
+                "ea": now,
+                "i": idea_id,
+            },
+        )
         if close_idea:
-            conn.execute(text("""
+            conn.execute(
+                text("""
                 UPDATE trade_ideas SET status = 'closed',
                                        status_updated_at = :now
                 WHERE idea_id = :i
                   AND status IN ('pending', 'taken', 'expired')
-            """), {"now": now, "i": idea_id})
+            """),
+                {"now": now, "i": idea_id},
+            )
 
 
 def _finalize_vanished(
-    engine: Any, row: dict[str, Any], now: datetime, counts: dict[str, int],
+    engine: Any,
+    row: dict[str, Any],
+    now: datetime,
+    counts: dict[str, int],
 ) -> None:
     """Row says open, Alpaca shows no position — record the truth."""
     idea_id = str(row["idea_id"])
@@ -329,25 +337,38 @@ def _finalize_vanished(
         # submit time via COALESCE).
         _mark_exit(engine, idea_id, now, exit_status="closed")
         counts["closed_confirmed"] += 1
-        logger.info("options exit: %s (%s) close CONFIRMED [%s]",
-                    row.get("occ_symbol"), row.get("ticker"),
-                    row.get("exit_reason"))
+        logger.info(
+            "options exit: %s (%s) close CONFIRMED [%s]",
+            row.get("occ_symbol"),
+            row.get("ticker"),
+            row.get("exit_reason"),
+        )
         return
     expiry = occ_expiry(row.get("occ_symbol"))
     if expiry is not None and expiry < now.date():
-        _mark_exit(engine, idea_id, now, exit_status="closed",
-                   exit_reason=ExitReason.EXPIRED_WORTHLESS,
-                   exit_premium=0.0, pnl_pct=-1.0)
+        _mark_exit(
+            engine,
+            idea_id,
+            now,
+            exit_status="closed",
+            exit_reason=ExitReason.EXPIRED_WORTHLESS,
+            exit_premium=0.0,
+            pnl_pct=-1.0,
+        )
         counts["expired_worthless"] += 1
-        logger.warning("options exit: %s (%s) EXPIRED WORTHLESS (-100%%)",
-                       row.get("occ_symbol"), row.get("ticker"))
+        logger.warning(
+            "options exit: %s (%s) EXPIRED WORTHLESS (-100%%)",
+            row.get("occ_symbol"),
+            row.get("ticker"),
+        )
         return
-    _mark_exit(engine, idea_id, now, exit_status="closed",
-               exit_reason=ExitReason.CLOSED_EXTERNAL)
+    _mark_exit(engine, idea_id, now, exit_status="closed", exit_reason=ExitReason.CLOSED_EXTERNAL)
     counts["closed_external"] += 1
-    logger.warning("options exit: %s (%s) closed OUTSIDE the manager — "
-                   "marked closed_external", row.get("occ_symbol"),
-                   row.get("ticker"))
+    logger.warning(
+        "options exit: %s (%s) closed OUTSIDE the manager — marked closed_external",
+        row.get("occ_symbol"),
+        row.get("ticker"),
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -368,9 +389,16 @@ def manage_option_exits(
     cfg = cfg or OptionsExitConfig()
     now = now or datetime.now(UTC)
     counts: dict[str, int] = {
-        "held": 0, "exit_submitted": 0, "exit_pending": 0,
-        "closed_confirmed": 0, "expired_worthless": 0, "closed_external": 0,
-        "unmatched": 0, "recovered": 0, "error": 0, "market_closed": 0,
+        "held": 0,
+        "exit_submitted": 0,
+        "exit_pending": 0,
+        "closed_confirmed": 0,
+        "expired_worthless": 0,
+        "closed_external": 0,
+        "unmatched": 0,
+        "recovered": 0,
+        "error": 0,
+        "market_closed": 0,
     }
 
     # Sells are market orders too — 422 outside regular hours.
@@ -380,12 +408,9 @@ def manage_option_exits(
         return counts
 
     try:
-        positions = {
-            str(p.get("symbol")): p for p in client.list_option_positions()
-        }
+        positions = {str(p.get("symbol")): p for p in client.list_option_positions()}
     except Exception:
-        logger.warning("options exit: positions fetch failed — retry next "
-                       "cycle", exc_info=True)
+        logger.warning("options exit: positions fetch failed — retry next cycle", exc_info=True)
         counts["error"] += 1
         return counts
 
@@ -410,8 +435,9 @@ def manage_option_exits(
             qty = int(float(pos.get("qty") or row.get("qty") or 0))
             if qty <= 0:
                 counts["error"] += 1
-                logger.warning("options exit: %s has non-positive qty %r — "
-                               "not selling", occ, pos.get("qty"))
+                logger.warning(
+                    "options exit: %s has non-positive qty %r — not selling", occ, pos.get("qty")
+                )
                 continue
             pnl = _pnl_pct(pos)
             try:
@@ -421,41 +447,65 @@ def manage_option_exits(
             exit_premium = cur * 100.0 * qty if cur > 0 else None
             try:
                 order = client.submit_option_order(
-                    occ, qty, "sell",
+                    occ,
+                    qty,
+                    "sell",
                     client_order_id=f"curlit-exit-{idea_id}",
                 )
             except Exception as sub_exc:
                 if _is_duplicate_client_order_id(sub_exc):
                     # Prior crashed cycle already sold — record, don't retry.
-                    _mark_exit(engine, idea_id, now, exit_status="submitted",
-                               exit_reason=reason, exit_order_id="recovered",
-                               exit_premium=exit_premium, pnl_pct=pnl)
+                    _mark_exit(
+                        engine,
+                        idea_id,
+                        now,
+                        exit_status="submitted",
+                        exit_reason=reason,
+                        exit_order_id="recovered",
+                        exit_premium=exit_premium,
+                        pnl_pct=pnl,
+                    )
                     counts["recovered"] += 1
-                    logger.warning("options exit: %s was ALREADY being sold "
-                                   "by a prior crashed cycle — recorded",
-                                   occ)
+                    logger.warning(
+                        "options exit: %s was ALREADY being sold "
+                        "by a prior crashed cycle — recorded",
+                        occ,
+                    )
                     continue
                 raise
-            _mark_exit(engine, idea_id, now, exit_status="submitted",
-                       exit_reason=reason,
-                       exit_order_id=str(order.get("id") or ""),
-                       exit_premium=exit_premium, pnl_pct=pnl)
+            _mark_exit(
+                engine,
+                idea_id,
+                now,
+                exit_status="submitted",
+                exit_reason=reason,
+                exit_order_id=str(order.get("id") or ""),
+                exit_premium=exit_premium,
+                pnl_pct=pnl,
+            )
             counts["exit_submitted"] += 1
             logger.info(
                 "options exit: SELLING %d %s (%s) — %s (%s); pnl=%s [idea %s]",
-                qty, occ, row.get("ticker"), reason, detail,
-                f"{pnl:+.0%}" if pnl is not None else "n/a", idea_id,
+                qty,
+                occ,
+                row.get("ticker"),
+                reason,
+                detail,
+                f"{pnl:+.0%}" if pnl is not None else "n/a",
+                idea_id,
             )
         except Exception:
             counts["error"] += 1
-            logger.warning("options exit: error managing %s", occ,
-                           exc_info=True)
+            logger.warning("options exit: error managing %s", occ, exc_info=True)
 
     # Anything Alpaca holds that we can't explain: flag, never auto-manage.
     for occ, _pos in positions.items():
         counts["unmatched"] += 1
-        logger.warning("options exit: UNMATCHED Alpaca position %s — no "
-                       "alpaca_option_orders row; NOT auto-managed", occ)
+        logger.warning(
+            "options exit: UNMATCHED Alpaca position %s — no "
+            "alpaca_option_orders row; NOT auto-managed",
+            occ,
+        )
 
     logger.info("options exit: %s", counts)
     return counts

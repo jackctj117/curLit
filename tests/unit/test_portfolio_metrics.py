@@ -46,11 +46,13 @@ class TestLeverage:
     def test_long_only_leverage(self) -> None:
         positions = [
             _FakePos("EURUSD", 1000.0, 1.10),  # 1100 notional
-            _FakePos("GBPUSD", 500.0, 1.30),   # 650 notional
+            _FakePos("GBPUSD", 500.0, 1.30),  # 650 notional
         ]
         emit_portfolio_metrics(
-            allocations={}, exposure_multipliers={},
-            positions=positions, equity=10_000,
+            allocations={},
+            exposure_multipliers={},
+            positions=positions,
+            equity=10_000,
         )
         assert _gauge_value(portfolio_gross_leverage) == pytest.approx(0.175)
         assert _gauge_value(portfolio_net_leverage) == pytest.approx(0.175)
@@ -61,8 +63,10 @@ class TestLeverage:
             _FakePos("GBPUSD", -500.0, 1.0),
         ]
         emit_portfolio_metrics(
-            allocations={}, exposure_multipliers={},
-            positions=positions, equity=10_000,
+            allocations={},
+            exposure_multipliers={},
+            positions=positions,
+            equity=10_000,
         )
         # Gross = 1500/10000 = 0.15; Net = 500/10000 = 0.05
         assert _gauge_value(portfolio_gross_leverage) == pytest.approx(0.15)
@@ -71,7 +75,8 @@ class TestLeverage:
     def test_zero_equity_no_op(self) -> None:
         # Should not crash or emit infinity.
         emit_portfolio_metrics(
-            allocations={}, exposure_multipliers={},
+            allocations={},
+            exposure_multipliers={},
             positions=[_FakePos("EURUSD", 1000, 1.0)],
             equity=0,
         )
@@ -84,15 +89,18 @@ class TestStrategyLevel:
         emit_portfolio_metrics(
             allocations={"s1": 0.6, "s2": 0.4},
             exposure_multipliers={"s1": 1.0, "s2": 0.5},
-            positions=[], equity=10_000,
+            positions=[],
+            equity=10_000,
         )
         assert _labeled(strategy_allocation, strategy="s1") == pytest.approx(0.6)
         assert _labeled(strategy_exposure_mult, strategy="s2") == pytest.approx(0.5)
 
     def test_attributed_pnl(self) -> None:
         emit_portfolio_metrics(
-            allocations={}, exposure_multipliers={},
-            positions=[], equity=10_000,
+            allocations={},
+            exposure_multipliers={},
+            positions=[],
+            equity=10_000,
             attributed_pnls={"s1": _FakePnL(realized=100.0, unrealized=20.0)},
         )
         assert _labeled(strategy_attributed_pnl_usd, strategy="s1") == pytest.approx(120.0)
@@ -102,8 +110,10 @@ class TestStrategyLevel:
         # Annualized Sharpe ≈ 0.001/0.01 * sqrt(252) ≈ 1.587.
         returns = pd.Series([0.001, 0.011, -0.009, 0.005, -0.002])
         emit_portfolio_metrics(
-            allocations={}, exposure_multipliers={},
-            positions=[], equity=10_000,
+            allocations={},
+            exposure_multipliers={},
+            positions=[],
+            equity=10_000,
             daily_returns={"s1": returns},
         )
         s = _labeled(strategy_attributed_sharpe, strategy="s1")
@@ -113,17 +123,23 @@ class TestStrategyLevel:
 class TestConflicts:
     def test_rate_zero_when_no_conflicts(self) -> None:
         emit_portfolio_metrics(
-            allocations={}, exposure_multipliers={},
-            positions=[], equity=10_000,
-            conflicts=0, n_intents=10,
+            allocations={},
+            exposure_multipliers={},
+            positions=[],
+            equity=10_000,
+            conflicts=0,
+            n_intents=10,
         )
         assert _gauge_value(portfolio_conflicts_rate) == 0.0
 
     def test_rate_fraction(self) -> None:
         emit_portfolio_metrics(
-            allocations={}, exposure_multipliers={},
-            positions=[], equity=10_000,
-            conflicts=2, n_intents=8,
+            allocations={},
+            exposure_multipliers={},
+            positions=[],
+            equity=10_000,
+            conflicts=2,
+            n_intents=8,
         )
         assert _gauge_value(portfolio_conflicts_rate) == pytest.approx(0.25)
 
@@ -131,8 +147,10 @@ class TestConflicts:
 class TestCorrelation:
     def test_max_pair_corr(self) -> None:
         emit_portfolio_metrics(
-            allocations={}, exposure_multipliers={},
-            positions=[], equity=10_000,
+            allocations={},
+            exposure_multipliers={},
+            positions=[],
+            equity=10_000,
             max_pair_corr=0.85,
         )
         assert _gauge_value(portfolio_correlation_max) == pytest.approx(0.85)

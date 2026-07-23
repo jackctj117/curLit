@@ -113,9 +113,7 @@ class FakeApi:
 
     @property
     def sent_messages(self) -> list[str]:
-        return [
-            str(p["text"]) for m, p in self.calls if m == "sendMessage"
-        ]
+        return [str(p["text"]) for m, p in self.calls if m == "sendMessage"]
 
 
 def _make_bot(
@@ -144,18 +142,21 @@ def _make_bot(
 class TestParseCommand:
     def test_simple_approve(self) -> None:
         assert parse_command("approve a1b2c3") == ParsedCommand(
-            verb="approve", target="a1b2c3",
+            verb="approve",
+            target="a1b2c3",
         )
 
     def test_case_insensitive_and_slash(self) -> None:
         assert parse_command("  /APPROVE A1B2C3  ") == ParsedCommand(
-            verb="approve", target="a1b2c3",
+            verb="approve",
+            target="a1b2c3",
         )
 
     def test_reason_captured(self) -> None:
         cmd = parse_command("skip a1b2c3 duplicates existing strategy")
         assert cmd == ParsedCommand(
-            verb="skip", target="a1b2c3",
+            verb="skip",
+            target="a1b2c3",
             reason="duplicates existing strategy",
         )
 
@@ -176,7 +177,9 @@ class TestParseCommand:
 
 class TestChatIdFiltering:
     def test_foreign_chat_ignored(
-        self, tmp_path: Path, caplog: pytest.LogCaptureFixture,
+        self,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         state = _make_state(ideas={HASH_A: _gate1_entry("alpha")})
         bot, api, state_path = _make_bot(
@@ -209,7 +212,8 @@ class TestChatIdFiltering:
 
     def test_missing_chat_ignored(self, tmp_path: Path) -> None:
         bot, api, _ = _make_bot(
-            tmp_path, batches=[[{"update_id": 5, "message": {"text": "pending"}}]],
+            tmp_path,
+            batches=[[{"update_id": 5, "message": {"text": "pending"}}]],
         )
         assert bot.poll_once(timeout_sec=0) == 1
         assert api.sent_messages == []
@@ -224,21 +228,21 @@ class TestMutations:
     def test_approve_gate1(self, tmp_path: Path) -> None:
         state = _make_state(ideas={HASH_A: _gate1_entry("alpha")})
         bot, api, state_path = _make_bot(
-            tmp_path, batches=[[_update(1, "approve a1b2c3")]], state=state,
+            tmp_path,
+            batches=[[_update(1, "approve a1b2c3")]],
+            state=state,
         )
         bot.poll_once(timeout_sec=0)
         reloaded = load_state(state_path)
         assert reloaded.ideas_processed[HASH_A]["status"] == GATE1_APPROVED_STATUS
         # One-line phone-readable ack (CL-frn7)
-        assert any(
-            m == "✅ Approved alpha — will implement next run."
-            for m in api.sent_messages
-        )
+        assert any(m == "✅ Approved alpha — will implement next run." for m in api.sent_messages)
 
     def test_reject_gate1_is_skip(self, tmp_path: Path) -> None:
         state = _make_state(ideas={HASH_A: _gate1_entry("alpha")})
         bot, _, state_path = _make_bot(
-            tmp_path, batches=[[_update(1, "reject a1b2c3 not novel")]],
+            tmp_path,
+            batches=[[_update(1, "reject a1b2c3 not novel")]],
             state=state,
         )
         bot.poll_once(timeout_sec=0)
@@ -249,7 +253,9 @@ class TestMutations:
     def test_skip_gate1_default_reason(self, tmp_path: Path) -> None:
         state = _make_state(ideas={HASH_A: _gate1_entry("alpha")})
         bot, _, state_path = _make_bot(
-            tmp_path, batches=[[_update(1, "skip a1b2c3")]], state=state,
+            tmp_path,
+            batches=[[_update(1, "skip a1b2c3")]],
+            state=state,
         )
         bot.poll_once(timeout_sec=0)
         entry = load_state(state_path).ideas_processed[HASH_A]
@@ -259,20 +265,20 @@ class TestMutations:
     def test_approve_gate2_by_slug(self, tmp_path: Path) -> None:
         state = _make_state(debates={"vol-carry": _gate2_entry()})
         bot, api, state_path = _make_bot(
-            tmp_path, batches=[[_update(1, "approve vol-carry")]], state=state,
+            tmp_path,
+            batches=[[_update(1, "approve vol-carry")]],
+            state=state,
         )
         bot.poll_once(timeout_sec=0)
         entry = load_state(state_path).debates_completed["vol-carry"]
         assert entry["deploy_status"] == GATE2_APPROVED_STATUS
-        assert any(
-            m.startswith("✅ Deploy approved vol-carry")
-            for m in api.sent_messages
-        )
+        assert any(m.startswith("✅ Deploy approved vol-carry") for m in api.sent_messages)
 
     def test_reject_gate2(self, tmp_path: Path) -> None:
         state = _make_state(debates={"vol-carry": _gate2_entry()})
         bot, _, state_path = _make_bot(
-            tmp_path, batches=[[_update(1, "reject vol-carry too risky")]],
+            tmp_path,
+            batches=[[_update(1, "reject vol-carry too risky")]],
             state=state,
         )
         bot.poll_once(timeout_sec=0)
@@ -283,7 +289,9 @@ class TestMutations:
     def test_gate2_slug_prefix(self, tmp_path: Path) -> None:
         state = _make_state(debates={"vol-carry": _gate2_entry()})
         bot, _, state_path = _make_bot(
-            tmp_path, batches=[[_update(1, "approve vol-c")]], state=state,
+            tmp_path,
+            batches=[[_update(1, "approve vol-c")]],
+            state=state,
         )
         bot.poll_once(timeout_sec=0)
         entry = load_state(state_path).debates_completed["vol-carry"]
@@ -311,14 +319,23 @@ class TestCliEquivalence:
         _seed(cli_path, _make_state(ideas={HASH_A: _gate1_entry("alpha")}))
 
         bot = TelegramApprovalBot(
-            token=TOKEN, chat_id=CHAT_ID, state_path=tg_path,
+            token=TOKEN,
+            chat_id=CHAT_ID,
+            state_path=tg_path,
             offset_path=tmp_path / "off.json",
             api_call=FakeApi([[_update(1, "approve a1b2c3")]]),
         )
         bot.poll_once(timeout_sec=0)
-        rc = self._run_cli([
-            "--state", str(cli_path), "--slug", "alpha", "--action", "GO",
-        ])
+        rc = self._run_cli(
+            [
+                "--state",
+                str(cli_path),
+                "--slug",
+                "alpha",
+                "--action",
+                "GO",
+            ]
+        )
         assert rc == 0
         assert tg_path.read_text() == cli_path.read_text()
 
@@ -329,15 +346,26 @@ class TestCliEquivalence:
         _seed(cli_path, _make_state(debates={"vol-carry": _gate2_entry()}))
 
         bot = TelegramApprovalBot(
-            token=TOKEN, chat_id=CHAT_ID, state_path=tg_path,
+            token=TOKEN,
+            chat_id=CHAT_ID,
+            state_path=tg_path,
             offset_path=tmp_path / "off.json",
             api_call=FakeApi([[_update(1, "reject vol-carry too risky")]]),
         )
         bot.poll_once(timeout_sec=0)
-        rc = self._run_cli([
-            "--state", str(cli_path), "--gate=2", "--slug", "vol-carry",
-            "--action", "SKIP", "--reason", "too risky",
-        ])
+        rc = self._run_cli(
+            [
+                "--state",
+                str(cli_path),
+                "--gate=2",
+                "--slug",
+                "vol-carry",
+                "--action",
+                "SKIP",
+                "--reason",
+                "too risky",
+            ]
+        )
         assert rc == 0
         assert tg_path.read_text() == cli_path.read_text()
 
@@ -349,9 +377,12 @@ class TestCliEquivalence:
 
 class TestResolution:
     def test_unambiguous_prefix(self) -> None:
-        state = _make_state(ideas={
-            HASH_A: _gate1_entry("alpha"), HASH_C: _gate1_entry("gamma"),
-        })
+        state = _make_state(
+            ideas={
+                HASH_A: _gate1_entry("alpha"),
+                HASH_C: _gate1_entry("gamma"),
+            }
+        )
         target, err = resolve_target(state, "a1")
         assert err == ""
         assert target is not None
@@ -359,9 +390,12 @@ class TestResolution:
         assert target.key == HASH_A
 
     def test_collision_lists_candidates(self, tmp_path: Path) -> None:
-        state = _make_state(ideas={
-            HASH_A: _gate1_entry("alpha"), HASH_B: _gate1_entry("beta"),
-        })
+        state = _make_state(
+            ideas={
+                HASH_A: _gate1_entry("alpha"),
+                HASH_B: _gate1_entry("beta"),
+            }
+        )
         target, err = resolve_target(state, "a1b2")
         assert target is None
         assert "Ambiguous" in err
@@ -371,16 +405,15 @@ class TestResolution:
         state_path = tmp_path / "state.json"
         _seed(state_path, state)
         bot = TelegramApprovalBot(
-            token=TOKEN, chat_id=CHAT_ID, state_path=state_path,
+            token=TOKEN,
+            chat_id=CHAT_ID,
+            state_path=state_path,
             offset_path=tmp_path / "off.json",
             api_call=FakeApi([[_update(1, "approve a1b2")]]),
         )
         bot.poll_once(timeout_sec=0)
         reloaded = load_state(state_path)
-        assert all(
-            e["status"] == GATE1_PENDING_STATUS
-            for e in reloaded.ideas_processed.values()
-        )
+        assert all(e["status"] == GATE1_PENDING_STATUS for e in reloaded.ideas_processed.values())
 
     def test_gate1_exact_slug_match(self) -> None:
         state = _make_state(ideas={HASH_A: _gate1_entry("alpha")})
@@ -420,11 +453,11 @@ class TestHandleText:
         )
         result = handle_text(state, "pending")
         assert not result.state_changed
-        assert HASH_A[:6] in result.reply       # gate1 short id
+        assert HASH_A[:6] in result.reply  # gate1 short id
         assert "alpha" in result.reply
-        assert HASH_C[:6] not in result.reply   # non-pending hidden
-        assert "vol-carry" in result.reply      # gate2 slug
-        assert "approve <id>" in result.reply   # reply instructions
+        assert HASH_C[:6] not in result.reply  # non-pending hidden
+        assert "vol-carry" in result.reply  # gate2 slug
+        assert "approve <id>" in result.reply  # reply instructions
 
     def test_pending_empty(self) -> None:
         result = handle_text(_make_state(), "pending")
@@ -448,7 +481,8 @@ class TestHandleText:
     def test_render_pending_matches_handle(self) -> None:
         state = _make_state(ideas={HASH_A: _gate1_entry("alpha")})
         assert handle_text(state, "pending") == CommandResult(
-            reply=render_pending(state), state_changed=False,
+            reply=render_pending(state),
+            state_changed=False,
         )
 
 
@@ -484,18 +518,22 @@ class TestAckReplies:
     def test_reject_gate1_one_liner(self, tmp_path: Path) -> None:
         state = _make_state(ideas={HASH_A: _gate1_entry("alpha")})
         bot, api, _ = _make_bot(
-            tmp_path, batches=[[_update(1, "reject a1b2c3 not novel")]],
+            tmp_path,
+            batches=[[_update(1, "reject a1b2c3 not novel")]],
             state=state,
         )
         bot.poll_once(timeout_sec=0)
         assert api.sent_messages == ["❌ Skipped alpha — not novel."]
 
     def test_reject_gate2_one_liner_default_reason(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         state = _make_state(debates={"vol-carry": _gate2_entry()})
         bot, api, _ = _make_bot(
-            tmp_path, batches=[[_update(1, "reject vol-carry")]], state=state,
+            tmp_path,
+            batches=[[_update(1, "reject vol-carry")]],
+            state=state,
         )
         bot.poll_once(timeout_sec=0)
         assert api.sent_messages == [
@@ -516,7 +554,8 @@ class TestAckReplies:
 
 class TestPendingFormat:
     def test_numbered_two_lines_per_entry_with_trades(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         brief_path = tmp_path / "brief.md"
         brief_path.write_text(BRIEF_TEXT)
@@ -586,11 +625,9 @@ class TestOffset:
         bot.poll_once(timeout_sec=0)
         assert load_offset(tmp_path / "telegram_offset.json") == 9
         bot.poll_once(timeout_sec=0)
-        get_updates_calls = [
-            p for m, p in api.calls if m == "getUpdates"
-        ]
+        get_updates_calls = [p for m, p in api.calls if m == "getUpdates"]
         assert "offset" not in get_updates_calls[0]  # fresh start
-        assert get_updates_calls[1]["offset"] == 9   # ack'd
+        assert get_updates_calls[1]["offset"] == 9  # ack'd
 
     def test_no_updates_no_offset_write(self, tmp_path: Path) -> None:
         bot, _, _ = _make_bot(tmp_path, batches=[[]])
@@ -605,7 +642,8 @@ class TestOffset:
 
 class TestTokenSafety:
     def test_httpx_api_scrubs_token(
-        self, monkeypatch: pytest.MonkeyPatch,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         import httpx
 
@@ -625,15 +663,19 @@ class TestTokenSafety:
         assert exc_info.value.__suppress_context__
 
     def test_no_token_in_logs_or_replies(
-        self, tmp_path: Path, caplog: pytest.LogCaptureFixture,
+        self,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         state = _make_state(ideas={HASH_A: _gate1_entry("alpha")})
         bot, api, _ = _make_bot(
             tmp_path,
-            batches=[[
-                _update(1, "approve a1b2c3"),
-                _update(2, "pending", chat_id=FOREIGN_CHAT_ID),
-            ]],
+            batches=[
+                [
+                    _update(1, "approve a1b2c3"),
+                    _update(2, "pending", chat_id=FOREIGN_CHAT_ID),
+                ]
+            ],
             state=state,
         )
         with caplog.at_level(logging.DEBUG):
@@ -644,11 +686,15 @@ class TestTokenSafety:
             assert TOKEN not in sent
 
     def test_send_failure_logged_scrubbed(
-        self, tmp_path: Path, caplog: pytest.LogCaptureFixture,
+        self,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         class SendBoomApi(FakeApi):
             def __call__(
-                self, method: str, params: dict[str, Any],
+                self,
+                method: str,
+                params: dict[str, Any],
             ) -> dict[str, Any]:
                 if method == "sendMessage":
                     raise TelegramApiError(
@@ -661,7 +707,9 @@ class TestTokenSafety:
         state_path = tmp_path / "state.json"
         _seed(state_path, state)
         bot = TelegramApprovalBot(
-            token=TOKEN, chat_id=CHAT_ID, state_path=state_path,
+            token=TOKEN,
+            chat_id=CHAT_ID,
+            state_path=state_path,
             offset_path=tmp_path / "off.json",
             api_call=SendBoomApi([[_update(3, "approve a1b2c3")]]),
         )
@@ -669,17 +717,16 @@ class TestTokenSafety:
             n = bot.poll_once(timeout_sec=0)
         assert n == 1
         # Mutation still landed; reply failure is logged, offset advances.
-        assert (
-            load_state(state_path).ideas_processed[HASH_A]["status"]
-            == GATE1_APPROVED_STATUS
-        )
+        assert load_state(state_path).ideas_processed[HASH_A]["status"] == GATE1_APPROVED_STATUS
         assert load_offset(tmp_path / "off.json") == 4
         joined = "\n".join(r.getMessage() for r in caplog.records)
         assert "failed to process update" in joined
         assert TOKEN not in joined
 
     def test_send_retries_once_then_succeeds(
-        self, tmp_path: Path, caplog: pytest.LogCaptureFixture,
+        self,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         class FlakySendApi(FakeApi):
             def __init__(self, batches: list[list[dict[str, Any]]]):
@@ -687,14 +734,15 @@ class TestTokenSafety:
                 self.send_attempts = 0
 
             def __call__(
-                self, method: str, params: dict[str, Any],
+                self,
+                method: str,
+                params: dict[str, Any],
             ) -> dict[str, Any]:
                 if method == "sendMessage":
                     self.send_attempts += 1
                     if self.send_attempts == 1:
                         raise TelegramApiError(
-                            "sendMessage failed: ConnectTimeout: "
-                            "handshake timed out",
+                            "sendMessage failed: ConnectTimeout: handshake timed out",
                         )
                 return super().__call__(method, params)
 
@@ -703,8 +751,11 @@ class TestTokenSafety:
         _seed(state_path, state)
         api = FlakySendApi([[_update(3, "approve a1b2c3")]])
         bot = TelegramApprovalBot(
-            token=TOKEN, chat_id=CHAT_ID, state_path=state_path,
-            offset_path=tmp_path / "off.json", api_call=api,
+            token=TOKEN,
+            chat_id=CHAT_ID,
+            state_path=state_path,
+            offset_path=tmp_path / "off.json",
+            api_call=api,
         )
         with caplog.at_level(logging.WARNING):
             bot.poll_once(timeout_sec=0)
@@ -732,8 +783,13 @@ class TestMobileKeyboardMangling:
             assert cmd.verb == "approve" and cmd.target == "abc123", text
 
     def test_trailing_punctuation_trimmed(self) -> None:
-        for text in ("Approve abc123.", "approve abc123,", "approve abc123!",
-                     "Approve \u201cabc123\u201d", "approve 'abc123'"):
+        for text in (
+            "Approve abc123.",
+            "approve abc123,",
+            "approve abc123!",
+            "Approve \u201cabc123\u201d",
+            "approve 'abc123'",
+        ):
             cmd = parse_command(text)
             assert cmd is not None, text
             assert cmd.target == "abc123", text
@@ -789,16 +845,44 @@ class TestIdeasCommand:
         from src.events.idea_ledger import persist_ideas
 
         now = datetime.now(UTC)
-        persist_ideas(engine, 1, {"trade_ideas": [{
-            "ticker": "TSM", "action": "buy_puts", "direction": "bearish",
-            "confidence": 0.7, "rationale": "r", "time_horizon": "short",
-            "holding_period_days": "2-6", "time_stop_days": 5,
-        }]}, now=now - timedelta(days=2))
-        persist_ideas(engine, 2, {"trade_ideas": [{
-            "ticker": "RTX", "action": "long", "direction": "bullish",
-            "confidence": 0.5, "rationale": "r", "time_horizon": "medium",
-            "holding_period_days": "10-20", "time_stop_days": 20,
-        }]}, now=now - timedelta(hours=3))
+        persist_ideas(
+            engine,
+            1,
+            {
+                "trade_ideas": [
+                    {
+                        "ticker": "TSM",
+                        "action": "buy_puts",
+                        "direction": "bearish",
+                        "confidence": 0.7,
+                        "rationale": "r",
+                        "time_horizon": "short",
+                        "holding_period_days": "2-6",
+                        "time_stop_days": 5,
+                    }
+                ]
+            },
+            now=now - timedelta(days=2),
+        )
+        persist_ideas(
+            engine,
+            2,
+            {
+                "trade_ideas": [
+                    {
+                        "ticker": "RTX",
+                        "action": "long",
+                        "direction": "bullish",
+                        "confidence": 0.5,
+                        "rationale": "r",
+                        "time_horizon": "medium",
+                        "holding_period_days": "10-20",
+                        "time_stop_days": 20,
+                    }
+                ]
+            },
+            now=now - timedelta(hours=3),
+        )
 
     def test_lists_open_ideas_with_age_stop_price(self) -> None:
         from src.research.telegram_approvals import render_ideas
@@ -831,17 +915,39 @@ class TestIdeasCommand:
 
         engine = _ledger_engine()
         now = datetime.now(UTC)
-        gold = {"ticker": "XAU_USD", "action": "long", "direction": "bullish",
-                "confidence": 0.7, "rationale": "r", "time_horizon": "short",
-                "holding_period_days": "2-6", "time_stop_days": 5}
+        gold = {
+            "ticker": "XAU_USD",
+            "action": "long",
+            "direction": "bullish",
+            "confidence": 0.7,
+            "rationale": "r",
+            "time_horizon": "short",
+            "holding_period_days": "2-6",
+            "time_stop_days": 5,
+        }
         for eid in (1, 2, 3):
-            persist_ideas(engine, eid, {"trade_ideas": [dict(gold)]},
-                          now=now - timedelta(minutes=eid))
-        persist_ideas(engine, 9, {"trade_ideas": [{
-            "ticker": "BCO_USD", "action": "long", "direction": "bullish",
-            "confidence": 0.6, "rationale": "r", "time_horizon": "short",
-            "holding_period_days": "2-6", "time_stop_days": 5}]},
-            now=now - timedelta(minutes=1))
+            persist_ideas(
+                engine, eid, {"trade_ideas": [dict(gold)]}, now=now - timedelta(minutes=eid)
+            )
+        persist_ideas(
+            engine,
+            9,
+            {
+                "trade_ideas": [
+                    {
+                        "ticker": "BCO_USD",
+                        "action": "long",
+                        "direction": "bullish",
+                        "confidence": 0.6,
+                        "rationale": "r",
+                        "time_horizon": "short",
+                        "holding_period_days": "2-6",
+                        "time_stop_days": 5,
+                    }
+                ]
+            },
+            now=now - timedelta(minutes=1),
+        )
 
         reply = render_ideas(engine=engine, get_prices_fn=lambda *a, **k: {})
         assert "XAU_USD LONG ×3 events" in reply
@@ -857,7 +963,8 @@ class TestIdeasCommand:
         from src.research.telegram_approvals import render_ideas
 
         reply = render_ideas(
-            engine=_ledger_engine(), get_prices_fn=lambda *a, **k: {},
+            engine=_ledger_engine(),
+            get_prices_fn=lambda *a, **k: {},
         )
         assert reply == "No open trade ideas."
 
@@ -886,7 +993,8 @@ class TestIdeasCommand:
         assert "$" not in reply
 
     def test_handle_text_dispatches_ideas(
-        self, monkeypatch: pytest.MonkeyPatch,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setattr(
             "src.research.telegram_approvals.render_ideas",
@@ -911,16 +1019,30 @@ class TestIdeaDetailCommand:
 
         from src.events.idea_ledger import make_idea_id, persist_ideas
 
-        persist_ideas(engine, 1, {"trade_ideas": [{
-            "ticker": "TSM", "action": "buy_puts", "direction": "bearish",
-            "confidence": 0.7, "rationale": "advanced-node concentration",
-            "time_horizon": "short", "holding_period_days": "2-6",
-            "time_stop_days": 5, "stop_loss_pct": 0.40,
-            "target_pct": [0.10, 0.18],
-            "entry_trigger": "on confirmed blockade language",
-            "invalidation": "official denial of the strike",
-        }]}, prices={"TSM": {"price": 172.4, "change_pct": -1.8}},
-            now=datetime(2026, 7, 20, 12, tzinfo=UTC))
+        persist_ideas(
+            engine,
+            1,
+            {
+                "trade_ideas": [
+                    {
+                        "ticker": "TSM",
+                        "action": "buy_puts",
+                        "direction": "bearish",
+                        "confidence": 0.7,
+                        "rationale": "advanced-node concentration",
+                        "time_horizon": "short",
+                        "holding_period_days": "2-6",
+                        "time_stop_days": 5,
+                        "stop_loss_pct": 0.40,
+                        "target_pct": [0.10, 0.18],
+                        "entry_trigger": "on confirmed blockade language",
+                        "invalidation": "official denial of the strike",
+                    }
+                ]
+            },
+            prices={"TSM": {"price": 172.4, "change_pct": -1.8}},
+            now=datetime(2026, 7, 20, 12, tzinfo=UTC),
+        )
         return make_idea_id(1, "TSM", "buy_puts")
 
     def test_full_card_found(self) -> None:
@@ -936,11 +1058,13 @@ class TestIdeaDetailCommand:
             return {"TSM": {"price": 172.4, "change_pct": -1.8}}
 
         reply = render_idea_detail(
-            idea_id[:6], engine=engine, get_prices_fn=fake_prices,
+            idea_id[:6],
+            engine=engine,
+            get_prices_fn=fake_prices,
         )
         assert reply.startswith("TSM — BUY PUTS")
         assert "$172.40" in reply
-        assert "Stop:" in reply            # dollar stop present
+        assert "Stop:" in reply  # dollar stop present
         assert "Targets:" in reply
         assert "Risk:reward:" in reply
         # option guidance with the pick-nearest caveat
@@ -955,7 +1079,11 @@ class TestIdeaDetailCommand:
         assert IDEA_ADVISORY_FOOTER in reply
 
     def _seed_instrument(
-        self, engine: Any, ticker: str, action: str, direction: str,
+        self,
+        engine: Any,
+        ticker: str,
+        action: str,
+        direction: str,
     ) -> str:
         """Seed one idea keyed on an OANDA/CFD instrument (CL-vowz), so
         the Robinhood proxy section has something to map."""
@@ -963,11 +1091,25 @@ class TestIdeaDetailCommand:
 
         from src.events.idea_ledger import make_idea_id, persist_ideas
 
-        persist_ideas(engine, 3, {"trade_ideas": [{
-            "ticker": ticker, "action": action, "direction": direction,
-            "confidence": 0.7, "rationale": "r", "time_horizon": "short",
-            "holding_period_days": "2-6", "time_stop_days": 5,
-        }]}, now=datetime(2026, 7, 20, 12, tzinfo=UTC))
+        persist_ideas(
+            engine,
+            3,
+            {
+                "trade_ideas": [
+                    {
+                        "ticker": ticker,
+                        "action": action,
+                        "direction": direction,
+                        "confidence": 0.7,
+                        "rationale": "r",
+                        "time_horizon": "short",
+                        "holding_period_days": "2-6",
+                        "time_stop_days": 5,
+                    }
+                ]
+            },
+            now=datetime(2026, 7, 20, 12, tzinfo=UTC),
+        )
         return make_idea_id(3, ticker, action)
 
     def test_robinhood_section_commodity_long(self) -> None:
@@ -978,7 +1120,9 @@ class TestIdeaDetailCommand:
         engine = _ledger_engine()
         idea_id = self._seed_instrument(engine, "XAU_USD", "long", "bullish")
         reply = render_idea_detail(
-            idea_id[:6], engine=engine, get_prices_fn=lambda *a, **k: {},
+            idea_id[:6],
+            engine=engine,
+            get_prices_fn=lambda *a, **k: {},
         )
         assert "Robinhood proxies: GLD, IAU" in reply
         assert "LONG XAU_USD → buy GLD or IAU." in reply
@@ -993,11 +1137,13 @@ class TestIdeaDetailCommand:
         engine = _ledger_engine()
         idea_id = self._seed_instrument(engine, "SPX500_USD", "short", "bearish")
         reply = render_idea_detail(
-            idea_id[:6], engine=engine, get_prices_fn=lambda *a, **k: {},
+            idea_id[:6],
+            engine=engine,
+            get_prices_fn=lambda *a, **k: {},
         )
         assert "Inverse (for shorts): SH, SDS" in reply
         assert "SHORT SPX500_USD → buy SH/SDS or SPY puts." in reply
-        assert "DECAY" in reply                    # leveraged decay caveat
+        assert "DECAY" in reply  # leveraged decay caveat
         assert "broker approval" in reply.lower()  # options caveat
 
     def test_robinhood_section_equity_direct(self) -> None:
@@ -1007,7 +1153,9 @@ class TestIdeaDetailCommand:
         engine = _ledger_engine()
         idea_id = self._seed_one(engine)
         reply = render_idea_detail(
-            idea_id[:6], engine=engine, get_prices_fn=lambda *a, **k: {},
+            idea_id[:6],
+            engine=engine,
+            get_prices_fn=lambda *a, **k: {},
         )
         assert "TSM trades directly" in reply
 
@@ -1017,7 +1165,9 @@ class TestIdeaDetailCommand:
         engine = _ledger_engine()
         self._seed_one(engine)
         reply = render_idea_detail(
-            "zzzzzz", engine=engine, get_prices_fn=lambda *a, **k: {},
+            "zzzzzz",
+            engine=engine,
+            get_prices_fn=lambda *a, **k: {},
         )
         assert "Unknown idea id" in reply
 
@@ -1031,15 +1181,25 @@ class TestIdeaDetailCommand:
 
         engine = _ledger_engine()
         now = datetime.now(UTC)
-        gold = {"ticker": "XAU_USD", "action": "long", "direction": "bullish",
-                "confidence": 0.7, "rationale": "r", "time_horizon": "short",
-                "holding_period_days": "2-6", "time_stop_days": 5}
+        gold = {
+            "ticker": "XAU_USD",
+            "action": "long",
+            "direction": "bullish",
+            "confidence": 0.7,
+            "rationale": "r",
+            "time_horizon": "short",
+            "holding_period_days": "2-6",
+            "time_stop_days": 5,
+        }
         for eid in (1, 2):
-            persist_ideas(engine, eid, {"trade_ideas": [dict(gold)]},
-                          now=now - timedelta(minutes=eid))
+            persist_ideas(
+                engine, eid, {"trade_ideas": [dict(gold)]}, now=now - timedelta(minutes=eid)
+            )
         idea_id = make_idea_id(1, "XAU_USD", "long")
         reply = render_idea_detail(
-            idea_id[:6], engine=engine, get_prices_fn=lambda *a, **k: {},
+            idea_id[:6],
+            engine=engine,
+            get_prices_fn=lambda *a, **k: {},
         )
         assert "Corroboration: ×2 events proposed this" in reply
 
@@ -1049,7 +1209,9 @@ class TestIdeaDetailCommand:
         engine = _ledger_engine()
         idea_id = self._seed_one(engine)
         reply = render_idea_detail(
-            idea_id[:6], engine=engine, get_prices_fn=lambda *a, **k: {},
+            idea_id[:6],
+            engine=engine,
+            get_prices_fn=lambda *a, **k: {},
         )
         assert "Corroboration:" not in reply
 
@@ -1063,7 +1225,9 @@ class TestIdeaDetailCommand:
         idea_id = self._seed_one(engine)
         # No live price now → uses persisted price_at_signal / levels.
         reply = render_idea_detail(
-            idea_id[:6], engine=engine, get_prices_fn=lambda *a, **k: {},
+            idea_id[:6],
+            engine=engine,
+            get_prices_fn=lambda *a, **k: {},
         )
         assert "at signal" in reply
         assert IDEA_ADVISORY_FOOTER in reply
@@ -1074,13 +1238,15 @@ class TestIdeaDetailCommand:
         from src.research.telegram_approvals import render_idea_detail
 
         reply = render_idea_detail(
-            "abc", engine=sa.create_engine("sqlite://"),
+            "abc",
+            engine=sa.create_engine("sqlite://"),
             get_prices_fn=lambda *a, **k: {},
         )
         assert "unavailable" in reply.lower()
 
     def test_handle_text_dispatches_idea_detail(
-        self, monkeypatch: pytest.MonkeyPatch,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         captured: dict[str, Any] = {}
 
@@ -1089,7 +1255,8 @@ class TestIdeaDetailCommand:
             return "DETAIL-SENTINEL"
 
         monkeypatch.setattr(
-            "src.research.telegram_approvals.render_idea_detail", fake,
+            "src.research.telegram_approvals.render_idea_detail",
+            fake,
         )
         result = handle_text(_make_state(), "idea a1b2c3")
         assert result == CommandResult(reply="DETAIL-SENTINEL", state_changed=False)
@@ -1101,7 +1268,8 @@ class TestIdeaDetailCommand:
 
     def test_parse_command_distinguishes_idea_from_ideas(self) -> None:
         assert parse_command("idea a1b2c3") == ParsedCommand(
-            verb="idea", target="a1b2c3",
+            verb="idea",
+            target="a1b2c3",
         )
         assert parse_command("ideas") == ParsedCommand(verb="ideas")
 
@@ -1121,7 +1289,8 @@ class TestIdeasEngineDbUrl:
     URL shape is preserved."""
 
     def test_uses_shared_build_db_url(
-        self, monkeypatch: pytest.MonkeyPatch,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         from src.data import db_env
         from src.research.telegram_approvals import _ideas_engine
@@ -1135,7 +1304,8 @@ class TestIdeasEngineDbUrl:
         assert str(_ideas_engine().url) == "sqlite://"
 
     def test_database_url_override_wins(
-        self, monkeypatch: pytest.MonkeyPatch,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         from src.research.telegram_approvals import _ideas_engine
 
@@ -1143,13 +1313,18 @@ class TestIdeasEngineDbUrl:
         assert str(_ideas_engine().url) == "sqlite://"
 
     def test_default_url_shape_unchanged(
-        self, monkeypatch: pytest.MonkeyPatch,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         from src.research.telegram_approvals import _ideas_engine
 
         for var in (
-            "DATABASE_URL", "POSTGRES_USER", "POSTGRES_PASSWORD",
-            "POSTGRES_HOST", "POSTGRES_PORT", "POSTGRES_DB",
+            "DATABASE_URL",
+            "POSTGRES_USER",
+            "POSTGRES_PASSWORD",
+            "POSTGRES_HOST",
+            "POSTGRES_PORT",
+            "POSTGRES_DB",
         ):
             monkeypatch.delenv(var, raising=False)
         engine = _ideas_engine()

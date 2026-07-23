@@ -70,7 +70,10 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     p.add_argument(
-        "-v", "--verbose", action="store_true", help="Enable DEBUG logging",
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Enable DEBUG logging",
     )
     return p
 
@@ -84,6 +87,7 @@ def main(argv: list[str] | None = None) -> int:
     # Auto-load .env so the LLM extractor's API keys are available
     # without first sourcing the file. Explicit env vars still win.
     from src.dotenv_bootstrap import load_project_env  # noqa: PLC0415
+
     load_project_env()
 
     feeds = load_feed_configs(args.config)
@@ -110,16 +114,19 @@ def main(argv: list[str] | None = None) -> int:
             if len(new) > 10:
                 print(f"  ... and {len(new) - 10} more")
         print(
-            f"\nDRY RUN total: {total_seen} fetched, "
-            f"{total_new} new across {len(feeds)} feed(s)",
+            f"\nDRY RUN total: {total_seen} fetched, {total_new} new across {len(feeds)} feed(s)",
         )
         return 0
 
     research_config = load_config(args.research_config)
     # from_config returns the Agent base type; cast to the subclass.
-    extractor = cast(PaperExtractor, PaperExtractor.from_config(
-        name="paper_extractor", research_config=research_config,
-    ))
+    extractor = cast(
+        PaperExtractor,
+        PaperExtractor.from_config(
+            name="paper_extractor",
+            research_config=research_config,
+        ),
+    )
 
     # CL-28j bridge: optionally write each paper to research_papers
     # so the triage dashboard sees them. Default is on; pass

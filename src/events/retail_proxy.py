@@ -175,8 +175,7 @@ def load_retail_proxies(
         msg = f"{path}: missing or empty 'instruments' mapping"
         raise ValueError(msg)
     return {
-        str(key).strip(): _parse_entry(str(key).strip(), body)
-        for key, body in instruments.items()
+        str(key).strip(): _parse_entry(str(key).strip(), body) for key, body in instruments.items()
     }
 
 
@@ -189,8 +188,7 @@ def _cached_proxies() -> dict[str, RetailProxy]:
         return load_retail_proxies()
     except Exception:
         logger.warning(
-            "retail proxies config unavailable; notifications render "
-            "without RH proxy lines",
+            "retail proxies config unavailable; notifications render without RH proxy lines",
             exc_info=True,
         )
         return {}
@@ -313,9 +311,7 @@ def full_detail(instrument: str, direction: str | None = None) -> list[str]:
         lines.append(f"Robinhood: {instrument} is FX — not tradable on Robinhood.")
         if proxy.note:
             lines.append(f"  {proxy.note}")
-        lines.append(
-            "  Skip the FX leg, or express the view via a correlated ETF."
-        )
+        lines.append("  Skip the FX leg, or express the view via a correlated ETF.")
         lines.append("  Advisory — not financial advice.")
         return lines
 
@@ -327,25 +323,16 @@ def full_detail(instrument: str, direction: str | None = None) -> list[str]:
         act = f"{dir_word} " if dir_word else ""
         if proxy.direction == "short":
             lines.append(
-                f"  {act}{proxy.instrument} → short shares (margin) or buy "
-                f"{proxy.instrument} puts."
+                f"  {act}{proxy.instrument} → short shares (margin) or buy {proxy.instrument} puts."
             )
         elif proxy.direction == "long":
-            lines.append(
-                f"  {act}{proxy.instrument} → buy {proxy.instrument} shares "
-                f"or calls."
-            )
-        lines.append(
-            "  Advisory — not financial advice; confirm strikes/expiries on "
-            "your broker."
-        )
+            lines.append(f"  {act}{proxy.instrument} → buy {proxy.instrument} shares or calls.")
+        lines.append("  Advisory — not financial advice; confirm strikes/expiries on your broker.")
         return lines
 
     # A mapped CFD/index/commodity proxy.
     proxy_word = "proxy" if len(proxy.proxies) == 1 else "proxies"
-    lines.append(
-        f"Robinhood {proxy_word}: {', '.join(proxy.proxies) or 'n/a'}"
-    )
+    lines.append(f"Robinhood {proxy_word}: {', '.join(proxy.proxies) or 'n/a'}")
     if proxy.inverse:
         lines.append(f"  Inverse (for shorts): {', '.join(proxy.inverse)}")
 
@@ -353,10 +340,7 @@ def full_detail(instrument: str, direction: str | None = None) -> list[str]:
     if proxy.direction == "short":
         if proxy.inverse:
             long_or = f" or {proxy.proxies[0]} puts" if proxy.proxies else ""
-            lines.append(
-                f"  SHORT {instrument} → buy {'/'.join(proxy.inverse)}"
-                f"{long_or}."
-            )
+            lines.append(f"  SHORT {instrument} → buy {'/'.join(proxy.inverse)}{long_or}.")
         elif proxy.proxies:
             lines.append(
                 f"  SHORT {instrument} → buy {proxy.proxies[0]} puts (no "
@@ -371,13 +355,11 @@ def full_detail(instrument: str, direction: str | None = None) -> list[str]:
         lines.append(f"  {proxy.note}")
 
     caveats = [
-        "ETF proxies track imperfectly (futures-based funds have "
-        "roll/contango drift).",
+        "ETF proxies track imperfectly (futures-based funds have roll/contango drift).",
     ]
     if proxy.leveraged_warning:
         caveats.append(
-            "Leveraged/inverse ETFs rebalance daily and DECAY on multi-day "
-            "holds — tactical only.",
+            "Leveraged/inverse ETFs rebalance daily and DECAY on multi-day holds — tactical only.",
         )
     caveats.append(
         "Options need broker approval; no live options/IV data here — "

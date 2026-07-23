@@ -33,16 +33,19 @@ def test_parse_moneyness():
 
 
 def test_parse_dte():
-    assert parse_dte_days("3-5 weeks to expiry", 28) == 28    # mid 4 weeks
+    assert parse_dte_days("3-5 weeks to expiry", 28) == 28  # mid 4 weeks
     assert parse_dte_days("3 weeks", 28) == 21
     assert parse_dte_days("21 days out", 28) == 21
-    assert parse_dte_days("calls", 28) == 28                  # default
+    assert parse_dte_days("calls", 28) == 28  # default
 
 
 def test_contract_target_call_is_otm_above():
     right, strike, exp = contract_target(
         {"action": "buy_calls", "preferred_instrument": "~5% OTM, 4 weeks"},
-        underlying_price=100.0, today=TODAY, cfg=ContractSelectionConfig())
+        underlying_price=100.0,
+        today=TODAY,
+        cfg=ContractSelectionConfig(),
+    )
     assert right == "call"
     assert strike == 105.0
     assert (exp - TODAY).days == 28
@@ -51,7 +54,10 @@ def test_contract_target_call_is_otm_above():
 def test_contract_target_put_is_otm_below():
     right, strike, _ = contract_target(
         {"action": "buy_puts", "preferred_instrument": "~10% OTM puts"},
-        underlying_price=200.0, today=TODAY, cfg=ContractSelectionConfig())
+        underlying_price=200.0,
+        today=TODAY,
+        cfg=ContractSelectionConfig(),
+    )
     assert right == "put"
     assert strike == 180.0
 
@@ -67,8 +73,9 @@ class _FakeAPI:
         self.calls: list[dict[str, Any]] = []
 
     def __call__(self, method, url, headers, params, json_body):
-        self.calls.append({"method": method, "url": url, "headers": headers,
-                           "params": params, "json": json_body})
+        self.calls.append(
+            {"method": method, "url": url, "headers": headers, "params": params, "json": json_body}
+        )
         if "/v2/account" in url:
             return self.responses.get("account", {})
         if "/v2/options/contracts" in url:
@@ -94,8 +101,7 @@ def test_client_uses_paper_base_and_auth():
 def test_find_contracts_builds_query():
     api = _FakeAPI()
     c = AlpacaOptionsClient("K", "S", request_fn=api)
-    c.find_contracts("aapl", "call", date(2026, 8, 8), date(2026, 8, 28),
-                     100.0, 120.0)
+    c.find_contracts("aapl", "call", date(2026, 8, 8), date(2026, 8, 28), 100.0, 120.0)
     p = api.calls[0]["params"]
     assert p["underlying_symbols"] == "AAPL"
     assert p["type"] == "call"
@@ -110,15 +116,22 @@ def test_submit_order_body():
     out = c.submit_option_order("AAPL260821C00105000", 2)
     assert out["id"] == "abc"
     body = api.calls[0]["json"]
-    assert body == {"symbol": "AAPL260821C00105000", "qty": "2",
-                    "side": "buy", "type": "market", "time_in_force": "day"}
+    assert body == {
+        "symbol": "AAPL260821C00105000",
+        "qty": "2",
+        "side": "buy",
+        "type": "market",
+        "time_in_force": "day",
+    }
 
 
 def test_list_option_positions_filters_asset_class():
-    api = _FakeAPI(positions=[
-        {"symbol": "AAPL", "asset_class": "us_equity"},
-        {"symbol": "AAPL260821C00105000", "asset_class": "us_option"},
-    ])
+    api = _FakeAPI(
+        positions=[
+            {"symbol": "AAPL", "asset_class": "us_equity"},
+            {"symbol": "AAPL260821C00105000", "asset_class": "us_option"},
+        ]
+    )
     c = AlpacaOptionsClient("K", "S", request_fn=api)
     pos = c.list_option_positions()
     assert len(pos) == 1 and pos[0]["asset_class"] == "us_option"
@@ -141,8 +154,11 @@ class _FakeClient:
 
 
 def _idea() -> dict[str, Any]:
-    return {"ticker": "RTX", "action": "buy_calls",
-            "preferred_instrument": "slightly OTM (~5%), 4 weeks"}
+    return {
+        "ticker": "RTX",
+        "action": "buy_calls",
+        "preferred_instrument": "slightly OTM (~5%), 4 weeks",
+    }
 
 
 def test_resolve_picks_nearest_expiry_then_strike():

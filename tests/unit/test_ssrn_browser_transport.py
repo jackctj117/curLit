@@ -145,10 +145,12 @@ def _install_fake_playwright(
 
 class TestBrowserHttpGet:
     def test_returns_rendered_html_and_closes_browser(
-        self, monkeypatch: pytest.MonkeyPatch,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         page, browser, _ = _install_fake_playwright(
-            monkeypatch, "<html><div class='trow'>x</div></html>",
+            monkeypatch,
+            "<html><div class='trow'>x</div></html>",
         )
         html = browser_http_get("https://papers.ssrn.com/sol3/x.cfm")
         assert "class='trow'" in html
@@ -156,7 +158,8 @@ class TestBrowserHttpGet:
         assert page.goto_calls[0]["url"] == "https://papers.ssrn.com/sol3/x.cfm"
 
     def test_realistic_browser_fingerprint(
-        self, monkeypatch: pytest.MonkeyPatch,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         _, browser, chromium = _install_fake_playwright(monkeypatch, "<html/>")
         browser_http_get("https://papers.ssrn.com/sol3/x.cfm")
@@ -170,21 +173,25 @@ class TestBrowserHttpGet:
         assert viewport["height"] > 0
 
     def test_waits_for_listing_selector(
-        self, monkeypatch: pytest.MonkeyPatch,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         page, _, _ = _install_fake_playwright(monkeypatch, "<html/>")
         browser_http_get("https://papers.ssrn.com/sol3/x.cfm")
         assert page.wait_calls[0]["selector"] == SSRN_LISTING_SELECTOR
 
     def test_selector_timeout_still_returns_html(
-        self, monkeypatch: pytest.MonkeyPatch,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
         # If the JS challenge never resolves into the listing, we hand
         # back what rendered — the parser yields [] and the runner
         # marks the feed failed, per the log-and-skip convention.
         _, browser, _ = _install_fake_playwright(
-            monkeypatch, "<html>Access Denied</html>", selector_raises=True,
+            monkeypatch,
+            "<html>Access Denied</html>",
+            selector_raises=True,
         )
         with caplog.at_level("WARNING"):
             html = browser_http_get("https://papers.ssrn.com/sol3/x.cfm")
@@ -193,7 +200,8 @@ class TestBrowserHttpGet:
         assert any("never rendered" in r.message for r in caplog.records)
 
     def test_missing_playwright_raises_actionable_error(
-        self, monkeypatch: pytest.MonkeyPatch,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         # None in sys.modules makes `import playwright.sync_api` raise
         # ImportError even though the package is installed.
@@ -216,6 +224,7 @@ class TestSSRNTransportWiring:
     def test_injected_http_get_overrides_browser_transport(self) -> None:
         def fake(_url: str) -> str:
             return ""
+
         f = build_fetcher("ssrn", http_get=fake)
         assert f.http_get is fake
 
@@ -303,7 +312,8 @@ class TestSSRNFetcherSPA:
     def test_parses_spa_listing(self) -> None:
         fetcher = SSRNFetcher(http_get=lambda _u: _SSRN_SPA_HTML)
         feed = FeedConfig(
-            name="ssrn_spa", adapter="ssrn",
+            name="ssrn_spa",
+            adapter="ssrn",
             query_url="https://papers.ssrn.com/sol3/JELJOUR_Results.cfm?journal_id=203",
             source_label="SSRN FEN",
         )
@@ -312,18 +322,14 @@ class TestSSRNFetcherSPA:
 
         first = papers[0]
         assert first.title == "Observing Climate Risks in Financial Markets"
-        assert first.url == (
-            "https://papers.ssrn.com/sol3/papers.cfm?abstract_id=7035198"
-        )
+        assert first.url == ("https://papers.ssrn.com/sol3/papers.cfm?abstract_id=7035198")
         assert first.authors == ("Charles Donovan",)
         # Year survives the whitespace-free stats concatenation.
         assert first.year == 2026
 
         second = papers[1]
         # Relative href expands against papers.ssrn.com.
-        assert second.url == (
-            "https://papers.ssrn.com/sol3/papers.cfm?abstract_id=7110978"
-        )
+        assert second.url == ("https://papers.ssrn.com/sol3/papers.cfm?abstract_id=7110978")
         assert second.authors == ("Tristan Jourde", "Martin Saillard")
         assert second.year == 2025
 
@@ -332,7 +338,8 @@ class TestSSRNFetcher:
     def test_parses_browser_rendered_listing(self) -> None:
         fetcher = SSRNFetcher(http_get=lambda _u: _SSRN_LISTING_HTML)
         feed = FeedConfig(
-            name="ssrn_test", adapter="ssrn",
+            name="ssrn_test",
+            adapter="ssrn",
             query_url="https://papers.ssrn.com/sol3/JELJOUR_Results.cfm?journal_id=1",
             source_label="SSRN test",
         )
@@ -349,13 +356,12 @@ class TestSSRNFetcher:
 
         # Relative hrefs expand against papers.ssrn.com.
         second = papers[1]
-        assert second.url == (
-            "https://papers.ssrn.com/sol3/papers.cfm?abstract_id=5023456"
-        )
+        assert second.url == ("https://papers.ssrn.com/sol3/papers.cfm?abstract_id=5023456")
         assert second.authors == ("Ana Silva",)
 
     def test_transport_failure_logs_and_returns_empty(
-        self, caplog: pytest.LogCaptureFixture,
+        self,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         # The missing-playwright RuntimeError follows the same path as
         # any transport error: log a warning, return [], keep the run
@@ -366,7 +372,8 @@ class TestSSRNFetcher:
 
         fetcher = SSRNFetcher(http_get=raising_get)
         feed = FeedConfig(
-            name="ssrn_gated", adapter="ssrn",
+            name="ssrn_gated",
+            adapter="ssrn",
             query_url="https://papers.ssrn.com/sol3/x.cfm",
             source_label="SSRN",
         )
@@ -382,7 +389,8 @@ class TestSSRNFetcher:
             http_get=lambda _u: "<html><body>Access Denied</body></html>",
         )
         feed = FeedConfig(
-            name="ssrn_denied", adapter="ssrn",
+            name="ssrn_denied",
+            adapter="ssrn",
             query_url="https://papers.ssrn.com/sol3/x.cfm",
             source_label="SSRN",
         )
@@ -410,8 +418,13 @@ class _SSRNCannedDriver(Driver):
         **kwargs: Any,
     ) -> LLMResponse:
         return LLMResponse(
-            text=self.canned_text, model=model, provider=self.name,
-            input_tokens=10, output_tokens=20, usd_cost=0.0001, elapsed_sec=0.01,
+            text=self.canned_text,
+            model=model,
+            provider=self.name,
+            input_tokens=10,
+            output_tokens=20,
+            usd_cost=0.0001,
+            elapsed_sec=0.01,
         )
 
 
@@ -426,7 +439,8 @@ def cfg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ResearchConfig:
     return ResearchConfig(
         providers={
             "ssrn-canned": ProviderConfig(
-                api_key_env="SSRN_INGEST_KEY", default_model="m1",
+                api_key_env="SSRN_INGEST_KEY",
+                default_model="m1",
             ),
         },
         agents={
@@ -443,7 +457,9 @@ def cfg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ResearchConfig:
 
 class TestIngestRunnerSSRN:
     def test_default_runner_uses_browser_transport_for_ssrn(
-        self, cfg: ResearchConfig, tmp_path: Path,
+        self,
+        cfg: ResearchConfig,
+        tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         # Swap the ssrn default transport for a canned-HTML shim; the
@@ -456,17 +472,21 @@ class TestIngestRunnerSSRN:
             return _SSRN_LISTING_HTML
 
         monkeypatch.setitem(
-            ingest._DEFAULT_TRANSPORTS, "ssrn", fake_browser_get,
+            ingest._DEFAULT_TRANSPORTS,
+            "ssrn",
+            fake_browser_get,
         )
         extractor = PaperExtractor.from_config(
-            name="paper_extractor", research_config=cfg,
+            name="paper_extractor",
+            research_config=cfg,
         )
         runner = IngestRunner(
             extractor=extractor,
             store=ExtractStore(root=tmp_path / "extracts"),
         )
         feed = FeedConfig(
-            name="ssrn_finmarkets", adapter="ssrn",
+            name="ssrn_finmarkets",
+            adapter="ssrn",
             query_url="https://papers.ssrn.com/sol3/JELJOUR_Results.cfm?journal_id=1",
             source_label="SSRN Financial Markets eJournal",
         )
@@ -477,12 +497,15 @@ class TestIngestRunnerSSRN:
         assert summary.papers_extracted == 2
 
     def test_injected_http_get_still_wins_for_ssrn(
-        self, cfg: ResearchConfig, tmp_path: Path,
+        self,
+        cfg: ResearchConfig,
+        tmp_path: Path,
     ) -> None:
         # Tests / dry-runs inject a plain shim; the browser transport
         # must not be consulted at all.
         extractor = PaperExtractor.from_config(
-            name="paper_extractor", research_config=cfg,
+            name="paper_extractor",
+            research_config=cfg,
         )
         runner = IngestRunner(
             extractor=extractor,
@@ -490,7 +513,8 @@ class TestIngestRunnerSSRN:
             http_get=lambda _u: _SSRN_LISTING_HTML,
         )
         feed = FeedConfig(
-            name="ssrn_finmarkets", adapter="ssrn",
+            name="ssrn_finmarkets",
+            adapter="ssrn",
             query_url="https://papers.ssrn.com/sol3/JELJOUR_Results.cfm?journal_id=1",
             source_label="SSRN Financial Markets eJournal",
         )

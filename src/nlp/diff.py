@@ -24,6 +24,7 @@ class StatementDiffer:
     ) -> None:
         if lexicon_scorer is None:
             from src.nlp.lexicon_scorer import LexiconScorer
+
             lexicon_scorer = LexiconScorer()
         self.lex = lexicon_scorer
         self.sim_threshold = similarity_threshold
@@ -61,7 +62,11 @@ class StatementDiffer:
         net_shift = added_score - removed_score
 
         return StatementDiff(
-            added, removed, modified,
-            added_score, removed_score,
-            net_shift, matcher.ratio(),
+            added,
+            removed,
+            modified,
+            added_score,
+            removed_score,
+            net_shift,
+            matcher.ratio(),
         )

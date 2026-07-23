@@ -182,11 +182,7 @@ class DriftDetector:
                 worst = _escalate(worst, DriftSeverity.DEGRADED)
 
         # MSE: regression error. Lower is better → INCREASE triggers drift.
-        if (
-            baseline.mse is not None
-            and current.mse is not None
-            and baseline.mse > 0
-        ):
+        if baseline.mse is not None and current.mse is not None and baseline.mse > 0:
             pct = (current.mse - baseline.mse) / baseline.mse
             if pct >= self.thresholds.mse_pct_increase_alarm:
                 triggers.append(
@@ -249,10 +245,10 @@ class RetrainGateThresholds:
     every retrain that produces a 0.001-worse R² would be rejected.
     """
 
-    max_r_squared_regression: float = 0.02   # candidate may be up to 0.02 lower
-    max_mse_pct_regression: float = 0.05      # candidate may be up to 5% higher MSE
-    max_accuracy_regression: float = 0.01    # ditto for accuracy
-    max_f1_regression: float = 0.01          # ditto for F1
+    max_r_squared_regression: float = 0.02  # candidate may be up to 0.02 lower
+    max_mse_pct_regression: float = 0.05  # candidate may be up to 5% higher MSE
+    max_accuracy_regression: float = 0.01  # ditto for accuracy
+    max_f1_regression: float = 0.01  # ditto for F1
 
     def __post_init__(self) -> None:
         assert self.max_r_squared_regression >= 0
@@ -301,31 +297,23 @@ class RetrainGate:
             if drop > self.thresholds.max_r_squared_regression:
                 failed.append("r_squared")
                 reasons.append(
-                    f"r_squared regressed {drop:.3f} > "
-                    f"{self.thresholds.max_r_squared_regression}",
+                    f"r_squared regressed {drop:.3f} > {self.thresholds.max_r_squared_regression}",
                 )
             else:
                 reasons.append(
-                    f"r_squared OK (Δ={drop:.3f} ≤ "
-                    f"{self.thresholds.max_r_squared_regression}) ✓",
+                    f"r_squared OK (Δ={drop:.3f} ≤ {self.thresholds.max_r_squared_regression}) ✓",
                 )
 
-        if (
-            production.mse is not None
-            and candidate.mse is not None
-            and production.mse > 0
-        ):
+        if production.mse is not None and candidate.mse is not None and production.mse > 0:
             pct = (candidate.mse - production.mse) / production.mse
             if pct > self.thresholds.max_mse_pct_regression:
                 failed.append("mse")
                 reasons.append(
-                    f"mse regressed {pct:.1%} > "
-                    f"{self.thresholds.max_mse_pct_regression:.0%}",
+                    f"mse regressed {pct:.1%} > {self.thresholds.max_mse_pct_regression:.0%}",
                 )
             else:
                 reasons.append(
-                    f"mse OK (Δ={pct:.1%} ≤ "
-                    f"{self.thresholds.max_mse_pct_regression:.0%}) ✓",
+                    f"mse OK (Δ={pct:.1%} ≤ {self.thresholds.max_mse_pct_regression:.0%}) ✓",
                 )
 
         if production.accuracy is not None and candidate.accuracy is not None:
@@ -333,13 +321,11 @@ class RetrainGate:
             if drop > self.thresholds.max_accuracy_regression:
                 failed.append("accuracy")
                 reasons.append(
-                    f"accuracy regressed {drop:.3f} > "
-                    f"{self.thresholds.max_accuracy_regression}",
+                    f"accuracy regressed {drop:.3f} > {self.thresholds.max_accuracy_regression}",
                 )
             else:
                 reasons.append(
-                    f"accuracy OK (Δ={drop:.3f} ≤ "
-                    f"{self.thresholds.max_accuracy_regression}) ✓",
+                    f"accuracy OK (Δ={drop:.3f} ≤ {self.thresholds.max_accuracy_regression}) ✓",
                 )
 
         if production.f1 is not None and candidate.f1 is not None:
@@ -356,7 +342,9 @@ class RetrainGate:
 
         approve = len(failed) == 0
         return RetrainGateDecision(
-            approve=approve, reasons=reasons, failed_metrics=failed,
+            approve=approve,
+            reasons=reasons,
+            failed_metrics=failed,
         )
 
 

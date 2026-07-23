@@ -95,8 +95,7 @@ class RedditFetcher:
             import praw
         except ImportError:
             logger.warning(
-                "Reddit fetcher: praw not installed. "
-                "Install with `pip install praw`.",
+                "Reddit fetcher: praw not installed. Install with `pip install praw`.",
             )
             return []
 
@@ -108,8 +107,8 @@ class RedditFetcher:
         )
         if not client_id or not client_secret:
             logger.warning(
-                "Reddit fetcher: REDDIT_CLIENT_ID/SECRET not set — "
-                "skipping %s", feed.name,
+                "Reddit fetcher: REDDIT_CLIENT_ID/SECRET not set — skipping %s",
+                feed.name,
             )
             return []
 
@@ -122,7 +121,8 @@ class RedditFetcher:
             reddit.read_only = True
         except Exception:
             logger.exception(
-                "Reddit fetcher: client init failed for %s", feed.name,
+                "Reddit fetcher: client init failed for %s",
+                feed.name,
             )
             return []
 
@@ -137,21 +137,22 @@ class RedditFetcher:
                     created = datetime.fromtimestamp(post.created_utc, UTC)
                     if created < cutoff:
                         continue
-                    body = (
-                        getattr(post, "selftext", "") or ""
-                    )[:4000]
-                    out.append(Paper(
-                        title=str(post.title or "")[:300],
-                        authors=(f"u/{post.author}",) if post.author else (),
-                        year=created.year,
-                        url=f"https://reddit.com{post.permalink}",
-                        doi="",
-                        abstract=body,
-                        source_label=feed.source_label,
-                    ))
+                    body = (getattr(post, "selftext", "") or "")[:4000]
+                    out.append(
+                        Paper(
+                            title=str(post.title or "")[:300],
+                            authors=(f"u/{post.author}",) if post.author else (),
+                            year=created.year,
+                            url=f"https://reddit.com{post.permalink}",
+                            doi="",
+                            abstract=body,
+                            source_label=feed.source_label,
+                        )
+                    )
             except Exception:
                 logger.exception(
-                    "Reddit fetcher: subreddit %s failed", sub,
+                    "Reddit fetcher: subreddit %s failed",
+                    sub,
                 )
         return out
 
@@ -161,8 +162,7 @@ class RedditFetcher:
         'r/wallstreetbets,r/forex'. Returns clean sub names."""
         raw = query_url.strip()
         parts = re.split(r"[,\s]+", raw)
-        return [p.removeprefix("r/").strip("/").strip()
-                for p in parts if p.strip()]
+        return [p.removeprefix("r/").strip("/").strip() for p in parts if p.strip()]
 
 
 # --------------------------------------------------------------------- #
@@ -188,9 +188,7 @@ class HackerNewsFetcher:
         params_str = feed.query_url.strip()
         if params_str == "front":
             url = "https://hn.algolia.com/api/v1/search"
-            params_str = (
-                f"tags=front_page&hitsPerPage={_DEFAULT_HN_LIMIT}"
-            )
+            params_str = f"tags=front_page&hitsPerPage={_DEFAULT_HN_LIMIT}"
         else:
             url = "https://hn.algolia.com/api/v1/search"
 
@@ -199,7 +197,8 @@ class HackerNewsFetcher:
             body = self.http_get(full_url)
         except Exception:
             logger.exception(
-                "HackerNews fetcher: fetch failed for %s", feed.name,
+                "HackerNews fetcher: fetch failed for %s",
+                feed.name,
             )
             return []
 
@@ -225,15 +224,17 @@ class HackerNewsFetcher:
             )
             body_text = (h.get("story_text") or "")[:4000]
             author = h.get("author") or ""
-            out.append(Paper(
-                title=str(title)[:300],
-                authors=(author,) if author else (),
-                year=created.year,
-                url=str(url_field),
-                doi="",
-                abstract=body_text,
-                source_label=feed.source_label,
-            ))
+            out.append(
+                Paper(
+                    title=str(title)[:300],
+                    authors=(author,) if author else (),
+                    year=created.year,
+                    url=str(url_field),
+                    doi="",
+                    abstract=body_text,
+                    source_label=feed.source_label,
+                )
+            )
         return out
 
 
@@ -263,10 +264,7 @@ class FourchanFetcher:
 
     def fetch(self, feed: FeedConfig) -> list[Paper]:
         cutoff = datetime.now(UTC) - timedelta(hours=self.max_age_hours)
-        boards = [
-            b.strip().strip("/") for b in feed.query_url.split(",")
-            if b.strip()
-        ]
+        boards = [b.strip().strip("/") for b in feed.query_url.split(",") if b.strip()]
         out: list[Paper] = []
         for board in boards:
             url = f"https://a.4cdn.org/{board}/catalog.json"
@@ -274,7 +272,8 @@ class FourchanFetcher:
                 body = self.http_get(url)
             except Exception:
                 logger.warning(
-                    "4chan fetcher: catalog fetch failed for %s", board,
+                    "4chan fetcher: catalog fetch failed for %s",
+                    board,
                     exc_info=True,
                 )
                 continue
@@ -292,24 +291,20 @@ class FourchanFetcher:
                     created = datetime.fromtimestamp(int(ts), UTC)
                     if created < cutoff:
                         continue
-                    title = (
-                        thread.get("sub")
-                        or _strip_html(thread.get("com", ""))[:120]
-                    )
+                    title = thread.get("sub") or _strip_html(thread.get("com", ""))[:120]
                     body_text = _strip_html(thread.get("com", ""))[:4000]
                     thread_no = thread.get("no")
-                    out.append(Paper(
-                        title=str(title or f"thread {thread_no}")[:300],
-                        authors=(thread.get("name", "Anonymous"),),
-                        year=created.year,
-                        url=(
-                            f"https://boards.4chan.org/{board}/thread/"
-                            f"{thread_no}"
-                        ),
-                        doi="",
-                        abstract=body_text,
-                        source_label=feed.source_label,
-                    ))
+                    out.append(
+                        Paper(
+                            title=str(title or f"thread {thread_no}")[:300],
+                            authors=(thread.get("name", "Anonymous"),),
+                            year=created.year,
+                            url=(f"https://boards.4chan.org/{board}/thread/{thread_no}"),
+                            doi="",
+                            abstract=body_text,
+                            source_label=feed.source_label,
+                        )
+                    )
         return out
 
 
@@ -335,10 +330,7 @@ class LainchanFetcher:
 
     def fetch(self, feed: FeedConfig) -> list[Paper]:
         cutoff = datetime.now(UTC) - timedelta(hours=self.max_age_hours)
-        boards = [
-            b.strip().strip("/") for b in feed.query_url.split(",")
-            if b.strip()
-        ]
+        boards = [b.strip().strip("/") for b in feed.query_url.split(",") if b.strip()]
         out: list[Paper] = []
         for board in boards:
             url = f"https://lainchan.org/{board}/catalog.json"
@@ -346,7 +338,8 @@ class LainchanFetcher:
                 body = self.http_get(url)
             except Exception:
                 logger.warning(
-                    "lainchan fetcher: catalog fetch failed for %s", board,
+                    "lainchan fetcher: catalog fetch failed for %s",
+                    board,
                     exc_info=True,
                 )
                 continue
@@ -354,7 +347,8 @@ class LainchanFetcher:
                 pages = json.loads(body)
             except json.JSONDecodeError:
                 logger.warning(
-                    "lainchan fetcher: invalid JSON for %s", board,
+                    "lainchan fetcher: invalid JSON for %s",
+                    board,
                 )
                 continue
             for page in pages:
@@ -365,24 +359,20 @@ class LainchanFetcher:
                     created = datetime.fromtimestamp(int(ts), UTC)
                     if created < cutoff:
                         continue
-                    title = (
-                        thread.get("sub")
-                        or _strip_html(thread.get("com", ""))[:120]
-                    )
+                    title = thread.get("sub") or _strip_html(thread.get("com", ""))[:120]
                     body_text = _strip_html(thread.get("com", ""))[:4000]
                     thread_no = thread.get("no")
-                    out.append(Paper(
-                        title=str(title or f"thread {thread_no}")[:300],
-                        authors=(thread.get("name", "Anonymous"),),
-                        year=created.year,
-                        url=(
-                            f"https://lainchan.org/{board}/res/"
-                            f"{thread_no}.html"
-                        ),
-                        doi="",
-                        abstract=body_text,
-                        source_label=feed.source_label,
-                    ))
+                    out.append(
+                        Paper(
+                            title=str(title or f"thread {thread_no}")[:300],
+                            authors=(thread.get("name", "Anonymous"),),
+                            year=created.year,
+                            url=(f"https://lainchan.org/{board}/res/{thread_no}.html"),
+                            doi="",
+                            abstract=body_text,
+                            source_label=feed.source_label,
+                        )
+                    )
         return out
 
 
@@ -426,9 +416,9 @@ class TwitterFetcher:
 
         # v2 search/recent has a 'start_time' RFC3339 param. Cap to
         # max_age_hours so we don't pull stale buzzword hits.
-        start_time = (
-            datetime.now(UTC) - timedelta(hours=self.max_age_hours)
-        ).strftime("%Y-%m-%dT%H:%M:%SZ")
+        start_time = (datetime.now(UTC) - timedelta(hours=self.max_age_hours)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
 
         try:
             resp = httpx.get(
@@ -447,15 +437,13 @@ class TwitterFetcher:
             resp.raise_for_status()
         except Exception:
             logger.exception(
-                "Twitter fetcher: API call failed for %s", feed.name,
+                "Twitter fetcher: API call failed for %s",
+                feed.name,
             )
             return []
 
         data = resp.json()
-        users = {
-            u["id"]: u["username"]
-            for u in data.get("includes", {}).get("users", [])
-        }
+        users = {u["id"]: u["username"] for u in data.get("includes", {}).get("users", [])}
         tweets = data.get("data", [])
 
         out: list[Paper] = []
@@ -471,17 +459,17 @@ class TwitterFetcher:
                 created = datetime.now(UTC)
             author_id = t.get("author_id", "")
             handle = users.get(author_id, "")
-            out.append(Paper(
-                title=text[:200],
-                authors=(f"@{handle}",) if handle else (),
-                year=created.year,
-                url=(
-                    f"https://twitter.com/{handle or 'i'}/status/{tid}"
-                ),
-                doi="",
-                abstract=text,
-                source_label=feed.source_label,
-            ))
+            out.append(
+                Paper(
+                    title=text[:200],
+                    authors=(f"@{handle}",) if handle else (),
+                    year=created.year,
+                    url=(f"https://twitter.com/{handle or 'i'}/status/{tid}"),
+                    doi="",
+                    abstract=text,
+                    source_label=feed.source_label,
+                )
+            )
         return out
 
 
@@ -498,11 +486,11 @@ def register_social_fetchers() -> None:
     from src.research.ingest import _FETCHER_REGISTRY
 
     additions: dict[str, Callable[[HttpGet], Any]] = {
-        "reddit":     lambda http_get: RedditFetcher(http_get=http_get),
+        "reddit": lambda http_get: RedditFetcher(http_get=http_get),
         "hackernews": lambda http_get: HackerNewsFetcher(http_get=http_get),
-        "fourchan":   lambda http_get: FourchanFetcher(http_get=http_get),
-        "lainchan":   lambda http_get: LainchanFetcher(http_get=http_get),
-        "twitter":    lambda http_get: TwitterFetcher(http_get=http_get),
+        "fourchan": lambda http_get: FourchanFetcher(http_get=http_get),
+        "lainchan": lambda http_get: LainchanFetcher(http_get=http_get),
+        "twitter": lambda http_get: TwitterFetcher(http_get=http_get),
     }
     for name, factory in additions.items():
         _FETCHER_REGISTRY.setdefault(name, factory)

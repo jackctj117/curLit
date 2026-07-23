@@ -193,9 +193,11 @@ class RiskContextBuilder:
             if self._day is not None:
                 self._day_rolled = True
                 logger.info(
-                    "risk context: UTC day rollover %s -> %s; day-start equity "
-                    "%.2f -> %.2f",
-                    self._day, today, self._day_start_equity or 0.0, equity,
+                    "risk context: UTC day rollover %s -> %s; day-start equity %.2f -> %.2f",
+                    self._day,
+                    today,
+                    self._day_start_equity or 0.0,
+                    equity,
                 )
             self._day = today
             self._day_start_equity = equity
@@ -220,7 +222,8 @@ class RiskContextBuilder:
             # health loop (CL-2yta).
             logger.warning(
                 "risk context: VIX fetch failed: %s: %s",
-                type(exc).__name__, exc,
+                type(exc).__name__,
+                exc,
             )
             return
         if not values:
@@ -239,12 +242,16 @@ class RiskContextBuilder:
             if latest is None:
                 return
             ctx["cvix_zscore"] = compute_vol_z_score(
-                provider, _CVIX_SERIES, self.cvix_z_lookback_days, now,
+                provider,
+                _CVIX_SERIES,
+                self.cvix_z_lookback_days,
+                now,
             )
         except Exception as exc:
             logger.warning(
                 "risk context: CVIX z-score failed: %s: %s",
-                type(exc).__name__, exc,
+                type(exc).__name__,
+                exc,
             )
 
     def _add_price_age(self, ctx: dict[str, Any], now: datetime) -> None:
@@ -269,12 +276,14 @@ class RiskContextBuilder:
             # stream that NEVER connects still trips stale_prices.
             reference = freshest or self._started_at
             ctx["price_stream_age_sec"] = max(
-                0.0, (now - reference).total_seconds(),
+                0.0,
+                (now - reference).total_seconds(),
             )
         except Exception as exc:
             logger.warning(
                 "risk context: price-age computation failed: %s: %s",
-                type(exc).__name__, exc,
+                type(exc).__name__,
+                exc,
             )
 
     def _add_position_mismatch(self, ctx: dict[str, Any]) -> None:
@@ -286,7 +295,8 @@ class RiskContextBuilder:
         except Exception as exc:
             logger.warning(
                 "risk context: position-mismatch supplier failed: %s: %s",
-                type(exc).__name__, exc,
+                type(exc).__name__,
+                exc,
             )
             return
         if value is not None:
@@ -332,9 +342,7 @@ class RiskContextBuilder:
             day_start = raw.get("day_start_equity")
             peak = raw.get("peak_equity")
             self._day = str(day) if day is not None else None
-            self._day_start_equity = (
-                float(day_start) if day_start is not None else None
-            )
+            self._day_start_equity = float(day_start) if day_start is not None else None
             self._peak_equity = float(peak) if peak is not None else None
         except (ValueError, KeyError, TypeError) as exc:
             msg = (
@@ -345,7 +353,10 @@ class RiskContextBuilder:
             raise ValueError(msg) from exc
         logger.info(
             "risk context: loaded state from %s (day=%s day_start=%s peak=%s)",
-            path, self._day, self._day_start_equity, self._peak_equity,
+            path,
+            self._day,
+            self._day_start_equity,
+            self._peak_equity,
         )
 
 

@@ -10,7 +10,6 @@ from hypothesis import strategies as st
 
 from src.risk.polymarket_sizer import PolySizeDecision, size_polymarket_order
 
-
 _BANKROLL: Decimal = Decimal("10000")
 
 
@@ -150,18 +149,39 @@ class TestInputValidation:
 @settings(deadline=None, max_examples=50)
 @given(
     bankroll=st.decimals(
-        min_value=Decimal("100"), max_value=Decimal("1000000"),
-        allow_nan=False, allow_infinity=False, places=2,
+        min_value=Decimal("100"),
+        max_value=Decimal("1000000"),
+        allow_nan=False,
+        allow_infinity=False,
+        places=2,
     ),
-    p=st.decimals(min_value=Decimal("0.05"), max_value=Decimal("0.95"),
-                  allow_nan=False, allow_infinity=False, places=2),
-    edge=st.decimals(min_value=Decimal("0.04"), max_value=Decimal("0.40"),
-                     allow_nan=False, allow_infinity=False, places=2),
-    cap=st.decimals(min_value=Decimal("0.01"), max_value=Decimal("0.20"),
-                    allow_nan=False, allow_infinity=False, places=2),
+    p=st.decimals(
+        min_value=Decimal("0.05"),
+        max_value=Decimal("0.95"),
+        allow_nan=False,
+        allow_infinity=False,
+        places=2,
+    ),
+    edge=st.decimals(
+        min_value=Decimal("0.04"),
+        max_value=Decimal("0.40"),
+        allow_nan=False,
+        allow_infinity=False,
+        places=2,
+    ),
+    cap=st.decimals(
+        min_value=Decimal("0.01"),
+        max_value=Decimal("0.20"),
+        allow_nan=False,
+        allow_infinity=False,
+        places=2,
+    ),
 )
 def test_decision_respects_cap(
-    bankroll: Decimal, p: Decimal, edge: Decimal, cap: Decimal,
+    bankroll: Decimal,
+    p: Decimal,
+    edge: Decimal,
+    cap: Decimal,
 ) -> None:
     q = p + edge
     if q >= 1:

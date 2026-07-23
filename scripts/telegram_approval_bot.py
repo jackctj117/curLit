@@ -49,19 +49,24 @@ def _build_parser() -> argparse.ArgumentParser:
         description="Telegram approval bot for the research-loop gates",
     )
     p.add_argument(
-        "--state", default=str(DEFAULT_STATE_PATH),
+        "--state",
+        default=str(DEFAULT_STATE_PATH),
         help="Path to the research-loop state file",
     )
     p.add_argument(
-        "--offset-file", default=str(DEFAULT_OFFSET_PATH),
+        "--offset-file",
+        default=str(DEFAULT_OFFSET_PATH),
         help="Path to the getUpdates offset persistence file",
     )
     p.add_argument(
-        "--poll-timeout", type=int, default=DEFAULT_POLL_TIMEOUT_SEC,
+        "--poll-timeout",
+        type=int,
+        default=DEFAULT_POLL_TIMEOUT_SEC,
         help="getUpdates long-poll timeout in seconds",
     )
     p.add_argument(
-        "--once", action="store_true",
+        "--once",
+        action="store_true",
         help=(
             "Drain one getUpdates batch (timeout=0) and exit — for "
             "testing and cron-driven operation"
@@ -74,6 +79,7 @@ def main(argv: list[str] | None = None) -> int:
     # Auto-load .env so credentials are available without sourcing the
     # file first. Explicit env vars still win (override=False).
     from src.dotenv_bootstrap import load_project_env  # noqa: PLC0415
+
     load_project_env()
     logging.basicConfig(
         level=logging.INFO,
@@ -85,8 +91,7 @@ def main(argv: list[str] | None = None) -> int:
     chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
     if not token or not chat_id:
         print(
-            "ERROR: TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID must be set "
-            "(env or .env)",
+            "ERROR: TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID must be set (env or .env)",
             file=sys.stderr,
         )
         return 2

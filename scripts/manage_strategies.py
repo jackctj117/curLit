@@ -47,7 +47,9 @@ logger = logging.getLogger(__name__)
 
 
 def _load_paper_returns(
-    coordinator: Any, strategy_id: str, lookback_days: int = 365,
+    coordinator: Any,
+    strategy_id: str,
+    lookback_days: int = 365,
 ) -> pd.Series:
     """Pull recent paper-mode daily returns for ``strategy_id``.
 
@@ -97,7 +99,10 @@ def _build_coordinator(broker_mode: str = "oanda-practice") -> Any:
     )
     strategies = build_strategies(config, broker, oms)
     coordinator = build_coordinator(
-        config, strategies, oms, broker,
+        config,
+        strategies,
+        oms,
+        broker,
         blackout_evaluator=build_blackout_evaluator(config),
     )
     if coordinator is None:
@@ -167,7 +172,8 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
     else:
         first_ts = paper_returns.index[0]
         paper_start = (
-            first_ts.to_pydatetime() if hasattr(first_ts, "to_pydatetime")
+            first_ts.to_pydatetime()
+            if hasattr(first_ts, "to_pydatetime")
             else datetime.combine(first_ts, datetime.min.time(), UTC)
         )
 
@@ -193,7 +199,8 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
 def cmd_promote(args: argparse.Namespace) -> int:
     coord = _build_coordinator(args.broker)
     coord.promote_strategy_to_live(
-        args.strategy, initial_weight=args.weight,
+        args.strategy,
+        initial_weight=args.weight,
     )
     print(f"Promoted {args.strategy} to live at {args.weight:.1%}.")
     print("Verify rebalance applied: bd remember 'check coordinator weights'")
@@ -227,7 +234,8 @@ def _add_broker_arg(sub_parser: argparse.ArgumentParser) -> None:
     (oanda-practice — see docs/CURRENT_OPERATIONS.md); choices are
     validated by run_engine.build_broker, not duplicated here."""
     sub_parser.add_argument(
-        "--broker", default="oanda-practice",
+        "--broker",
+        default="oanda-practice",
         help=(
             "Broker mode (must match the running engine's mode; same "
             "values as run_engine --broker). Default: oanda-practice."
@@ -247,13 +255,16 @@ def main(argv: list[str] | None = None) -> int:
     p_add.add_argument("--strategy", required=True)
     _add_broker_arg(p_add)
     p_add.add_argument(
-        "--paper-days", type=int, default=90,
+        "--paper-days",
+        type=int,
+        default=90,
         help="Required paper period before evaluate() will promote",
     )
     p_add.set_defaults(func=cmd_add)
 
     p_eval = sub.add_parser(
-        "evaluate", help="Show promotion verdict from AllocationPolicy",
+        "evaluate",
+        help="Show promotion verdict from AllocationPolicy",
     )
     p_eval.add_argument("--strategy", required=True)
     _add_broker_arg(p_eval)
@@ -262,7 +273,9 @@ def main(argv: list[str] | None = None) -> int:
     p_prom = sub.add_parser("promote", help="Promote paper → live")
     p_prom.add_argument("--strategy", required=True)
     p_prom.add_argument(
-        "--weight", type=float, default=0.05,
+        "--weight",
+        type=float,
+        default=0.05,
         # %% — argparse help strings interpolate %-specifiers; a bare %
         # is a "badly formed help string" ValueError on Python >= 3.14.
         help="Initial allocation weight (default 5%%)",
@@ -273,7 +286,8 @@ def main(argv: list[str] | None = None) -> int:
     p_rem = sub.add_parser("remove", help="Liquidate and remove")
     p_rem.add_argument("--strategy", required=True)
     p_rem.add_argument(
-        "--confirm", action="store_true",
+        "--confirm",
+        action="store_true",
         help="Required: confirms immediate liquidation of all positions",
     )
     _add_broker_arg(p_rem)

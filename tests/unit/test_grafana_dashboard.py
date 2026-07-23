@@ -17,7 +17,6 @@ from pathlib import Path
 
 import pytest
 
-
 _DASHBOARD_PATH = Path("grafana/dashboards/portfolio.json")
 
 
@@ -71,8 +70,7 @@ class TestQueriesReferenceRealMetrics:
 
         missing = referenced - acceptable
         assert not missing, (
-            f"Dashboard references metrics not declared in metrics.py: "
-            f"{sorted(missing)}"
+            f"Dashboard references metrics not declared in metrics.py: {sorted(missing)}"
         )
 
 
@@ -97,7 +95,8 @@ class TestSectionCoverage:
 
 class TestPrometheusDatasourceConsistency:
     def test_every_target_uses_prometheus_datasource(
-        self, dashboard: dict,  # type: ignore[type-arg]
+        self,
+        dashboard: dict,  # type: ignore[type-arg]
     ) -> None:
         for p in dashboard["panels"]:
             if p.get("type") == "row":

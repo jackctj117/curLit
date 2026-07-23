@@ -27,12 +27,14 @@ logger = logging.getLogger(__name__)
 
 def main(argv: list[str] | None = None) -> int:
     from src.dotenv_bootstrap import load_project_env  # noqa: PLC0415
+
     load_project_env()
 
     parser = argparse.ArgumentParser(description="Reflective outcome review.")
     parser.add_argument("--once", action="store_true", default=True)
-    parser.add_argument("--telegram", action="store_true",
-                        help="Also push the proposal to the operator's Telegram.")
+    parser.add_argument(
+        "--telegram", action="store_true", help="Also push the proposal to the operator's Telegram."
+    )
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args(argv)
 
@@ -53,6 +55,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.telegram:
         from src.research.notifications import notify_operator  # noqa: PLC0415
+
         res = notify_operator("Reflective review", result.to_telegram(), html=True)
         print(f"telegram: ok={res.telegram_succeeded}")
 

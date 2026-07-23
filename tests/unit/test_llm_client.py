@@ -121,7 +121,8 @@ class TestGetClient:
             get_client(provider="claude")
 
     def test_explicit_api_key_overrides_env(
-        self, monkeypatch: pytest.MonkeyPatch,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         # Register the stub so we don't need a real anthropic key for the test
         register_driver("test_stub", _StubDriver)
@@ -134,13 +135,19 @@ class TestGetClient:
     def test_register_new_driver_extension_hook(self) -> None:
         """A new provider plugs in via register_driver — the extension hook
         for future Ollama / Bedrock / etc. drivers."""
+
         class _LocalDriver(Driver):
             name = "local"
 
             def complete(self, messages, model, max_tokens=4096, temperature=0.0, **kwargs):  # noqa: ANN001
                 return LLMResponse(
-                    text="local-response", model=model, provider="local",
-                    input_tokens=10, output_tokens=5, usd_cost=0.0, elapsed_sec=0.001,
+                    text="local-response",
+                    model=model,
+                    provider="local",
+                    input_tokens=10,
+                    output_tokens=5,
+                    usd_cost=0.0,
+                    elapsed_sec=0.001,
                 )
 
         register_driver("local", _LocalDriver)

@@ -96,9 +96,7 @@ class StrategyMetrics:
         assert self.paper_days >= 0, "paper_days must be non-negative"
         assert 0.0 <= self.null_max_p <= 1.0, "null_max_p must be in [0,1]"
         assert 0.0 <= self.reality_check_p <= 1.0, "reality_check_p must be in [0,1]"
-        assert 0.0 <= self.edge_concentration <= 1.0, (
-            "edge_concentration must be in [0,1]"
-        )
+        assert 0.0 <= self.edge_concentration <= 1.0, "edge_concentration must be in [0,1]"
 
 
 @dataclass
@@ -167,23 +165,16 @@ class EdgePolicy:
         if metrics.paper_days < self.paper.min_days_before_live:
             failed.append("min_days_before_live")
             reasons.append(
-                f"paper_days={metrics.paper_days} < required "
-                f"{self.paper.min_days_before_live}"
+                f"paper_days={metrics.paper_days} < required {self.paper.min_days_before_live}"
             )
         else:
-            reasons.append(
-                f"paper_days={metrics.paper_days} ≥ {self.paper.min_days_before_live} ✓"
-            )
+            reasons.append(f"paper_days={metrics.paper_days} ≥ {self.paper.min_days_before_live} ✓")
 
         if metrics.null_max_p > self.paper.null_p_max:
             failed.append("null_p_max")
-            reasons.append(
-                f"null p={metrics.null_max_p:.3f} > max {self.paper.null_p_max}"
-            )
+            reasons.append(f"null p={metrics.null_max_p:.3f} > max {self.paper.null_p_max}")
         else:
-            reasons.append(
-                f"null p={metrics.null_max_p:.3f} ≤ {self.paper.null_p_max} ✓"
-            )
+            reasons.append(f"null p={metrics.null_max_p:.3f} ≤ {self.paper.null_p_max} ✓")
 
         if metrics.reality_check_p > self.paper.reality_check_p_max:
             failed.append("reality_check_p_max")
@@ -223,10 +214,7 @@ class EdgePolicy:
         We return the first applicable action in that order, so a strategy
         that triggers both decay-retire AND z-halt retires.
         """
-        if (
-            snapshot.decay_tau is not None
-            and snapshot.decay_tau <= self.live.decay_tau_retire
-        ):
+        if snapshot.decay_tau is not None and snapshot.decay_tau <= self.live.decay_tau_retire:
             return LiveAction.RETIRE_STRATEGY
 
         if snapshot.sharpe_z <= self.live.sharpe_z_halt:
@@ -299,10 +287,14 @@ def load_edge_policy(path: Path | str = DEFAULT_POLICY_PATH) -> EdgePolicy:
             _require(_require(paper_cfg, "required_tests", dict), "null_p_max", (int, float)),
         ),
         reality_check_p_max=float(
-            _require(_require(paper_cfg, "required_tests", dict), "reality_check_p_max", (int, float)),
+            _require(
+                _require(paper_cfg, "required_tests", dict), "reality_check_p_max", (int, float)
+            ),
         ),
         edge_concentration_max=float(
-            _require(_require(paper_cfg, "required_tests", dict), "edge_concentration_max", (int, float)),
+            _require(
+                _require(paper_cfg, "required_tests", dict), "edge_concentration_max", (int, float)
+            ),
         ),
     )
 
@@ -339,9 +331,9 @@ def load_edge_policy(path: Path | str = DEFAULT_POLICY_PATH) -> EdgePolicy:
         alert_severity=alert_severity,
     )
     logger.info(
-        "Loaded edge policy from %s (paper days=%d, sharpe halt=%.2f, "
-        "cooldown=%d days)",
-        p, policy.paper.min_days_before_live,
+        "Loaded edge policy from %s (paper days=%d, sharpe halt=%.2f, cooldown=%d days)",
+        p,
+        policy.paper.min_days_before_live,
         policy.live.sharpe_z_halt,
         policy.retirement.cooldown_days,
     )

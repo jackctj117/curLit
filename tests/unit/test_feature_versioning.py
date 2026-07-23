@@ -67,10 +67,20 @@ class TestSnapshotId:
     def test_dict_order_does_not_matter(self) -> None:
         ts = datetime(2026, 4, 25, 12, 0, 0, tzinfo=UTC)
         a = canonical_snapshot_id(
-            "set", "v1", "data", "model", ts, {"a": 1.0, "b": 2.0},
+            "set",
+            "v1",
+            "data",
+            "model",
+            ts,
+            {"a": 1.0, "b": 2.0},
         )
         b = canonical_snapshot_id(
-            "set", "v1", "data", "model", ts, {"b": 2.0, "a": 1.0},
+            "set",
+            "v1",
+            "data",
+            "model",
+            ts,
+            {"b": 2.0, "a": 1.0},
         )
         assert a == b
 
@@ -115,7 +125,8 @@ class TestFeatureSnapshotStore:
         assert store.fetch("nonexistent") is None
 
     def test_round_trip_preserves_values_bit_exact(
-        self, store: FeatureSnapshotStore,
+        self,
+        store: FeatureSnapshotStore,
     ) -> None:
         snap = FeatureSnapshot.create(
             feature_set_name="set",
@@ -162,10 +173,14 @@ class TestRegistry:
     def test_multiple_versions_coexist(self) -> None:
         reg = FeatureVersionRegistry()
         v1 = FeatureSetDefinition(
-            name="rd", version="1.0.0", schema={"a": float},
+            name="rd",
+            version="1.0.0",
+            schema={"a": float},
         )
         v2 = FeatureSetDefinition(
-            name="rd", version="2.0.0", schema={"a": float, "b": int},
+            name="rd",
+            version="2.0.0",
+            schema={"a": float, "b": int},
         )
         reg.register(v1)
         reg.register(v2)
@@ -181,14 +196,16 @@ class TestRegistry:
 
     def test_validate_passes_on_match(self) -> None:
         defn = FeatureSetDefinition(
-            name="rd", version="1.0.0",
+            name="rd",
+            version="1.0.0",
             schema={"a": float, "b": int},
         )
         defn.validate({"a": 1.5, "b": 3})
 
     def test_validate_rejects_missing_field(self) -> None:
         defn = FeatureSetDefinition(
-            name="rd", version="1.0.0",
+            name="rd",
+            version="1.0.0",
             schema={"a": float, "b": int},
         )
         with pytest.raises(ValueError, match="missing"):
@@ -196,7 +213,8 @@ class TestRegistry:
 
     def test_validate_rejects_wrong_type(self) -> None:
         defn = FeatureSetDefinition(
-            name="rd", version="1.0.0",
+            name="rd",
+            version="1.0.0",
             schema={"a": float},
         )
         with pytest.raises(ValueError, match="expected"):
@@ -210,7 +228,9 @@ class TestRegistry:
 
 class TestReconstruction:
     def test_reconstruct_finds_snapshot_via_payload(
-        self, store: FeatureSnapshotStore, journal: TradeJournal,
+        self,
+        store: FeatureSnapshotStore,
+        journal: TradeJournal,
     ) -> None:
         snap = _make_snapshot()
         store.store(snap)
@@ -219,7 +239,8 @@ class TestReconstruction:
         journal.record(
             EventType.INTENT_SUBMITTED,
             payload=attach_snapshot_payload(
-                snap, extra={"target_position": 1000.0},
+                snap,
+                extra={"target_position": 1000.0},
             ),
             intent_id="intent-1",
             strategy_id="rate_diff_mr",
@@ -232,19 +253,24 @@ class TestReconstruction:
         assert recovered.values == snap.values
 
     def test_reconstruct_returns_none_when_no_payload_ref(
-        self, store: FeatureSnapshotStore, journal: TradeJournal,
+        self,
+        store: FeatureSnapshotStore,
+        journal: TradeJournal,
     ) -> None:
         # Record an intent without a snapshot reference.
         journal.record(
             EventType.INTENT_SUBMITTED,
             payload={"target_position": 1000.0},
             intent_id="bare",
-            strategy_id="x", symbol="EURUSD",
+            strategy_id="x",
+            symbol="EURUSD",
         )
         assert reconstruct_features(journal, store, "bare") is None
 
     def test_reconstruct_returns_none_for_unknown_intent(
-        self, store: FeatureSnapshotStore, journal: TradeJournal,
+        self,
+        store: FeatureSnapshotStore,
+        journal: TradeJournal,
     ) -> None:
         assert reconstruct_features(journal, store, "never-seen") is None
 
@@ -252,8 +278,12 @@ class TestReconstruction:
         snap = _make_snapshot()
         payload = attach_snapshot_payload(snap, extra={"target_position": 100})
         for key in (
-            "snapshot_id", "feature_set_name", "feature_set_version",
-            "data_snapshot_id", "model_version", "feature_ts",
+            "snapshot_id",
+            "feature_set_name",
+            "feature_set_version",
+            "data_snapshot_id",
+            "model_version",
+            "feature_ts",
         ):
             assert key in payload
         assert payload["target_position"] == 100

@@ -41,8 +41,8 @@ class TestLongDirection:
     def test_long_stop_below_targets_above(self) -> None:
         card = build_trade_card(_idea(action="long"), 100.0)
         assert card["bullish"] is True
-        assert card["stop_price"] == pytest.approx(90.0)   # 100 × (1 − 0.10)
-        assert card["target_prices"] == [110.0, 120.0]      # 100 × (1 ± 0.10/0.20)
+        assert card["stop_price"] == pytest.approx(90.0)  # 100 × (1 − 0.10)
+        assert card["target_prices"] == [110.0, 120.0]  # 100 × (1 ± 0.10/0.20)
         assert card["priced"] is True
         assert card["no_live_price"] is False
 
@@ -59,8 +59,8 @@ class TestShortDirection:
             100.0,
         )
         assert card["bullish"] is False
-        assert card["stop_price"] == pytest.approx(108.0)   # 100 × (1 + 0.08)
-        assert card["target_prices"] == [90.0, 80.0]         # 100 × (1 − 0.10/0.20)
+        assert card["stop_price"] == pytest.approx(108.0)  # 100 × (1 + 0.08)
+        assert card["target_prices"] == [90.0, 80.0]  # 100 × (1 − 0.10/0.20)
 
     def test_short_risk_reward(self) -> None:
         # reward = |90 − 100| = 10 ; risk = |100 − 108| = 8 → 1.25 → 1.2
@@ -81,11 +81,12 @@ class TestOptions:
 
     def test_buy_puts_strike_below_spot(self) -> None:
         card = build_trade_card(
-            _idea(action="buy_puts", direction="bearish"), 100.0,
+            _idea(action="buy_puts", direction="bearish"),
+            100.0,
         )
         assert card["is_option"] is True
         assert card["bullish"] is False
-        assert card["suggested_strike"] == pytest.approx(95.0)   # 5% OTM put
+        assert card["suggested_strike"] == pytest.approx(95.0)  # 5% OTM put
 
     def test_option_stop_uses_underlying_default_not_premium_pct(self) -> None:
         # The idea's stop_loss_pct for an option is a % of PREMIUM, not a
@@ -154,7 +155,7 @@ class TestRoundingAndEdges:
     def test_penny_name_keeps_precision(self) -> None:
         card = build_trade_card(_idea(action="long", stop_loss_pct=0.10), 3.20)
         # < 10 → 3 decimals
-        assert card["stop_price"] == pytest.approx(2.88)   # 3.20 × 0.90
+        assert card["stop_price"] == pytest.approx(2.88)  # 3.20 × 0.90
 
     def test_missing_stop_uses_stock_default(self) -> None:
         idea = _idea(action="long")

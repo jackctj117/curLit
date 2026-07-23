@@ -123,7 +123,8 @@ class MetaLearner:
         self.engine = engine
 
     def gather(
-        self, since: datetime | None = None,
+        self,
+        since: datetime | None = None,
     ) -> MetaLearningReport:
         """Read papers + strategy fills, build the rollup. Returns the
         in-memory report; persistence is opt-in via .persist()."""
@@ -135,11 +136,14 @@ class MetaLearner:
             # Pull all papers ingested in the lookback window. Use the
             # caller's `since` directly as the floor; rows without
             # ingested_at are treated as "now" (i.e. always included).
-            paper_rows = conn.execute(text("""
+            paper_rows = conn.execute(
+                text("""
                 SELECT paper_id, title, abstract, source, implementation_priority
                 FROM research_papers
                 WHERE ingested_at IS NULL OR ingested_at >= :since
-            """), {"since": since}).fetchall()
+            """),
+                {"since": since},
+            ).fetchall()
 
             if not paper_rows:
                 return report
@@ -148,12 +152,14 @@ class MetaLearner:
             # Map paper → strategy via paper.implementation_priority +
             # the convention that strategy_id = paper_id when promoted.
             # For papers with no matching strategy_id, P&L = 0.
-            pnl_rows = conn.execute(text("""
+            pnl_rows = conn.execute(
+                text("""
                 SELECT strategy_id,
                        COALESCE(SUM(quantity * fill_price), 0) AS pnl
                 FROM strategy_fills
                 GROUP BY strategy_id
-            """)).fetchall()
+            """)
+            ).fetchall()
             pnl_by_strategy = {sid: float(p) for sid, p in pnl_rows}
 
         sources: dict[str, SourceOutcome] = {}
@@ -168,7 +174,9 @@ class MetaLearner:
             if source_label not in sources:
                 sources[source_label] = SourceOutcome(
                     source_label=source_label,
-                    n_papers=0, n_implemented=0, n_promoted=0,
+                    n_papers=0,
+                    n_implemented=0,
+                    n_promoted=0,
                     total_pnl_usd=0.0,
                 )
             s = sources[source_label]
@@ -193,7 +201,8 @@ class MetaLearner:
         return report
 
     def persist_and_emit_overlay(
-        self, report: MetaLearningReport,
+        self,
+        report: MetaLearningReport,
     ) -> dict[str, dict[str, float]]:
         """Write report into research_papers.evaluation_data and return
         the overlay dict consumable by RelevanceScorer.
@@ -225,10 +234,7 @@ class MetaLearner:
                         "multiplier": outcome.multiplier,
                         "generated_at": report.generated_at.isoformat(),
                     }
-                    pid = (
-                        f"meta:learning:"
-                        f"{source_label.replace(' ', '_').lower()}"
-                    )
+                    pid = f"meta:learning:{source_label.replace(' ', '_').lower()}"
                     dialect = self.engine.dialect.name
                     if dialect == "postgresql":
                         stmt = text("""
@@ -244,18 +250,22 @@ class MetaLearner:
                             "(paper_id, source, evaluation_data) "
                             "VALUES (:pid, :source, :data)",
                         )
-                    conn.execute(stmt, {
-                        "pid": pid,
-                        "source": source_label,
-                        "data": json.dumps(payload),
-                    })
+                    conn.execute(
+                        stmt,
+                        {
+                            "pid": pid,
+                            "source": source_label,
+                            "data": json.dumps(payload),
+                        },
+                    )
         except Exception:
             logger.exception("meta-learning persist failed")
         return overlay
 
 
 def update_scorer_overlay(
-    scorer: Any, learner: MetaLearner,
+    scorer: Any,
+    learner: MetaLearner,
 ) -> int:
     """Convenience: gather → persist → push the overlay onto an existing
     RelevanceScorer. Returns the number of source-labels updated."""

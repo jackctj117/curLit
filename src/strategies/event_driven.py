@@ -198,8 +198,7 @@ class EventDrivenStrategy:
 
                 self._symbol_universe = SymbolUniverse(self.db)
             except Exception:
-                logger.debug("symbol universe unavailable for name enrichment",
-                             exc_info=True)
+                logger.debug("symbol universe unavailable for name enrichment", exc_info=True)
                 self._symbol_universe = None
         if self._symbol_universe is None:
             return {}
@@ -301,8 +300,7 @@ class EventDrivenStrategy:
             feature_set_version=_FEATURE_SET_VERSION,
             data_snapshot_id="live",
             model_version=(
-                f"move_frac={self.config.confirm_move_frac},"
-                f"min_urgency={self.config.min_urgency}"
+                f"move_frac={self.config.confirm_move_frac},min_urgency={self.config.min_urgency}"
             ),
             ts=datetime.now(UTC),
             values=values,
@@ -311,8 +309,7 @@ class EventDrivenStrategy:
             self.snapshot_store.store(snapshot)
         except Exception:
             logger.exception(
-                "Failed to store feature snapshot for %s — intent will lack "
-                "snapshot reference",
+                "Failed to store feature snapshot for %s — intent will lack snapshot reference",
                 self.id,
             )
             return {}
@@ -337,8 +334,7 @@ class EventDrivenStrategy:
         "ORDER BY seen_at DESC LIMIT :lim"
     )
     _POLL_COUNT_SQL = text(
-        "SELECT count(*) FROM geo_events "
-        "WHERE status = 'ASSESSED' AND seen_at >= :floor"
+        "SELECT count(*) FROM geo_events WHERE status = 'ASSESSED' AND seen_at >= :floor"
     )
 
     def _fetch_assessed(self) -> list[dict[str, Any]] | None:
@@ -348,28 +344,24 @@ class EventDrivenStrategy:
         if self.db is None:
             if not self._table_missing_logged:
                 logger.warning(
-                    "EventDrivenStrategy has no DB handle — running as a NO-OP "
-                    "(logged once)",
+                    "EventDrivenStrategy has no DB handle — running as a NO-OP (logged once)",
                 )
                 self._table_missing_logged = True
             return None
         floor = (
-            datetime.now(UTC)
-            - timedelta(hours=self.config.assessed_poll_window_hours)
+            datetime.now(UTC) - timedelta(hours=self.config.assessed_poll_window_hours)
         ).isoformat()
         limit = self.config.assessed_poll_limit
         params = {"floor": floor, "lim": limit}
         try:
             with self.db.connect() as conn:
-                rows = [
-                    dict(r)
-                    for r in conn.execute(self._POLL_SQL, params).mappings().all()
-                ]
+                rows = [dict(r) for r in conn.execute(self._POLL_SQL, params).mappings().all()]
                 # Only pay for the count when we actually hit the cap — a
                 # full page means there MAY be elided rows worth logging.
                 total = (
                     conn.execute(
-                        self._POLL_COUNT_SQL, {"floor": floor},
+                        self._POLL_COUNT_SQL,
+                        {"floor": floor},
                     ).scalar()
                     if len(rows) >= limit
                     else len(rows)
@@ -380,7 +372,8 @@ class EventDrivenStrategy:
                     "geo_events unavailable (%s: %s) — event strategy idles as a "
                     "NO-OP until the producer migration (005_geo_events.sql) is "
                     "applied (logged once)",
-                    type(exc).__name__, exc,
+                    type(exc).__name__,
+                    exc,
                 )
                 self._table_missing_logged = True
             return None
@@ -392,8 +385,11 @@ class EventDrivenStrategy:
                 "ASSESSED poll capped: processing %d of %d in-window rows "
                 "(limit=%d, window=%.1fh, freshest first) — %d older row(s) "
                 "elided this cycle (CL-9ts9)",
-                len(rows), total, limit,
-                self.config.assessed_poll_window_hours, total - len(rows),
+                len(rows),
+                total,
+                limit,
+                self.config.assessed_poll_window_hours,
+                total - len(rows),
             )
         return rows
 
@@ -418,7 +414,10 @@ class EventDrivenStrategy:
             # traceback per CL-2yta.
             logger.warning(
                 "%s: price fallback get_latest_value failed for %s: %s: %s",
-                self.id, symbol, type(exc).__name__, exc,
+                self.id,
+                symbol,
+                type(exc).__name__,
+                exc,
             )
             return None
         return float(value) if value is not None else None
@@ -435,7 +434,8 @@ class EventDrivenStrategy:
         quantity for residual/phantom confirmation (CL-9dhg)."""
         exits: list[OrderIntent] = []
         closed = self.book.check_exits(
-            lambda symbol: self._current_price(symbol, prices, now), now,
+            lambda symbol: self._current_price(symbol, prices, now),
+            now,
             broker_positions,
         )
         for rec in closed:
@@ -444,28 +444,38 @@ class EventDrivenStrategy:
             # every value in a re-emission derives from the trigger-time
             # capture, so per-tick re-recording would just write a
             # near-identical row per pending exit per tick.
-            meta = {} if rec.emit_count > 1 else self._emit_snapshot({
-                "trigger": "exit",
-                "exit_reason": rec.reason,
-                "symbol": rec.symbol,
-                "event_id": pos.event_id,
-                "entry_price": float(pos.entry_price),
-                "current_price": (
-                    float(rec.current_price) if rec.current_price is not None else None
-                ),
-                "direction": int(pos.direction),
-                "pnl": float(rec.pnl),
-                "held_hours": float(rec.held_hours),
-                "book_realized_pnl": float(rec.book_realized_pnl),
-            })
+            meta = (
+                {}
+                if rec.emit_count > 1
+                else self._emit_snapshot(
+                    {
+                        "trigger": "exit",
+                        "exit_reason": rec.reason,
+                        "symbol": rec.symbol,
+                        "event_id": pos.event_id,
+                        "entry_price": float(pos.entry_price),
+                        "current_price": (
+                            float(rec.current_price) if rec.current_price is not None else None
+                        ),
+                        "direction": int(pos.direction),
+                        "pnl": float(rec.pnl),
+                        "held_hours": float(rec.held_hours),
+                        "book_realized_pnl": float(rec.book_realized_pnl),
+                    }
+                )
+            )
             # Canonical URGENT (CL-ikz2): the legacy "high" string was unknown
             # to the coordinator's rank map, so exits could never escalate.
-            exits.append(OrderIntent(
-                strategy_id=self.id, symbol=rec.symbol, target_position=0,
-                urgency=Urgency.URGENT.value,
-                max_slippage_bps=self.config.max_slippage_bps,
-                metadata=meta,
-            ))
+            exits.append(
+                OrderIntent(
+                    strategy_id=self.id,
+                    symbol=rec.symbol,
+                    target_position=0,
+                    urgency=Urgency.URGENT.value,
+                    max_slippage_bps=self.config.max_slippage_bps,
+                    metadata=meta,
+                )
+            )
         return exits
 
     # ------------------------------------------------------------------
@@ -507,7 +517,8 @@ class EventDrivenStrategy:
         headline = str(row.get("headline") or "")
 
         all_tradables = [
-            aff for aff in (assessment.get("affected") or [])
+            aff
+            for aff in (assessment.get("affected") or [])
             if isinstance(aff, dict)
             and str(aff.get("kind") or "") in TRADABLE_KINDS
             and str(aff.get("direction") or "") in TRADE_DIRECTIONS
@@ -539,37 +550,39 @@ class EventDrivenStrategy:
                 ca_confirmed is None and self.config.cross_asset_block_on_missing
             )
             if veto:
-                reason = (
-                    "cross_asset_veto"
-                    if ca_confirmed is False else "cross_asset_no_data"
-                )
+                reason = "cross_asset_veto" if ca_confirmed is False else "cross_asset_no_data"
                 logger.warning(
                     "cross-asset gate BLOCKED event id=%s entries (%s): "
                     "related assets %s — skipping %d leg(s)",
-                    event_id, reason,
-                    "contradict the theme" if ca_confirmed is False
-                    else "unreadable",
+                    event_id,
+                    reason,
+                    "contradict the theme" if ca_confirmed is False else "unreadable",
                     len(tradables),
                 )
-                return intents, entered, [
-                    (str(aff.get("instrument") or ""), reason)
-                    for aff in tradables
-                ]
+                return (
+                    intents,
+                    entered,
+                    [(str(aff.get("instrument") or ""), reason) for aff in tradables],
+                )
 
         if equity is None or equity <= 0:
             logger.warning(
                 "Cannot size event entries (broker account unavailable) — "
-                "skipping trades for event id=%s", event_id,
+                "skipping trades for event id=%s",
+                event_id,
             )
-            return intents, entered, [
-                (str(aff.get("instrument") or ""), "no_account") for aff in tradables
-            ]
+            return (
+                intents,
+                entered,
+                [(str(aff.get("instrument") or ""), "no_account") for aff in tradables],
+            )
 
         if self.book.breached(equity):
-            return intents, entered, [
-                (str(aff.get("instrument") or ""), "event_book_loss_cap")
-                for aff in tradables
-            ]
+            return (
+                intents,
+                entered,
+                [(str(aff.get("instrument") or ""), "event_book_loss_cap") for aff in tradables],
+            )
 
         for aff in tradables:
             instrument = str(aff.get("instrument") or "")
@@ -579,7 +592,8 @@ class EventDrivenStrategy:
                 logger.warning(
                     "Event instrument %r not in instrument_map — skipping "
                     "(event id=%s). Add a mapping to trade it.",
-                    instrument, event_id,
+                    instrument,
+                    event_id,
                 )
                 skipped.append((instrument, "unknown_instrument"))
                 continue
@@ -588,8 +602,9 @@ class EventDrivenStrategy:
                 # slot is still occupied by REAL broker risk, and a fresh
                 # entry would race the in-flight/retrying close order.
                 logger.info(
-                    "Event entry %s skipped — exit pending broker "
-                    "confirmation (event id=%s)", symbol, event_id,
+                    "Event entry %s skipped — exit pending broker confirmation (event id=%s)",
+                    symbol,
+                    event_id,
                 )
                 skipped.append((symbol, "pending_exit"))
                 continue
@@ -598,8 +613,9 @@ class EventDrivenStrategy:
                 # submitted and awaiting its fill — a second submit would
                 # race it and double the position. The slot is committed.
                 logger.info(
-                    "Event entry %s skipped — entry pending broker fill "
-                    "confirmation (event id=%s)", symbol, event_id,
+                    "Event entry %s skipped — entry pending broker fill confirmation (event id=%s)",
+                    symbol,
+                    event_id,
                 )
                 skipped.append((symbol, "pending_entry"))
                 continue
@@ -610,9 +626,10 @@ class EventDrivenStrategy:
             accounting = self.book.accounting_positions()
             if len(accounting) >= self.config.max_concurrent_event_positions:
                 logger.warning(
-                    "max_concurrent_event_positions=%d reached — skipping %s "
-                    "(event id=%s)",
-                    self.config.max_concurrent_event_positions, symbol, event_id,
+                    "max_concurrent_event_positions=%d reached — skipping %s (event id=%s)",
+                    self.config.max_concurrent_event_positions,
+                    symbol,
+                    event_id,
                 )
                 skipped.append((symbol, "max_concurrent"))
                 continue
@@ -629,7 +646,8 @@ class EventDrivenStrategy:
                 if fallback is None:
                     logger.warning(
                         "No price for %s — skipping event entry (event id=%s)",
-                        symbol, event_id,
+                        symbol,
+                        event_id,
                     )
                     skipped.append((symbol, "no_price"))
                     continue
@@ -643,7 +661,10 @@ class EventDrivenStrategy:
             # (and, for havens, cluster) headroom, or skip at 0 — see
             # EventBook.concentration_capped_size. Additive to the loss cap.
             capped = self.book.concentration_capped_size(
-                symbol, size, entry_price, equity,
+                symbol,
+                size,
+                entry_price,
+                equity,
             )
             if capped == 0.0:
                 skipped.append((symbol, "concentration_cap"))
@@ -659,13 +680,19 @@ class EventDrivenStrategy:
                 spread_bps = spread_bps_from_tick(tick)
                 if spread_bps is not None:
                     liq_size = PositionSizer.adjust_for_liquidity(
-                        size, symbol, now, spread_bps, self._liquidity_profile,
+                        size,
+                        symbol,
+                        now,
+                        spread_bps,
+                        self._liquidity_profile,
                     )
                     if liq_size == 0.0:
                         logger.info(
                             "Event entry %s skipped — dead liquidity window "
                             "(spread=%.1fbps, event id=%s)",
-                            symbol, spread_bps, event_id,
+                            symbol,
+                            spread_bps,
+                            event_id,
                         )
                         skipped.append((symbol, "liquidity_window"))
                         continue
@@ -673,7 +700,10 @@ class EventDrivenStrategy:
                         logger.info(
                             "Event entry %s trimmed for thin liquidity "
                             "(spread=%.1fbps): %.0f -> %.0f",
-                            symbol, spread_bps, size, liq_size,
+                            symbol,
+                            spread_bps,
+                            size,
+                            liq_size,
                         )
                     size = liq_size
 
@@ -684,43 +714,63 @@ class EventDrivenStrategy:
             # intended phantom the reconciler would flag.
             self.book.record_entry(
                 EventPosition(
-                    symbol=symbol, event_id=event_id, entry_ts=now,
-                    entry_price=entry_price, quantity=size, direction=direction,
-                    stop_price=stop_price, headline=headline[:200],
+                    symbol=symbol,
+                    event_id=event_id,
+                    entry_ts=now,
+                    entry_price=entry_price,
+                    quantity=size,
+                    direction=direction,
+                    stop_price=stop_price,
+                    headline=headline[:200],
                 ),
                 broker_positions,
                 now,
             )
             logger.info(
-                "Event entry %s %s: size=%.0f entry=%.5f stop=%.5f event_id=%s "
-                "headline=%r",
-                symbol, dir_str, size, entry_price, stop_price, event_id,
+                "Event entry %s %s: size=%.0f entry=%.5f stop=%.5f event_id=%s headline=%r",
+                symbol,
+                dir_str,
+                size,
+                entry_price,
+                stop_price,
+                event_id,
                 headline[:80],
             )
-            meta = self._emit_snapshot({
-                "trigger": "entry",
-                "event_id": event_id,
-                "headline": headline[:200],
-                "instrument": instrument,
-                "symbol": symbol,
-                "direction": int(direction),
-                "urgency": int(assessment.get("urgency") or 0),
-                "confidence": float(assessment.get("confidence") or 0.0),
-                "entry_price": float(entry_price),
-                "stop_price": float(stop_price),
-                "size": float(size),
-                "reason": str(aff.get("reason") or ""),
-            })
-            intents.append(OrderIntent(
-                strategy_id=self.id, symbol=symbol, target_position=size,
-                urgency=Urgency.URGENT.value,
-                max_slippage_bps=self.config.max_slippage_bps,
-                metadata=meta,
-            ))
-            entered.append((
-                symbol, dir_str, f"{size:.0f}", entry_price,
-                str(aff.get("reason") or ""),
-            ))
+            meta = self._emit_snapshot(
+                {
+                    "trigger": "entry",
+                    "event_id": event_id,
+                    "headline": headline[:200],
+                    "instrument": instrument,
+                    "symbol": symbol,
+                    "direction": int(direction),
+                    "urgency": int(assessment.get("urgency") or 0),
+                    "confidence": float(assessment.get("confidence") or 0.0),
+                    "entry_price": float(entry_price),
+                    "stop_price": float(stop_price),
+                    "size": float(size),
+                    "reason": str(aff.get("reason") or ""),
+                }
+            )
+            intents.append(
+                OrderIntent(
+                    strategy_id=self.id,
+                    symbol=symbol,
+                    target_position=size,
+                    urgency=Urgency.URGENT.value,
+                    max_slippage_bps=self.config.max_slippage_bps,
+                    metadata=meta,
+                )
+            )
+            entered.append(
+                (
+                    symbol,
+                    dir_str,
+                    f"{size:.0f}",
+                    entry_price,
+                    str(aff.get("reason") or ""),
+                )
+            )
         return intents, entered, skipped
 
     # ------------------------------------------------------------------
@@ -735,8 +785,9 @@ class EventDrivenStrategy:
             # Broad by design: broker hiccups must not break the tick, but
             # include the actual error for diagnosis (CL-gmr1).
             logger.warning(
-                "broker.get_account() failed (%s: %s) — cannot size event "
-                "entries", type(exc).__name__, exc,
+                "broker.get_account() failed (%s: %s) — cannot size event entries",
+                type(exc).__name__,
+                exc,
             )
             return None
 
@@ -760,7 +811,9 @@ class EventDrivenStrategy:
             return None
 
     async def generate_intents(
-        self, prices: dict[str, Any], broker: Any,
+        self,
+        prices: dict[str, Any],
+        broker: Any,
     ) -> list[OrderIntent]:
         now = datetime.now(UTC)
         # Prune phantom positions from earlier rejected orders BEFORE the cap
@@ -817,7 +870,10 @@ class EventDrivenStrategy:
         for row in rows:
             try:
                 result = self.confluence.evaluate_and_transition(
-                    row, prices=prices, now=now, poll_cache=poll_cache,
+                    row,
+                    prices=prices,
+                    now=now,
+                    poll_cache=poll_cache,
                 )
             except Exception:
                 logger.exception(
@@ -835,12 +891,11 @@ class EventDrivenStrategy:
                     and result.urgency >= self.config.expired_alert_min_urgency
                     and expired_alerts_sent < 1
                 ):
-                    exp_assessment = (
-                        EventConfluence.parse_assessment(row.get("assessment"))
-                        or {}
-                    )
+                    exp_assessment = EventConfluence.parse_assessment(row.get("assessment")) or {}
                     self.notifier.alert_expired(
-                        row, result.urgency, result.confidence,
+                        row,
+                        result.urgency,
+                        result.confidence,
                         names=self._resolve_names(exp_assessment),
                     )
                     expired_alerts_sent += 1
@@ -853,11 +908,13 @@ class EventDrivenStrategy:
             # CL-tbl8 (P0): only the instruments that INDIVIDUALLY passed
             # Gate B are machine-traded — not every affected leg just because
             # the event-level confirm gate (min_confirmed_instruments) tripped.
-            confirmed_instruments = {
-                str(c.instrument) for c in result.checks if c.confirmed
-            }
+            confirmed_instruments = {str(c.instrument) for c in result.checks if c.confirmed}
             entry_intents, entered, skipped = self._enter_confirmed(
-                row, assessment, prices, equity, now,
+                row,
+                assessment,
+                prices,
+                equity,
+                now,
                 cross_asset=result.cross_asset,
                 broker_positions=broker_positions,
                 confirmed_instruments=confirmed_instruments,
@@ -869,7 +926,12 @@ class EventDrivenStrategy:
             # Alert on every CONFIRMED event — even when caps/mapping
             # meant nothing was tradable (operator can act manually).
             self.notifier.alert_confirmed(
-                row, assessment, entered, skipped, prices=prices, now=now,
+                row,
+                assessment,
+                entered,
+                skipped,
+                prices=prices,
+                now=now,
                 cross_asset=result.cross_asset,
                 names=self._resolve_names(assessment),
             )
@@ -883,9 +945,9 @@ class EventDrivenStrategy:
         # batched, batch DB queries issued, wall-ms. Makes the batch win
         # (queries flat as the event set grows) measurable in the logs.
         logger.info(
-            "event poll cycle: events=%d instruments=%d batch_queries=%d "
-            "wall_ms=%.1f",
-            len(rows), poll_cache.instruments_looked_up,
+            "event poll cycle: events=%d instruments=%d batch_queries=%d wall_ms=%.1f",
+            len(rows),
+            poll_cache.instruments_looked_up,
             poll_cache.batch_queries,
             (time.monotonic() - poll_started) * 1000.0,
         )

@@ -51,11 +51,15 @@ class TestPitchFeatures:
 class TestPauseFeatures:
     def test_counts_constructed_gaps(self) -> None:
         # tone(1s) gap(0.5s) tone(1s) gap(0.5s) tone(1s) → 2 pauses ≈ 0.5 s
-        y = np.concatenate([
-            _tone(180, 1.0), _silence(0.5),
-            _tone(180, 1.0), _silence(0.5),
-            _tone(180, 1.0),
-        ])
+        y = np.concatenate(
+            [
+                _tone(180, 1.0),
+                _silence(0.5),
+                _tone(180, 1.0),
+                _silence(0.5),
+                _tone(180, 1.0),
+            ]
+        )
         feats = extract_pause_features(y, SR, top_db=30.0, min_pause_s=0.3)
         assert feats["pause_count"] == 2.0
         assert feats["pause_mean_s"] == pytest.approx(0.5, abs=0.15)
@@ -86,11 +90,15 @@ class TestPauseFeatures:
         # both gaps.
         rng = np.random.default_rng(7)
         room = (0.1 * rng.standard_normal(int(0.5 * SR))).astype(np.float32)
-        y = np.concatenate([
-            _tone(180, 1.0), room,
-            _tone(180, 1.0), room,
-            _tone(180, 1.0),
-        ])
+        y = np.concatenate(
+            [
+                _tone(180, 1.0),
+                room,
+                _tone(180, 1.0),
+                room,
+                _tone(180, 1.0),
+            ]
+        )
         fixed = extract_pause_features(y, SR, top_db=30.0, min_pause_s=0.3)
         adaptive = extract_pause_features(y, SR, min_pause_s=0.3)
         assert fixed["pause_count"] == 0.0  # the failure mode being fixed
@@ -117,7 +125,8 @@ class TestEnergyFeatures:
     def test_constant_tone_has_lower_cv_than_bursty(self) -> None:
         steady = extract_energy_features(_tone(180, 2.0), SR)
         bursty = extract_energy_features(
-            np.concatenate([_tone(180, 0.5), _silence(0.5)] * 2), SR,
+            np.concatenate([_tone(180, 0.5), _silence(0.5)] * 2),
+            SR,
         )
         assert steady["rms_cv"] < bursty["rms_cv"]
 

@@ -50,8 +50,10 @@ def test_engine_exits_cleanly_on_sigterm() -> None:
     env = {**os.environ, "FX_LOG_DIR": str(ROOT / "logs")}
     proc = subprocess.Popen(
         [sys.executable, "-m", "src.runtime.run_engine", "--practice"],
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        env=env, cwd=ROOT,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        env=env,
+        cwd=ROOT,
     )
     try:
         # Give the engine time to boot — start_metrics_server, build the
@@ -68,9 +70,7 @@ def test_engine_exits_cleanly_on_sigterm() -> None:
             proc.wait(timeout=10)
         except subprocess.TimeoutExpired:
             proc.kill()
-            pytest.fail(
-                "engine did not exit within 10s of SIGTERM — CL-6v2l regressed"
-            )
+            pytest.fail("engine did not exit within 10s of SIGTERM — CL-6v2l regressed")
         assert proc.returncode == 0, (
             f"engine exited with non-zero code {proc.returncode} on SIGTERM"
         )

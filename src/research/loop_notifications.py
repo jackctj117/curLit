@@ -97,7 +97,7 @@ def _brief_thesis(brief_path: Path) -> str:
         if stripped.startswith("# "):
             thesis = stripped[2:].strip()
             if thesis.lower().startswith("hypothesis:"):
-                thesis = thesis[len("hypothesis:"):].strip()
+                thesis = thesis[len("hypothesis:") :].strip()
             return thesis
     return ""
 
@@ -113,7 +113,8 @@ def _report_oos_metrics(report_path: str | Path) -> dict[str, Any]:
     if not isinstance(report, dict):
         return {}
     oos = report.get("backtest_metrics", {}).get(
-        "oos_metrics", {},
+        "oos_metrics",
+        {},
     ) or report.get("oos_metrics", {})
     return oos if isinstance(oos, dict) else {}
 
@@ -164,7 +165,9 @@ class LoopNotifier:
         except Exception as exc:
             logger.warning(
                 "%s notification dispatch raised: %s: %s",
-                kind, type(exc).__name__, exc,
+                kind,
+                type(exc).__name__,
+                exc,
             )
             return False
         return disp.any_attempted
@@ -224,11 +227,12 @@ class LoopNotifier:
             if e.missing or not e.passed
         ]
         oos = candidate_report.get("backtest_metrics", {}).get(
-            "oos_metrics", {},
+            "oos_metrics",
+            {},
         ) or candidate_report.get("oos_metrics", {})
-        metrics_blurb = ", ".join(
-            f"{k}={v}" for k, v in oos.items()
-        ) if isinstance(oos, dict) else ""
+        metrics_blurb = (
+            ", ".join(f"{k}={v}" for k, v in oos.items()) if isinstance(oos, dict) else ""
+        )
         title = f"ESCALATE: debate result needs operator review — {slug}"
         # Telegram-HTML, phone-first (CL-frn7): every interpolated
         # value escaped; short lines, blank-line separation.
@@ -272,15 +276,11 @@ class LoopNotifier:
         numbers, reply line.
         """
         title = "GATE 2 — strategy ready to deploy"
-        instruments = (
-            extract_candidate_instruments(code_path) if code_path else []
-        )
+        instruments = extract_candidate_instruments(code_path) if code_path else []
         reason = str(entry.get("reason") or "").strip()
         if len(reason) > 200:
             reason = reason[:197] + "..."
-        verdict_line = "Verdict: PROMOTE" + (
-            f" — {html_escape(reason)}" if reason else ""
-        )
+        verdict_line = "Verdict: PROMOTE" + (f" — {html_escape(reason)}" if reason else "")
         backtest_line = _fmt_backtest_line(
             _report_oos_metrics(entry.get("candidate_report_path", "")),
         )
@@ -294,6 +294,5 @@ class LoopNotifier:
             lines.append(backtest_line)
         lines.append("Paper-shadow at allocation=0 — no real-money risk.")
         lines.append("")
-        lines.append(f"Reply: approve {html_escape(slug)} | "
-                     f"reject {html_escape(slug)}")
+        lines.append(f"Reply: approve {html_escape(slug)} | reject {html_escape(slug)}")
         return self._dispatch("GATE 2", title, "\n".join(lines), 1)

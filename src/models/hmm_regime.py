@@ -84,10 +84,7 @@ def fit_hmm_regime(
     Returns a RegimeFit. Raises ValueError when history is too short.
     """
     if len(features) < _MIN_HISTORY_DAYS:
-        msg = (
-            f"HMM needs at least {_MIN_HISTORY_DAYS} obs for stable EM, "
-            f"got {len(features)}"
-        )
+        msg = f"HMM needs at least {_MIN_HISTORY_DAYS} obs for stable EM, got {len(features)}"
         raise ValueError(msg)
 
     try:
@@ -119,9 +116,7 @@ def fit_hmm_regime(
     state_means_on_vol = model.means_[:, 0]
     state_order = np.argsort(state_means_on_vol)
     label_names = ["trending", "ranging", "volatile"]
-    label_map = {
-        int(state_order[i]): label_names[i] for i in range(n_states)
-    }
+    label_map = {int(state_order[i]): label_names[i] for i in range(n_states)}
 
     return RegimeFit(
         states_per_date=pd.Series(raw_states, index=df.index, dtype=int),

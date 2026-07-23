@@ -70,9 +70,7 @@ class FillContext:
     def __post_init__(self) -> None:
         assert self.arrival_mid > 0, f"arrival_mid must be > 0, got {self.arrival_mid}"
         assert self.fill_mid > 0, f"fill_mid must be > 0, got {self.fill_mid}"
-        assert self.submit_spread >= 0, (
-            f"submit_spread must be >= 0, got {self.submit_spread}"
-        )
+        assert self.submit_spread >= 0, f"submit_spread must be >= 0, got {self.submit_spread}"
 
 
 @dataclass
@@ -175,7 +173,9 @@ def compute_tca(
     # compute via "buy" sign so it's always +bps regardless of trade side.
 
     impact_bps = _signed_bps(
-        context.fill_mid - context.arrival_mid, context.arrival_mid, fill.side,
+        context.fill_mid - context.arrival_mid,
+        context.arrival_mid,
+        fill.side,
     )
 
     # Broker fill quality: how far is the broker's fill price from the
@@ -192,7 +192,9 @@ def compute_tca(
     total_bps = queue_bps + impact_bps + broker_bps
 
     is_bps = _signed_bps(
-        fill.price - context.arrival_mid, context.arrival_mid, fill.side,
+        fill.price - context.arrival_mid,
+        context.arrival_mid,
+        fill.side,
     )
 
     return TCAComponents(
@@ -221,7 +223,8 @@ def publish_tca_metrics(components: TCAComponents) -> None:
             components.broker_bps,
         )
         tca_implementation_shortfall_bps.labels(
-            pair=components.pair, side=components.side,
+            pair=components.pair,
+            side=components.side,
         ).observe(components.implementation_shortfall_bps)
     except Exception:
         logger.exception("TCA metric emit failed")

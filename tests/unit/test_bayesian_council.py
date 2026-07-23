@@ -16,7 +16,6 @@ import pytest
 pytest.importorskip("pymc")
 
 from src.research.agents.bayesian_council import (  # noqa: E402
-    BayesianCouncilOutcome,
     run_bayesian_council,
 )
 
@@ -39,18 +38,25 @@ _VALID_SPEC = {
     "rationale": "FX-rate diff partial pooling",
     "outcome": {"variable": "log_return", "type": "continuous"},
     "predictors": [
-        {"variable": "rate_diff", "role": "fixed_effect",
-         "prior": {"family": "Normal", "mu": 0.0, "sigma": 1.0}}
+        {
+            "variable": "rate_diff",
+            "role": "fixed_effect",
+            "prior": {"family": "Normal", "mu": 0.0, "sigma": 1.0},
+        }
     ],
-    "hierarchy": {"grouping": "pair", "varying_intercept": True,
-                  "varying_slopes": ["rate_diff"], "pooling": "partial"},
-    "noise": {"family": "Normal",
-              "scale_prior": {"family": "HalfNormal", "sigma": 0.05}},
-    "fit_settings": {"draws": 200, "tune": 200, "chains": 2,
-                     "target_accept": 0.95},
-    "diagnostic_thresholds": {"rhat_max": 1.05,
-                              "ess_min_per_chain": 50,
-                              "divergence_rate_max": 0.05},
+    "hierarchy": {
+        "grouping": "pair",
+        "varying_intercept": True,
+        "varying_slopes": ["rate_diff"],
+        "pooling": "partial",
+    },
+    "noise": {"family": "Normal", "scale_prior": {"family": "HalfNormal", "sigma": 0.05}},
+    "fit_settings": {"draws": 200, "tune": 200, "chains": 2, "target_accept": 0.95},
+    "diagnostic_thresholds": {
+        "rhat_max": 1.05,
+        "ess_min_per_chain": 50,
+        "divergence_rate_max": 0.05,
+    },
     "expected_runtime_sec": 30,
     "expected_post_outputs": ["per_pair_beta_posterior"],
 }
@@ -76,19 +82,26 @@ def _stub_agent(text: str) -> MagicMock:
 class TestShipPath:
     def test_ship_verdict_short_circuits_loop(self) -> None:
         modeler = _stub_agent(json.dumps(_VALID_SPEC))
-        evaluator = _stub_agent(json.dumps({
-            "verdict": "ship",
-            "verdict_reason": "All diagnostics pass",
-            "concerns": [],
-            "calibration": {"posterior_predictive_coverage_95": 0.92,
-                            "log_likelihood_oos": -100.0},
-            "follow_up_actions": [],
-        }))
+        evaluator = _stub_agent(
+            json.dumps(
+                {
+                    "verdict": "ship",
+                    "verdict_reason": "All diagnostics pass",
+                    "concerns": [],
+                    "calibration": {
+                        "posterior_predictive_coverage_95": 0.92,
+                        "log_likelihood_oos": -100.0,
+                    },
+                    "follow_up_actions": [],
+                }
+            )
+        )
         outcome = run_bayesian_council(
             hypothesis="Rate diff predicts FX returns hierarchically across G10",
             panel=_panel(),
             panel_schema=_PANEL_SCHEMA,
-            modeler=modeler, fit_evaluator=evaluator,
+            modeler=modeler,
+            fit_evaluator=evaluator,
         )
         assert outcome.verdict == "ship"
         assert outcome.iterations == 1
@@ -102,33 +115,47 @@ class TestIteratePath:
         modeler = _stub_agent(json.dumps(_VALID_SPEC))
         # First call returns "iterate", second returns "ship"
         eval_responses = [
-            json.dumps({
-                "verdict": "iterate",
-                "verdict_reason": "R-hat borderline",
-                "concerns": [{"severity": "warn",
-                              "category": "convergence",
-                              "detail": "R-hat 1.02",
-                              "suggested_fix": "Raise tune to 1000"}],
-                "calibration": {"posterior_predictive_coverage_95": 0.85,
-                                "log_likelihood_oos": -110.0},
-                "follow_up_actions": ["raise tune"],
-            }),
-            json.dumps({
-                "verdict": "ship",
-                "verdict_reason": "Now passes after tune raise",
-                "concerns": [],
-                "calibration": {"posterior_predictive_coverage_95": 0.93,
-                                "log_likelihood_oos": -100.0},
-                "follow_up_actions": [],
-            }),
+            json.dumps(
+                {
+                    "verdict": "iterate",
+                    "verdict_reason": "R-hat borderline",
+                    "concerns": [
+                        {
+                            "severity": "warn",
+                            "category": "convergence",
+                            "detail": "R-hat 1.02",
+                            "suggested_fix": "Raise tune to 1000",
+                        }
+                    ],
+                    "calibration": {
+                        "posterior_predictive_coverage_95": 0.85,
+                        "log_likelihood_oos": -110.0,
+                    },
+                    "follow_up_actions": ["raise tune"],
+                }
+            ),
+            json.dumps(
+                {
+                    "verdict": "ship",
+                    "verdict_reason": "Now passes after tune raise",
+                    "concerns": [],
+                    "calibration": {
+                        "posterior_predictive_coverage_95": 0.93,
+                        "log_likelihood_oos": -100.0,
+                    },
+                    "follow_up_actions": [],
+                }
+            ),
         ]
         eval_mock = MagicMock()
         eval_mock.run.side_effect = lambda *_a, **_k: _wrap(eval_responses.pop(0))
 
         outcome = run_bayesian_council(
-            hypothesis="x", panel=_panel(),
+            hypothesis="x",
+            panel=_panel(),
             panel_schema=_PANEL_SCHEMA,
-            modeler=modeler, fit_evaluator=eval_mock,
+            modeler=modeler,
+            fit_evaluator=eval_mock,
             max_iterations=3,
         )
         assert outcome.verdict == "ship"
@@ -158,9 +185,11 @@ class TestRejectPath:
         modeler = _stub_agent("not even json {{{")
         evaluator = _stub_agent(json.dumps({"verdict": "ship"}))
         outcome = run_bayesian_council(
-            hypothesis="x", panel=_panel(),
+            hypothesis="x",
+            panel=_panel(),
             panel_schema=_PANEL_SCHEMA,
-            modeler=modeler, fit_evaluator=evaluator,
+            modeler=modeler,
+            fit_evaluator=evaluator,
         )
         assert outcome.verdict == "reject"
         # Evaluator should never have been called — we bailed at the
@@ -170,37 +199,50 @@ class TestRejectPath:
     def test_max_iterations_with_iterate_becomes_reject(self) -> None:
         modeler = _stub_agent(json.dumps(_VALID_SPEC))
         # Always iterate — never converges.
-        evaluator = _stub_agent(json.dumps({
-            "verdict": "iterate",
-            "verdict_reason": "Still concerning",
-            "concerns": [{"severity": "warn", "category": "convergence",
-                          "detail": "R-hat", "suggested_fix": "raise tune"}],
-            "calibration": {"posterior_predictive_coverage_95": 0.8,
-                            "log_likelihood_oos": -110.0},
-            "follow_up_actions": [],
-        }))
+        evaluator = _stub_agent(
+            json.dumps(
+                {
+                    "verdict": "iterate",
+                    "verdict_reason": "Still concerning",
+                    "concerns": [
+                        {
+                            "severity": "warn",
+                            "category": "convergence",
+                            "detail": "R-hat",
+                            "suggested_fix": "raise tune",
+                        }
+                    ],
+                    "calibration": {
+                        "posterior_predictive_coverage_95": 0.8,
+                        "log_likelihood_oos": -110.0,
+                    },
+                    "follow_up_actions": [],
+                }
+            )
+        )
         outcome = run_bayesian_council(
-            hypothesis="x", panel=_panel(),
+            hypothesis="x",
+            panel=_panel(),
             panel_schema=_PANEL_SCHEMA,
-            modeler=modeler, fit_evaluator=evaluator,
+            modeler=modeler,
+            fit_evaluator=evaluator,
             max_iterations=2,
         )
         assert outcome.verdict == "reject"
         assert outcome.iterations == 2
-        assert "Exceeded max_iterations" in outcome.final_evaluator_response[
-            "verdict_reason"
-        ]
+        assert "Exceeded max_iterations" in outcome.final_evaluator_response["verdict_reason"]
 
 
 class TestTranscript:
     def test_transcript_records_all_steps(self) -> None:
         modeler = _stub_agent(json.dumps(_VALID_SPEC))
-        evaluator = _stub_agent(json.dumps({"verdict": "ship",
-                                            "verdict_reason": "ok"}))
+        evaluator = _stub_agent(json.dumps({"verdict": "ship", "verdict_reason": "ok"}))
         outcome = run_bayesian_council(
-            hypothesis="x", panel=_panel(),
+            hypothesis="x",
+            panel=_panel(),
             panel_schema=_PANEL_SCHEMA,
-            modeler=modeler, fit_evaluator=evaluator,
+            modeler=modeler,
+            fit_evaluator=evaluator,
         )
         # 3 entries per iteration (modeler, tool, evaluator); 1 iteration → 3.
         assert len(outcome.transcript) == 3

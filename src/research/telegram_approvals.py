@@ -167,7 +167,8 @@ def load_offset(path: Path | str = DEFAULT_OFFSET_PATH) -> int | None:
     except (ValueError, KeyError, TypeError) as exc:
         logger.warning(
             "offset file %s malformed (%s); treating as fresh start",
-            p, type(exc).__name__,
+            p,
+            type(exc).__name__,
         )
         return None
 
@@ -177,7 +178,9 @@ def save_offset(offset: int, path: Path | str = DEFAULT_OFFSET_PATH) -> None:
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(
-        dir=p.parent, prefix=f".{p.name}.", suffix=".tmp",
+        dir=p.parent,
+        prefix=f".{p.name}.",
+        suffix=".tmp",
     )
     try:
         with os.fdopen(fd, "w") as fh:
@@ -223,9 +226,7 @@ def parse_command(text: str) -> ParsedCommand | None:
         return None
     if verb == "start":  # Telegram's default first message → help
         verb = "help"
-    target = (
-        tokens[1].lower().strip(_TOKEN_TRIM_CHARS) if len(tokens) > 1 else ""
-    )
+    target = tokens[1].lower().strip(_TOKEN_TRIM_CHARS) if len(tokens) > 1 else ""
     reason = " ".join(tokens[2:])
     return ParsedCommand(verb=verb, target=target, reason=reason)
 
@@ -252,18 +253,15 @@ class GateTarget:
 
 def _pending_targets(state: LoopState) -> list[GateTarget]:
     targets = [
-        GateTarget(gate=1, key=h, slug=str(e.get("slug") or h))
-        for h, e in gate1_pending(state)
+        GateTarget(gate=1, key=h, slug=str(e.get("slug") or h)) for h, e in gate1_pending(state)
     ]
-    targets += [
-        GateTarget(gate=2, key=slug, slug=slug)
-        for slug, e in gate2_pending(state)
-    ]
+    targets += [GateTarget(gate=2, key=slug, slug=slug) for slug, e in gate2_pending(state)]
     return targets
 
 
 def resolve_target(
-    state: LoopState, token: str,
+    state: LoopState,
+    token: str,
 ) -> tuple[GateTarget | None, str]:
     """Match a short id against pending entries.
 
@@ -274,19 +272,17 @@ def resolve_target(
     """
     token_l = token.lower()
     matches = [
-        t for t in _pending_targets(state)
+        t
+        for t in _pending_targets(state)
         if t.key.lower().startswith(token_l) or t.slug.lower() == token_l
     ]
     if len(matches) == 1:
         return matches[0], ""
     if len(matches) > 1:
-        lines = [
-            f"  {t.short_id}  {t.slug} (gate {t.gate})" for t in matches
-        ]
+        lines = [f"  {t.short_id}  {t.slug} (gate {t.gate})" for t in matches]
         return None, (
             f"Ambiguous id {token!r} — matches {len(matches)} pending "
-            f"entries:\n" + "\n".join(lines)
-            + "\nReply with a longer prefix."
+            f"entries:\n" + "\n".join(lines) + "\nReply with a longer prefix."
         )
     decided = _decided_matches(state, token_l)
     if decided:
@@ -295,8 +291,7 @@ def resolve_target(
             f"{token!r}:\n" + "\n".join(f"  {d}" for d in decided)
         )
     return None, (
-        f"Unknown id {token!r} — nothing pending matches. "
-        f"Send 'pending' to list open approvals."
+        f"Unknown id {token!r} — nothing pending matches. Send 'pending' to list open approvals."
     )
 
 
@@ -307,10 +302,7 @@ def _decided_matches(state: LoopState, token_l: str) -> list[str]:
     for h, e in state.ideas_processed.items():
         slug = str(e.get("slug") or "")
         if h.lower().startswith(token_l) or slug.lower() == token_l:
-            out.append(
-                f"{h[:SHORT_ID_LEN]}  {slug or h} (gate 1) "
-                f"status={e.get('status')}"
-            )
+            out.append(f"{h[:SHORT_ID_LEN]}  {slug or h} (gate 1) status={e.get('status')}")
     for slug, e in state.debates_completed.items():
         if slug.lower().startswith(token_l):
             status = e.get("deploy_status") or f"verdict={e.get('verdict')}"
@@ -367,9 +359,7 @@ def render_pending(state: LoopState) -> str:
         n += 1
         lines.append(f"{n}. {slug} (gate 2)")
         code_path = state.candidates_processed.get(slug, {}).get("code_path")
-        instruments = (
-            extract_candidate_instruments(code_path) if code_path else []
-        )
+        instruments = extract_candidate_instruments(code_path) if code_path else []
         lines.append(_entry_trades_line(instruments))
     lines.append("")
     lines.append("Reply: approve <id> | reject <id> | skip <id>")
@@ -434,7 +424,9 @@ def render_ideas(
         rows = idea_ledger.list_open_consolidated(engine)
     except Exception as exc:
         logger.warning(
-            "ideas listing unavailable: %s: %s", type(exc).__name__, exc,
+            "ideas listing unavailable: %s: %s",
+            type(exc).__name__,
+            exc,
         )
         return (
             "Trade ideas unavailable (ledger unreachable — is migration "
@@ -468,7 +460,8 @@ def render_ideas(
         if aging:
             parts.append(" / ".join(aging))
         price = prices_mod.format_price(
-            row["ticker"], price_map.get(row["ticker"]),
+            row["ticker"],
+            price_map.get(row["ticker"]),
         )
         if price:
             parts.append(price)
@@ -518,17 +511,16 @@ def render_idea_detail(
         row = idea_ledger.get_idea(engine, prefix)
     except Exception as exc:
         logger.warning(
-            "idea detail unavailable: %s: %s", type(exc).__name__, exc,
+            "idea detail unavailable: %s: %s",
+            type(exc).__name__,
+            exc,
         )
         return (
             "Trade idea unavailable (ledger unreachable — is the DB up "
             "and migrations 007/008 applied?)."
         )
     if row is None:
-        return (
-            f"Unknown idea id {prefix!r} — send 'ideas' to list open "
-            f"ideas and their ids."
-        )
+        return f"Unknown idea id {prefix!r} — send 'ideas' to list open ideas and their ids."
 
     ticker = str(row.get("ticker") or "")
     fetch = get_prices_fn if get_prices_fn is not None else prices_mod.get_prices
@@ -553,9 +545,9 @@ def render_idea_detail(
     with contextlib.suppress(Exception):
         raw_action = str(row.get("action") or "")
         n_events = sum(
-            1 for r in idea_ledger.list_open(engine)
-            if str(r.get("ticker") or "") == ticker
-            and str(r.get("action") or "") == raw_action
+            1
+            for r in idea_ledger.list_open(engine)
+            if str(r.get("ticker") or "") == ticker and str(r.get("action") or "") == raw_action
         )
         if n_events > 1:
             lines.append(f"Corroboration: ×{n_events} events proposed this")
@@ -565,8 +557,7 @@ def render_idea_detail(
         lines.append(f"Price: {price_str} (live last close)")
     elif row.get("price_at_signal") is not None:
         lines.append(
-            f"Price: {_fmt_dollar(row.get('price_at_signal'))} at signal "
-            f"(no live price now)",
+            f"Price: {_fmt_dollar(row.get('price_at_signal'))} at signal (no live price now)",
         )
     else:
         lines.append("Price: no live price")
@@ -609,14 +600,12 @@ def render_idea_detail(
         dte = str(card.get("dte_window") or row.get("dte_window") or "").strip()
         if strike is not None:
             lines.append(
-                f"Suggested strike: {_fmt_dollar(strike)} — pick nearest "
-                f"listed strike",
+                f"Suggested strike: {_fmt_dollar(strike)} — pick nearest listed strike",
             )
         if dte:
             dte_days = card.get("dte_days")
             days_note = (
-                f" (choose the listed expiry nearest {dte_days} days out)"
-                if dte_days else ""
+                f" (choose the listed expiry nearest {dte_days} days out)" if dte_days else ""
             )
             lines.append(f"Expiry: {dte} to expiry{days_note}")
 
@@ -648,7 +637,8 @@ def render_idea_detail(
     # tradable ETF/stock version. The idea's ``direction`` (falling back
     # to ``action``) selects the short side (inverse ETFs / puts).
     proxy_lines = full_detail(
-        ticker, str(row.get("direction") or row.get("action") or ""),
+        ticker,
+        str(row.get("direction") or row.get("action") or ""),
     )
     if proxy_lines:
         lines.append("")
@@ -680,19 +670,13 @@ def handle_text(state: LoopState, text: str) -> CommandResult:
     if cmd.verb == "idea":
         if not cmd.target:
             return CommandResult(
-                reply=(
-                    "Usage: idea <id> — send 'ideas' for the open ideas "
-                    "and their ids."
-                ),
+                reply=("Usage: idea <id> — send 'ideas' for the open ideas and their ids."),
             )
         return CommandResult(reply=render_idea_detail(cmd.target))
     # approve / reject / skip
     if not cmd.target:
         return CommandResult(
-            reply=(
-                f"Usage: {cmd.verb} <id> [reason] — send 'pending' for "
-                f"the ids awaiting you."
-            ),
+            reply=(f"Usage: {cmd.verb} <id> [reason] — send 'pending' for the ids awaiting you."),
         )
     target, error = resolve_target(state, cmd.target)
     if target is None:
@@ -719,10 +703,7 @@ def _ack_reply(target: GateTarget, approve: bool, reason: str) -> str:
             return f"✅ Approved {slug} — will implement next run."
         return f"❌ Skipped {slug} — {reason or 'skipped by operator'}."
     if approve:
-        return (
-            f"✅ Deploy approved {slug} — paper-shadow registration "
-            f"next run."
-        )
+        return f"✅ Deploy approved {slug} — paper-shadow registration next run."
     return f"❌ Deploy rejected {slug} — {reason or 'rejected by operator'}."
 
 
@@ -765,9 +746,7 @@ class TelegramApprovalBot:
         (authorized or not). The offset is advanced past every update
         in the batch — a poison message never wedges the loop."""
         assert self.api_call is not None  # set in __post_init__
-        timeout = (
-            self.poll_timeout_sec if timeout_sec is None else timeout_sec
-        )
+        timeout = self.poll_timeout_sec if timeout_sec is None else timeout_sec
         params: dict[str, Any] = {
             "timeout": timeout,
             "allowed_updates": json.dumps(["message"]),
@@ -778,8 +757,7 @@ class TelegramApprovalBot:
         payload = self.api_call("getUpdates", params)
         if not payload.get("ok", False):
             raise TelegramApiError(
-                f"getUpdates returned ok=false: "
-                f"{payload.get('description')!r}",
+                f"getUpdates returned ok=false: {payload.get('description')!r}",
             )
         updates: list[dict[str, Any]] = payload.get("result", [])
         for update in updates:
@@ -789,14 +767,17 @@ class TelegramApprovalBot:
                 # api_call errors are already token-scrubbed.
                 logger.warning(
                     "failed to process update %s: %s: %s",
-                    update.get("update_id"), type(exc).__name__, exc,
+                    update.get("update_id"),
+                    type(exc).__name__,
+                    exc,
                 )
         if updates:
             next_offset = max(int(u["update_id"]) for u in updates) + 1
             save_offset(next_offset, self.offset_path)
             logger.info(
                 "processed %d update(s); offset → %d",
-                len(updates), next_offset,
+                len(updates),
+                next_offset,
             )
         return len(updates)
 
@@ -809,7 +790,8 @@ class TelegramApprovalBot:
         Transient API failures back off and retry."""
         logger.info(
             "Telegram approval bot polling (long-poll %ds, state=%s)",
-            self.poll_timeout_sec, self.state_path,
+            self.poll_timeout_sec,
+            self.state_path,
         )
         while not stop.is_set():
             try:
@@ -817,7 +799,8 @@ class TelegramApprovalBot:
             except TelegramApiError as exc:
                 logger.warning(
                     "poll failed: %s — retrying in %.0fs",
-                    exc, error_backoff_sec,
+                    exc,
+                    error_backoff_sec,
                 )
                 stop.wait(error_backoff_sec)
         logger.info("Telegram approval bot stopped")
@@ -831,7 +814,8 @@ class TelegramApprovalBot:
             logger.warning(
                 "ignoring update %s from unauthorized chat id=%r "
                 "(only the configured TELEGRAM_CHAT_ID may issue commands)",
-                update.get("update_id"), chat.get("id"),
+                update.get("update_id"),
+                chat.get("id"),
             )
             return
         text = str(message.get("text") or "").strip()
@@ -843,7 +827,8 @@ class TelegramApprovalBot:
             save_state_atomic(state, self.state_path)
             logger.info(
                 "state updated via Telegram command: %r → %s",
-                text, result.reply.splitlines()[0],
+                text,
+                result.reply.splitlines()[0],
             )
         self._send_reply(result.reply)
 
@@ -859,7 +844,8 @@ class TelegramApprovalBot:
         for attempt in range(1 + _SEND_RETRIES):
             try:
                 self.api_call(
-                    "sendMessage", {"chat_id": self.chat_id, "text": reply},
+                    "sendMessage",
+                    {"chat_id": self.chat_id, "text": reply},
                 )
                 return
             except TelegramApiError as exc:
@@ -867,5 +853,6 @@ class TelegramApprovalBot:
                     raise
                 logger.warning(
                     "sendMessage attempt %d failed: %s — retrying",
-                    attempt + 1, exc,
+                    attempt + 1,
+                    exc,
                 )

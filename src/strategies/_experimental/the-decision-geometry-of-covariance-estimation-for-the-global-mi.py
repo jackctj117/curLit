@@ -28,7 +28,6 @@ are per-bar position weights.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
 
 import numpy as np
 import pandas as pd
@@ -49,7 +48,7 @@ _PAIR_SIGN = np.array([1.0, 1.0, 1.0, 1.0, -1.0, -1.0, -1.0])
 
 # Fixed numerical constants (documented, NOT tunable hyperparameters):
 _MIN_HISTORY_DAYS = 60  # below this, fall back to equal currency weights
-_RIDGE = 1e-10          # diagonal loading for numerical stability
+_RIDGE = 1e-10  # diagonal loading for numerical stability
 
 
 @dataclass
@@ -78,7 +77,7 @@ class GMVPShrinkageConfig:
 
     lookback_days: int = 252
     use_shrinkage: bool = True
-    shrinkage_intensity: Optional[float] = None
+    shrinkage_intensity: float | None = None
     max_weight: float = 0.60
 
 
@@ -103,20 +102,18 @@ class Strategy:
     # over all pairs; execution_symbol set for protocol completeness.
     execution_symbol = "EURUSD"
 
-    def __init__(self, config: Optional[GMVPShrinkageConfig] = None):
+    def __init__(self, config: GMVPShrinkageConfig | None = None):
         self.config = config if config is not None else GMVPShrinkageConfig()
         cfg = self.config
         if not 20 <= cfg.lookback_days <= 2000:
             raise ValueError("lookback_days out of plausible range [20, 2000]")
-        if cfg.shrinkage_intensity is not None and not (
-            0.0 <= cfg.shrinkage_intensity <= 1.0
-        ):
+        if cfg.shrinkage_intensity is not None and not (0.0 <= cfg.shrinkage_intensity <= 1.0):
             raise ValueError("shrinkage_intensity must be in [0, 1]")
         if not 1.0 / _N_ASSETS <= cfg.max_weight <= 1.0:
             raise ValueError("max_weight must be in [1/7, 1.0]")
         # Tail of in-sample USD-value log returns, stored by fit() so the
         # first out-of-sample rebalance has a full covariance window.
-        self._hist_rets: Optional[pd.DataFrame] = None
+        self._hist_rets: pd.DataFrame | None = None
 
     # ------------------------------------------------------------------
     # Protocol methods
@@ -181,7 +178,7 @@ class Strategy:
             hist = ret_values[: offset + t]
             hist = hist[np.isfinite(hist).all(axis=1)]
             if len(hist) > cfg.lookback_days:
-                hist = hist[-cfg.lookback_days:]
+                hist = hist[-cfg.lookback_days :]
             if len(hist) >= _MIN_HISTORY_DAYS:
                 sigma = self._estimate_cov(hist)
                 if np.isfinite(sigma).all():
@@ -256,7 +253,7 @@ class Strategy:
         # dev[t, i, j] = x_it * x_jt - s_ij   (T x n x n; small: n = 7)
         prod = x[:, :, None] * x[:, None, :]
         dev = prod - sample[None, :, :]
-        pi_mat = (dev ** 2).mean(axis=0)
+        pi_mat = (dev**2).mean(axis=0)
         pi_hat = pi_mat.sum()
         # theta_ii,ij and theta_jj,ij (dev is symmetric in i, j).
         diag_dev = dev[:, np.arange(n), np.arange(n)]  # x_it^2 - s_ii

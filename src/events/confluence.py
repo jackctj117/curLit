@@ -161,11 +161,11 @@ class InstrumentCheck:
     """Gate-B outcome for a single affected instrument."""
 
     instrument: str  # assessment instrument id
-    symbol: str      # market symbol used for price/vol lookups
+    symbol: str  # market symbol used for price/vol lookups
     kind: str
     direction: str
     confirmed: bool = False
-    move_frac: float | None = None       # observed move since seen_at
+    move_frac: float | None = None  # observed move since seen_at
     threshold_frac: float | None = None  # required |move|
     reason: str = ""
 
@@ -265,7 +265,8 @@ class EventConfluence:
         if seen_at is None:
             logger.warning(
                 "geo_event id=%s has unparseable seen_at %r — leaving row untouched",
-                event_id, event.get("seen_at"),
+                event_id,
+                event.get("seen_at"),
             )
             return result
 
@@ -317,7 +318,11 @@ class EventConfluence:
             if not isinstance(aff, dict):
                 continue
             check = self._check_instrument(
-                aff, seen_at, now, prices or {}, poll_cache,
+                aff,
+                seen_at,
+                now,
+                prices or {},
+                poll_cache,
             )
             result.checks.append(check)
             if check.confirmed:
@@ -343,7 +348,11 @@ class EventConfluence:
             from src.events.cross_asset import cross_asset_confirmation  # noqa: PLC0415
 
             return cross_asset_confirmation(
-                self.data, theme, since, self.cross_asset_config, now=now,
+                self.data,
+                theme,
+                since,
+                self.cross_asset_config,
+                now=now,
             )
         except Exception:
             logger.debug("cross-asset confirmation failed", exc_info=True)
@@ -362,7 +371,10 @@ class EventConfluence:
         direction = str(aff.get("direction") or "")
         symbol = self.instrument_map.get(instrument, instrument)
         check = InstrumentCheck(
-            instrument=instrument, symbol=symbol, kind=kind, direction=direction,
+            instrument=instrument,
+            symbol=symbol,
+            kind=kind,
+            direction=direction,
         )
 
         if kind not in TRADABLE_KINDS:
@@ -388,7 +400,10 @@ class EventConfluence:
             return check
 
         daily_vol = self._cached_daily_vol(
-            symbol, self.config.realized_vol_window, now, poll_cache,
+            symbol,
+            self.config.realized_vol_window,
+            now,
+            poll_cache,
         )
         if daily_vol is None or daily_vol <= 0:
             check.reason = "no_vol_data"
@@ -450,7 +465,9 @@ class EventConfluence:
         return sorted(symbols)
 
     def build_poll_cache(
-        self, events: list[dict[str, Any]], now: datetime,
+        self,
+        events: list[dict[str, Any]],
+        now: datetime,
     ) -> PollCache:
         """Prefetch the current-mid and daily-vol for the WHOLE instrument
         set of a poll cycle in one batch each (CL-9ts9 / CL-8s2a), so Gate
@@ -478,9 +495,13 @@ class EventConfluence:
         getter = getattr(self.data, "get_intraday_values_batch", None)
         if getter is not None:
             try:
-                mid.update(getter(
-                    symbols, now, self.config.intraday_max_staleness_minutes,
-                ))
+                mid.update(
+                    getter(
+                        symbols,
+                        now,
+                        self.config.intraday_max_staleness_minutes,
+                    )
+                )
                 cache.batch_queries += 1
             except Exception:
                 logger.debug("intraday batch prefetch failed", exc_info=True)
@@ -499,7 +520,9 @@ class EventConfluence:
         if vol_getter is not None:
             try:
                 annualized = vol_getter(
-                    symbols, self.config.realized_vol_window, now,
+                    symbols,
+                    self.config.realized_vol_window,
+                    now,
                 )
                 cache.batch_queries += 1
                 cache.daily_vol_now = {
@@ -513,7 +536,10 @@ class EventConfluence:
         return cache
 
     def _current_price(
-        self, symbol: str, now: datetime, poll_cache: PollCache | None,
+        self,
+        symbol: str,
+        now: datetime,
+        poll_cache: PollCache | None,
     ) -> float | None:
         """Current-price fallback leg — served from the per-tick batch when
         the cache prefetched it, else the byte-identical per-symbol read."""
@@ -529,7 +555,10 @@ class EventConfluence:
         return self._provider_price(symbol, now)
 
     def _reference_price(
-        self, symbol: str, seen_at: datetime, poll_cache: PollCache | None,
+        self,
+        symbol: str,
+        seen_at: datetime,
+        poll_cache: PollCache | None,
     ) -> float | None:
         """Reference price at ``seen_at`` — per-call (seen_at differs per
         event) but memoized per (symbol, seen_at) within the cycle so a
@@ -551,7 +580,10 @@ class EventConfluence:
         return poll_cache.ref_price[key]
 
     def _cached_daily_vol(
-        self, symbol: str, window: int, now: datetime,
+        self,
+        symbol: str,
+        window: int,
+        now: datetime,
         poll_cache: PollCache | None,
     ) -> float | None:
         """Daily realized vol at ``now`` — from the per-tick batch when
@@ -588,7 +620,10 @@ class EventConfluence:
         except Exception as exc:
             logger.debug(
                 "Provider price lookup failed for %s @ %s: %s: %s",
-                symbol, as_of, type(exc).__name__, exc,
+                symbol,
+                as_of,
+                type(exc).__name__,
+                exc,
             )
             return None
         return float(value) if value is not None else None
@@ -602,12 +637,17 @@ class EventConfluence:
             return None
         try:
             value = getter(
-                symbol, as_of, self.config.intraday_max_staleness_minutes,
+                symbol,
+                as_of,
+                self.config.intraday_max_staleness_minutes,
             )
         except Exception as exc:
             logger.debug(
                 "Intraday price lookup failed for %s @ %s: %s: %s",
-                symbol, as_of, type(exc).__name__, exc,
+                symbol,
+                as_of,
+                type(exc).__name__,
+                exc,
             )
             return None
         return float(value) if value is not None else None
@@ -621,7 +661,9 @@ class EventConfluence:
         except Exception as exc:
             logger.debug(
                 "Realized vol lookup failed for %s: %s: %s",
-                symbol, type(exc).__name__, exc,
+                symbol,
+                type(exc).__name__,
+                exc,
             )
             return None
         if annualized is None:
@@ -661,6 +703,9 @@ class EventConfluence:
             return bool(res.rowcount == 1)
         except Exception:
             logger.exception(
-                "geo_events transition %s → %s failed for id=%s", old, new, event_id,
+                "geo_events transition %s → %s failed for id=%s",
+                old,
+                new,
+                event_id,
             )
             return False

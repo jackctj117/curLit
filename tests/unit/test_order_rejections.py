@@ -26,11 +26,17 @@ from src.execution.rejection import (
 class TestClassification:
     def test_margin_classified(self) -> None:
         assert classify_exception(Exception("INSUFFICIENT_MARGIN")) == RejectionClass.MARGIN
-        assert classify_exception(Exception("Insufficient margin to place order")) == RejectionClass.MARGIN
+        assert (
+            classify_exception(Exception("Insufficient margin to place order"))
+            == RejectionClass.MARGIN
+        )
 
     def test_liquidity_classified(self) -> None:
         assert classify_exception(Exception("FOK fill failed")) == RejectionClass.LIQUIDITY
-        assert classify_exception(Exception("no liquidity at requested price")) == RejectionClass.LIQUIDITY
+        assert (
+            classify_exception(Exception("no liquidity at requested price"))
+            == RejectionClass.LIQUIDITY
+        )
 
     def test_halt_classified(self) -> None:
         assert classify_exception(Exception("instrument halted")) == RejectionClass.HALT
@@ -39,14 +45,18 @@ class TestClassification:
     def test_transient_classified(self) -> None:
         assert classify_exception(Exception("connection reset")) == RejectionClass.TRANSIENT
         assert classify_exception(Exception("503 Service Unavailable")) == RejectionClass.TRANSIENT
-        assert classify_exception(Exception("timeout reading from broker")) == RejectionClass.TRANSIENT
+        assert (
+            classify_exception(Exception("timeout reading from broker")) == RejectionClass.TRANSIENT
+        )
 
     def test_malformed_classified(self) -> None:
         assert classify_exception(Exception("400 Bad Request")) == RejectionClass.MALFORMED
         assert classify_exception(Exception("invalid json payload")) == RejectionClass.MALFORMED
 
     def test_unknown_default(self) -> None:
-        assert classify_exception(Exception("something completely random")) == RejectionClass.UNKNOWN
+        assert (
+            classify_exception(Exception("something completely random")) == RejectionClass.UNKNOWN
+        )
 
     def test_response_text_used_when_provided(self) -> None:
         # Exception message is innocuous; rejection signal lives in body.
@@ -87,16 +97,19 @@ class TestHandlerLiquidity:
 
     def test_below_min_fraction_aborts(self) -> None:
         # With max_attempts=10 (override) and halving, attempt 4 → 0.0625 < min 0.10 → abort.
-        policy = RejectionPolicy(by_class={
-            RejectionClass.LIQUIDITY: ClassPolicy(
-                resolution=RejectionResolution.RETRY_SMALLER,
-                max_attempts=10,
-            ),
-            **{
-                k: v for k, v in RejectionPolicy.default().by_class.items()
-                if k != RejectionClass.LIQUIDITY
-            },
-        })
+        policy = RejectionPolicy(
+            by_class={
+                RejectionClass.LIQUIDITY: ClassPolicy(
+                    resolution=RejectionResolution.RETRY_SMALLER,
+                    max_attempts=10,
+                ),
+                **{
+                    k: v
+                    for k, v in RejectionPolicy.default().by_class.items()
+                    if k != RejectionClass.LIQUIDITY
+                },
+            }
+        )
         handler = RejectionHandler(policy)
         intent, order = _make_intent_and_order()
         out = handler.handle(intent, order, Exception("FOK fill failed"), attempt=4)

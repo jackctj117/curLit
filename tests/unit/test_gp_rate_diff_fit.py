@@ -62,10 +62,14 @@ class TestGPFit:
         clean = model.predict({"spread": 0.0})
         noisy = model.predict({"spread": 1.8})
         size_clean = position_size_from_uncertainty(
-            base_size=1000.0, std=clean.std, std_floor=clean.std,
+            base_size=1000.0,
+            std=clean.std,
+            std_floor=clean.std,
         )
         size_noisy = position_size_from_uncertainty(
-            base_size=1000.0, std=noisy.std, std_floor=clean.std,
+            base_size=1000.0,
+            std=noisy.std,
+            std_floor=clean.std,
         )
         # Higher uncertainty → smaller position.
         assert size_noisy < size_clean

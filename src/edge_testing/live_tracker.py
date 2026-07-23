@@ -119,9 +119,7 @@ class BacktestExpectations:
     n_days_backtest: int = _TRADING_DAYS_PER_YEAR
 
     def __post_init__(self) -> None:
-        assert 0 <= self.hit_rate <= 1, (
-            f"hit_rate must be in [0, 1], got {self.hit_rate}"
-        )
+        assert 0 <= self.hit_rate <= 1, f"hit_rate must be in [0, 1], got {self.hit_rate}"
         assert self.vol >= 0, f"vol must be non-negative, got {self.vol}"
         assert self.n_days_backtest >= 1, "n_days_backtest must be >= 1"
 
@@ -188,7 +186,9 @@ def _sharpe_se_lo(sharpe: float, n_obs: int) -> float:
 
 
 def _sharpe_z_test(
-    live_sharpe: float, expected_sharpe: float, n_obs: int,
+    live_sharpe: float,
+    expected_sharpe: float,
+    n_obs: int,
 ) -> tuple[float, float]:
     """Return (z-score, one-sided p-value for live < expected)."""
     se = _sharpe_se_lo(expected_sharpe, n_obs)
@@ -201,7 +201,9 @@ def _sharpe_z_test(
 
 
 def _hit_rate_binomial_test(
-    n_hits: int, n_obs: int, expected_hit_rate: float,
+    n_hits: int,
+    n_obs: int,
+    expected_hit_rate: float,
 ) -> float:
     """One-sided lower-tail binomial p-value: P(X <= n_hits | p = expected)."""
     assert 0 <= expected_hit_rate <= 1
@@ -279,7 +281,9 @@ class LiveEdgeTracker:
         live_mean_return = float(np.mean(arr))
 
         z_score, sharpe_p = _sharpe_z_test(
-            live_sharpe, self.backtest.sharpe, n,
+            live_sharpe,
+            self.backtest.sharpe,
+            n,
         )
         hit_p = _hit_rate_binomial_test(n_hits, n, self.backtest.hit_rate)
 

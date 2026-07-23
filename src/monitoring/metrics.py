@@ -118,8 +118,7 @@ tca_component_bps = Histogram(
 
 tca_implementation_shortfall_bps = Histogram(
     "fx_tca_implementation_shortfall_bps",
-    "Per-fill total implementation shortfall vs arrival mid in bps. "
-    "Positive = adverse fill price.",
+    "Per-fill total implementation shortfall vs arrival mid in bps. Positive = adverse fill price.",
     ["pair", "side"],
     buckets=(-5.0, -2.0, -1.0, -0.5, 0.0, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0),
 )
@@ -391,7 +390,8 @@ errors_total = Counter(
 
 
 def track_duration(
-    histogram: Histogram, **labels: str,
+    histogram: Histogram,
+    **labels: str,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Decorator that observes function duration in *histogram*."""
 
@@ -403,12 +403,15 @@ def track_duration(
                 return func(*args, **kwargs)
             finally:
                 histogram.labels(**labels).observe(time() - start)
+
         return wrapper
+
     return decorator
 
 
 def track_errors(
-    service_name: str, category: str = "unknown",
+    service_name: str,
+    category: str = "unknown",
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Decorator that increments fx_errors_total on exception."""
 
@@ -424,7 +427,9 @@ def track_errors(
                     category=category,
                 ).inc()
                 raise
+
         return wrapper
+
     return decorator
 
 
@@ -458,10 +463,12 @@ class HeartbeatTracker:
 def start_metrics_server(port: int = 8000) -> None:
     """Start the Prometheus /metrics HTTP endpoint."""
     import logging
+
     logger = logging.getLogger(__name__)
     try:
         start_http_server(port)
     except OSError:
         logger.warning("Port %d unavailable — metrics server not started", port)
+
 
 import threading  # noqa: E402

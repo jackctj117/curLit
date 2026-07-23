@@ -27,8 +27,16 @@ class JSONFormatter(logging.Formatter):
         if hasattr(record, "extra_data"):
             log_obj.update(record.extra_data)
 
-        for attr in ("trade_id", "strategy_id", "symbol", "order_id",
-                      "intent_id", "doc_id", "cb", "doc_type"):
+        for attr in (
+            "trade_id",
+            "strategy_id",
+            "symbol",
+            "order_id",
+            "intent_id",
+            "doc_id",
+            "cb",
+            "doc_type",
+        ):
             if hasattr(record, attr):
                 log_obj[attr] = getattr(record, attr)
 
@@ -99,15 +107,21 @@ def setup_logging(
 
     console = logging.StreamHandler(sys.stdout)
     console.setLevel(console_level)
-    console.setFormatter(logging.Formatter(
-        "%(asctime)s %(levelname)-8s %(name)-20s %(message)s",
-    ))
+    console.setFormatter(
+        logging.Formatter(
+            "%(asctime)s %(levelname)-8s %(name)-20s %(message)s",
+        )
+    )
     console.addFilter(_context_filter)
     root_logger.addHandler(console)
 
     file_path = str(log_dir / f"{service_name}.jsonl")
     file_handler = logging.handlers.TimedRotatingFileHandler(
-        file_path, when="midnight", interval=1, backupCount=30, utc=True,
+        file_path,
+        when="midnight",
+        interval=1,
+        backupCount=30,
+        utc=True,
     )
     file_handler.setLevel(file_level)
     file_handler.setFormatter(JSONFormatter())
@@ -116,7 +130,11 @@ def setup_logging(
 
     error_path = str(log_dir / f"{service_name}-errors.jsonl")
     error_handler = logging.handlers.TimedRotatingFileHandler(
-        error_path, when="midnight", interval=1, backupCount=90, utc=True,
+        error_path,
+        when="midnight",
+        interval=1,
+        backupCount=90,
+        utc=True,
     )
     error_handler.setLevel(logging.WARNING)
     error_handler.setFormatter(JSONFormatter())

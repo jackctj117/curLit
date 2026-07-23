@@ -62,16 +62,21 @@ class CBScraper(ABC):
 
     def save_document(self, doc: Document) -> Path:
         path = self.raw_dir / f"{doc.doc_id}.json"
-        path.write_text(json.dumps({
-            "cb": doc.cb,
-            "doc_type": doc.doc_type,
-            "title": doc.title,
-            "date": doc.date.isoformat(),
-            "url": doc.url,
-            "speaker": doc.speaker,
-            "raw_text": doc.raw_text,
-            "metadata": doc.metadata,
-        }, indent=2))
+        path.write_text(
+            json.dumps(
+                {
+                    "cb": doc.cb,
+                    "doc_type": doc.doc_type,
+                    "title": doc.title,
+                    "date": doc.date.isoformat(),
+                    "url": doc.url,
+                    "speaker": doc.speaker,
+                    "raw_text": doc.raw_text,
+                    "metadata": doc.metadata,
+                },
+                indent=2,
+            )
+        )
         return path
 
     def run(self, since: datetime) -> list[Document]:

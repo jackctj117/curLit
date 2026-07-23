@@ -22,6 +22,7 @@ from src.data.db_env import build_db_url  # noqa: E402
 
 def main(argv: list[str] | None = None) -> int:
     from src.dotenv_bootstrap import load_project_env  # noqa: PLC0415
+
     load_project_env()
     logging.basicConfig(level=logging.INFO, format="%(message)s")
 

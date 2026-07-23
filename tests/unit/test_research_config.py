@@ -70,8 +70,7 @@ def valid_config_dict(tmp_rules: Path) -> dict:
                 "rules_path": str(tmp_rules),
                 "rounds": [
                     {"name": "round1", "type": "parallel"},
-                    {"name": "round2", "type": "per_agent_async",
-                     "sub_loop": "list_unknowns"},
+                    {"name": "round2", "type": "per_agent_async", "sub_loop": "list_unknowns"},
                     {"name": "round3", "type": "sequential"},
                     {"name": "round4", "type": "parallel"},
                 ],
@@ -101,7 +100,8 @@ class TestValidConfig:
         assert rounds[3].type == RoundType.PARALLEL
 
     def test_resolve_model_uses_default_when_unset(
-        self, valid_config_dict: dict,
+        self,
+        valid_config_dict: dict,
     ) -> None:
         cfg = ResearchConfig(**valid_config_dict)
         # bull has no explicit model → falls back to claude provider's default
@@ -112,7 +112,9 @@ class TestValidConfig:
         assert cfg.resolve_model("idea") == "deepseek-chat"
 
     def test_resolve_api_key_reads_env(
-        self, valid_config_dict: dict, monkeypatch: pytest.MonkeyPatch,
+        self,
+        valid_config_dict: dict,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-123")
         monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
@@ -136,7 +138,8 @@ class TestCrossValidation:
             ResearchConfig(**valid_config_dict)
 
     def test_agent_referencing_unknown_provider_fails(
-        self, valid_config_dict: dict,
+        self,
+        valid_config_dict: dict,
     ) -> None:
         valid_config_dict["agents"]["broken"] = {
             "provider": "nonexistent",
@@ -147,7 +150,8 @@ class TestCrossValidation:
             ResearchConfig(**valid_config_dict)
 
     def test_debate_referencing_unknown_agent_fails(
-        self, valid_config_dict: dict,
+        self,
+        valid_config_dict: dict,
     ) -> None:
         valid_config_dict["debates"]["promotion_review"]["participants"].append(
             "ghost_agent",
@@ -156,9 +160,7 @@ class TestCrossValidation:
             ResearchConfig(**valid_config_dict)
 
     def test_missing_rules_path_fails(self, valid_config_dict: dict) -> None:
-        valid_config_dict["debates"]["promotion_review"]["rules_path"] = (
-            "/nope/does/not/exist.md"
-        )
+        valid_config_dict["debates"]["promotion_review"]["rules_path"] = "/nope/does/not/exist.md"
         with pytest.raises(ValueError, match="does not exist"):
             ResearchConfig(**valid_config_dict)
 
@@ -170,7 +172,9 @@ class TestCrossValidation:
 
 class TestLoadFromYaml:
     def test_load_config_yaml_round_trip(
-        self, valid_config_dict: dict, tmp_path: Path,
+        self,
+        valid_config_dict: dict,
+        tmp_path: Path,
     ) -> None:
         yaml_path = tmp_path / "research_agents.yaml"
         yaml_path.write_text(yaml.safe_dump(valid_config_dict))

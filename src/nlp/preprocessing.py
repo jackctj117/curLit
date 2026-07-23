@@ -52,8 +52,12 @@ class TextPreprocessor:
         cleaned = self.clean(doc.raw_text)
         sentences, paragraphs = self.segment(cleaned)
         return ProcessedDocument(
-            doc_id=doc.doc_id, cb=doc.cb, doc_type=doc.doc_type,
-            date=doc.date, sentences=sentences, paragraphs=paragraphs,
+            doc_id=doc.doc_id,
+            cb=doc.cb,
+            doc_type=doc.doc_type,
+            date=doc.date,
+            sentences=sentences,
+            paragraphs=paragraphs,
             word_count=sum(len(s.split()) for s in sentences),
             metadata=doc.metadata,
         )

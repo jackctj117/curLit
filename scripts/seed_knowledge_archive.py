@@ -137,11 +137,15 @@ def _strip_code_fence(s: str) -> str:
 
 
 def _extract_llm_prior_knowledge(
-    entry: CorpusEntry, llm_provider: str, llm_model: str | None,
+    entry: CorpusEntry,
+    llm_provider: str,
+    llm_model: str | None,
 ) -> list[Chunk]:
     client = get_client(provider=llm_provider)
     prompt = _PRIOR_KNOWLEDGE_PROMPT.format(
-        title=entry.title, author=entry.author, year=entry.year,
+        title=entry.title,
+        author=entry.author,
+        year=entry.year,
         n_chunks=entry.chunks_per_source,
         topics=", ".join(entry.topic_tags),
     )
@@ -166,16 +170,21 @@ def _extract_llm_prior_knowledge(
     chunks: list[Chunk] = []
     for c in chunks_json:
         try:
-            chunks.append(Chunk(
-                chunk_idx=int(c["chunk_idx"]),
-                chunk_text=str(c["chunk_text"]),
-                page_ref=str(c.get("page_ref", "")),
-            ))
+            chunks.append(
+                Chunk(
+                    chunk_idx=int(c["chunk_idx"]),
+                    chunk_text=str(c["chunk_text"]),
+                    page_ref=str(c.get("page_ref", "")),
+                )
+            )
         except (KeyError, ValueError):
             logger.warning("Skipping malformed chunk in %r: %r", entry.title, c)
     logger.info(
         "Extracted %d chunks for %r via %s (cost $%.4f)",
-        len(chunks), entry.title, resp.provider, resp.usd_cost,
+        len(chunks),
+        entry.title,
+        resp.provider,
+        resp.usd_cost,
     )
     return chunks
 
@@ -216,7 +225,9 @@ def _default_model_for_provider(provider: str) -> str:
 
 
 def _produce_chunks(
-    entry: CorpusEntry, llm_provider: str, llm_model: str | None,
+    entry: CorpusEntry,
+    llm_provider: str,
+    llm_model: str | None,
 ) -> list[Chunk]:
     """Dispatch to the right extractor based on extract_source mode."""
     src = entry.extract_source
@@ -301,17 +312,16 @@ def _upsert_chunks(
     for i, c in enumerate(chunks):
         emb = embeddings[i] if embeddings is not None else None
         # Format pgvector literal: "[0.1, 0.2, …]"
-        emb_str = (
-            "[" + ",".join(f"{x:.7f}" for x in emb) + "]"
-            if emb is not None else None
+        emb_str = "[" + ",".join(f"{x:.7f}" for x in emb) + "]" if emb is not None else None
+        rows.append(
+            {
+                "sid": source_id,
+                "idx": c.chunk_idx,
+                "text": c.chunk_text,
+                "emb": emb_str,
+                "page": c.page_ref,
+            }
         )
-        rows.append({
-            "sid": source_id,
-            "idx": c.chunk_idx,
-            "text": c.chunk_text,
-            "emb": emb_str,
-            "page": c.page_ref,
-        })
 
     with engine.begin() as conn:
         conn.execute(
@@ -339,32 +349,41 @@ def main() -> int:
         description="Seed the knowledge archive from a curated corpus YAML.",
     )
     parser.add_argument(
-        "--corpus", type=Path,
+        "--corpus",
+        type=Path,
         default=Path("docs/research/knowledge_corpus.yaml"),
     )
     parser.add_argument(
-        "--importance", choices=["P1", "P2", "all"], default="P1",
+        "--importance",
+        choices=["P1", "P2", "all"],
+        default="P1",
         help="Filter which entries to ingest (default: P1 only).",
     )
     parser.add_argument(
-        "--llm-provider", choices=["claude", "deepseek", "grok"],
+        "--llm-provider",
+        choices=["claude", "deepseek", "grok"],
         default="claude",
         help="Which LLM produces the chunks for llm-prior-knowledge entries.",
     )
     parser.add_argument(
-        "--llm-model", type=str, default=None,
+        "--llm-model",
+        type=str,
+        default=None,
         help="Specific model — falls back to provider default.",
     )
     parser.add_argument(
-        "--no-embed", action="store_true",
+        "--no-embed",
+        action="store_true",
         help="Skip embedding step. Chunks stored with embedding=NULL.",
     )
     parser.add_argument(
-        "--dry-run", action="store_true",
+        "--dry-run",
+        action="store_true",
         help="Show what would be ingested without calling LLM or DB.",
     )
     parser.add_argument(
-        "--rebuild", action="store_true",
+        "--rebuild",
+        action="store_true",
         help="Delete + re-ingest each entry (skips idempotency check).",
     )
     args = parser.parse_args()
@@ -381,8 +400,10 @@ def main() -> int:
 
     if args.dry_run:
         for e in corpus:
-            print(f"  {e.importance} {e.title!r:<55} ({e.author}, {e.year})  "
-                  f"chunks={e.chunks_per_source}  src={e.extract_source}")
+            print(
+                f"  {e.importance} {e.title!r:<55} ({e.author}, {e.year})  "
+                f"chunks={e.chunks_per_source}  src={e.extract_source}"
+            )
         return 0
 
     engine = _build_db_engine()
@@ -415,7 +436,8 @@ def main() -> int:
                 if len(embeddings[0]) != embedding_dim():
                     logger.error(
                         "Embedding dim %d != schema dim %d — schema needs migration",
-                        len(embeddings[0]), embedding_dim(),
+                        len(embeddings[0]),
+                        embedding_dim(),
                     )
                     embeddings = None
             except Exception:
@@ -423,12 +445,14 @@ def main() -> int:
 
         _upsert_source(engine, entry)
         n = _upsert_chunks(engine, sid, chunks, embeddings)
-        summary.append({
-            "title": entry.title,
-            "chunks": n,
-            "embedded": embeddings is not None,
-            "elapsed_sec": round(time.time() - t0, 1),
-        })
+        summary.append(
+            {
+                "title": entry.title,
+                "chunks": n,
+                "embedded": embeddings is not None,
+                "elapsed_sec": round(time.time() - t0, 1),
+            }
+        )
 
     print()
     if not summary:
@@ -441,7 +465,9 @@ def main() -> int:
             f"{s['title']:<55}  {s['chunks']:>7}  "
             f"{'yes' if s['embedded'] else 'no':>9}  {s['elapsed_sec']:>6}s"
         )
-    print(f"\nTotal ingested: {sum(s['chunks'] for s in summary)} chunks across {len(summary)} sources")
+    print(
+        f"\nTotal ingested: {sum(s['chunks'] for s in summary)} chunks across {len(summary)} sources"
+    )
     return 0
 
 

@@ -39,7 +39,7 @@ class Strategy:
         return None
 '''
 
-CANDIDATE_WITH_EXECUTION_SYMBOLS_PLURAL = '''\
+CANDIDATE_WITH_EXECUTION_SYMBOLS_PLURAL = """\
 class Strategy:
     symbols = ["EURUSD", "GBPUSD", "USDJPY"]
     execution_symbols = ["GBPUSD", "USDJPY"]
@@ -49,7 +49,7 @@ class Strategy:
 
     def generate_signals(self, data):
         return None
-'''
+"""
 
 CANDIDATE_ANNOTATED_STYLE = '''\
 class Strategy:
@@ -99,17 +99,21 @@ def _write(path: Path, content: str) -> Path:
 
 class TestExtractCandidateInstruments:
     def test_execution_symbol_first_then_signal_symbols(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         code = _write(tmp_path / "cand.py", CANDIDATE_WITH_EXECUTION_SYMBOL)
         assert extract_candidate_instruments(code) == ["EURUSD", "DXY"]
 
     def test_execution_symbols_plural_supported(self, tmp_path: Path) -> None:
         code = _write(
-            tmp_path / "cand.py", CANDIDATE_WITH_EXECUTION_SYMBOLS_PLURAL,
+            tmp_path / "cand.py",
+            CANDIDATE_WITH_EXECUTION_SYMBOLS_PLURAL,
         )
         assert extract_candidate_instruments(code) == [
-            "GBPUSD", "USDJPY", "EURUSD",
+            "GBPUSD",
+            "USDJPY",
+            "EURUSD",
         ]
 
     def test_annotated_class_attr_style(self, tmp_path: Path) -> None:
@@ -119,7 +123,8 @@ class TestExtractCandidateInstruments:
         assert extract_candidate_instruments(code) == ["EURUSD"]
 
     def test_no_symbols_attr_uses_backtest_default(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         # _read_symbols fail-opens to EURUSD; the notification must
         # show what the backtest would actually have traded.
@@ -132,17 +137,19 @@ class TestExtractCandidateInstruments:
         assert extract_candidate_instruments(code) == ["EURUSD"]
 
     def test_missing_file_returns_empty_with_warning(
-        self, tmp_path: Path, caplog: pytest.LogCaptureFixture,
+        self,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         with caplog.at_level(logging.WARNING):
             out = extract_candidate_instruments(tmp_path / "nope.py")
         assert out == []
-        assert any(
-            "could not extract instruments" in r.message for r in caplog.records
-        )
+        assert any("could not extract instruments" in r.message for r in caplog.records)
 
     def test_broken_code_returns_empty(
-        self, tmp_path: Path, caplog: pytest.LogCaptureFixture,
+        self,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         code = _write(tmp_path / "cand.py", "def broken(:\n")
         with caplog.at_level(logging.WARNING):
@@ -155,10 +162,7 @@ class TestExtractCandidateInstruments:
         before = set(sys.modules)
         extract_candidate_instruments(code)
         extract_candidate_instruments(code)
-        leaked = {
-            m for m in set(sys.modules) - before
-            if m.startswith("_research_strategy_")
-        }
+        leaked = {m for m in set(sys.modules) - before if m.startswith("_research_strategy_")}
         assert leaked == set()
 
 
@@ -180,7 +184,8 @@ class TestExtractBriefInstruments:
         assert "USDJPY" not in tradable  # only in '## References'
 
     def test_prose_uppercase_not_misread_as_series(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         _tradable, inputs = extract_brief_instruments(
             _write(tmp_path / "brief.md", BRIEF_WITH_DATA_REQUIREMENTS),
@@ -190,27 +195,26 @@ class TestExtractBriefInstruments:
         assert "INGESTED" not in inputs
 
     def test_missing_section_falls_back_to_whole_doc(
-        self, tmp_path: Path, caplog: pytest.LogCaptureFixture,
+        self,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         brief = _write(tmp_path / "brief.md", BRIEF_WITHOUT_SECTION)
         with caplog.at_level(logging.WARNING):
             tradable, inputs = extract_brief_instruments(brief)
         assert tradable == ["EURUSD"]
         assert inputs == []
-        assert any(
-            "no '## Data requirements'" in r.message for r in caplog.records
-        )
+        assert any("no '## Data requirements'" in r.message for r in caplog.records)
 
     def test_missing_file_returns_empty_with_warning(
-        self, tmp_path: Path, caplog: pytest.LogCaptureFixture,
+        self,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         with caplog.at_level(logging.WARNING):
             out = extract_brief_instruments(tmp_path / "nope.md")
         assert out == ([], [])
-        assert any(
-            "could not read hypothesis brief" in r.message
-            for r in caplog.records
-        )
+        assert any("could not read hypothesis brief" in r.message for r in caplog.records)
 
     def test_six_letter_word_is_not_an_fx_pair(self, tmp_path: Path) -> None:
         brief = _write(

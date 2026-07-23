@@ -217,10 +217,12 @@ class TestSuggestParams:
 class TestConfigDiff:
     def test_changed_and_unchanged_marked(self):
         defaults = RateDiffMRConfig()
-        lines = config_diff({
-            "entry_z_threshold": defaults.entry_z_threshold,  # unchanged
-            "max_holding_days": defaults.max_holding_days + 5,
-        })
+        lines = config_diff(
+            {
+                "entry_z_threshold": defaults.entry_z_threshold,  # unchanged
+                "max_holding_days": defaults.max_holding_days + 5,
+            }
+        )
         joined = "\n".join(lines)
         assert f"entry_z_threshold: {defaults.entry_z_threshold} -> " in joined
         assert "(unchanged)" in joined

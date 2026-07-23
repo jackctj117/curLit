@@ -33,6 +33,7 @@ class Embedder:
             msg = "Embedder requires non-empty OpenAI API key"
             raise ValueError(msg)
         from openai import OpenAI  # lazy import
+
         self._client = OpenAI(api_key=api_key)
         self.model = model
 
@@ -57,7 +58,8 @@ class Embedder:
         if not texts:
             return []
         resp: Any = self._client.embeddings.create(
-            model=self.model, input=texts,
+            model=self.model,
+            input=texts,
         )
         return [item.embedding for item in resp.data]
 

@@ -62,10 +62,10 @@ class FillRecord:
 
     ts: datetime
     instrument: str  # OANDA-style "EUR_USD" — we normalize on read
-    units: float     # signed: positive=buy, negative=sell
+    units: float  # signed: positive=buy, negative=sell
     price: float
     transaction_id: str  # OANDA txn id or our intent_id
-    source: str          # "oanda" | "internal"
+    source: str  # "oanda" | "internal"
 
 
 @dataclass
@@ -160,10 +160,16 @@ def fetch_oanda_fills(
         except (KeyError, ValueError):
             logger.warning("Skipped malformed OANDA txn: %r", txn)
             continue
-        out.append(FillRecord(
-            ts=ts, instrument=_oanda_to_pair(inst), units=units,
-            price=price, transaction_id=tid, source="oanda",
-        ))
+        out.append(
+            FillRecord(
+                ts=ts,
+                instrument=_oanda_to_pair(inst),
+                units=units,
+                price=price,
+                transaction_id=tid,
+                source="oanda",
+            )
+        )
     return out
 
 
@@ -178,7 +184,9 @@ def _oanda_to_pair(symbol: str) -> str:
 
 
 def fetch_internal_fills(
-    engine: Any, since: datetime, until: datetime,
+    engine: Any,
+    since: datetime,
+    until: datetime,
 ) -> list[FillRecord]:
     """Pull ORDER_FILLED events from trade_journal_events."""
     with engine.connect() as conn:
@@ -209,17 +217,19 @@ def fetch_internal_fills(
         # missing, set to 0 and the comparator will flag price_drift on
         # any non-zero broker price — which is the right alert surface.
         price = float(payload.get("fill_price", 0))
-        out.append(FillRecord(
-            ts=ts if isinstance(ts, datetime) else datetime.fromisoformat(str(ts)),
-            # CL-2zt0: canonicalize the journal symbol to match the OANDA
-            # side (also canonicalized) — event legs journal as USD_CAD but
-            # OANDA reports USDCAD; raw they never matched.
-            instrument=canonical_symbol(str(symbol)),
-            units=qty,
-            price=price,
-            transaction_id=str(intent_id or ""),
-            source="internal",
-        ))
+        out.append(
+            FillRecord(
+                ts=ts if isinstance(ts, datetime) else datetime.fromisoformat(str(ts)),
+                # CL-2zt0: canonicalize the journal symbol to match the OANDA
+                # side (also canonicalized) — event legs journal as USD_CAD but
+                # OANDA reports USDCAD; raw they never matched.
+                instrument=canonical_symbol(str(symbol)),
+                units=qty,
+                price=price,
+                transaction_id=str(intent_id or ""),
+                source="internal",
+            )
+        )
     return out
 
 
@@ -256,38 +266,42 @@ def reconcile_fills(
                 break
 
         if match is None:
-            report.mismatches.append(Mismatch(
-                kind="missing_internal",
-                oanda=o, internal=None,
-                detail=(
-                    f"OANDA reports {o.units:+.0f} {o.instrument} @ "
-                    f"{o.price} at {o.ts.isoformat()} but no internal "
-                    f"journal entry within {_TS_MATCH_WINDOW_SEC}s"
-                ),
-            ))
+            report.mismatches.append(
+                Mismatch(
+                    kind="missing_internal",
+                    oanda=o,
+                    internal=None,
+                    detail=(
+                        f"OANDA reports {o.units:+.0f} {o.instrument} @ "
+                        f"{o.price} at {o.ts.isoformat()} but no internal "
+                        f"journal entry within {_TS_MATCH_WINDOW_SEC}s"
+                    ),
+                )
+            )
             continue
         matched_internal.add(id(match))
 
         if abs(o.units - match.units) > _QTY_TOLERANCE:
-            report.mismatches.append(Mismatch(
-                kind="qty_drift",
-                oanda=o, internal=match,
-                detail=(
-                    f"Quantity drift: oanda={o.units:+.0f} "
-                    f"internal={match.units:+.0f}"
-                ),
-            ))
+            report.mismatches.append(
+                Mismatch(
+                    kind="qty_drift",
+                    oanda=o,
+                    internal=match,
+                    detail=(f"Quantity drift: oanda={o.units:+.0f} internal={match.units:+.0f}"),
+                )
+            )
         elif match.price != 0 and abs(o.price - match.price) > _PRICE_TOLERANCE:
             # price=0 in internal means we never recorded it — flag as
             # missing-price-data rather than a drift, because the unit
             # match was valid.
-            report.mismatches.append(Mismatch(
-                kind="price_drift",
-                oanda=o, internal=match,
-                detail=(
-                    f"Price drift: oanda={o.price} internal={match.price}"
-                ),
-            ))
+            report.mismatches.append(
+                Mismatch(
+                    kind="price_drift",
+                    oanda=o,
+                    internal=match,
+                    detail=(f"Price drift: oanda={o.price} internal={match.price}"),
+                )
+            )
         else:
             report.matched += 1
 
@@ -295,21 +309,25 @@ def reconcile_fills(
     for _sign_key, candidates in by_key.items():
         for c in candidates:
             if id(c) not in matched_internal:
-                report.mismatches.append(Mismatch(
-                    kind="missing_broker",
-                    oanda=None, internal=c,
-                    detail=(
-                        f"Internal records {c.units:+.0f} {c.instrument} "
-                        f"at {c.ts.isoformat()} but OANDA has no "
-                        f"corresponding ORDER_FILL"
-                    ),
-                ))
+                report.mismatches.append(
+                    Mismatch(
+                        kind="missing_broker",
+                        oanda=None,
+                        internal=c,
+                        detail=(
+                            f"Internal records {c.units:+.0f} {c.instrument} "
+                            f"at {c.ts.isoformat()} but OANDA has no "
+                            f"corresponding ORDER_FILL"
+                        ),
+                    )
+                )
 
     return report
 
 
 def write_report(
-    report: ReconciliationReport, out_dir: Path | None = None,
+    report: ReconciliationReport,
+    out_dir: Path | None = None,
 ) -> Path:
     """Write the daily JSON report. Path: ``reports/reconciliation/YYYY-MM-DD.json``."""
     out_dir = out_dir or Path("reports/reconciliation")
@@ -327,6 +345,7 @@ def emit_metrics(report: ReconciliationReport) -> None:
             reconciliation_clean_days,
             reconciliation_mismatches,
         )
+
         reconciliation_mismatches.set(len(report.mismatches))
         if report.is_clean:
             reconciliation_clean_days.inc()
@@ -356,11 +375,13 @@ def run_daily_reconciliation(
     if report.is_clean:
         logger.info(
             "Reconciliation clean for %s — matched %d fills",
-            date.date(), report.matched,
+            date.date(),
+            report.matched,
         )
     else:
         logger.error(
             "Reconciliation found %d mismatches for %s — see report",
-            len(report.mismatches), date.date(),
+            len(report.mismatches),
+            date.date(),
         )
     return report

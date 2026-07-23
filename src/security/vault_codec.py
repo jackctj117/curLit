@@ -54,13 +54,45 @@ MIN_PASSPHRASE_BITS = 60.0
 # script imports this module — importing back would be circular). A phrase
 # built solely from these words has only log2(35) ~= 5.13 bits/word against
 # an attacker who has read the repo, regardless of its character length.
-_LEGACY_WORDLIST = frozenset({
-    "abacus", "balance", "cactus", "dagger", "eagle", "fabric", "galaxy",
-    "habitat", "iceberg", "jungle", "kayak", "lantern", "magnet", "nebula",
-    "octopus", "paddle", "quantum", "raccoon", "saddle", "tackle", "umbrella",
-    "vapor", "walnut", "xenon", "yacht", "zebra", "anchor", "blizzard",
-    "captain", "diamond", "emerald", "falcon", "garden", "horizon", "island",
-})
+_LEGACY_WORDLIST = frozenset(
+    {
+        "abacus",
+        "balance",
+        "cactus",
+        "dagger",
+        "eagle",
+        "fabric",
+        "galaxy",
+        "habitat",
+        "iceberg",
+        "jungle",
+        "kayak",
+        "lantern",
+        "magnet",
+        "nebula",
+        "octopus",
+        "paddle",
+        "quantum",
+        "raccoon",
+        "saddle",
+        "tackle",
+        "umbrella",
+        "vapor",
+        "walnut",
+        "xenon",
+        "yacht",
+        "zebra",
+        "anchor",
+        "blizzard",
+        "captain",
+        "diamond",
+        "emerald",
+        "falcon",
+        "garden",
+        "horizon",
+        "island",
+    }
+)
 
 
 def estimate_passphrase_bits(passphrase: str) -> float:
@@ -92,16 +124,10 @@ def estimate_passphrase_bits(passphrase: str) -> float:
 def passphrase_weakness(passphrase: str) -> str | None:
     """Human-readable reason the passphrase fails policy, or None if it passes."""
     if len(passphrase) < MIN_PASSPHRASE_CHARS:
-        return (
-            f"only {len(passphrase)} characters "
-            f"(minimum {MIN_PASSPHRASE_CHARS})"
-        )
+        return f"only {len(passphrase)} characters (minimum {MIN_PASSPHRASE_CHARS})"
     bits = estimate_passphrase_bits(passphrase)
     if bits < MIN_PASSPHRASE_BITS:
-        return (
-            f"estimated entropy ~{bits:.0f} bits "
-            f"(minimum {MIN_PASSPHRASE_BITS:.0f})"
-        )
+        return f"estimated entropy ~{bits:.0f} bits (minimum {MIN_PASSPHRASE_BITS:.0f})"
     return None
 
 
@@ -177,10 +203,12 @@ def seal(plaintext: bytes, key: bytes) -> dict[str, Any]:
     nonce = secrets.token_bytes(12)
     try:
         from wolfcrypt.ciphers import MODE_GCM, Aes  # noqa: PLC0415
+
         aes = Aes(key, MODE_GCM, nonce)
         ct, tag = aes.encrypt(plaintext)
     except ImportError:
         from cryptography.hazmat.primitives.ciphers.aead import AESGCM  # noqa: PLC0415
+
         blob = AESGCM(key).encrypt(nonce, plaintext, None)
         ct, tag = blob[:-_TAG_LEN], blob[-_TAG_LEN:]
     return {
@@ -213,8 +241,10 @@ def unseal(data: dict[str, Any], key: bytes) -> bytes:
 
     try:
         from wolfcrypt.ciphers import MODE_GCM, Aes  # noqa: PLC0415
+
         aes = Aes(key, MODE_GCM, nonce)
         return bytes(aes.decrypt(ct, tag))
     except ImportError:
         from cryptography.hazmat.primitives.ciphers.aead import AESGCM  # noqa: PLC0415
+
         return AESGCM(key).decrypt(nonce, ct + tag, None)

@@ -30,7 +30,9 @@ def _make_returns(n_days: int, n_strategies: int, seed: int = 0) -> pd.DataFrame
 
 
 def _make_dated_returns(
-    n_days: int, n_strategies: int, seed: int = 0,
+    n_days: int,
+    n_strategies: int,
+    seed: int = 0,
 ) -> pd.DataFrame:
     df = _make_returns(n_days, n_strategies, seed)
     df.index = pd.date_range("2020-01-01", periods=n_days, freq="B")
@@ -166,7 +168,9 @@ class TestRiskParityTargetVol:
         returns = pd.DataFrame(data, columns=["s1", "s2"])
         # n=2 → default bounds infeasible; use full range pre-leverage.
         weights = risk_parity_weights(
-            returns, target_total_vol=0.20, bounds=(0.0, 1.0),
+            returns,
+            target_total_vol=0.20,
+            bounds=(0.0, 1.0),
         )
         assert weights.sum() > 1.0
 
@@ -180,7 +184,9 @@ class TestRollingRiskParity:
     def test_returns_dataframe(self) -> None:
         returns = _make_dated_returns(400, 3)
         rolling = rolling_risk_parity_weights(
-            returns, window_days=252, refit_freq_days=21,
+            returns,
+            window_days=252,
+            refit_freq_days=21,
         )
         assert isinstance(rolling, pd.DataFrame)
         assert list(rolling.columns) == ["s1", "s2", "s3"]
@@ -188,7 +194,9 @@ class TestRollingRiskParity:
     def test_refits_at_expected_frequency(self) -> None:
         returns = _make_dated_returns(400, 3)
         rolling = rolling_risk_parity_weights(
-            returns, window_days=252, refit_freq_days=21,
+            returns,
+            window_days=252,
+            refit_freq_days=21,
         )
         # Expected refit count: floor((400-252)/21) + 1
         expected = (400 - 252) // 21 + 1
@@ -202,12 +210,13 @@ class TestRollingRiskParity:
     def test_each_row_sums_to_one_when_no_target(self) -> None:
         returns = _make_dated_returns(500, 3)
         rolling = rolling_risk_parity_weights(
-            returns, window_days=252, refit_freq_days=42, target_vol=None,
+            returns,
+            window_days=252,
+            refit_freq_days=42,
+            target_vol=None,
         )
         for date, row in rolling.iterrows():
-            assert row.sum() == pytest.approx(1.0, abs=1e-6), (
-                f"row {date} did not sum to 1"
-            )
+            assert row.sum() == pytest.approx(1.0, abs=1e-6), f"row {date} did not sum to 1"
 
 
 # =============================================================================

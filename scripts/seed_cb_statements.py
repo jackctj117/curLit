@@ -54,16 +54,22 @@ def _load_raw_doc(path: Path) -> Document | None:
         logger.exception("failed to load %s", path)
         return None
     return Document(
-        cb=d["cb"], doc_type=d["doc_type"], title=d["title"],
+        cb=d["cb"],
+        doc_type=d["doc_type"],
+        title=d["title"],
         date=datetime.fromisoformat(d["date"]),
-        url=d["url"], speaker=d.get("speaker"),
-        raw_html="", raw_text=d["raw_text"],
+        url=d["url"],
+        speaker=d.get("speaker"),
+        raw_html="",
+        raw_text=d["raw_text"],
         metadata=d.get("metadata", {}),
     )
 
 
 def _upsert_sentences(
-    engine: Any, processed: Any, scores: list[Any],
+    engine: Any,
+    processed: Any,
+    scores: list[Any],
 ) -> int:
     """Write per-sentence rows to cb_sentiment.
 
@@ -71,17 +77,19 @@ def _upsert_sentences(
     """
     rows: list[dict[str, Any]] = []
     for idx, (sent, score) in enumerate(zip(processed.sentences, scores, strict=False)):
-        rows.append({
-            "ts": processed.date,
-            "doc_id": processed.doc_id,
-            "cb": processed.cb,
-            "doc_type": processed.doc_type,
-            "sentence_idx": idx,
-            "sentence": sent,
-            "lex_hawkish": score.hawkish_count,
-            "lex_dovish": score.dovish_count,
-            "lex_net": float(score.net_score),
-        })
+        rows.append(
+            {
+                "ts": processed.date,
+                "doc_id": processed.doc_id,
+                "cb": processed.cb,
+                "doc_type": processed.doc_type,
+                "sentence_idx": idx,
+                "sentence": sent,
+                "lex_hawkish": score.hawkish_count,
+                "lex_dovish": score.dovish_count,
+                "lex_net": float(score.net_score),
+            }
+        )
     if not rows:
         return 0
     with engine.begin() as conn:
@@ -101,13 +109,15 @@ def _upsert_sentences(
 
 
 def _upsert_diff_event(
-    engine: Any, cb: str, current: Any, previous: Any, diff: Any,
+    engine: Any,
+    cb: str,
+    current: Any,
+    previous: Any,
+    diff: Any,
 ) -> int:
     """Write one diff event row to cb_diff_events."""
     n_prev = max(len(previous.sentences), 1)
-    change_ratio = (
-        len(diff.added_sentences) + len(diff.removed_sentences)
-    ) / n_prev
+    change_ratio = (len(diff.added_sentences) + len(diff.removed_sentences)) / n_prev
     with engine.begin() as conn:
         conn.execute(
             text("""
@@ -138,15 +148,20 @@ def main() -> int:
     )
     parser.add_argument("--since", type=str, default="2015-01-01")
     parser.add_argument(
-        "--cbs", type=str, default="fed",
+        "--cbs",
+        type=str,
+        default="fed",
         help=f"Comma list. Available: {sorted(SCRAPERS)}",
     )
     parser.add_argument(
-        "--raw-dir", type=Path, default=Path("data/cb_raw"),
+        "--raw-dir",
+        type=Path,
+        default=Path("data/cb_raw"),
         help="Where to cache scraped JSON. Re-runs skip already-fetched docs.",
     )
     parser.add_argument(
-        "--skip-scrape", action="store_true",
+        "--skip-scrape",
+        action="store_true",
         help="Skip scraping; reprocess whatever's already in raw-dir.",
     )
     args = parser.parse_args()
@@ -216,7 +231,10 @@ def main() -> int:
                 diff = differ.diff(curr.sentences, prev.sentences)
             except Exception:
                 logger.exception(
-                    "[%s] diff failed: %s vs %s", cb, prev.doc_id, curr.doc_id,
+                    "[%s] diff failed: %s vs %s",
+                    cb,
+                    prev.doc_id,
+                    curr.doc_id,
                 )
                 continue
             n_events += _upsert_diff_event(engine, cb, curr, prev, diff)

@@ -116,12 +116,9 @@ def build_position_digest(
                     pnl_txt = f" ({float(plpc):+.0%})"
                 except (TypeError, ValueError):
                     pnl_txt = ""
-            val_txt = (
-                f" — entry ${entry:,.0f}, now ${cur:,.0f}" if entry > 0 else ""
-            )
+            val_txt = f" — entry ${entry:,.0f}, now ${cur:,.0f}" if entry > 0 else ""
             lines.append(
-                f"  {html_escape(desc)} ×{qty}{html_escape(val_txt)}"
-                f"{html_escape(pnl_txt)}"
+                f"  {html_escape(desc)} ×{qty}{html_escape(val_txt)}{html_escape(pnl_txt)}"
             )
 
     if closed_24h:
@@ -136,10 +133,13 @@ def build_position_digest(
 
     if balances:
         lines.append("")
-        lines.append("<i>" + " | ".join(
-            f"{html_escape(str(k))}: {html_escape(str(v))}"
-            for k, v in balances.items()
-        ) + "</i>")
+        lines.append(
+            "<i>"
+            + " | ".join(
+                f"{html_escape(str(k))}: {html_escape(str(v))}" for k, v in balances.items()
+            )
+            + "</i>"
+        )
 
     lines.append("")
     lines.append(f"<i>{now.astimezone(_NY).strftime('%Y-%m-%d %H:%M ET')}</i>")

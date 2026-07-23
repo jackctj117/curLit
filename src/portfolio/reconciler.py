@@ -91,8 +91,7 @@ class ReconciliationReport:
             "entries": [e.to_dict() for e in self.entries],
             "actions_taken": list(self.actions_taken),
             "summary": {
-                status.value: len(self.by_status(status))
-                for status in ReconciliationStatus
+                status.value: len(self.by_status(status)) for status in ReconciliationStatus
             },
         }
 
@@ -112,8 +111,8 @@ class ReconciliationPolicy:
     says this out loud so nobody assumes otherwise.
     """
 
-    on_orphaned_broker: str = "flatten"   # "flatten" | "hold" | "alert_only"
-    on_orphaned_internal: str = "clear"   # "clear" | "hold" — BOTH alert-only
+    on_orphaned_broker: str = "flatten"  # "flatten" | "hold" | "alert_only"
+    on_orphaned_internal: str = "clear"  # "clear" | "hold" — BOTH alert-only
     on_size_mismatch: str = "trust_broker"  # "trust_broker" | "alert_only" — BOTH alert-only
 
     def __post_init__(self) -> None:
@@ -126,14 +125,13 @@ class ReconciliationPolicy:
         assert self.on_size_mismatch in {"trust_broker", "alert_only"}, (
             f"on_size_mismatch invalid: {self.on_size_mismatch}"
         )
-        if self.on_orphaned_internal == "clear" or (
-            self.on_size_mismatch == "trust_broker"
-        ):
+        if self.on_orphaned_internal == "clear" or (self.on_size_mismatch == "trust_broker"):
             logger.warning(
                 "ReconciliationPolicy: on_orphaned_internal=%r / "
                 "on_size_mismatch=%r are ALERT-ONLY in this build — no "
                 "books or state are rewritten (CL-8lv6)",
-                self.on_orphaned_internal, self.on_size_mismatch,
+                self.on_orphaned_internal,
+                self.on_size_mismatch,
             )
 
 
@@ -145,8 +143,7 @@ class StrategyStateLike(Protocol):
     can hold the same symbol — the reconciler aggregates per symbol.
     """
 
-    def get_current_position(self, strategy_id: str) -> dict[str, Any] | None:
-        ...
+    def get_current_position(self, strategy_id: str) -> dict[str, Any] | None: ...
 
 
 class PositionReconciler:
@@ -209,9 +206,7 @@ class PositionReconciler:
                     payload=report.to_dict(),
                 )
             except Exception:
-                logger.exception(
-                    "Trade journal append failed for reconciliation report"
-                )
+                logger.exception("Trade journal append failed for reconciliation report")
 
         return report
 
@@ -233,8 +228,8 @@ class PositionReconciler:
             broker_list = self.broker.get_positions()
         except Exception:
             logger.warning(
-                "Alignment check: broker.get_positions() failed — alignment "
-                "unknown this cycle", exc_info=True,
+                "Alignment check: broker.get_positions() failed — alignment unknown this cycle",
+                exc_info=True,
             )
             return None
         # CL-n5xk (P0): canonicalize broker keys to match the internal side
@@ -281,7 +276,8 @@ class PositionReconciler:
                 if book is not None and hasattr(book, "confirm_entries"):
                     try:
                         book.confirm_entries(
-                            list(broker_positions.values()), now,
+                            list(broker_positions.values()),
+                            now,
                         )
                     except Exception:
                         logger.exception(
@@ -295,19 +291,26 @@ class PositionReconciler:
 
         entries: list[ReconciliationEntry] = []
         for symbol in sorted(all_symbols):
-            broker_qty = broker_positions.get(symbol, Position(
-                symbol=symbol, quantity=0.0, avg_price=0.0,
-            )).quantity
+            broker_qty = broker_positions.get(
+                symbol,
+                Position(
+                    symbol=symbol,
+                    quantity=0.0,
+                    avg_price=0.0,
+                ),
+            ).quantity
             internal_records = internal_positions.get(symbol, [])
             internal_qty = sum(r["quantity"] for r in internal_records)
             contributors = [r["strategy_id"] for r in internal_records]
 
-            entries.append(self._classify(
-                symbol=symbol,
-                broker_qty=broker_qty,
-                internal_qty=internal_qty,
-                contributors=contributors,
-            ))
+            entries.append(
+                self._classify(
+                    symbol=symbol,
+                    broker_qty=broker_qty,
+                    internal_qty=internal_qty,
+                    contributors=contributors,
+                )
+            )
         return entries
 
     @staticmethod
@@ -340,9 +343,7 @@ class PositionReconciler:
                 internal_quantity=0.0,
                 contributing_strategies=contributors,
                 status=ReconciliationStatus.ORPHANED_BROKER,
-                detail=(
-                    f"broker has {broker_qty} but no strategy claims this symbol"
-                ),
+                detail=(f"broker has {broker_qty} but no strategy claims this symbol"),
             )
 
         if internal_present and not broker_present:
@@ -353,8 +354,7 @@ class PositionReconciler:
                 contributing_strategies=contributors,
                 status=ReconciliationStatus.ORPHANED_INTERNAL,
                 detail=(
-                    f"strategies {contributors} claim {internal_qty} but "
-                    f"broker has no position"
+                    f"strategies {contributors} claim {internal_qty} but broker has no position"
                 ),
             )
 
@@ -375,10 +375,7 @@ class PositionReconciler:
             internal_quantity=internal_qty,
             contributing_strategies=contributors,
             status=ReconciliationStatus.SIZE_MISMATCH,
-            detail=(
-                f"broker {broker_qty} vs internal {internal_qty} "
-                f"(strategies: {contributors})"
-            ),
+            detail=(f"broker {broker_qty} vs internal {internal_qty} (strategies: {contributors})"),
         )
 
     def _apply_policy(
@@ -492,7 +489,8 @@ class PositionReconciler:
                 pos = self.state.get_current_position(sid)
             except Exception:
                 logger.exception(
-                    "Reconciliation: get_current_position(%s) failed", sid,
+                    "Reconciliation: get_current_position(%s) failed",
+                    sid,
                 )
                 pos = None
             if pos is not None:
@@ -501,7 +499,8 @@ class PositionReconciler:
                 if symbol is None or qty is None:
                     logger.warning(
                         "Strategy %s position record missing symbol/size: %s",
-                        sid, pos,
+                        sid,
+                        pos,
                     )
                 else:
                     recorded_in_store = True
@@ -510,12 +509,15 @@ class PositionReconciler:
                     # mismatch broker "USDCAD" and recreate the CL-8s1e
                     # restart-flatten for store-writing strategies.
                     from src.execution.broker import canonical_symbol  # noqa: PLC0415
+
                     symbol = canonical_symbol(symbol)
-                    per_symbol.setdefault(symbol, []).append({
-                        "strategy_id": sid,
-                        "quantity": float(qty),
-                        "raw": pos,
-                    })
+                    per_symbol.setdefault(symbol, []).append(
+                        {
+                            "strategy_id": sid,
+                            "quantity": float(qty),
+                            "raw": pos,
+                        }
+                    )
             # Multi-position book (CL-8s1e). Skipped when the store already
             # carries this strategy's position, to avoid double counting.
             if recorded_in_store:
@@ -528,11 +530,17 @@ class PositionReconciler:
                 if qty_val is None:
                     continue
                 from src.execution.broker import canonical_symbol  # noqa: PLC0415
+
                 norm = canonical_symbol(raw_symbol)
-                per_symbol.setdefault(norm, []).append({
-                    "strategy_id": sid,
-                    "quantity": float(qty_val),
-                    "raw": {"symbol": norm, "quantity": float(qty_val),
-                            "source": "open_positions"},
-                })
+                per_symbol.setdefault(norm, []).append(
+                    {
+                        "strategy_id": sid,
+                        "quantity": float(qty_val),
+                        "raw": {
+                            "symbol": norm,
+                            "quantity": float(qty_val),
+                            "source": "open_positions",
+                        },
+                    }
+                )
         return per_symbol

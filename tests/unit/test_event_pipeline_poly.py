@@ -64,13 +64,15 @@ def _patch_signal(
     monkeypatch.setattr(mod, "load_tracked_markets", lambda path: markets)
     # _poly_step builds an engine — stub create_engine to a sentinel.
     import sqlalchemy
+
     monkeypatch.setattr(sqlalchemy, "create_engine", lambda url: object())
     monkeypatch.setattr(ep, "build_db_url", lambda: "sqlite://")
 
 
 class TestPolyStep:
     def test_polls_and_notifies_shifts(
-        self, monkeypatch: pytest.MonkeyPatch,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         sig = _FakeSignal()
         sig.shifts_to_return = ["shift-1", "shift-2"]
@@ -83,7 +85,8 @@ class TestPolyStep:
         assert sig.notified == ["shift-1", "shift-2"]
 
     def test_no_markets_skips_poll(
-        self, monkeypatch: pytest.MonkeyPatch,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         sig = _FakeSignal()
         _patch_signal(monkeypatch, sig, [])
@@ -101,7 +104,8 @@ class TestPolyStep:
 
 class TestCyclePolyTolerance:
     def test_poly_failure_never_kills_cycle(
-        self, monkeypatch: pytest.MonkeyPatch,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         # _poly_step raises; _cycle (assess=False path) must swallow it.
         def boom(args: Any) -> Any:
@@ -112,7 +116,8 @@ class TestCyclePolyTolerance:
         ep._cycle(_args(poly=True))
 
     def test_no_poly_skips_step(
-        self, monkeypatch: pytest.MonkeyPatch,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         called = {"n": 0}
 
@@ -124,7 +129,8 @@ class TestCyclePolyTolerance:
         assert called["n"] == 0
 
     def test_poly_runs_when_enabled(
-        self, monkeypatch: pytest.MonkeyPatch,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         called = {"n": 0}
 

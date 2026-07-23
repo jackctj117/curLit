@@ -36,9 +36,13 @@ def _listing(*children: dict[str, Any]) -> dict[str, Any]:
 
 def _child(**over: Any) -> dict[str, Any]:
     base = {
-        "id": "abc123", "title": "Strait of Hormuz tanker traffic halted",
-        "selftext": "", "score": 50, "num_comments": 12,
-        "created_utc": 1784800000.0, "permalink": "/r/energy/comments/abc123/x/",
+        "id": "abc123",
+        "title": "Strait of Hormuz tanker traffic halted",
+        "selftext": "",
+        "score": 50,
+        "num_comments": 12,
+        "created_utc": 1784800000.0,
+        "permalink": "/r/energy/comments/abc123/x/",
     }
     base.update(over)
     return base
@@ -48,14 +52,16 @@ def _child(**over: Any) -> dict[str, Any]:
 def engine(tmp_path: Path) -> Any:
     eng = sa.create_engine(f"sqlite:///{tmp_path / 'r.db'}")
     with eng.begin() as conn:
-        conn.execute(text("""
+        conn.execute(
+            text("""
             CREATE TABLE geo_events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 seen_at TEXT NOT NULL, source TEXT NOT NULL,
                 external_id TEXT UNIQUE NOT NULL, headline TEXT NOT NULL,
                 url TEXT, theme TEXT, status TEXT NOT NULL DEFAULT 'NEW',
                 status_updated_at TEXT NOT NULL)
-        """))
+        """)
+        )
     return eng
 
 
@@ -97,9 +103,9 @@ def test_load_watchlist_skips_malformed_entry(tmp_path: Path):
     )
     subs = load_reddit_watchlist(p)
     assert len(subs) == 1
-    assert subs[0].tier == 3        # clamped
+    assert subs[0].tier == 3  # clamped
     assert subs[0].listing == "new"  # invalid → default
-    assert subs[0].min_score == 0    # clamped
+    assert subs[0].min_score == 0  # clamped
 
 
 # --------------------------------------------------------------------- #
@@ -155,9 +161,16 @@ def test_fetch_posts_builds_request_and_fail_soft():
 
 
 def test_post_text_combines_title_and_selftext_head():
-    p = RedditPost(id="i", subreddit="s", title="Hormuz update",
-                   selftext="x" * 1000, score=1, num_comments=0,
-                   created_utc=0.0, permalink="/r/s/i/")
+    p = RedditPost(
+        id="i",
+        subreddit="s",
+        title="Hormuz update",
+        selftext="x" * 1000,
+        score=1,
+        num_comments=0,
+        created_utc=0.0,
+        permalink="/r/s/i/",
+    )
     assert p.text.startswith("Hormuz update ")
     assert len(p.text) <= len("Hormuz update ") + 400
 
@@ -169,10 +182,14 @@ def test_post_text_combines_title_and_selftext_head():
 
 def _post(**over: Any) -> RedditPost:
     base = {
-        "id": "p1", "subreddit": "energy",
+        "id": "p1",
+        "subreddit": "energy",
         "title": "Strait of Hormuz closed to tanker traffic",
-        "selftext": "", "score": 10, "num_comments": 3,
-        "created_utc": 1784800000.0, "permalink": "/r/energy/comments/p1/x/",
+        "selftext": "",
+        "score": 10,
+        "num_comments": 3,
+        "created_utc": 1784800000.0,
+        "permalink": "/r/energy/comments/p1/x/",
     }
     base.update(over)
     return RedditPost(**base)
@@ -182,8 +199,7 @@ def test_ingest_theme_matched_post(engine):
     result = ingest_reddit_posts(engine, SUB, [_post()], PLAYBOOKS)
     assert result.ingested == 1
     with engine.connect() as c:
-        row = c.execute(text(
-            "SELECT source, external_id, theme, status FROM geo_events")).one()
+        row = c.execute(text("SELECT source, external_id, theme, status FROM geo_events")).one()
     assert row[0] == "reddit:energy"
     assert row[1] == "reddit:p1"
     assert row[2] == "energy_chokepoint"
@@ -198,7 +214,8 @@ def test_ingest_score_gate(engine):
 
 def test_ingest_no_theme_gate(engine):
     result = ingest_reddit_posts(
-        engine, SUB, [_post(title="My favourite soup recipes of 2026")], PLAYBOOKS)
+        engine, SUB, [_post(title="My favourite soup recipes of 2026")], PLAYBOOKS
+    )
     assert result.ingested == 0 and result.skipped_no_theme == 1
 
 
@@ -240,12 +257,11 @@ def test_oauth_token_cached_and_refreshed():
         return {"access_token": f"tok{len(calls)}", "expires_in": 3600}
 
     clock = {"t": 1000.0}
-    oauth = RedditOAuth("cid", "secret", token_post=fake_post,
-                        clock=lambda: clock["t"])
+    oauth = RedditOAuth("cid", "secret", token_post=fake_post, clock=lambda: clock["t"])
     assert oauth.token() == "tok1"
-    assert oauth.token() == "tok1"      # cached — no second call
+    assert oauth.token() == "tok1"  # cached — no second call
     assert len(calls) == 1
-    clock["t"] += 3600                   # past expiry → refresh
+    clock["t"] += 3600  # past expiry → refresh
     assert oauth.token() == "tok2"
 
 
@@ -258,16 +274,15 @@ def test_oauth_token_failure_is_soft():
     oauth = RedditOAuth("cid", "bad", token_post=boom)
     assert oauth.token() is None
     # fetch_posts with a dead oauth skips cleanly.
-    assert fetch_posts(SUB, http_get=lambda *a: _listing(_child()),
-                       oauth=oauth) == []
+    assert fetch_posts(SUB, http_get=lambda *a: _listing(_child()), oauth=oauth) == []
 
 
 def test_fetch_posts_uses_oauth_endpoint_and_bearer():
     from src.data.reddit_monitor import RedditOAuth
 
     oauth = RedditOAuth(
-        "cid", "secret",
-        token_post=lambda *a: {"access_token": "T", "expires_in": 3600})
+        "cid", "secret", token_post=lambda *a: {"access_token": "T", "expires_in": 3600}
+    )
     seen: dict[str, Any] = {}
 
     def fake(url, params, headers):

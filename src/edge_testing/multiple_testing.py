@@ -50,7 +50,8 @@ _DEFAULT_RC_BOOTSTRAP: int = 5_000
 
 
 def bonferroni(
-    p_values: list[float] | _NDArray, alpha: float = 0.05,
+    p_values: list[float] | _NDArray,
+    alpha: float = 0.05,
 ) -> tuple[_NDArray, _NDArray]:
     """Bonferroni correction.
 
@@ -69,7 +70,8 @@ def bonferroni(
 
 
 def benjamini_hochberg(
-    p_values: list[float] | _NDArray, alpha: float = 0.05,
+    p_values: list[float] | _NDArray,
+    alpha: float = 0.05,
 ) -> tuple[_NDArray, _NDArray]:
     """Benjamini-Hochberg FDR correction (BH step-up procedure).
 
@@ -240,9 +242,7 @@ class MultipleTestingReport:
             "bonferroni_reject": self.bonferroni_reject,
             "bh_adjusted": self.bh_adjusted,
             "bh_reject": self.bh_reject,
-            "reality_check": (
-                self.reality_check.to_dict() if self.reality_check else None
-            ),
+            "reality_check": (self.reality_check.to_dict() if self.reality_check else None),
         }
 
 

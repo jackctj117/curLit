@@ -63,7 +63,10 @@ def _group_stats(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     rets = [float(r["return_pct"]) for r in rows if r["return_pct"] is not None]
     avg_ret = sum(rets) / len(rets) if rets else None
     return {
-        "n": n, "wins": wins, "losses": losses, "flats": flats,
+        "n": n,
+        "wins": wins,
+        "losses": losses,
+        "flats": flats,
         "win_rate": round(wins / n, 3),
         "avg_return": round(avg_ret, 4) if avg_ret is not None else None,
     }
@@ -79,11 +82,16 @@ def _by(rows: Sequence[Mapping[str, Any]], keyfn: Any) -> dict[str, Any]:
 def aggregate_outcomes(engine: Any) -> dict[str, Any]:
     """Aggregate FINALISED outcomes into an overall + by-dimension summary."""
     with engine.connect() as conn:
-        rows = [dict(r._mapping) for r in conn.execute(text(
-            "SELECT outcome, return_pct, theme, action, direction, confidence, "
-            "       is_niche, hop_count, red_team_survived "
-            "FROM idea_outcomes WHERE outcome IN ('win', 'loss', 'flat')",
-        ))]
+        rows = [
+            dict(r._mapping)
+            for r in conn.execute(
+                text(
+                    "SELECT outcome, return_pct, theme, action, direction, confidence, "
+                    "       is_niche, hop_count, red_team_survived "
+                    "FROM idea_outcomes WHERE outcome IN ('win', 'loss', 'flat')",
+                )
+            )
+        ]
     return {
         "sample": len(rows),
         "overall": _group_stats(rows),
@@ -91,11 +99,14 @@ def aggregate_outcomes(engine: Any) -> dict[str, Any]:
         "by_action": _by(rows, lambda r: r["action"] or "unknown"),
         "by_direction": _by(rows, lambda r: r["direction"] or "unknown"),
         "by_hop": _by(rows, lambda r: _hop_bucket(r["hop_count"])),
-        "by_confidence": _by(rows, lambda r: _bucket_confidence(
-            float(r["confidence"]) if r["confidence"] is not None else None)),
+        "by_confidence": _by(
+            rows,
+            lambda r: _bucket_confidence(
+                float(r["confidence"]) if r["confidence"] is not None else None
+            ),
+        ),
         "by_niche": _by(rows, lambda r: "niche" if r["is_niche"] else "core"),
-        "by_red_team": _by(rows, lambda r:
-                           "survived" if r["red_team_survived"] else "n/a"),
+        "by_red_team": _by(rows, lambda r: "survived" if r["red_team_survived"] else "n/a"),
     }
 
 
@@ -125,7 +136,8 @@ class ReviewResult:
                 if isinstance(c, dict):
                     lines.append(
                         f"• <b>{c.get('knob', '?')}</b>: {c.get('change', '')} "
-                        f"— {c.get('rationale', '')}")
+                        f"— {c.get('rationale', '')}"
+                    )
         return "\n".join(lines)
 
 
@@ -176,16 +188,15 @@ class ReflectiveReviewer:
             self.client = client
         else:
             from src.research.llm import get_client  # noqa: PLC0415
+
             self.client = get_client("claude-code")
-        self.model = model or os.environ.get(
-            "NICHE_REVIEW_MODEL", DEFAULT_REVIEW_MODEL)
+        self.model = model or os.environ.get("NICHE_REVIEW_MODEL", DEFAULT_REVIEW_MODEL)
         self.max_tokens = max_tokens
         if min_sample is not None:
             self.min_sample = min_sample
         else:
             try:
-                self.min_sample = int(os.environ.get(
-                    "NICHE_REVIEW_MIN_SAMPLE", DEFAULT_MIN_SAMPLE))
+                self.min_sample = int(os.environ.get("NICHE_REVIEW_MIN_SAMPLE", DEFAULT_MIN_SAMPLE))
             except ValueError:
                 self.min_sample = DEFAULT_MIN_SAMPLE
 
@@ -195,25 +206,30 @@ class ReflectiveReviewer:
         summary = aggregate_outcomes(self.engine)
         sample = summary["sample"]
         if sample < self.min_sample:
-            return ReviewResult(status="insufficient_data", sample=sample,
-                                summary=summary)
+            return ReviewResult(status="insufficient_data", sample=sample, summary=summary)
         import json  # noqa: PLC0415
+
         try:
             resp = self.client.complete(
                 messages=[
                     Message(role="system", content=_SYSTEM_PROMPT),
-                    Message(role="user", content=(
-                        "Track record by dimension (JSON):\n"
-                        f"{json.dumps(summary, indent=2)}\n\n"
-                        "Review it and propose tuning. JSON only.")),
+                    Message(
+                        role="user",
+                        content=(
+                            "Track record by dimension (JSON):\n"
+                            f"{json.dumps(summary, indent=2)}\n\n"
+                            "Review it and propose tuning. JSON only."
+                        ),
+                    ),
                 ],
-                model=self.model, max_tokens=self.max_tokens,
+                model=self.model,
+                max_tokens=self.max_tokens,
             )
             proposal = extract_json_object(resp.text)
             raw = resp.text
         except Exception as exc:
             logger.warning("reflective review: LLM/parse failed: %s", str(exc)[:200])
-            return ReviewResult(status="ok", sample=sample, summary=summary,
-                                proposal=None)
-        return ReviewResult(status="ok", sample=sample, summary=summary,
-                            proposal=proposal, raw_text=raw)
+            return ReviewResult(status="ok", sample=sample, summary=summary, proposal=None)
+        return ReviewResult(
+            status="ok", sample=sample, summary=summary, proposal=proposal, raw_text=raw
+        )

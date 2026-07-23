@@ -44,10 +44,10 @@ class Verdict(StrEnum):
 class RuleEvaluation:
     """One rule's pass/fail/missing decision."""
 
-    rule_id: str         # 'A.1', 'B.2', etc.
-    description: str     # short text from the rule heading
+    rule_id: str  # 'A.1', 'B.2', etc.
+    description: str  # short text from the rule heading
     threshold_expr: str  # 'oos_metrics.sharpe >= 0.50'
-    passed: bool         # True if rule passed (or no evidence to fail it)
+    passed: bool  # True if rule passed (or no evidence to fail it)
     missing: bool = False  # True if a required metric was absent
     actual_value: Any = None
     detail: str = ""
@@ -107,14 +107,16 @@ def parse_rules(rules_md_path: Path | str) -> list[ParsedRule]:
         description = m.group(2).strip()
         # Slice from this heading to the next, search for the THRESHOLD.
         section_end = headings[i + 1].start() if i + 1 < len(headings) else len(text)
-        section = text[m.end():section_end]
+        section = text[m.end() : section_end]
         thr = _THRESHOLD_PATTERN.search(section)
         threshold_expr = thr.group(1).strip() if thr else None
-        rules.append(ParsedRule(
-            rule_id=rule_id,
-            description=description,
-            threshold_expr=threshold_expr,
-        ))
+        rules.append(
+            ParsedRule(
+                rule_id=rule_id,
+                description=description,
+                threshold_expr=threshold_expr,
+            )
+        )
     return rules
 
 
@@ -162,9 +164,7 @@ def _parse_literal(s: str) -> Any:
     except ValueError:
         pass
     # List of strings: ('A', 'B') or ['A', 'B']
-    if (s.startswith("(") and s.endswith(")")) or (
-        s.startswith("[") and s.endswith("]")
-    ):
+    if (s.startswith("(") and s.endswith(")")) or (s.startswith("[") and s.endswith("]")):
         inner = s[1:-1].strip()
         if not inner:
             return []
@@ -179,7 +179,8 @@ def _parse_literal(s: str) -> Any:
 
 
 def evaluate_threshold(
-    expr: str, report: dict[str, Any],
+    expr: str,
+    report: dict[str, Any],
 ) -> tuple[bool, bool, Any]:
     """Evaluate a threshold expression against the candidate report.
 
@@ -260,42 +261,46 @@ def compute_verdict(
     any_missing = False
     for rule in rules:
         if rule.threshold_expr is None:
-            evaluations.append(RuleEvaluation(
-                rule_id=rule.rule_id,
-                description=rule.description,
-                threshold_expr="(agent-evidence-driven)",
-                passed=True,
-                detail="no parseable threshold; agent positions decide",
-            ))
+            evaluations.append(
+                RuleEvaluation(
+                    rule_id=rule.rule_id,
+                    description=rule.description,
+                    threshold_expr="(agent-evidence-driven)",
+                    passed=True,
+                    detail="no parseable threshold; agent positions decide",
+                )
+            )
             continue
         try:
             passed, missing, actual = evaluate_threshold(
-                rule.threshold_expr, candidate_report,
+                rule.threshold_expr,
+                candidate_report,
             )
         except ValueError as exc:
             logger.exception("rule %s threshold malformed", rule.rule_id)
-            evaluations.append(RuleEvaluation(
+            evaluations.append(
+                RuleEvaluation(
+                    rule_id=rule.rule_id,
+                    description=rule.description,
+                    threshold_expr=rule.threshold_expr,
+                    passed=False,
+                    missing=True,
+                    detail=f"malformed threshold: {exc}",
+                )
+            )
+            any_missing = True
+            continue
+        evaluations.append(
+            RuleEvaluation(
                 rule_id=rule.rule_id,
                 description=rule.description,
                 threshold_expr=rule.threshold_expr,
-                passed=False,
-                missing=True,
-                detail=f"malformed threshold: {exc}",
-            ))
-            any_missing = True
-            continue
-        evaluations.append(RuleEvaluation(
-            rule_id=rule.rule_id,
-            description=rule.description,
-            threshold_expr=rule.threshold_expr,
-            passed=passed,
-            missing=missing,
-            actual_value=actual,
-            detail=(
-                "missing metric at path"
-                if missing else f"actual={actual!r}"
-            ),
-        ))
+                passed=passed,
+                missing=missing,
+                actual_value=actual,
+                detail=("missing metric at path" if missing else f"actual={actual!r}"),
+            )
+        )
         if missing:
             any_missing = True
         elif not passed:

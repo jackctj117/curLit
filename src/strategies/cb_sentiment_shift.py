@@ -23,10 +23,15 @@ _FEATURE_SET_VERSION = "v1"
 
 @dataclass
 class CBSentimentConfig:
-    cb_to_pair: dict[str, Any] = field(default_factory=lambda: {
-        "fed": ("EURUSD", "short"), "ecb": ("EURUSD", "long"),
-        "boe": ("GBPUSD", "long"), "boj": ("USDJPY", "short"), "boc": ("USDCAD", "short"),
-    })
+    cb_to_pair: dict[str, Any] = field(
+        default_factory=lambda: {
+            "fed": ("EURUSD", "short"),
+            "ecb": ("EURUSD", "long"),
+            "boe": ("GBPUSD", "long"),
+            "boj": ("USDJPY", "short"),
+            "boc": ("USDCAD", "short"),
+        }
+    )
     strong_shift_percentile: float = 0.15
     min_diff_score_abs: float = 0.3
     holding_days: int = 10
@@ -86,6 +91,7 @@ class CBSentimentShiftStrategy:
             return
         import json  # noqa: PLC0415
         import os  # noqa: PLC0415
+
         if not os.path.exists(self._state_path):
             return
         with open(self._state_path) as fh:
@@ -100,13 +106,9 @@ class CBSentimentShiftStrategy:
                 stop_loss=float(d["stop_loss"]),
                 source_cb=str(d.get("source_cb", "")),
                 trailing_stop=(
-                    float(d["trailing_stop"])
-                    if d.get("trailing_stop") is not None else None
+                    float(d["trailing_stop"]) if d.get("trailing_stop") is not None else None
                 ),
-                peak_price=(
-                    float(d["peak_price"])
-                    if d.get("peak_price") is not None else None
-                ),
+                peak_price=(float(d["peak_price"]) if d.get("peak_price") is not None else None),
             )
 
     def _save_state(self) -> None:
@@ -117,6 +119,7 @@ class CBSentimentShiftStrategy:
         import json  # noqa: PLC0415
         import os  # noqa: PLC0415
         import tempfile  # noqa: PLC0415
+
         try:
             payload = {
                 "open_positions": {
@@ -159,8 +162,7 @@ class CBSentimentShiftStrategy:
             self.snapshot_store.store(snapshot)
         except Exception:
             logger.exception(
-                "Failed to store feature snapshot for %s — intent will lack "
-                "snapshot reference",
+                "Failed to store feature snapshot for %s — intent will lack snapshot reference",
                 self.id,
             )
             return {}
@@ -191,7 +193,8 @@ class CBSentimentShiftStrategy:
             return
         try:
             events = self.nlp.get_historical_diff_scores(
-                cbs=list(self.config.cb_to_pair.keys()), lookback_years=5,
+                cbs=list(self.config.cb_to_pair.keys()),
+                lookback_years=5,
             )
             if events is not None and not events.empty:
                 for cb in self.config.cb_to_pair:
@@ -204,8 +207,10 @@ class CBSentimentShiftStrategy:
             # (previous thresholds stay in force), but the failure has to be
             # visible (CL-gmr1). warning without traceback per CL-2yta.
             logger.warning(
-                "%s: threshold refresh failed (%s: %s) — keeping previous "
-                "thresholds", self.id, type(exc).__name__, exc,
+                "%s: threshold refresh failed (%s: %s) — keeping previous thresholds",
+                self.id,
+                type(exc).__name__,
+                exc,
             )
 
     def _get_thresholds(self, cb: str) -> tuple[float, float]:
@@ -234,12 +239,14 @@ class CBSentimentShiftStrategy:
             # failure — but a dead NLP feed is NOT "no events", so it must
             # never be swallowed silently (CL-gmr1 review call-out).
             logger.warning(
-                "%s: get_recent_diff_events failed (%s: %s) — treating as no "
-                "events this tick", self.id, type(exc).__name__, exc,
+                "%s: get_recent_diff_events failed (%s: %s) — treating as no events this tick",
+                self.id,
+                type(exc).__name__,
+                exc,
             )
             return []
         signals = []
-        for event in (events or []):
+        for event in events or []:
             cb = event.get("cb", "")
             if cb not in self.config.cb_to_pair:
                 continue
@@ -248,12 +255,26 @@ class CBSentimentShiftStrategy:
             pair, cb_hawkish_side = self.config.cb_to_pair[cb]
             if shift >= hawkish_thr:
                 direction = 1 if cb_hawkish_side == "long" else -1
-                signals.append({"cb": cb, "pair": pair, "direction": direction,
-                                "shift": shift, "doc_id": event.get("doc_id", "")})
+                signals.append(
+                    {
+                        "cb": cb,
+                        "pair": pair,
+                        "direction": direction,
+                        "shift": shift,
+                        "doc_id": event.get("doc_id", ""),
+                    }
+                )
             elif shift <= dovish_thr:
                 direction = -1 if cb_hawkish_side == "long" else 1
-                signals.append({"cb": cb, "pair": pair, "direction": direction,
-                                "shift": shift, "doc_id": event.get("doc_id", "")})
+                signals.append(
+                    {
+                        "cb": cb,
+                        "pair": pair,
+                        "direction": direction,
+                        "shift": shift,
+                        "doc_id": event.get("doc_id", ""),
+                    }
+                )
         return signals
 
     def _update_trailing_stops(self, prices: dict[str, Any]) -> list[OrderIntent]:
@@ -291,20 +312,26 @@ class CBSentimentShiftStrategy:
 
             if exit_reason:
                 logger.info("Exit %s: %s pnl=%.2f%%", symbol, exit_reason, pnl_pct * 100)
-                meta = self._emit_snapshot({
-                    "trigger": "exit",
-                    "exit_reason": exit_reason,
-                    "symbol": symbol,
-                    "current_price": float(current),
-                    "entry_price": float(pos.entry_price),
-                    "direction": int(pos.direction),
-                    "pnl_pct": float(pnl_pct),
-                    "source_cb": pos.source_cb,
-                })
-                exits.append(OrderIntent(
-                    strategy_id=self.id, symbol=symbol,
-                    target_position=0, metadata=meta,
-                ))
+                meta = self._emit_snapshot(
+                    {
+                        "trigger": "exit",
+                        "exit_reason": exit_reason,
+                        "symbol": symbol,
+                        "current_price": float(current),
+                        "entry_price": float(pos.entry_price),
+                        "direction": int(pos.direction),
+                        "pnl_pct": float(pnl_pct),
+                        "source_cb": pos.source_cb,
+                    }
+                )
+                exits.append(
+                    OrderIntent(
+                        strategy_id=self.id,
+                        symbol=symbol,
+                        target_position=0,
+                        metadata=meta,
+                    )
+                )
                 del self.open_positions[symbol]
         return exits
 
@@ -326,6 +353,7 @@ class CBSentimentShiftStrategy:
             logger.warning("%s: phantom-drop skipped — broker read failed", self.id)
             return
         from src.execution.broker import canonical_symbol  # noqa: PLC0415
+
         held = {
             canonical_symbol(str(getattr(p, "symbol", ""))): float(
                 getattr(p, "quantity", 0.0),
@@ -336,12 +364,16 @@ class CBSentimentShiftStrategy:
             if abs(held.get(canonical_symbol(pair), 0.0)) < 1e-6:
                 logger.info(
                     "%s: dropping phantom open position %s — broker is flat "
-                    "(entry likely rejected)", self.id, pair,
+                    "(entry likely rejected)",
+                    self.id,
+                    pair,
                 )
                 del self.open_positions[pair]
 
     async def generate_intents(
-        self, prices: dict[str, Any], broker: Any,
+        self,
+        prices: dict[str, Any],
+        broker: Any,
     ) -> list[OrderIntent]:
         self._drop_phantom_positions(broker)
         self._refresh_thresholds()
@@ -373,29 +405,46 @@ class CBSentimentShiftStrategy:
             entry_price = tick["ask"] if signal["direction"] > 0 else tick["bid"]
             stop_price = entry_price * (1 - signal["direction"] * self.config.hard_stop_pct)
             stop_distance = abs(entry_price - stop_price)
-            size = account.equity * self.config.risk_per_trade_pct / max(stop_distance, 0.0001) * signal["direction"]
+            size = (
+                account.equity
+                * self.config.risk_per_trade_pct
+                / max(stop_distance, 0.0001)
+                * signal["direction"]
+            )
 
-            logger.info("Entry %s: %s shift=%.3f size=%.0f", pair, signal["cb"], signal["shift"], size)
+            logger.info(
+                "Entry %s: %s shift=%.3f size=%.0f", pair, signal["cb"], signal["shift"], size
+            )
             self.open_positions[pair] = OpenPosition(
-                symbol=pair, entry_ts=datetime.now(UTC), entry_price=entry_price,
-                quantity=size, direction=signal["direction"], stop_loss=stop_price,
+                symbol=pair,
+                entry_ts=datetime.now(UTC),
+                entry_price=entry_price,
+                quantity=size,
+                direction=signal["direction"],
+                stop_loss=stop_price,
                 source_cb=signal["cb"],
             )
-            meta = self._emit_snapshot({
-                "trigger": "entry",
-                "cb": signal["cb"],
-                "pair": pair,
-                "direction": int(signal["direction"]),
-                "shift": float(signal["shift"]),
-                "doc_id": signal.get("doc_id", ""),
-                "entry_price": float(entry_price),
-                "stop_price": float(stop_price),
-                "size": float(size),
-            })
-            intents.append(OrderIntent(
-                strategy_id=self.id, symbol=pair,
-                target_position=size, metadata=meta,
-            ))
+            meta = self._emit_snapshot(
+                {
+                    "trigger": "entry",
+                    "cb": signal["cb"],
+                    "pair": pair,
+                    "direction": int(signal["direction"]),
+                    "shift": float(signal["shift"]),
+                    "doc_id": signal.get("doc_id", ""),
+                    "entry_price": float(entry_price),
+                    "stop_price": float(stop_price),
+                    "size": float(size),
+                }
+            )
+            intents.append(
+                OrderIntent(
+                    strategy_id=self.id,
+                    symbol=pair,
+                    target_position=size,
+                    metadata=meta,
+                )
+            )
 
         self._save_state()  # CL-885p: persist the tick's entries/exits
         return intents

@@ -40,31 +40,59 @@ _MAX_TOOL_RESULT_CHARS = 4000
 
 #: OpenAI-format tool schemas the model may call.
 TOOL_SCHEMAS: list[dict[str, Any]] = [
-    {"type": "function", "function": {
-        "name": "check_ticker",
-        "description": "Verify a US-listed ticker exists and is tradable; "
-                       "returns its exchange and Robinhood-tradeable flag.",
-        "parameters": {"type": "object", "properties": {
-            "ticker": {"type": "string"}}, "required": ["ticker"]}}},
-    {"type": "function", "function": {
-        "name": "resolve_company",
-        "description": "Resolve a company NAME to candidate US-listed tickers "
-                       "when you're unsure of the exact symbol.",
-        "parameters": {"type": "object", "properties": {
-            "company_name": {"type": "string"}}, "required": ["company_name"]}}},
-    {"type": "function", "function": {
-        "name": "get_company_profile",
-        "description": "Sector, industry and business summary for a ticker.",
-        "parameters": {"type": "object", "properties": {
-            "ticker": {"type": "string"}}, "required": ["ticker"]}}},
-    {"type": "function", "function": {
-        "name": "get_sec_filing",
-        "description": "Excerpt of a company's latest 10-K/10-Q (business + "
-                       "risk factors) — where real customers, suppliers, "
-                       "competitors and dependencies are named. Use it to find "
-                       "the next hop from FACT, not memory.",
-        "parameters": {"type": "object", "properties": {
-            "ticker": {"type": "string"}}, "required": ["ticker"]}}},
+    {
+        "type": "function",
+        "function": {
+            "name": "check_ticker",
+            "description": "Verify a US-listed ticker exists and is tradable; "
+            "returns its exchange and Robinhood-tradeable flag.",
+            "parameters": {
+                "type": "object",
+                "properties": {"ticker": {"type": "string"}},
+                "required": ["ticker"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "resolve_company",
+            "description": "Resolve a company NAME to candidate US-listed tickers "
+            "when you're unsure of the exact symbol.",
+            "parameters": {
+                "type": "object",
+                "properties": {"company_name": {"type": "string"}},
+                "required": ["company_name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_company_profile",
+            "description": "Sector, industry and business summary for a ticker.",
+            "parameters": {
+                "type": "object",
+                "properties": {"ticker": {"type": "string"}},
+                "required": ["ticker"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_sec_filing",
+            "description": "Excerpt of a company's latest 10-K/10-Q (business + "
+            "risk factors) — where real customers, suppliers, "
+            "competitors and dependencies are named. Use it to find "
+            "the next hop from FACT, not memory.",
+            "parameters": {
+                "type": "object",
+                "properties": {"ticker": {"type": "string"}},
+                "required": ["ticker"],
+            },
+        },
+    },
 ]
 
 _SYSTEM_PROMPT = """\
@@ -127,20 +155,29 @@ class KimiToolAgent:
     ) -> None:
         self.universe = universe
         self.tools = tools  # ResearchTools (SEC excerpt + profile)
-        self.api_key = api_key if api_key is not None else os.environ.get(
-            "MOONSHOT_API_KEY", "",
+        self.api_key = (
+            api_key
+            if api_key is not None
+            else os.environ.get(
+                "MOONSHOT_API_KEY",
+                "",
+            )
         )
         self.model = model or os.environ.get("KIMI_MODEL", DEFAULT_KIMI_MODEL)
         self.base_url = base_url or os.environ.get(
-            "KIMI_BASE_URL", DEFAULT_KIMI_BASE_URL,
+            "KIMI_BASE_URL",
+            DEFAULT_KIMI_BASE_URL,
         )
         if max_iterations is not None:
             self.max_iterations = max_iterations
         else:
             try:
-                self.max_iterations = int(os.environ.get(
-                    "KIMI_MAX_ITERATIONS", DEFAULT_MAX_ITERATIONS,
-                ))
+                self.max_iterations = int(
+                    os.environ.get(
+                        "KIMI_MAX_ITERATIONS",
+                        DEFAULT_MAX_ITERATIONS,
+                    )
+                )
             except ValueError:
                 self.max_iterations = DEFAULT_MAX_ITERATIONS
         self.temperature = temperature
@@ -165,22 +202,26 @@ class KimiToolAgent:
                 exists = bool(t) and self.universe.exists(t)
                 info = (self.universe.get(t) or {}) if exists else {}
                 return {
-                    "ticker": t, "exists": exists,
+                    "ticker": t,
+                    "exists": exists,
                     "exchange": info.get("exchange"),
                     "robinhood_tradeable": (
-                        bool(self.universe.robinhood_tradeable(t)) if exists
-                        else False
+                        bool(self.universe.robinhood_tradeable(t)) if exists else False
                     ),
                 }
             if name == "resolve_company":
                 q = str(args.get("company_name", "")).strip()
                 matches = self.universe.resolve_name(q) if q else []
-                return {"matches": [
-                    {"symbol": m.get("symbol"),
-                     "name": m.get("security_name"),
-                     "exchange": m.get("exchange")}
-                    for m in matches[:5]
-                ]}
+                return {
+                    "matches": [
+                        {
+                            "symbol": m.get("symbol"),
+                            "name": m.get("security_name"),
+                            "exchange": m.get("exchange"),
+                        }
+                        for m in matches[:5]
+                    ]
+                }
             if name == "get_company_profile":
                 t = str(args.get("ticker", "")).strip()
                 prof = None
@@ -189,13 +230,13 @@ class KimiToolAgent:
                 return prof or {"error": "no profile available"}
             if name == "get_sec_filing":
                 t = str(args.get("ticker", "")).strip()
-                cik = self.universe.get_cik(t) if hasattr(
-                    self.universe, "get_cik") else None
+                cik = self.universe.get_cik(t) if hasattr(self.universe, "get_cik") else None
                 excerpt = None
                 if cik and self.tools is not None:
                     excerpt = self.tools.sec_excerpt(cik)
                 return {
-                    "ticker": t, "cik": cik,
+                    "ticker": t,
+                    "cik": cik,
                     "excerpt": (excerpt or "no filing found")[:_MAX_TOOL_RESULT_CHARS],
                 }
         except Exception as exc:
@@ -210,18 +251,19 @@ class KimiToolAgent:
             return self._create_fn(**kwargs)
         if self._client is None:
             from openai import OpenAI  # noqa: PLC0415 — lazy
+
             self._client = OpenAI(api_key=self.api_key, base_url=self.base_url)
         return self._client.chat.completions.create(**kwargs)
 
     def _user_prompt(self, event_row: Mapping[str, Any], playbook: Any) -> str:
         pb = ""
         if playbook is not None:
-            insts = ", ".join(
-                i.instrument for i in getattr(playbook, "instruments", [])
+            insts = ", ".join(i.instrument for i in getattr(playbook, "instruments", []))
+            pb = (
+                f"\nMatched playbook {getattr(playbook, 'key', '')}: "
+                f"{getattr(playbook, 'description', '')}\n"
+                f"Obvious reachable instruments (go BEYOND these): {insts}"
             )
-            pb = (f"\nMatched playbook {getattr(playbook, 'key', '')}: "
-                  f"{getattr(playbook, 'description', '')}\n"
-                  f"Obvious reachable instruments (go BEYOND these): {insts}")
         return (
             f"EVENT: {event_row.get('headline')}\n"
             f"THEME: {event_row.get('theme') or 'unmatched'}{pb}\n\n"
@@ -229,7 +271,9 @@ class KimiToolAgent:
         )
 
     def discover(
-        self, event_row: Mapping[str, Any], playbook: Any = None,
+        self,
+        event_row: Mapping[str, Any],
+        playbook: Any = None,
     ) -> str:
         """Run the agentic tool-loop; return the model's final JSON text (or
         "" on any failure / no key / iteration budget exhausted)."""
@@ -244,8 +288,11 @@ class KimiToolAgent:
         try:
             for _ in range(self.max_iterations):
                 resp = self._create(
-                    model=self.model, messages=messages, tools=TOOL_SCHEMAS,
-                    tool_choice="auto", temperature=self.temperature,
+                    model=self.model,
+                    messages=messages,
+                    tools=TOOL_SCHEMAS,
+                    tool_choice="auto",
+                    temperature=self.temperature,
                     max_tokens=self.max_tokens,
                 )
                 msg = resp.choices[0].message
@@ -254,7 +301,8 @@ class KimiToolAgent:
                 if not calls:
                     logger.info(
                         "kimi tool agent: event id=%s done after %d tool call(s)",
-                        event_row.get("id"), tool_calls_made,
+                        event_row.get("id"),
+                        tool_calls_made,
                     )
                     return msg.content or ""
                 for tc in calls:
@@ -264,19 +312,24 @@ class KimiToolAgent:
                     except (ValueError, TypeError):
                         args = {}
                     result = self._dispatch(tc.function.name, args)
-                    messages.append({
-                        "role": "tool", "tool_call_id": tc.id,
-                        "content": json.dumps(result)[:_MAX_TOOL_RESULT_CHARS],
-                    })
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tc.id,
+                            "content": json.dumps(result)[:_MAX_TOOL_RESULT_CHARS],
+                        }
+                    )
             logger.info(
-                "kimi tool agent: event id=%s hit max_iterations (%d) — "
-                "no final answer", event_row.get("id"), self.max_iterations,
+                "kimi tool agent: event id=%s hit max_iterations (%d) — no final answer",
+                event_row.get("id"),
+                self.max_iterations,
             )
             return ""
         except Exception as exc:
             logger.warning(
                 "kimi tool agent failed for event id=%s: %s",
-                event_row.get("id"), str(exc)[:200],
+                event_row.get("id"),
+                str(exc)[:200],
             )
             return ""
 
@@ -287,9 +340,11 @@ def _assistant_dict(msg: Any, calls: list[Any]) -> dict[str, Any]:
     out: dict[str, Any] = {"role": "assistant", "content": msg.content or ""}
     if calls:
         out["tool_calls"] = [
-            {"id": tc.id, "type": "function",
-             "function": {"name": tc.function.name,
-                          "arguments": tc.function.arguments}}
+            {
+                "id": tc.id,
+                "type": "function",
+                "function": {"name": tc.function.name, "arguments": tc.function.arguments},
+            }
             for tc in calls
         ]
     return out

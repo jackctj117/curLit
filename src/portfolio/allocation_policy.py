@@ -113,9 +113,12 @@ class PolicyConfig:
             initial_pct=float(ov.get("initial_pct", self.initial_pct)),
             ramp_per_month=float(ov.get("ramp_per_month", self.ramp_per_month)),
             max_pct=float(ov.get("max_pct", self.max_pct)),
-            min_paper_sharpe=float(ov.get(
-                "min_paper_sharpe", self.min_paper_sharpe,
-            )),
+            min_paper_sharpe=float(
+                ov.get(
+                    "min_paper_sharpe",
+                    self.min_paper_sharpe,
+                )
+            ),
         )
 
 
@@ -142,10 +145,7 @@ class AllocationPolicy:
         if paper_days < cfg.min_paper_days:
             return PromotionDecision(
                 verdict=PromotionVerdict.HOLD,
-                reason=(
-                    f"Paper days {paper_days} < required "
-                    f"{cfg.min_paper_days}"
-                ),
+                reason=(f"Paper days {paper_days} < required {cfg.min_paper_days}"),
                 paper_days=paper_days,
             )
 
@@ -159,10 +159,7 @@ class AllocationPolicy:
         if sharpe < cfg.min_paper_sharpe:
             return PromotionDecision(
                 verdict=PromotionVerdict.REJECT,
-                reason=(
-                    f"Paper Sharpe {sharpe:.2f} < threshold "
-                    f"{cfg.min_paper_sharpe}"
-                ),
+                reason=(f"Paper Sharpe {sharpe:.2f} < threshold {cfg.min_paper_sharpe}"),
                 paper_days=paper_days,
                 paper_sharpe=sharpe,
             )
@@ -170,10 +167,7 @@ class AllocationPolicy:
         return PromotionDecision(
             verdict=PromotionVerdict.PROMOTE,
             initial_weight=cfg.initial_pct,
-            reason=(
-                f"Paper Sharpe {sharpe:.2f} ≥ {cfg.min_paper_sharpe} over "
-                f"{paper_days}d"
-            ),
+            reason=(f"Paper Sharpe {sharpe:.2f} ≥ {cfg.min_paper_sharpe} over {paper_days}d"),
             paper_days=paper_days,
             paper_sharpe=sharpe,
         )

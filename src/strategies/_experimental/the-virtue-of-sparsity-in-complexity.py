@@ -26,6 +26,7 @@ from sklearn.preprocessing import StandardScaler
 # Config
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class SparseFactorFXConfig:
     """
@@ -54,6 +55,7 @@ class SparseFactorFXConfig:
         Acceptable range: [3, 10].
         Default: 5.
     """
+
     lags: list = field(default_factory=lambda: [1, 2, 3, 5, 10, 21])
     rolling_windows: list = field(default_factory=lambda: [5, 10, 21, 63])
     signal_clip: float = 1.0
@@ -65,9 +67,8 @@ class SparseFactorFXConfig:
 # Feature engineering (pure function — no look-ahead)
 # ---------------------------------------------------------------------------
 
-def _build_features(close: pd.Series,
-                    lags: list[int],
-                    rolling_windows: list[int]) -> pd.DataFrame:
+
+def _build_features(close: pd.Series, lags: list[int], rolling_windows: list[int]) -> pd.DataFrame:
     """
     Build a feature matrix from a single close price series.
 
@@ -97,7 +98,7 @@ def _build_features(close: pd.Series,
     ret_shifted = log_ret.shift(1)  # r_{t-1}, r_{t-2}, ...
     for w in rolling_windows:
         roll = ret_shifted.rolling(window=w, min_periods=max(3, w // 2))
-        frames[f"roll_vol_{w}"]  = roll.std()
+        frames[f"roll_vol_{w}"] = roll.std()
         frames[f"roll_skew_{w}"] = roll.skew()
         frames[f"roll_kurt_{w}"] = roll.kurt()
 
@@ -116,6 +117,7 @@ def _build_features(close: pd.Series,
 # ---------------------------------------------------------------------------
 # Strategy
 # ---------------------------------------------------------------------------
+
 
 class Strategy:
     """

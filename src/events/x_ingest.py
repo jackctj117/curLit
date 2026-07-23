@@ -185,7 +185,7 @@ def source_credibility_note(source: str, category: str | None = None) -> str | N
     mapping carries the load, falling back to the category framing.
     """
     if source and source.startswith("reddit:"):
-        sub = source[len("reddit:"):].strip()
+        sub = source[len("reddit:") :].strip()
         return (
             f"SOURCE: Reddit r/{sub} (community post — crowd-surfaced and "
             "unverified; sometimes carries early primary data — freight "
@@ -195,15 +195,13 @@ def source_credibility_note(source: str, category: str | None = None) -> str | N
         )
     if not source or not source.startswith("x:"):
         return None
-    handle = source[len("x:"):].strip()
+    handle = source[len("x:") :].strip()
     handle_lower = handle.lower()
     detail = _HANDLE_CREDIBILITY.get(handle_lower)
     if detail is None and category:
         detail = _CATEGORY_CREDIBILITY.get(category)
     if detail is None:
-        detail = (
-            "X/social post — a single unverified source; weigh accordingly"
-        )
+        detail = "X/social post — a single unverified source; weigh accordingly"
     return f"SOURCE: X/@{handle} ({detail})."
 
 
@@ -321,15 +319,17 @@ def ingest_posts(
         if theme is None:
             skipped_no_theme += 1
             continue
-        rows.append({
-            "seen_at": _parse_created_at(post.created_at),
-            "source": f"x:{account.handle}",
-            "external_id": f"x:{post.id}",
-            "headline": _normalise_headline(post.text),
-            "url": f"https://x.com/{account.handle}/status/{post.id}",
-            "theme": theme,
-            "now": now,
-        })
+        rows.append(
+            {
+                "seen_at": _parse_created_at(post.created_at),
+                "source": f"x:{account.handle}",
+                "external_id": f"x:{post.id}",
+                "headline": _normalise_headline(post.text),
+                "url": f"https://x.com/{account.handle}/status/{post.id}",
+                "theme": theme,
+                "now": now,
+            }
+        )
         ingested += 1
 
     if not rows:
@@ -356,7 +356,9 @@ def ingest_posts(
         # report zero ingested for this call.
         logger.warning(
             "x-ingest DB write failed for @%s (%d candidate rows): %s",
-            account.handle, len(rows), str(exc)[:200],
+            account.handle,
+            len(rows),
+            str(exc)[:200],
         )
         return IngestResult(
             ingested=0,

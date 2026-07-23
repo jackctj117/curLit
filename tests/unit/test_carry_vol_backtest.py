@@ -30,7 +30,9 @@ _BDAY = "B"
 
 
 def _build_rates(
-    n_days: int, currencies: list[str], rate_map: dict[str, float],
+    n_days: int,
+    currencies: list[str],
+    rate_map: dict[str, float],
 ) -> pd.DataFrame:
     """Constant rates per currency over n_days."""
     idx = pd.date_range("2010-01-04", periods=n_days, freq=_BDAY)
@@ -49,10 +51,7 @@ def _build_fx_returns(
     drift_per_ccy = drift_per_ccy or {c: 0.0 for c in currencies}
     vol_per_ccy = vol_per_ccy or {c: 0.005 for c in currencies}
     return pd.DataFrame(
-        {
-            c: rng.normal(drift_per_ccy[c], vol_per_ccy[c], len(rates_index))
-            for c in currencies
-        },
+        {c: rng.normal(drift_per_ccy[c], vol_per_ccy[c], len(rates_index)) for c in currencies},
         index=rates_index,
     )
 
@@ -86,8 +85,14 @@ class TestSmoke:
             n_days=252,
             currencies=currencies,
             rate_map={
-                "EUR": 0.04, "GBP": 0.045, "AUD": 0.05, "NZD": 0.055,
-                "JPY": 0.001, "CHF": 0.005, "CAD": 0.04, "NOK": 0.04,
+                "EUR": 0.04,
+                "GBP": 0.045,
+                "AUD": 0.05,
+                "NZD": 0.055,
+                "JPY": 0.001,
+                "CHF": 0.005,
+                "CAD": 0.04,
+                "NOK": 0.04,
             },
         )
         fx = _build_fx_returns(rates.index, currencies, seed=1)
@@ -107,8 +112,12 @@ class TestSmoke:
             n_days=252,
             currencies=currencies,
             rate_map={
-                "EUR": 0.04, "GBP": 0.045, "AUD": 0.05, "NZD": 0.055,
-                "JPY": 0.001, "CHF": 0.005,
+                "EUR": 0.04,
+                "GBP": 0.045,
+                "AUD": 0.05,
+                "NZD": 0.055,
+                "JPY": 0.001,
+                "CHF": 0.005,
             },
         )
         fx = _build_fx_returns(rates.index, currencies, seed=2)
@@ -134,15 +143,21 @@ class TestFilterEffect:
             n_days=n,
             currencies=currencies,
             rate_map={
-                "EUR": 0.04, "GBP": 0.045, "AUD": 0.05, "NZD": 0.055,
-                "JPY": 0.001, "CHF": 0.005,
+                "EUR": 0.04,
+                "GBP": 0.045,
+                "AUD": 0.05,
+                "NZD": 0.055,
+                "JPY": 0.001,
+                "CHF": 0.005,
             },
         )
         fx = _build_fx_returns(rates.index, currencies, seed=5)
         # Spike vol from day 500 to 700 (way above the rolling baseline).
         vol = _build_vol_series(
-            rates.index, base_level=10.0,
-            spike_window=(500, 700), spike_level=30.0,
+            rates.index,
+            base_level=10.0,
+            spike_window=(500, 700),
+            spike_level=30.0,
         )
         result = CarryVolBacktester(
             CarryVolFilterConfig(top_k=2, bottom_k=2),
@@ -175,7 +190,9 @@ class TestFilterEffect:
         r2 = bt.run(rates, fx, vol_high)
         # Unfiltered runs should produce identical returns regardless of vol.
         pd.testing.assert_series_equal(
-            r1.unfiltered.returns, r2.unfiltered.returns, check_names=False,
+            r1.unfiltered.returns,
+            r2.unfiltered.returns,
+            check_names=False,
         )
 
 
@@ -187,11 +204,14 @@ class TestDrawdownReduction:
         n = 1500
         idx = pd.date_range("2010-01-04", periods=n, freq=_BDAY)
         rates = pd.DataFrame(
-            {c: [r] * n for c, r in zip(
-                currencies,
-                [0.04, 0.045, 0.05, 0.055, 0.001, 0.005],
-                strict=True,
-            )},
+            {
+                c: [r] * n
+                for c, r in zip(
+                    currencies,
+                    [0.04, 0.045, 0.05, 0.055, 0.001, 0.005],
+                    strict=True,
+                )
+            },
             index=idx,
         )
         # Background returns are mildly positive (carry pays).
@@ -200,12 +220,16 @@ class TestDrawdownReduction:
         # Inject a 200-day adverse window where high-yielders crash hard.
         crash_start, crash_end = 600, 800
         fx_arr[crash_start:crash_end, [3, 2]] = rng.normal(
-            -0.005, 0.01, (crash_end - crash_start, 2),
+            -0.005,
+            0.01,
+            (crash_end - crash_start, 2),
         )  # NZD, AUD crash
         fx = pd.DataFrame(fx_arr, index=idx, columns=currencies)
         # Vol spikes during the same window (filter should detect + cut).
         vol = _build_vol_series(
-            idx, base_level=10.0, spike_window=(crash_start, crash_end),
+            idx,
+            base_level=10.0,
+            spike_window=(crash_start, crash_end),
             spike_level=30.0,
         )
 
@@ -214,7 +238,9 @@ class TestDrawdownReduction:
         ).run(rates, fx, vol)
 
         # Filter should cut the max drawdown (max_dd is negative; filtered > unfiltered means closer to 0).
-        assert result.filtered.metrics["max_drawdown"] > result.unfiltered.metrics["max_drawdown"], (
+        assert (
+            result.filtered.metrics["max_drawdown"] > result.unfiltered.metrics["max_drawdown"]
+        ), (
             f"filter did not reduce drawdown: filtered={result.filtered.metrics['max_dd']:.4f} "
             f"unfiltered={result.unfiltered.metrics['max_dd']:.4f}"
         )
@@ -295,8 +321,12 @@ class TestCostModel:
             n_days=500,
             currencies=currencies,
             rate_map={
-                "EUR": 0.04, "GBP": 0.045, "AUD": 0.05, "NZD": 0.055,
-                "JPY": 0.001, "CHF": 0.005,
+                "EUR": 0.04,
+                "GBP": 0.045,
+                "AUD": 0.05,
+                "NZD": 0.055,
+                "JPY": 0.001,
+                "CHF": 0.005,
             },
         )
         fx = _build_fx_returns(rates.index, currencies, seed=33)

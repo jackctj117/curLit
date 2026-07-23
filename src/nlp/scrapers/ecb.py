@@ -55,9 +55,7 @@ class ECBStatementScraper(CBScraper):
                     continue
                 if d < since:
                     continue
-                url = (
-                    f"https://www.ecb.europa.eu{href}" if href.startswith("/") else href
-                )
+                url = f"https://www.ecb.europa.eu{href}" if href.startswith("/") else href
                 if url in urls_seen:
                     continue
                 urls_seen.add(url)
@@ -69,6 +67,11 @@ class ECBStatementScraper(CBScraper):
         main = soup.find("main") or soup.find("article") or soup.find("body")
         text = main.get_text(separator="\n", strip=True) if main else ""
         return Document(
-            cb="ecb", doc_type=meta["doc_type"], title=meta["title"],
-            date=meta["date"], url=meta["url"], raw_html=html, raw_text=text,
+            cb="ecb",
+            doc_type=meta["doc_type"],
+            title=meta["title"],
+            date=meta["date"],
+            url=meta["url"],
+            raw_html=html,
+            raw_text=text,
         )

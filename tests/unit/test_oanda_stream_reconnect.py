@@ -39,7 +39,8 @@ class _FakeResp:
     def raise_for_status(self) -> None:
         if self.status_code >= 400:
             raise httpx.HTTPStatusError(
-                "err", request=httpx.Request("GET", "http://x"),
+                "err",
+                request=httpx.Request("GET", "http://x"),
                 response=httpx.Response(self.status_code),
             )
 
@@ -80,8 +81,7 @@ class _FakeClient:
 
 def _patch(monkeypatch, script: list) -> None:
     state = {"i": 0}
-    monkeypatch.setattr(httpx, "AsyncClient",
-                        lambda **k: _FakeClient(script, state))
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **k: _FakeClient(script, state))
 
     async def _no_sleep(*_a: object) -> None:
         return None
@@ -91,10 +91,13 @@ def _patch(monkeypatch, script: list) -> None:
 
 def test_reconnects_past_transient_error(monkeypatch):
     # First connect raises ConnectError (the DNS blip); reconnect yields.
-    _patch(monkeypatch, [
-        httpx.ConnectError("nodename nor servname provided"),
-        _FakeResp([_PRICE_LINE]),
-    ])
+    _patch(
+        monkeypatch,
+        [
+            httpx.ConnectError("nodename nor servname provided"),
+            _FakeResp([_PRICE_LINE]),
+        ],
+    )
 
     async def run():  # noqa: ANN202
         gen = _broker().stream_prices(["EUR_USD"])
@@ -148,6 +151,7 @@ def test_stream_populates_slippage_reference_cache(monkeypatch):
     # a monotonic capture time, so _compute_price_bound can reuse it as the
     # slippage reference instead of issuing a fresh /pricing GET.
     import time
+
     _patch(monkeypatch, [_FakeResp([_PRICE_LINE])])
     b = _broker()
 

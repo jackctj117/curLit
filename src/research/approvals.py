@@ -65,7 +65,9 @@ def save_state_atomic(state: LoopState, path: Path | str) -> None:
     p.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps(asdict(state), indent=2, default=str)
     fd, tmp_name = tempfile.mkstemp(
-        dir=p.parent, prefix=f".{p.name}.", suffix=".tmp",
+        dir=p.parent,
+        prefix=f".{p.name}.",
+        suffix=".tmp",
     )
     try:
         with os.fdopen(fd, "w") as fh:
@@ -85,15 +87,15 @@ def save_state_atomic(state: LoopState, path: Path | str) -> None:
 def gate1_pending(state: LoopState) -> list[tuple[str, dict[str, Any]]]:
     """``(extract_hash, entry)`` pairs awaiting GATE 1 approval."""
     return [
-        (h, e) for h, e in state.ideas_processed.items()
-        if e.get("status") == GATE1_PENDING_STATUS
+        (h, e) for h, e in state.ideas_processed.items() if e.get("status") == GATE1_PENDING_STATUS
     ]
 
 
 def gate2_pending(state: LoopState) -> list[tuple[str, dict[str, Any]]]:
     """``(slug, entry)`` pairs awaiting GATE 2 deploy confirmation."""
     return [
-        (slug, e) for slug, e in state.debates_completed.items()
+        (slug, e)
+        for slug, e in state.debates_completed.items()
         if e.get("deploy_status") == GATE2_PENDING_STATUS
     ]
 
@@ -148,7 +150,8 @@ def act_gate1(
     entry["status"] = GATE1_SKIPPED_STATUS
     entry["reason"] = reason or "skipped by operator"
     return ActionResult(
-        ok=True, message=f"SKIPPED: {slug} — {entry['reason']}",
+        ok=True,
+        message=f"SKIPPED: {slug} — {entry['reason']}",
     )
 
 
@@ -165,7 +168,8 @@ def act_gate2(
     """
     if slug not in state.debates_completed:
         return ActionResult(
-            ok=False, message=f"no debate entry for slug={slug!r}",
+            ok=False,
+            message=f"no debate entry for slug={slug!r}",
         )
     entry = state.debates_completed[slug]
     if entry.get("deploy_status") != GATE2_PENDING_STATUS:

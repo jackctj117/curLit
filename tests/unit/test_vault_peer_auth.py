@@ -44,6 +44,7 @@ def _reset_warn_flag(monkeypatch):
 
 # --- peer_uid --------------------------------------------------------------
 
+
 def test_peer_uid_socketpair_reports_own_uid():
     a, b = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
@@ -56,13 +57,16 @@ def test_peer_uid_socketpair_reports_own_uid():
 
 def test_peer_uid_none_on_query_failure(monkeypatch):
     """A socket that can't answer the credential query -> None (fail closed)."""
+
     class Broken:
         def getsockopt(self, *args):
             raise OSError("no creds")
+
     assert vault_agent.peer_uid(Broken()) is None
 
 
 # --- peer_authorized branches ---------------------------------------------
+
 
 def test_peer_authorized_same_uid():
     a, b = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -90,6 +94,7 @@ def test_peer_authorized_fails_closed_on_unknown_platform(monkeypatch, caplog):
 
 
 # --- end-to-end over a real AF_UNIX socket --------------------------------
+
 
 async def _request(path: str, payload: dict) -> bytes:
     """One framed request/response round-trip (CL-1ho7 wire protocol).
@@ -156,6 +161,7 @@ def test_agent_drops_client_when_platform_unsupported(sock_dir, monkeypatch):
 
 
 # --- socket file / directory hardening ------------------------------------
+
 
 def test_socket_file_mode_is_0600(sock_dir):
     async def run() -> None:

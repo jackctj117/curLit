@@ -32,15 +32,18 @@ def main(argv: list[str] | None = None) -> int:
         description="Diff OANDA fills vs internal trade journal.",
     )
     p.add_argument(
-        "--date", default=None,
+        "--date",
+        default=None,
         help="UTC date to reconcile (default: today). Format YYYY-MM-DD.",
     )
     p.add_argument(
-        "--practice", action="store_true",
+        "--practice",
+        action="store_true",
         help="Use OANDA practice host instead of fxtrade",
     )
     p.add_argument(
-        "--quiet-success", action="store_true",
+        "--quiet-success",
+        action="store_true",
         help="Print nothing on a clean day (cron-friendly)",
     )
     args = p.parse_args(argv)
@@ -56,10 +59,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
-    base = (
-        "https://api-fxpractice.oanda.com" if args.practice
-        else "https://api-fxtrade.oanda.com"
-    )
+    base = "https://api-fxpractice.oanda.com" if args.practice else "https://api-fxtrade.oanda.com"
     client = httpx.Client(
         base_url=base,
         headers={
@@ -76,6 +76,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     from src.runtime.run_engine import _build_db_engine
+
     engine = _build_db_engine()
 
     report = run_daily_reconciliation(engine, client, account_id, date=date)
@@ -83,14 +84,12 @@ def main(argv: list[str] | None = None) -> int:
     if report.is_clean:
         if not args.quiet_success:
             print(
-                f"Reconciliation clean for {date.date()}: "
-                f"{report.matched} matched fills",
+                f"Reconciliation clean for {date.date()}: {report.matched} matched fills",
             )
         return 0
 
     print(
-        f"Reconciliation found {len(report.mismatches)} mismatches for "
-        f"{date.date()}:",
+        f"Reconciliation found {len(report.mismatches)} mismatches for {date.date()}:",
         file=sys.stderr,
     )
     for m in report.mismatches:

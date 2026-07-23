@@ -64,10 +64,7 @@ def _validate_instrument(theme: str, entry: dict[str, object]) -> PlaybookInstru
         msg = f"playbook {theme!r}: instrument entry missing 'instrument'"
         raise ValueError(msg)
     if kind not in VALID_KINDS:
-        msg = (
-            f"playbook {theme!r} / {instrument}: kind {kind!r} "
-            f"not in {sorted(VALID_KINDS)}"
-        )
+        msg = f"playbook {theme!r} / {instrument}: kind {kind!r} not in {sorted(VALID_KINDS)}"
         raise ValueError(msg)
     if direction not in VALID_DIRECTIONS:
         msg = (
@@ -88,8 +85,10 @@ def _validate_instrument(theme: str, entry: dict[str, object]) -> PlaybookInstru
         )
         raise ValueError(msg)
     return PlaybookInstrument(
-        instrument=instrument, kind=kind,
-        direction=direction, rationale=rationale,
+        instrument=instrument,
+        kind=kind,
+        direction=direction,
+        rationale=rationale,
     )
 
 
@@ -113,15 +112,11 @@ def load_playbooks(
         if not isinstance(body, dict):
             msg = f"playbook {key!r}: body must be a mapping"
             raise ValueError(msg)
-        watch_terms = tuple(
-            str(t).strip() for t in body.get("watch_terms") or [] if str(t).strip()
-        )
+        watch_terms = tuple(str(t).strip() for t in body.get("watch_terms") or [] if str(t).strip())
         if not watch_terms:
             msg = f"playbook {key!r}: watch_terms must be a non-empty list"
             raise ValueError(msg)
-        instruments = tuple(
-            _validate_instrument(key, e) for e in body.get("instruments") or []
-        )
+        instruments = tuple(_validate_instrument(key, e) for e in body.get("instruments") or [])
         if not instruments:
             msg = f"playbook {key!r}: instruments must be a non-empty list"
             raise ValueError(msg)

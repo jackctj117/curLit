@@ -37,7 +37,8 @@ def _build_asset_returns(n_days: int = 800, seed: int = 0) -> pd.Series:
 
 
 def _build_known_profitable_strategy(
-    asset: pd.Series, hit_rate: float = 0.70,
+    asset: pd.Series,
+    hit_rate: float = 0.70,
 ) -> tuple[pd.Series, pd.Series]:
     """Build a strategy with a known positive expected return.
 
@@ -84,17 +85,24 @@ class TestAcceptance:
         asset = _build_asset_returns()
         strat, signal = _build_random_strategy(asset)
         # Provide optional inputs so all 6 nulls evaluate.
-        basket = pd.DataFrame({
-            "a": _build_asset_returns(seed=1).values,
-            "b": _build_asset_returns(seed=2).values,
-            "c": _build_asset_returns(seed=3).values,
-        }, index=asset.index)
-        yields = pd.DataFrame({
-            "base": np.full(len(asset), 0.04),
-            "quote": np.full(len(asset), 0.02),
-        }, index=asset.index)
+        basket = pd.DataFrame(
+            {
+                "a": _build_asset_returns(seed=1).values,
+                "b": _build_asset_returns(seed=2).values,
+                "c": _build_asset_returns(seed=3).values,
+            },
+            index=asset.index,
+        )
+        yields = pd.DataFrame(
+            {
+                "base": np.full(len(asset), 0.04),
+                "quote": np.full(len(asset), 0.02),
+            },
+            index=asset.index,
+        )
         fw = NullHypothesisFramework(
-            n_simulations=_TEST_N_SIMULATIONS, seed=42,
+            n_simulations=_TEST_N_SIMULATIONS,
+            seed=42,
         )
         report = fw.test_strategy(
             strategy_returns=strat,
@@ -104,8 +112,12 @@ class TestAcceptance:
             yields=yields,
         )
         assert set(report.results.keys()) == {
-            "random_longshort", "random_autocorr", "buy_and_hold",
-            "equal_weight_basket", "simple_momentum", "simple_carry",
+            "random_longshort",
+            "random_autocorr",
+            "buy_and_hold",
+            "equal_weight_basket",
+            "simple_momentum",
+            "simple_carry",
         }
         # All 6 evaluated.
         for name, r in report.results.items():
@@ -116,7 +128,8 @@ class TestAcceptance:
         asset = _build_asset_returns(seed=10)
         strat, signal = _build_random_strategy(asset)
         fw = NullHypothesisFramework(
-            n_simulations=_TEST_N_SIMULATIONS, seed=11,
+            n_simulations=_TEST_N_SIMULATIONS,
+            seed=11,
         )
         report = fw.test_strategy(
             strategy_returns=strat,
@@ -128,15 +141,14 @@ class TestAcceptance:
         # And random_longshort should NOT reject H0 at alpha=0.05 typically.
         random_p = report.results["random_longshort"].p_value
         assert random_p is not None
-        assert random_p > 0.05, (
-            f"random strategy fluked p={random_p:.3f} on random_longshort"
-        )
+        assert random_p > 0.05, f"random strategy fluked p={random_p:.3f} on random_longshort"
 
     def test_known_profitable_strategy_shows_edge(self) -> None:
         asset = _build_asset_returns(seed=20)
         strat, signal = _build_known_profitable_strategy(asset)
         fw = NullHypothesisFramework(
-            n_simulations=_TEST_N_SIMULATIONS, seed=21,
+            n_simulations=_TEST_N_SIMULATIONS,
+            seed=21,
         )
         report = fw.test_strategy(
             strategy_returns=strat,
@@ -171,8 +183,11 @@ class TestOptionalInputs:
         assert report.results["equal_weight_basket"].evaluated is False
         # Other 5 still evaluate.
         for name in (
-            "random_longshort", "random_autocorr", "buy_and_hold",
-            "simple_momentum", "simple_carry",
+            "random_longshort",
+            "random_autocorr",
+            "buy_and_hold",
+            "simple_momentum",
+            "simple_carry",
         ):
             assert report.results[name].evaluated, f"{name} not evaluated"
 
@@ -203,7 +218,9 @@ class TestReportingHelpers:
         strat, signal = _build_random_strategy(asset)
         fw = NullHypothesisFramework(n_simulations=_TEST_N_SIMULATIONS, seed=55)
         report = fw.test_strategy(
-            strategy_returns=strat, asset_returns=asset, signal=signal,
+            strategy_returns=strat,
+            asset_returns=asset,
+            signal=signal,
         )
         d = report.to_dict()
         assert "edge_exists" in d
@@ -215,7 +232,9 @@ class TestReportingHelpers:
         strat, signal = _build_known_profitable_strategy(asset)
         fw = NullHypothesisFramework(n_simulations=_TEST_N_SIMULATIONS, seed=61)
         report = fw.test_strategy(
-            strategy_returns=strat, asset_returns=asset, signal=signal,
+            strategy_returns=strat,
+            asset_returns=asset,
+            signal=signal,
         )
         passed = set(report.passed_nulls())
         failed = set(report.failed_nulls())

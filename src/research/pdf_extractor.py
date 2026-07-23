@@ -43,8 +43,11 @@ HttpGetBytes = Callable[[str], bytes]
 
 def _default_http_get_bytes(url: str) -> bytes:
     import httpx
+
     resp = httpx.get(
-        url, timeout=30.0, follow_redirects=True,
+        url,
+        timeout=30.0,
+        follow_redirects=True,
         headers={"User-Agent": "curLit-research/1.0 (+research@curlit)"},
     )
     resp.raise_for_status()
@@ -104,7 +107,9 @@ def extract_pdf_text(
         except Exception as exc:
             logger.warning(
                 "PDF parse failed for %s: %s: %s",
-                url, type(exc).__name__, exc,
+                url,
+                type(exc).__name__,
+                exc,
             )
             return ""
         text = _normalize_text("\n".join(pages))
@@ -118,7 +123,8 @@ def extract_pdf_text(
 
 
 def enrich_paper_with_pdf(
-    paper: Any, http_get_bytes: HttpGetBytes | None = None,
+    paper: Any,
+    http_get_bytes: HttpGetBytes | None = None,
 ) -> Any:
     """Convenience: if ``paper`` has a pdf_url and an empty/short abstract,
     fill paper.full_text from the PDF. Returns the (possibly mutated)

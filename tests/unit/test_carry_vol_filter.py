@@ -47,7 +47,10 @@ class _FakeDataProvider:
         return None
 
     def get_series(
-        self, name: str, start: datetime, end: datetime,
+        self,
+        name: str,
+        start: datetime,
+        end: datetime,
     ) -> list[float] | None:
         return self.vol_series
 
@@ -62,24 +65,23 @@ class _FakeBroker:
 
 def _build_prices(quote_per_pair: dict[str, float]) -> dict[str, dict[str, Any]]:
     """Build the price-tick dict the engine passes to generate_intents."""
-    return {
-        pair: {"bid": p - 0.0001, "ask": p + 0.0001}
-        for pair, p in quote_per_pair.items()
-    }
+    return {pair: {"bid": p - 0.0001, "ask": p + 0.0001} for pair, p in quote_per_pair.items()}
 
 
 # Default G10-ish prices — bid/ask within 1 pip of mid.
-_DEFAULT_PRICES = _build_prices({
-    "EURUSD": 1.1000,
-    "USDJPY": 150.00,
-    "GBPUSD": 1.2500,
-    "USDCHF": 0.9000,
-    "USDCAD": 1.3500,
-    "AUDUSD": 0.6700,
-    "NZDUSD": 0.6100,
-    "USDNOK": 10.50,
-    "USDSEK": 10.80,
-})
+_DEFAULT_PRICES = _build_prices(
+    {
+        "EURUSD": 1.1000,
+        "USDJPY": 150.00,
+        "GBPUSD": 1.2500,
+        "USDCHF": 0.9000,
+        "USDCAD": 1.3500,
+        "AUDUSD": 0.6700,
+        "NZDUSD": 0.6100,
+        "USDNOK": 10.50,
+        "USDSEK": 10.80,
+    }
+)
 
 
 # =============================================================================
@@ -129,8 +131,14 @@ class TestCurrencyMapping:
 class TestBasketConstruction:
     def test_top_k_bottom_k(self) -> None:
         rates = {
-            "EUR": 0.04, "JPY": 0.005, "GBP": 0.045, "AUD": 0.045,
-            "NZD": 0.05, "CHF": 0.01, "CAD": 0.04, "NOK": 0.04,
+            "EUR": 0.04,
+            "JPY": 0.005,
+            "GBP": 0.045,
+            "AUD": 0.045,
+            "NZD": 0.05,
+            "CHF": 0.01,
+            "CAD": 0.04,
+            "NOK": 0.04,
         }
         strat = CarryVolFilterStrategy(CarryVolFilterConfig(top_k=3, bottom_k=3))
         b = strat._construct_baskets(rates)
@@ -151,25 +159,34 @@ class TestBasketConstruction:
         assert b["short"] == []
 
     def test_min_spread_gate(self) -> None:
-        strat = CarryVolFilterStrategy(CarryVolFilterConfig(
-            top_k=2, bottom_k=2, min_rate_spread=0.05,
-        ))
+        strat = CarryVolFilterStrategy(
+            CarryVolFilterConfig(
+                top_k=2,
+                bottom_k=2,
+                min_rate_spread=0.05,
+            )
+        )
         # Tiny spread between top and bottom — below gate.
-        b = strat._construct_baskets({
-            "EUR": 0.04, "JPY": 0.04, "GBP": 0.04, "AUD": 0.04, "NZD": 0.04, "CHF": 0.04,
-        })
+        b = strat._construct_baskets(
+            {
+                "EUR": 0.04,
+                "JPY": 0.04,
+                "GBP": 0.04,
+                "AUD": 0.04,
+                "NZD": 0.04,
+                "CHF": 0.04,
+            }
+        )
         assert b["long"] == []
         assert b["short"] == []
 
     def test_usd_excluded_from_basket(self) -> None:
-        rates = {f"X{i}": 0.04 + i*0.001 for i in range(8)}
+        rates = {f"X{i}": 0.04 + i * 0.001 for i in range(8)}
         rates["USD"] = 0.10  # very high, would dominate if included
         strat = CarryVolFilterStrategy(CarryVolFilterConfig(top_k=2, bottom_k=2))
         # We're using made-up tickers — but USD must not appear in baskets.
         b = strat._construct_baskets(rates)
-        ccys_in_baskets = (
-            [c for c, _, _ in b["long"]] + [c for c, _, _ in b["short"]]
-        )
+        ccys_in_baskets = [c for c, _, _ in b["long"]] + [c for c, _, _ in b["short"]]
         assert "USD" not in ccys_in_baskets
 
 
@@ -267,7 +284,9 @@ class TestRebalanceScheduling:
 
 class TestGenerateIntents:
     def _strategy(
-        self, rates: dict[str, float], vol_series: list[float] | None = None,
+        self,
+        rates: dict[str, float],
+        vol_series: list[float] | None = None,
     ) -> CarryVolFilterStrategy:
         return CarryVolFilterStrategy(
             CarryVolFilterConfig(top_k=3, bottom_k=3),
@@ -278,8 +297,15 @@ class TestGenerateIntents:
     def test_initial_rebalance_emits_long_short_intents(self) -> None:
         # All 9 non-USD G10 with distinct rates so baskets are well-defined.
         rates = {
-            "EUR": 0.04, "JPY": 0.005, "GBP": 0.045, "AUD": 0.045,
-            "NZD": 0.05, "CHF": 0.01, "CAD": 0.04, "NOK": 0.04, "SEK": 0.03,
+            "EUR": 0.04,
+            "JPY": 0.005,
+            "GBP": 0.045,
+            "AUD": 0.045,
+            "NZD": 0.05,
+            "CHF": 0.01,
+            "CAD": 0.04,
+            "NOK": 0.04,
+            "SEK": 0.03,
             "USD": 0.045,
         }
         strat = self._strategy(rates)
@@ -305,8 +331,15 @@ class TestGenerateIntents:
         # Set up: first call with low vol → builds positions.
         # Second call with vol spike → should emit downsizing intents.
         rates = {
-            "EUR": 0.04, "JPY": 0.005, "GBP": 0.045, "AUD": 0.045,
-            "NZD": 0.05, "CHF": 0.01, "CAD": 0.04, "NOK": 0.04, "SEK": 0.03,
+            "EUR": 0.04,
+            "JPY": 0.005,
+            "GBP": 0.045,
+            "AUD": 0.045,
+            "NZD": 0.05,
+            "CHF": 0.01,
+            "CAD": 0.04,
+            "NOK": 0.04,
+            "SEK": 0.03,
             "USD": 0.045,
         }
         # First call: stable history, no z spike.
@@ -375,15 +408,28 @@ class TestInterface:
 _WIDE_PRICES = {
     pair: {"bid": p * 0.99, "ask": p * 1.01}
     for pair, p in {
-        "EURUSD": 1.1000, "USDJPY": 150.00, "GBPUSD": 1.2500,
-        "USDCHF": 0.9000, "USDCAD": 1.3500, "AUDUSD": 0.6700,
-        "NZDUSD": 0.6100, "USDNOK": 10.50, "USDSEK": 10.80,
+        "EURUSD": 1.1000,
+        "USDJPY": 150.00,
+        "GBPUSD": 1.2500,
+        "USDCHF": 0.9000,
+        "USDCAD": 1.3500,
+        "AUDUSD": 0.6700,
+        "NZDUSD": 0.6100,
+        "USDNOK": 10.50,
+        "USDSEK": 10.80,
     }.items()
 }
 
 _RATES = {
-    "EUR": 0.04, "JPY": 0.005, "GBP": 0.045, "AUD": 0.045,
-    "NZD": 0.05, "CHF": 0.01, "CAD": 0.04, "NOK": 0.04, "SEK": 0.03,
+    "EUR": 0.04,
+    "JPY": 0.005,
+    "GBP": 0.045,
+    "AUD": 0.045,
+    "NZD": 0.05,
+    "CHF": 0.01,
+    "CAD": 0.04,
+    "NOK": 0.04,
+    "SEK": 0.03,
     "USD": 0.045,
 }
 # Baskets from _RATES: long = NZD, GBP, AUD; short = JPY, CHF, SEK.
@@ -434,8 +480,11 @@ class TestLiquidityGate:
         strat = self._strategy(LiquidityProfile())
         strat.current_positions = {
             ccy: CarryPosition(
-                currency=ccy, side=1, weight=1 / 3,
-                entry_ts=datetime(2026, 3, 1, tzinfo=UTC), reference_rate=0.04,
+                currency=ccy,
+                side=1,
+                weight=1 / 3,
+                entry_ts=datetime(2026, 3, 1, tzinfo=UTC),
+                reference_rate=0.04,
             )
             for ccy in _BASKET_CCYS
         }
@@ -454,22 +503,26 @@ class TestLiquidityGate:
 class TestStatePersistence:
     def _pos(self, ccy: str, pair: str, qty: float) -> CarryPosition:
         return CarryPosition(
-            currency=ccy, side=1 if qty > 0 else -1, weight=1 / 3,
-            entry_ts=datetime.now(UTC), reference_rate=0.04,
-            pair=pair, quantity=qty,
+            currency=ccy,
+            side=1 if qty > 0 else -1,
+            weight=1 / 3,
+            entry_ts=datetime.now(UTC),
+            reference_rate=0.04,
+            pair=pair,
+            quantity=qty,
         )
 
     def test_open_positions_view_keyed_by_pair_with_quantity(self) -> None:
         s = CarryVolFilterStrategy(CarryVolFilterConfig())
         s.current_positions["GBP"] = self._pos("GBP", "GBPUSD", 5000.0)
         op = s.open_positions
-        assert "GBPUSD" in op            # keyed by PAIR (reconciler dialect)
+        assert "GBPUSD" in op  # keyed by PAIR (reconciler dialect)
         assert op["GBPUSD"].quantity == 5000.0
 
     def test_zero_qty_or_no_pair_not_exposed(self) -> None:
         s = CarryVolFilterStrategy(CarryVolFilterConfig())
         s.current_positions["GBP"] = self._pos("GBP", "GBPUSD", 0.0)  # flat
-        s.current_positions["EUR"] = self._pos("EUR", "", 5000.0)     # no pair
+        s.current_positions["EUR"] = self._pos("EUR", "", 5000.0)  # no pair
         assert s.open_positions == {}
 
     def test_save_reload_roundtrip(self, tmp_path) -> None:
@@ -492,14 +545,15 @@ class TestStatePersistence:
             data_provider=_FakeDataProvider(rates=_RATES),
         )
         asyncio.run(s1.generate_intents(_DEFAULT_PRICES, _FakeBroker()))
-        assert len(s1.open_positions) == 6            # 6 basket legs, by pair
+        assert len(s1.open_positions) == 6  # 6 basket legs, by pair
         s2 = CarryVolFilterStrategy(
             CarryVolFilterConfig(top_k=3, bottom_k=3, state_path=path),
         )
-        assert len(s2.open_positions) == 6            # survived the restart
+        assert len(s2.open_positions) == 6  # survived the restart
 
     def test_corrupt_file_fails_loud(self, tmp_path) -> None:
         import json
+
         path = tmp_path / "carry.json"
         path.write_text("{ not json")
         with pytest.raises(json.JSONDecodeError):

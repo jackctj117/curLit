@@ -55,14 +55,18 @@ class _FakeCoordinator:
 
 def _remove_args(strategy: str, *, confirm: bool = True) -> argparse.Namespace:
     return argparse.Namespace(
-        strategy=strategy, confirm=confirm, broker="paper",
+        strategy=strategy,
+        confirm=confirm,
+        broker="paper",
     )
 
 
 def test_remove_seeds_memory_before_remove_strategy(monkeypatch):
     coord = _FakeCoordinator(["rate_diff_mr", "event_driven"])
     monkeypatch.setattr(
-        manage_strategies, "_build_coordinator", lambda mode: coord,
+        manage_strategies,
+        "_build_coordinator",
+        lambda mode: coord,
     )
 
     rc = manage_strategies.cmd_remove(_remove_args("rate_diff_mr"))
@@ -75,7 +79,9 @@ def test_remove_seeds_memory_before_remove_strategy(monkeypatch):
 def test_remove_without_confirm_refuses_and_does_not_touch_state(monkeypatch):
     coord = _FakeCoordinator(["rate_diff_mr"])
     monkeypatch.setattr(
-        manage_strategies, "_build_coordinator", lambda mode: coord,
+        manage_strategies,
+        "_build_coordinator",
+        lambda mode: coord,
     )
 
     rc = manage_strategies.cmd_remove(
@@ -90,7 +96,9 @@ def test_remove_without_confirm_refuses_and_does_not_touch_state(monkeypatch):
 def test_remove_unknown_strategy_refuses(monkeypatch):
     coord = _FakeCoordinator(["rate_diff_mr"])
     monkeypatch.setattr(
-        manage_strategies, "_build_coordinator", lambda mode: coord,
+        manage_strategies,
+        "_build_coordinator",
+        lambda mode: coord,
     )
 
     rc = manage_strategies.cmd_remove(_remove_args("nope"))
@@ -103,7 +111,9 @@ def test_main_remove_end_to_end_seeds_before_removal(monkeypatch):
     """Through argparse: main(['remove', ...]) reaches the seeded path."""
     coord = _FakeCoordinator(["carry_vol"])
     monkeypatch.setattr(
-        manage_strategies, "_build_coordinator", lambda mode: coord,
+        manage_strategies,
+        "_build_coordinator",
+        lambda mode: coord,
     )
     # Keep the unit test hermetic — don't load the operator's .env.
     monkeypatch.setattr(manage_strategies, "load_project_env", lambda: None)
@@ -128,17 +138,23 @@ def test_build_coordinator_reuses_run_engine_builders(monkeypatch):
     fake_config = {"strategies": []}
 
     monkeypatch.setattr(
-        run_engine, "load_config", lambda path: calls.append("config") or fake_config,
+        run_engine,
+        "load_config",
+        lambda path: calls.append("config") or fake_config,
     )
     monkeypatch.setattr(
-        run_engine, "build_broker",
+        run_engine,
+        "build_broker",
         lambda mode: calls.append(f"broker:{mode}") or fake_broker,
     )
     monkeypatch.setattr(
-        run_engine, "build_trade_journal", lambda: calls.append("journal"),
+        run_engine,
+        "build_trade_journal",
+        lambda: calls.append("journal"),
     )
     monkeypatch.setattr(
-        run_engine, "build_blackout_evaluator",
+        run_engine,
+        "build_blackout_evaluator",
         lambda config: calls.append("blackout"),
     )
 
@@ -152,7 +168,10 @@ def test_build_coordinator_reuses_run_engine_builders(monkeypatch):
     monkeypatch.setattr(run_engine, "build_strategies", fake_build_strategies)
 
     def fake_build_coordinator(
-        config: Any, strategies: Any, oms: Any, broker: Any,
+        config: Any,
+        strategies: Any,
+        oms: Any,
+        broker: Any,
         blackout_evaluator: Any = None,
     ) -> Any:
         assert strategies is fake_strategies
@@ -166,7 +185,11 @@ def test_build_coordinator_reuses_run_engine_builders(monkeypatch):
 
     assert coord is sentinel_coord
     assert calls == [
-        "config", "broker:paper", "journal", "strategies", "blackout",
+        "config",
+        "broker:paper",
+        "journal",
+        "strategies",
+        "blackout",
         "coordinator",
     ]
 
@@ -181,10 +204,14 @@ def test_build_coordinator_fails_loud_when_state_unreachable(monkeypatch):
     monkeypatch.setattr(run_engine, "build_broker", lambda mode: object())
     monkeypatch.setattr(run_engine, "build_trade_journal", lambda: None)
     monkeypatch.setattr(
-        run_engine, "build_blackout_evaluator", lambda config: None,
+        run_engine,
+        "build_blackout_evaluator",
+        lambda config: None,
     )
     monkeypatch.setattr(
-        run_engine, "build_strategies", lambda config, broker, oms: [],
+        run_engine,
+        "build_strategies",
+        lambda config, broker, oms: [],
     )
     monkeypatch.setattr(
         run_engine,

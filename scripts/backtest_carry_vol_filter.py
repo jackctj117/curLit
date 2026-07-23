@@ -84,7 +84,8 @@ PAIR_DIRECTION: dict[str, tuple[str, int]] = {
 
 
 def _load_data(
-    start: datetime, end: datetime,
+    start: datetime,
+    end: datetime,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.Series]:
     """Load (rates, fx_returns_to_long_foreign, vix) — all daily, aligned.
 
@@ -110,7 +111,8 @@ def _load_data(
                 "  AND observation_date BETWEEN :s AND :e "
                 "ORDER BY observation_date, release_date DESC"
             ),
-            engine, params={"sid": series_id, "s": start.date(), "e": end.date()},
+            engine,
+            params={"sid": series_id, "s": start.date(), "e": end.date()},
         )
         if df.empty:
             logger.warning("No rate data for %s (%s)", ccy, series_id)
@@ -133,11 +135,15 @@ def _load_data(
             "  AND ts BETWEEN :s AND :e "
             "ORDER BY ts"
         ),
-        engine, params={"pairs": pairs, "s": start, "e": end},
+        engine,
+        params={"pairs": pairs, "s": start, "e": end},
     )
     fx_df["ts"] = pd.to_datetime(fx_df["ts"], utc=True).dt.tz_localize(None)
     fx_pivot = fx_df.pivot_table(
-        index="ts", columns="symbol", values="close", aggfunc="last",
+        index="ts",
+        columns="symbol",
+        values="close",
+        aggfunc="last",
     ).astype(float)
 
     # Build a "long-foreign-vs-USD spot" series per currency by applying
@@ -154,10 +160,10 @@ def _load_data(
     # --- VIX -----------------------------------------------------------
     vix_df = pd.read_sql(
         text(
-            "SELECT ts, close FROM prices WHERE symbol = 'VIX' "
-            "AND ts BETWEEN :s AND :e ORDER BY ts"
+            "SELECT ts, close FROM prices WHERE symbol = 'VIX' AND ts BETWEEN :s AND :e ORDER BY ts"
         ),
-        engine, params={"s": start, "e": end},
+        engine,
+        params={"s": start, "e": end},
     )
     vix_df["ts"] = pd.to_datetime(vix_df["ts"], utc=True).dt.tz_localize(None)
     vix = vix_df.set_index("ts")["close"].astype(float).rename("VIX")
@@ -187,7 +193,8 @@ def _vol_z_exposure(vix: pd.Series, lookback: int = 120) -> pd.Series:
 
 
 def _rebalance_dates(
-    index: pd.DatetimeIndex, rebalance_day: int = 1,
+    index: pd.DatetimeIndex,
+    rebalance_day: int = 1,
 ) -> list[pd.Timestamp]:
     """First business day on or after rebalance_day of each month."""
     out: list[pd.Timestamp] = []
@@ -203,8 +210,11 @@ def _rebalance_dates(
 
 
 def _build_weights(
-    rates: pd.DataFrame, top_k: int, bottom_k: int,
-    rebalance_dates: list[pd.Timestamp], tradable_ccys: list[str],
+    rates: pd.DataFrame,
+    top_k: int,
+    bottom_k: int,
+    rebalance_dates: list[pd.Timestamp],
+    tradable_ccys: list[str],
 ) -> pd.DataFrame:
     """Per-rebalance-date weights — equal-weight long top-k, equal-weight short bottom-k.
 
@@ -237,8 +247,11 @@ def _build_weights(
 
 
 def _compute_pnl(
-    rates: pd.DataFrame, fx_returns: pd.DataFrame, vix: pd.Series,
-    weights: pd.DataFrame, cost_per_turn: float,
+    rates: pd.DataFrame,
+    fx_returns: pd.DataFrame,
+    vix: pd.Series,
+    weights: pd.DataFrame,
+    cost_per_turn: float,
 ) -> pd.Series:
     """Daily portfolio returns including carry, vol-scaling, and rebalance costs."""
     # Forward-fill weights from each rebalance date to the next.
@@ -273,12 +286,15 @@ def _per_year_metrics(returns: pd.Series) -> list[dict[str, Any]]:
         sharpe = (group.mean() / group.std()) * np.sqrt(252) if group.std() > 0 else 0.0
         equity = (1 + group).cumprod()
         max_dd = float(((equity - equity.cummax()) / equity.cummax()).min())
-        out.append({
-            "year": int(year), "n_days": int(len(group)),
-            "sharpe": float(sharpe),
-            "total_return": float((1 + group).prod() - 1),
-            "max_drawdown": max_dd,
-        })
+        out.append(
+            {
+                "year": int(year),
+                "n_days": int(len(group)),
+                "sharpe": float(sharpe),
+                "total_return": float((1 + group).prod() - 1),
+                "max_drawdown": max_dd,
+            }
+        )
     return out
 
 
@@ -293,12 +309,18 @@ def _print_summary(report: dict[str, Any]) -> None:
     print()
     print("=" * 70)
     print(f"Carry+VolFilter — {report['data_window']['start']} → {report['data_window']['end']}")
-    print(f"top_k={report['config']['top_k']} bottom_k={report['config']['bottom_k']}, "
-          f"rebalances={report['n_rebalances']}, n_days={report['data_window']['n_days']}")
+    print(
+        f"top_k={report['config']['top_k']} bottom_k={report['config']['bottom_k']}, "
+        f"rebalances={report['n_rebalances']}, n_days={report['data_window']['n_days']}"
+    )
     print("=" * 70)
-    print(f"  Sharpe:        {m['sharpe']:>7.3f}    95% CI: [{ci['low']:.3f}, {ci['high']:.3f}]   {cmp_['sharpe_in_expected_range']} (expect {cmp_['expected_sharpe_range']})")
+    print(
+        f"  Sharpe:        {m['sharpe']:>7.3f}    95% CI: [{ci['low']:.3f}, {ci['high']:.3f}]   {cmp_['sharpe_in_expected_range']} (expect {cmp_['expected_sharpe_range']})"
+    )
     print(f"  Sortino:       {m['sortino']:>7.3f}")
-    print(f"  Max drawdown:  {m['max_drawdown']:>7.1%}                                {cmp_['max_drawdown_in_expected_range']} (expect {cmp_['expected_max_drawdown_range']})")
+    print(
+        f"  Max drawdown:  {m['max_drawdown']:>7.1%}                                {cmp_['max_drawdown_in_expected_range']} (expect {cmp_['expected_max_drawdown_range']})"
+    )
     print(f"  Calmar:        {m['calmar']:>7.3f}")
     print(f"  Hit rate:      {m['hit_rate']:>7.1%}")
     print(f"  Profit factor: {m['profit_factor']:>7.3f}")
@@ -309,8 +331,10 @@ def _print_summary(report: dict[str, Any]) -> None:
     print()
     print("  Per-year stability:")
     for y in report["per_year"]:
-        print(f"    {y['year']}  sharpe={y['sharpe']:>6.2f}  return={y['total_return']:>+6.1%}  "
-              f"maxDD={y['max_drawdown']:>+6.1%}  n={y['n_days']}")
+        print(
+            f"    {y['year']}  sharpe={y['sharpe']:>6.2f}  return={y['total_return']:>+6.1%}  "
+            f"maxDD={y['max_drawdown']:>+6.1%}  n={y['n_days']}"
+        )
     print("=" * 70)
 
 
@@ -328,7 +352,8 @@ def main() -> int:
     parser.add_argument("--top-k", type=int, default=3)
     parser.add_argument("--bottom-k", type=int, default=3)
     parser.add_argument(
-        "--out", type=Path,
+        "--out",
+        type=Path,
         default=Path("reports/backtest_carry_vol_filter.json"),
     )
     parser.add_argument("--bootstrap-n", type=int, default=5000)
@@ -349,7 +374,10 @@ def main() -> int:
     rates, fx_returns, vix = _load_data(start, end)
     logger.info(
         "rates shape=%s ccys=%s; fx_returns shape=%s ccys=%s; vix len=%d",
-        rates.shape, list(rates.columns), fx_returns.shape, list(fx_returns.columns),
+        rates.shape,
+        list(rates.columns),
+        fx_returns.shape,
+        list(fx_returns.columns),
         len(vix),
     )
 
@@ -359,7 +387,8 @@ def main() -> int:
     if len(tradable) < args.top_k + args.bottom_k:
         logger.error(
             "Only %d tradable currencies but top_k+bottom_k=%d. Need to seed more.",
-            len(tradable), args.top_k + args.bottom_k,
+            len(tradable),
+            args.top_k + args.bottom_k,
         )
         return 1
     logger.info("Tradable currencies: %s", tradable)
@@ -385,7 +414,9 @@ def main() -> int:
     metrics = PerformanceAnalytics.metrics(daily_returns)
     logger.info("Bootstrapping Sharpe 95%% CI (n=%d)", args.bootstrap_n)
     ci_low, ci_high = stationary_bootstrap_sharpe_ci(
-        daily_returns, block_mean_len=20, n_bootstrap=args.bootstrap_n,
+        daily_returns,
+        block_mean_len=20,
+        n_bootstrap=args.bootstrap_n,
         confidence=0.95,
     )
 
@@ -408,8 +439,12 @@ def main() -> int:
         "n_rebalances": int(len(weights)),
         "per_year": _per_year_metrics(daily_returns),
         "architecture_comparison": {
-            "sharpe_in_expected_range": _flag(metrics.get("sharpe", 0.0), _EXPECT_SHARPE_LO, _EXPECT_SHARPE_HI),
-            "max_drawdown_in_expected_range": _flag(metrics.get("max_drawdown", 0.0), _EXPECT_DD_LO, _EXPECT_DD_HI),
+            "sharpe_in_expected_range": _flag(
+                metrics.get("sharpe", 0.0), _EXPECT_SHARPE_LO, _EXPECT_SHARPE_HI
+            ),
+            "max_drawdown_in_expected_range": _flag(
+                metrics.get("max_drawdown", 0.0), _EXPECT_DD_LO, _EXPECT_DD_HI
+            ),
             "expected_sharpe_range": [_EXPECT_SHARPE_LO, _EXPECT_SHARPE_HI],
             "expected_max_drawdown_range": [_EXPECT_DD_LO, _EXPECT_DD_HI],
         },

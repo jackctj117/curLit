@@ -91,7 +91,10 @@ def _http_get(url: str, headers: dict[str, str] | None = None) -> Any:
     import httpx  # noqa: PLC0415
 
     resp = httpx.get(
-        url, headers={**_UA, **(headers or {})}, follow_redirects=True, timeout=30.0,
+        url,
+        headers={**_UA, **(headers or {})},
+        follow_redirects=True,
+        timeout=30.0,
     )
     resp.raise_for_status()
     return resp
@@ -166,10 +169,19 @@ def extract_audio_wav(mp4_path: Path, wav_path: Path, seconds: float) -> None:
 
     ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
     cmd = [
-        ffmpeg, "-v", "error", "-y",
-        "-i", str(mp4_path),
-        "-t", f"{seconds:.0f}",
-        "-vn", "-ac", "1", "-ar", "16000",
+        ffmpeg,
+        "-v",
+        "error",
+        "-y",
+        "-i",
+        str(mp4_path),
+        "-t",
+        f"{seconds:.0f}",
+        "-vn",
+        "-ac",
+        "1",
+        "-ar",
+        "16000",
         str(wav_path),
     ]
     # Truncated-but-faststart MP4s decode fine; ffmpeg may still whine on
@@ -201,8 +213,7 @@ def transcribe_wav(wav_path: Path, model_name: str) -> dict[str, Any]:
     return {
         "text": result["text"].strip(),
         "segments": [
-            {"start": s["start"], "end": s["end"], "text": s["text"]}
-            for s in result["segments"]
+            {"start": s["start"], "end": s["end"], "text": s["text"]} for s in result["segments"]
         ],
         "model": model_name,
     }
@@ -228,7 +239,12 @@ def extract_pitch_features(
     import librosa  # noqa: PLC0415
 
     f0, voiced_flag, _ = librosa.pyin(
-        y, fmin=fmin, fmax=fmax, sr=sr, frame_length=2048, hop_length=512,
+        y,
+        fmin=fmin,
+        fmax=fmax,
+        sr=sr,
+        frame_length=2048,
+        hop_length=512,
     )
     voiced = f0[np.asarray(voiced_flag, dtype=bool) & np.isfinite(f0)]
     if voiced.size == 0:
@@ -320,7 +336,9 @@ def extract_pause_features(
 
 
 def speaking_rate_features(
-    n_words: int, speech_seconds: float, span_seconds: float,
+    n_words: int,
+    speech_seconds: float,
+    span_seconds: float,
 ) -> dict[str, float]:
     """Words/minute over speech time (articulation rate proxy) and over the
     whole span (includes pauses)."""
@@ -346,9 +364,7 @@ def prosody_features(y: np.ndarray, sr: int, n_words: int) -> dict[str, float]:
     feats: dict[str, float] = {}
     feats.update(extract_pitch_features(y, sr))
     feats.update(pauses)
-    feats.update(
-        speaking_rate_features(n_words, pauses["speech_seconds"], pauses["span_seconds"])
-    )
+    feats.update(speaking_rate_features(n_words, pauses["speech_seconds"], pauses["span_seconds"]))
     feats.update(extract_energy_features(y, sr))
     return feats
 
@@ -422,8 +438,12 @@ def _yf_close_series(ticker: str, start: str, end: str, interval: str) -> Any:
     )
     def _download() -> Any:
         return yf.download(
-            ticker, start=start, end=end, interval=interval,
-            progress=False, auto_adjust=False,
+            ticker,
+            start=start,
+            end=end,
+            interval=interval,
+            progress=False,
+            auto_adjust=False,
         )
 
     df = _download()
@@ -436,7 +456,9 @@ def _yf_close_series(ticker: str, start: str, end: str, interval: str) -> Any:
 
 
 def _bar_close_at(
-    close: Any, label: datetime, bar: timedelta,
+    close: Any,
+    label: datetime,
+    bar: timedelta,
 ) -> float | None:
     """Close of the bar labeled ``label`` (bar start), asof-fallback
     bounded to one bar interval — a fallback that reaches further back
@@ -486,7 +508,8 @@ def eurusd_reaction(meeting: str) -> dict[str, Any]:
             out.update(
                 reaction_pct=(post / pre - 1.0) * 100.0,
                 reaction_window="5m_post_statement",
-                pre_px=pre, post_px=post,
+                pre_px=pre,
+                post_px=post,
             )
             p_pre = _bar_close_at(close, presser - timedelta(minutes=5), timedelta(minutes=5))
             p_post = _bar_close_at(close, presser + timedelta(minutes=25), timedelta(minutes=5))
@@ -507,7 +530,8 @@ def eurusd_reaction(meeting: str) -> dict[str, Any]:
             out.update(
                 reaction_pct=(post / pre - 1.0) * 100.0,
                 reaction_window="60m_post_statement",
-                pre_px=pre, post_px=post,
+                pre_px=pre,
+                post_px=post,
             )
             return out
 
@@ -530,7 +554,8 @@ def eurusd_reaction(meeting: str) -> dict[str, Any]:
             out.update(
                 reaction_pct=(float(rows[0][1]) / float(rows[1][1]) - 1.0) * 100.0,
                 reaction_window="1d_close_to_close_db",
-                pre_px=float(rows[1][1]), post_px=float(rows[0][1]),
+                pre_px=float(rows[1][1]),
+                post_px=float(rows[0][1]),
             )
             return out
     except Exception as exc:
@@ -541,7 +566,8 @@ def eurusd_reaction(meeting: str) -> dict[str, Any]:
         out.update(
             reaction_pct=(float(close.iloc[-1]) / float(close.iloc[-2]) - 1.0) * 100.0,
             reaction_window="1d_close_to_close_yf",
-            pre_px=float(close.iloc[-2]), post_px=float(close.iloc[-1]),
+            pre_px=float(close.iloc[-2]),
+            post_px=float(close.iloc[-1]),
         )
         return out
 
@@ -554,15 +580,22 @@ def eurusd_reaction(meeting: str) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 CORR_FEATURES: tuple[str, ...] = (
-    "pitch_mean_hz", "pitch_std_hz", "pitch_range_hz",
-    "pauses_per_min", "pause_mean_s", "pause_fraction",
-    "wpm_speech", "wpm_total", "rms_cv",
+    "pitch_mean_hz",
+    "pitch_std_hz",
+    "pitch_range_hz",
+    "pauses_per_min",
+    "pause_mean_s",
+    "pause_fraction",
+    "wpm_speech",
+    "wpm_total",
+    "rms_cv",
     "text_net",
 )
 
 
 def feature_market_correlations(
-    rows: list[dict[str, Any]], features: tuple[str, ...] = CORR_FEATURES,
+    rows: list[dict[str, Any]],
+    features: tuple[str, ...] = CORR_FEATURES,
 ) -> dict[str, dict[str, float | None]]:
     """Pearson + Spearman of each feature vs the EUR/USD reaction.
 
@@ -625,7 +658,9 @@ def analyze_presser(
         src = lowest_mp4_source(meta)
         logger.info(
             "%s: '%s' (%.1f min total), MP4 %s kbps",
-            meeting, meta_name, meta.get("duration", 0) / 60000.0,
+            meeting,
+            meta_name,
+            meta.get("duration", 0) / 60000.0,
             src.get("avg_bitrate", 0) // 1000,
         )
         if force or not mp4_path.exists():
@@ -649,7 +684,9 @@ def analyze_presser(
 
     market = eurusd_reaction(meeting)
     logger.info(
-        "%s: EURUSD %s = %s", meeting, market.get("reaction_window"),
+        "%s: EURUSD %s = %s",
+        meeting,
+        market.get("reaction_window"),
         f"{market['reaction_pct']:+.3f}%" if market.get("reaction_pct") is not None else "n/a",
     )
 
@@ -752,18 +789,24 @@ def main(argv: list[str] | None = None) -> int:
         description="FOMC presser audio → whisper transcript → prosody vs EUR/USD reaction.",
     )
     p.add_argument(
-        "--meetings", type=str, default="20260617,20260429,20260318",
+        "--meetings",
+        type=str,
+        default="20260617,20260429,20260318",
         help="Comma-separated FOMC meeting dates (YYYYMMDD) with press conferences",
     )
     p.add_argument(
-        "--minutes", type=float, default=15.0,
+        "--minutes",
+        type=float,
+        default=15.0,
         help="Minutes of audio to analyze from the start (statement reading)",
     )
     p.add_argument("--whisper-model", type=str, default="base.en")
     p.add_argument("--data-dir", type=Path, default=Path("data/cb_audio"))
     p.add_argument("--out", type=Path, default=Path("reports/cb_audio_prosody.json"))
     p.add_argument(
-        "--summary-md", type=Path, default=Path("reports/cb_audio_prosody.md"),
+        "--summary-md",
+        type=Path,
+        default=Path("reports/cb_audio_prosody.md"),
     )
     p.add_argument("--force", action="store_true", help="Redo downloads/transcripts")
     p.add_argument("-v", "--verbose", action="store_true")
@@ -783,8 +826,12 @@ def main(argv: list[str] | None = None) -> int:
         try:
             rows.append(
                 analyze_presser(
-                    meeting, args.data_dir, args.minutes,
-                    args.whisper_model, policy_key, force=args.force,
+                    meeting,
+                    args.data_dir,
+                    args.minutes,
+                    args.whisper_model,
+                    policy_key,
+                    force=args.force,
                 )
             )
         except Exception:

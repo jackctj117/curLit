@@ -59,9 +59,7 @@ class _FakeState:
         self._returns = returns_df if returns_df is not None else pd.DataFrame()
         self._positions = positions_by_strategy or {}
         self.reallocations: list[tuple[datetime, dict[str, float], dict[str, Any]]] = []
-        self.portfolio_orders: list[
-            tuple[datetime, str, float, dict[str, float]]
-        ] = []
+        self.portfolio_orders: list[tuple[datetime, str, float, dict[str, float]]] = []
 
     def record_reallocation(
         self,
@@ -78,9 +76,7 @@ class _FakeState:
         target_position: float,
         strategy_contributions: dict[str, float],
     ) -> None:
-        self.portfolio_orders.append(
-            (ts, symbol, target_position, dict(strategy_contributions))
-        )
+        self.portfolio_orders.append((ts, symbol, target_position, dict(strategy_contributions)))
 
     def get_positions_by_strategy(self, strategy_id: str) -> list[_FakePosition]:
         return list(self._positions.get(strategy_id, []))
@@ -153,7 +149,9 @@ class TestStrategyAllocation:
     def test_invalid_exposure_rejected(self) -> None:
         with pytest.raises(AssertionError):
             StrategyAllocation(
-                strategy_id="x", target_weight=0.5, current_exposure_mult=-0.1,
+                strategy_id="x",
+                target_weight=0.5,
+                current_exposure_mult=-0.1,
             )
 
 
@@ -188,8 +186,10 @@ class TestInitialization:
     def test_requires_strategies(self) -> None:
         with pytest.raises(AssertionError):
             PortfolioCoordinator(
-                strategies=[], oms=_RecordingOMS(),  # type: ignore[arg-type]
-                broker=PaperBroker(), state=_FakeState(),  # type: ignore[arg-type]
+                strategies=[],
+                oms=_RecordingOMS(),  # type: ignore[arg-type]
+                broker=PaperBroker(),
+                state=_FakeState(),  # type: ignore[arg-type]
             )
 
     def test_rejects_duplicate_ids(self) -> None:
@@ -243,9 +243,7 @@ class TestScaleIntents:
         coord, *_ = _make_coord(["s1"])
         coord.initialize_allocations({"s1": 1.0})
         coord.allocations["s1"].current_exposure_mult = 0.5
-        intents = {
-            "s1": [OrderIntent(strategy_id="s1", symbol="EURUSD", target_position=1000)]
-        }
+        intents = {"s1": [OrderIntent(strategy_id="s1", symbol="EURUSD", target_position=1000)]}
         scaled = coord._scale_intents(intents)
         assert len(scaled) == 1
         # weight=1.0 * exposure=0.5 * perf=1.0 = 0.5
@@ -254,12 +252,12 @@ class TestScaleIntents:
     def test_paper_mode_drops_intents(self) -> None:
         coord, *_ = _make_coord(["s1"])
         coord.allocations["s1"] = StrategyAllocation(
-            strategy_id="s1", target_weight=0.0,
-            current_exposure_mult=0.0, paper_mode=True,
+            strategy_id="s1",
+            target_weight=0.0,
+            current_exposure_mult=0.0,
+            paper_mode=True,
         )
-        intents = {
-            "s1": [OrderIntent(strategy_id="s1", symbol="EURUSD", target_position=1000)]
-        }
+        intents = {"s1": [OrderIntent(strategy_id="s1", symbol="EURUSD", target_position=1000)]}
         scaled = coord._scale_intents(intents)
         assert scaled == []
 
@@ -267,9 +265,7 @@ class TestScaleIntents:
         coord, *_ = _make_coord(["s1"])
         coord.initialize_allocations({"s1": 1.0})
         intents = {
-            "ghost": [
-                OrderIntent(strategy_id="ghost", symbol="EURUSD", target_position=1000)
-            ]
+            "ghost": [OrderIntent(strategy_id="ghost", symbol="EURUSD", target_position=1000)]
         }
         scaled = coord._scale_intents(intents)
         assert scaled == []
@@ -324,16 +320,22 @@ class TestAggregateBySymbol:
         coord, *_ = _make_coord()
         intents = [
             OrderIntent(
-                strategy_id="s1", symbol="EURUSD",
-                target_position=100, urgency="passive",
+                strategy_id="s1",
+                symbol="EURUSD",
+                target_position=100,
+                urgency="passive",
             ),
             OrderIntent(
-                strategy_id="s2", symbol="EURUSD",
-                target_position=100, urgency="urgent",
+                strategy_id="s2",
+                symbol="EURUSD",
+                target_position=100,
+                urgency="urgent",
             ),
             OrderIntent(
-                strategy_id="s3", symbol="EURUSD",
-                target_position=100, urgency="normal",
+                strategy_id="s3",
+                symbol="EURUSD",
+                target_position=100,
+                urgency="normal",
             ),
         ]
         agg = coord._aggregate_by_symbol(intents)
@@ -346,12 +348,16 @@ class TestAggregateBySymbol:
         coord, *_ = _make_coord()
         intents = [
             OrderIntent(
-                strategy_id="s1", symbol="EURUSD",
-                target_position=100, urgency="normal",
+                strategy_id="s1",
+                symbol="EURUSD",
+                target_position=100,
+                urgency="normal",
             ),
             OrderIntent(
-                strategy_id="s2", symbol="EURUSD",
-                target_position=100, urgency="high",  # legacy, non-canonical
+                strategy_id="s2",
+                symbol="EURUSD",
+                target_position=100,
+                urgency="high",  # legacy, non-canonical
             ),
         ]
         agg = coord._aggregate_by_symbol(intents)
@@ -375,7 +381,9 @@ class TestConstraints:
         # cap so the gross-leverage clip is the only binding constraint.
         relaxed = PortfolioConstraints(max_notional_per_pair_pct=10.0)
         coord, *_ = _make_coord(
-            ["s1"], initial_capital=100_000, constraints=relaxed,
+            ["s1"],
+            initial_capital=100_000,
+            constraints=relaxed,
         )
         # 100k equity, 3x cap → max gross 300k notional. Push 600k → 50% scale.
         units = 600_000 / 1.10
@@ -492,21 +500,19 @@ class TestProcessIntents:
     def test_paper_mode_strategy_not_submitted(self) -> None:
         coord, oms, *_ = _make_coord(["s1"])
         coord.allocations["s1"] = StrategyAllocation(
-            strategy_id="s1", target_weight=0.0,
-            current_exposure_mult=0.0, paper_mode=True,
+            strategy_id="s1",
+            target_weight=0.0,
+            current_exposure_mult=0.0,
+            paper_mode=True,
         )
-        raw = {
-            "s1": [OrderIntent(strategy_id="s1", symbol="EURUSD", target_position=1000)]
-        }
+        raw = {"s1": [OrderIntent(strategy_id="s1", symbol="EURUSD", target_position=1000)]}
         asyncio.run(coord.process_intents(raw))
         assert oms.submitted == []
 
     def test_state_records_portfolio_order(self) -> None:
         coord, _oms, _broker, state = _make_coord(["s1"])
         coord.initialize_allocations({"s1": 1.0})
-        raw = {
-            "s1": [OrderIntent(strategy_id="s1", symbol="EURUSD", target_position=1000)]
-        }
+        raw = {"s1": [OrderIntent(strategy_id="s1", symbol="EURUSD", target_position=1000)]}
         asyncio.run(coord.process_intents(raw))
         assert len(state.portfolio_orders) == 1
         _, sym, target, contribs = state.portfolio_orders[0]
@@ -537,7 +543,8 @@ class TestStrategyLifecycle:
     def test_remove_strategy_liquidates(self) -> None:
         positions = {"s1": [_FakePosition(symbol="EURUSD", quantity=1000)]}
         coord, oms, _broker, _state = _make_coord(
-            ["s1", "s2"], state=_FakeState(positions_by_strategy=positions),
+            ["s1", "s2"],
+            state=_FakeState(positions_by_strategy=positions),
         )
         coord.initialize_allocations({"s1": 0.5, "s2": 0.5})
         coord.remove_strategy("s1")
@@ -561,7 +568,9 @@ class TestStrategyLifecycle:
 
 
 def _make_returns_df(
-    n_days: int, n_strategies: int = 2, seed: int = 0,
+    n_days: int,
+    n_strategies: int = 2,
+    seed: int = 0,
 ) -> pd.DataFrame:
     rng = np.random.default_rng(seed)
     data = rng.normal(0.0005, 0.01, size=(n_days, n_strategies))
@@ -602,7 +611,8 @@ class TestRebalance:
         returns = _make_returns_df(n_days=400, n_strategies=3)
         state = _FakeState(returns_df=returns)
         coord, _oms, _broker, _state = _make_coord(
-            ["s1", "s2", "s3"], state=state,
+            ["s1", "s2", "s3"],
+            state=state,
         )
         coord.initialize_allocations({"s1": 1.0, "s2": 1.0, "s3": 1.0})
         asyncio.run(coord.rebalance_allocations(force=True))
@@ -619,7 +629,8 @@ class TestRebalance:
         returns = pd.DataFrame({"s1": s1, "s2": s2, "s3": s3})
         state = _FakeState(returns_df=returns)
         coord, _oms, _broker, _state = _make_coord(
-            ["s1", "s2", "s3"], state=state,
+            ["s1", "s2", "s3"],
+            state=state,
         )
         coord.initialize_allocations({"s1": 1.0, "s2": 1.0, "s3": 1.0})
         asyncio.run(coord.rebalance_allocations(force=True))
@@ -669,7 +680,9 @@ def test_aggregate_net_equals_sum_of_contributions(
 )
 @settings(max_examples=200)
 def test_effective_scale_bounded(
-    weight: float, exposure: float, perf: float,
+    weight: float,
+    exposure: float,
+    perf: float,
 ) -> None:
     """effective_scale always lies in [0, 1] regardless of inputs in [0, 1]."""
     a = StrategyAllocation(
@@ -725,9 +738,7 @@ def test_gross_leverage_capped_after_constraints(notionals: list[float]) -> None
             "strategy_contributions": {"s1": units},
         }
     coord._apply_portfolio_constraints(agg)
-    gross = sum(
-        abs(a["target_position"]) * coord._get_price(sym) for sym, a in agg.items()
-    )
+    gross = sum(abs(a["target_position"]) * coord._get_price(sym) for sym, a in agg.items())
     equity = coord.broker.get_account().equity
     leverage = gross / equity
     assert leverage <= coord.constraints.max_gross_leverage + 1e-6
@@ -753,16 +764,19 @@ def _evaluator_with_event(
         EconomicEvent,
         SeverityTier,
     )
+
     when = datetime.now(UTC) + timedelta(minutes=minutes_until)
-    cal = EconomicCalendar([
-        EconomicEvent(
-            ts=when,
-            event_type="NFP",
-            severity_tier=SeverityTier.TIER_1,
-            description="test",
-            currency=currency,
-        ),
-    ])
+    cal = EconomicCalendar(
+        [
+            EconomicEvent(
+                ts=when,
+                event_type="NFP",
+                severity_tier=SeverityTier.TIER_1,
+                description="test",
+                currency=currency,
+            ),
+        ]
+    )
     return BlackoutEvaluator(cal)
 
 
@@ -844,8 +858,8 @@ class TestUnpriceableSymbolWithheld:
             },
         }
         out = coord._apply_portfolio_constraints(agg)
-        assert "XAU_USD" not in out          # withheld entirely — no intent
-        assert "EURUSD" in out                # priceable symbol unaffected
+        assert "XAU_USD" not in out  # withheld entirely — no intent
+        assert "EURUSD" in out  # priceable symbol unaffected
         assert out["EURUSD"]["target_position"] == pytest.approx(500.0)
 
     def test_all_unpriceable_returns_empty(self) -> None:
@@ -935,7 +949,10 @@ class _ThreadRecordingState(_FakeState):
 
         self.call_threads.append(threading.get_ident())
         super().record_portfolio_order(
-            ts, symbol, target_position, strategy_contributions,
+            ts,
+            symbol,
+            target_position,
+            strategy_contributions,
         )
 
 
@@ -962,9 +979,15 @@ class TestBrokerIoOffEventLoop:
             pre_trade_validator=validator,
         )
         coord.initialize_allocations({"s1": 1.0})
-        raw = {"s1": [OrderIntent(
-            strategy_id="s1", symbol="EURUSD", target_position=1000.0,
-        )]}
+        raw = {
+            "s1": [
+                OrderIntent(
+                    strategy_id="s1",
+                    symbol="EURUSD",
+                    target_position=1000.0,
+                )
+            ]
+        }
 
         loop_thread: list[int] = []
 
@@ -989,7 +1012,8 @@ class TestBrokerIoOffEventLoop:
 
 class TestBackgroundRebalanceTasks:
     def test_remove_strategy_retains_task_and_logs_failure(
-        self, caplog: pytest.LogCaptureFixture,
+        self,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         import logging
 
@@ -1013,10 +1037,7 @@ class TestBackgroundRebalanceTasks:
         with caplog.at_level(logging.ERROR, logger="src.portfolio.coordinator"):
             asyncio.run(run())
 
-        failures = [
-            r for r in caplog.records
-            if "Background task" in r.getMessage() and r.exc_info
-        ]
+        failures = [r for r in caplog.records if "Background task" in r.getMessage() and r.exc_info]
         assert failures, "failed rebalance task must be logged with traceback"
 
     def test_promote_spawns_observed_task_that_completes(self) -> None:

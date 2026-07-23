@@ -30,13 +30,12 @@ from pathlib import Path
 def load_bip39_words() -> list[str]:
     """The canonical 2048-word BIP39 English list vendored at
     scripts/bip39_english.txt (sha256 2f5eed53…dbda)."""
-    words = (
-        Path(__file__).parent / "bip39_english.txt"
-    ).read_text().strip().split("\n")[:2048]
+    words = (Path(__file__).parent / "bip39_english.txt").read_text().strip().split("\n")[:2048]
     if len(words) != 2048:
         raise RuntimeError(
             f"bip39_english.txt has {len(words)} words, expected 2048 — "
-            "refusing to generate weak secrets from a truncated list")
+            "refusing to generate weak secrets from a truncated list"
+        )
     return words
 
 
@@ -51,12 +50,13 @@ def generate_passphrase() -> str:
 
 def generate_recovery_seed() -> tuple[bytes, list[str]]:
     from hashlib import sha256
+
     entropy = secrets.token_bytes(32)
     checksum = sha256(entropy).digest()[0]
     full = entropy + bytes([checksum])
     bit_string = "".join(f"{b:08b}" for b in full)[:264]
     bip39 = load_bip39_words()
-    indices = [int(bit_string[i:i+11], 2) for i in range(0, 264, 11)]
+    indices = [int(bit_string[i : i + 11], 2) for i in range(0, 264, 11)]
     words = [bip39[i] for i in indices[:24]]
     return entropy, words
 
@@ -76,9 +76,7 @@ from src.security.vault_codec import seal as encrypt  # noqa: E402
 def reseal(args: argparse.Namespace) -> int:
     """Non-interactive re-seal (CL-8lv6): plaintext JSON in, sealed vault out."""
     encrypted_path = Path(args.encrypted)
-    salt_path = (
-        Path(args.salt) if args.salt else encrypted_path.with_name("vault.salt")
-    )
+    salt_path = Path(args.salt) if args.salt else encrypted_path.with_name("vault.salt")
 
     # open()+read(), no stat/seek games — the path is often a pipe like
     # /dev/fd/N (rotate_secrets and init_vault.sh both feed the plaintext
@@ -88,12 +86,14 @@ def reseal(args: argparse.Namespace) -> int:
     try:
         parsed = json.loads(plaintext)
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-        print(f"--plaintext is not valid JSON ({exc}) — refusing to seal it; "
-              "the vault agent could never open the result", file=sys.stderr)
+        print(
+            f"--plaintext is not valid JSON ({exc}) — refusing to seal it; "
+            "the vault agent could never open the result",
+            file=sys.stderr,
+        )
         return 2
     if not isinstance(parsed, dict):
-        print("--plaintext must be a JSON object (the credentials mapping)",
-              file=sys.stderr)
+        print("--plaintext must be a JSON object (the credentials mapping)", file=sys.stderr)
         return 2
 
     if args.passphrase_stdin:
@@ -121,15 +121,20 @@ def reseal(args: argparse.Namespace) -> int:
         # rotate its own secrets (that flow re-seals under the SAME phrase).
         weakness = passphrase_weakness(passphrase)
         if weakness is not None:
-            print(f"WARNING: vault passphrase is weak ({weakness}) — rotate "
-                  "it: scripts/rotate_secrets.py --rotate-passphrase",
-                  file=sys.stderr)
+            print(
+                f"WARNING: vault passphrase is weak ({weakness}) — rotate "
+                "it: scripts/rotate_secrets.py --rotate-passphrase",
+                file=sys.stderr,
+            )
 
     if salt_path.exists():
         salt = salt_path.read_bytes()
         if len(salt) < 8:
-            print(f"Corrupt salt file {salt_path} ({len(salt)} bytes) — "
-                  "refusing to derive a key from it", file=sys.stderr)
+            print(
+                f"Corrupt salt file {salt_path} ({len(salt)} bytes) — "
+                "refusing to derive a key from it",
+                file=sys.stderr,
+            )
             return 2
     else:
         salt = secrets.token_bytes(16)
@@ -200,23 +205,32 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="initialize_vault",
         description="Vault setup. No flags: interactive one-time init "
-                    "(generates passphrase + recovery seed). With --plaintext/"
-                    "--encrypted: non-interactive re-seal (CL-8lv6).",
+        "(generates passphrase + recovery seed). With --plaintext/"
+        "--encrypted: non-interactive re-seal (CL-8lv6).",
     )
     parser.add_argument(
-        "--plaintext", metavar="PATH",
+        "--plaintext",
+        metavar="PATH",
         help="Read plaintext credentials JSON from PATH (pipe paths like "
-             "/dev/fd/N supported — preferred, so secrets never hit disk)")
+        "/dev/fd/N supported — preferred, so secrets never hit disk)",
+    )
     parser.add_argument(
-        "--encrypted", metavar="PATH",
-        help="Write the sealed vault to PATH (atomic tmp+rename, mode 0600)")
+        "--encrypted",
+        metavar="PATH",
+        help="Write the sealed vault to PATH (atomic tmp+rename, mode 0600)",
+    )
     parser.add_argument(
-        "--salt", metavar="PATH", default=None,
+        "--salt",
+        metavar="PATH",
+        default=None,
         help="Salt file (default: vault.salt alongside --encrypted). "
-             "Reused if it exists, else 16 random bytes are written 0600")
+        "Reused if it exists, else 16 random bytes are written 0600",
+    )
     parser.add_argument(
-        "--passphrase-stdin", action="store_true",
-        help="Read the passphrase from stdin (one trailing newline stripped)")
+        "--passphrase-stdin",
+        action="store_true",
+        help="Read the passphrase from stdin (one trailing newline stripped)",
+    )
     args = parser.parse_args(argv)
 
     if args.plaintext or args.encrypted:

@@ -91,13 +91,9 @@ _IMPLEMENTER_OUTPUT = (
     "**FINAL_POSITION**: IMPLEMENTED\n"
 )
 
-_BULL_REVIEW = (
-    "# PROMOTE_CASE\n\nDry-run stub.\n\n**FINAL_POSITION**: PROMOTE\n"
-)
+_BULL_REVIEW = "# PROMOTE_CASE\n\nDry-run stub.\n\n**FINAL_POSITION**: PROMOTE\n"
 
-_BEAR_REVIEW = (
-    "# REJECT_CASE\n\nDry-run stub.\n\n**FINAL_POSITION**: PROMOTE\n"
-)
+_BEAR_REVIEW = "# REJECT_CASE\n\nDry-run stub.\n\n**FINAL_POSITION**: PROMOTE\n"
 
 
 # Maps a fingerprint substring to its canned-response handler. Each
@@ -118,15 +114,14 @@ def _idea_brief_handler(_sys: str, user: str) -> str:
     References section to cite the actual extract path or filename;
     splicing it in here makes the dry-run idea-agent output pass."""
     m = re.search(r"paper_extract:([^']+)", user)
-    extract_path = (
-        f"data/research/extracts/{m.group(1)}" if m else "data/research/extracts/abc.md"
-    )
+    extract_path = f"data/research/extracts/{m.group(1)}" if m else "data/research/extracts/abc.md"
     return _IDEA_BRIEF_TEMPLATE.format(extract_path=extract_path)
 
 
 def _static(text: str) -> Callable[[str, str], str]:
     def handler(_sys: str, _user: str) -> str:
         return text
+
     return handler
 
 
@@ -176,9 +171,13 @@ class DryRunDriver(Driver):
                 text = handler(sys_text, user_text)
                 break
         return LLMResponse(
-            text=text, model=model, provider=self.name,
-            input_tokens=10, output_tokens=20,
-            usd_cost=0.0, elapsed_sec=0.001,
+            text=text,
+            model=model,
+            provider=self.name,
+            input_tokens=10,
+            output_tokens=20,
+            usd_cost=0.0,
+            elapsed_sec=0.001,
         )
 
 

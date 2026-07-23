@@ -30,8 +30,10 @@ class TestOffsetParsing:
     def test_zero_offset_when_clocks_aligned(self) -> None:
         """If the server's transmit time matches the round-trip midpoint,
         the computed offset should be ~0."""
-        with patch("scripts.clock_drift_monitor.socket.socket") as mock_sock_cls, \
-             patch("scripts.clock_drift_monitor.time.time") as mock_time:
+        with (
+            patch("scripts.clock_drift_monitor.socket.socket") as mock_sock_cls,
+            patch("scripts.clock_drift_monitor.time.time") as mock_time,
+        ):
             mock_sock = mock_sock_cls.return_value
             mock_time.side_effect = [1000.0, 1000.0]  # t1=t4=1000 → midpoint=1000
             mock_sock.recvfrom.return_value = (_fake_response(1000.0), None)
@@ -41,8 +43,10 @@ class TestOffsetParsing:
     def test_positive_offset_when_local_behind(self) -> None:
         """Server says it's 1010, local clock at midpoint says 1000 →
         offset = +10 (we are 10s behind)."""
-        with patch("scripts.clock_drift_monitor.socket.socket") as mock_sock_cls, \
-             patch("scripts.clock_drift_monitor.time.time") as mock_time:
+        with (
+            patch("scripts.clock_drift_monitor.socket.socket") as mock_sock_cls,
+            patch("scripts.clock_drift_monitor.time.time") as mock_time,
+        ):
             mock_sock = mock_sock_cls.return_value
             mock_time.side_effect = [1000.0, 1000.0]
             mock_sock.recvfrom.return_value = (_fake_response(1010.0), None)
@@ -51,8 +55,10 @@ class TestOffsetParsing:
 
     def test_negative_offset_when_local_ahead(self) -> None:
         """Local clock 1000, server 990 → offset = -10."""
-        with patch("scripts.clock_drift_monitor.socket.socket") as mock_sock_cls, \
-             patch("scripts.clock_drift_monitor.time.time") as mock_time:
+        with (
+            patch("scripts.clock_drift_monitor.socket.socket") as mock_sock_cls,
+            patch("scripts.clock_drift_monitor.time.time") as mock_time,
+        ):
             mock_sock = mock_sock_cls.return_value
             mock_time.side_effect = [1000.0, 1000.0]
             mock_sock.recvfrom.return_value = (_fake_response(990.0), None)

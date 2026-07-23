@@ -151,10 +151,10 @@ class Strategy:
         if T == 0:
             return np.zeros((0, self._n_assets))
 
-        E = np.tanh(Z @ p["w_in"] + p["b_in"])          # (T, d)
-        Q = E @ p["w_q"]                                # (T, d)
-        K = E @ p["w_k"]                                # (T, d)
-        V = E @ p["w_v"]                                # (T, d)
+        E = np.tanh(Z @ p["w_in"] + p["b_in"])  # (T, d)
+        Q = E @ p["w_q"]  # (T, d)
+        K = E @ p["w_k"]  # (T, d)
+        V = E @ p["w_v"]  # (T, d)
 
         pad = np.zeros((L - 1, d))
         # window t covers original rows [t-L+1, t]; window index j
@@ -163,19 +163,19 @@ class Strategy:
         Vw = sliding_window_view(np.vstack([pad, V]), L, axis=0)  # (T, d, L)
 
         scores = np.einsum("td,tdl->tl", Q, Kw) / np.sqrt(d)
-        scores = scores + p["pos"][None, :]             # learned lag bias
+        scores = scores + p["pos"][None, :]  # learned lag bias
         jj = np.arange(L)[None, :]
         tt = np.arange(T)[:, None]
-        valid = jj >= (L - 1 - tt)                      # mask pre-history pad
+        valid = jj >= (L - 1 - tt)  # mask pre-history pad
         scores = np.where(valid, scores, -np.inf)
         scores = scores - scores.max(axis=1, keepdims=True)
         attn = np.exp(scores)
         attn = attn / attn.sum(axis=1, keepdims=True)
 
-        H = E + np.einsum("tl,tdl->td", attn, Vw)       # residual add
-        raw = np.tanh(H @ p["w_out"] + p["b_out"])      # (T, n)
+        H = E + np.einsum("tl,tdl->td", attn, Vw)  # residual add
+        raw = np.tanh(H @ p["w_out"] + p["b_out"])  # (T, n)
         gross = np.abs(raw).sum(axis=1, keepdims=True)
-        return raw / np.maximum(gross, 1.0)             # sum |w| <= 1
+        return raw / np.maximum(gross, 1.0)  # sum |w| <= 1
 
     # ------------------------------------------------------------------
     # end-to-end objective: negative net annualised Sharpe
@@ -184,7 +184,7 @@ class Strategy:
         W = self._forward(theta, Z)
         if W.shape[0] < 3:
             return 5.0
-        gross_pnl = (W[:-1] * R[1:]).sum(axis=1)        # w_t earns r_{t+1}
+        gross_pnl = (W[:-1] * R[1:]).sum(axis=1)  # w_t earns r_{t+1}
         turnover = np.abs(np.diff(W, axis=0)).sum(axis=1)
         net = gross_pnl - COST_RATE * turnover
         burn = min(self.config.lookback, len(net) // 3)
@@ -193,7 +193,7 @@ class Strategy:
             return 5.0
         sd = net.std()
         if sd < 1e-8:
-            return 5.0                                  # degenerate/constant
+            return 5.0  # degenerate/constant
         return -(net.mean() / sd) * np.sqrt(ANNUALISER)
 
     # ------------------------------------------------------------------
@@ -258,8 +258,7 @@ class Strategy:
             raise RuntimeError("fit() must be called before generate_signals()")
         cols = list(self.symbols)
         if len(data.index) == 0:
-            return pd.DataFrame(np.zeros((0, len(cols))), index=data.index,
-                                columns=cols)
+            return pd.DataFrame(np.zeros((0, len(cols))), index=data.index, columns=cols)
         R = self._returns(data)
         Z = np.clip(R / self._scale, -Z_CLIP, Z_CLIP)
         targets = self._forward(self._theta, Z)

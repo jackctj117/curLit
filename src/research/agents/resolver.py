@@ -52,24 +52,24 @@ class Routing(StrEnum):
 class ResolutionStatus(StrEnum):
     """Outcome of a single resolve() call."""
 
-    RESOLVED = "RESOLVED"        # answer obtained from tool/agent, returned in transcript
+    RESOLVED = "RESOLVED"  # answer obtained from tool/agent, returned in transcript
     REFORMULATE = "REFORMULATE"  # question malformed; asker re-submits
-    ESCALATE = "ESCALATE"        # routing=human OR caps exceeded; needs operator
-    FAILED = "FAILED"            # tool errored / agent unreachable; orchestrator decides
+    ESCALATE = "ESCALATE"  # routing=human OR caps exceeded; needs operator
+    FAILED = "FAILED"  # tool errored / agent unreachable; orchestrator decides
 
 
 @dataclass
 class SmartQuestion:
     """One parsed question per SMART_QUESTIONS.md format."""
 
-    question_id: str          # 'q-{round}-{n}'
-    asker: str                # agent name
+    question_id: str  # 'q-{round}-{n}'
+    asker: str  # agent name
     decision_blocker: str
     what_i_tried_first: str
     specific_evidence_needed: str
     routing: Routing
     acceptance: str
-    raw_yaml: str = ""        # original text — preserved for transcript
+    raw_yaml: str = ""  # original text — preserved for transcript
 
 
 @dataclass
@@ -78,9 +78,9 @@ class ResolutionResult:
 
     status: ResolutionStatus
     question_id: str
-    answer: str = ""                    # tool output / agent response (when RESOLVED)
+    answer: str = ""  # tool output / agent response (when RESOLVED)
     reformulate_reasons: list[str] = field(default_factory=list)  # for REFORMULATE
-    escalate_reason: str = ""           # for ESCALATE / FAILED
+    escalate_reason: str = ""  # for ESCALATE / FAILED
     elapsed_sec: float = 0.0
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -139,16 +139,18 @@ def parse_questions(text: str) -> list[SmartQuestion]:
             # reformulate reason. Use a sentinel routing for now.
             out.append(_build_question_with_invalid_routing(data, raw))
             continue
-        out.append(SmartQuestion(
-            question_id=str(data["question_id"]).strip(),
-            asker=str(data["asker"]).strip(),
-            decision_blocker=str(data["decision_blocker"]).strip(),
-            what_i_tried_first=str(data["what_i_tried_first"]).strip(),
-            specific_evidence_needed=str(data["specific_evidence_needed"]).strip(),
-            routing=routing,
-            acceptance=str(data["acceptance"]).strip(),
-            raw_yaml=raw,
-        ))
+        out.append(
+            SmartQuestion(
+                question_id=str(data["question_id"]).strip(),
+                asker=str(data["asker"]).strip(),
+                decision_blocker=str(data["decision_blocker"]).strip(),
+                what_i_tried_first=str(data["what_i_tried_first"]).strip(),
+                specific_evidence_needed=str(data["specific_evidence_needed"]).strip(),
+                routing=routing,
+                acceptance=str(data["acceptance"]).strip(),
+                raw_yaml=raw,
+            )
+        )
     return out
 
 
@@ -380,7 +382,8 @@ class QuestionResolver:
 
         # Reformulate cap (3 strikes → ESCALATE the underlying decision)
         prior_reformulates = ledger.reformulates_per_question.get(
-            question.question_id, 0,
+            question.question_id,
+            0,
         )
         if prior_reformulates >= MAX_REFORMULATES_PER_QUESTION:
             return ResolutionResult(
@@ -396,9 +399,7 @@ class QuestionResolver:
         # Validate format
         issues = validate_question(question)
         if issues:
-            ledger.reformulates_per_question[question.question_id] = (
-                prior_reformulates + 1
-            )
+            ledger.reformulates_per_question[question.question_id] = prior_reformulates + 1
             return ResolutionResult(
                 status=ResolutionStatus.REFORMULATE,
                 question_id=question.question_id,
@@ -410,7 +411,10 @@ class QuestionResolver:
         try:
             if question.routing == Routing.CODE_TOOL:
                 return self._resolve_code_tool(
-                    question, tool_name, tool_args, t0,
+                    question,
+                    tool_name,
+                    tool_args,
+                    t0,
                 )
             if question.routing == Routing.OTHER_AGENT:
                 return self._resolve_other_agent(question, target_agent, t0)
@@ -419,8 +423,7 @@ class QuestionResolver:
                     status=ResolutionStatus.ESCALATE,
                     question_id=question.question_id,
                     escalate_reason=(
-                        f"question {question.question_id!r} routed to human "
-                        f"per asker request"
+                        f"question {question.question_id!r} routed to human per asker request"
                     ),
                     elapsed_sec=time.time() - t0,
                 )
@@ -455,9 +458,7 @@ class QuestionResolver:
             return ResolutionResult(
                 status=ResolutionStatus.FAILED,
                 question_id=q.question_id,
-                escalate_reason=(
-                    "code_tool routing but no tool_name supplied to resolve()"
-                ),
+                escalate_reason=("code_tool routing but no tool_name supplied to resolve()"),
                 elapsed_sec=time.time() - t0,
             )
         if tool_name not in self.code_tools:
@@ -465,8 +466,7 @@ class QuestionResolver:
                 status=ResolutionStatus.FAILED,
                 question_id=q.question_id,
                 escalate_reason=(
-                    f"unknown code tool {tool_name!r}; "
-                    f"registered: {sorted(self.code_tools)}"
+                    f"unknown code tool {tool_name!r}; registered: {sorted(self.code_tools)}"
                 ),
                 elapsed_sec=time.time() - t0,
             )
@@ -504,10 +504,7 @@ class QuestionResolver:
             return ResolutionResult(
                 status=ResolutionStatus.FAILED,
                 question_id=q.question_id,
-                escalate_reason=(
-                    "other_agent routing but no target_agent supplied "
-                    "to resolve()"
-                ),
+                escalate_reason=("other_agent routing but no target_agent supplied to resolve()"),
                 elapsed_sec=time.time() - t0,
             )
         if self.agent_dispatch is None:
@@ -515,8 +512,7 @@ class QuestionResolver:
                 status=ResolutionStatus.FAILED,
                 question_id=q.question_id,
                 escalate_reason=(
-                    "other_agent routing but no agent_dispatch callback "
-                    "configured on resolver"
+                    "other_agent routing but no agent_dispatch callback configured on resolver"
                 ),
                 elapsed_sec=time.time() - t0,
             )

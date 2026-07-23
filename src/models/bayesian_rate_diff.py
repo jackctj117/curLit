@@ -83,13 +83,13 @@ _DEFAULT_FIT_TIMEOUT_SEC: int = 300
 
 @dataclass
 class BayesianRateDiffConfig:
-    pair_col: str = "pair"          # column name carrying pair label in long-format input
+    pair_col: str = "pair"  # column name carrying pair label in long-format input
     rate_diff_col: str = "rate_diff"
     return_col: str = "log_return"
     draws: int = _DEFAULT_DRAWS
     tune: int = _DEFAULT_TUNE
     chains: int = _DEFAULT_CHAINS
-    target_accept: float = 0.95     # NUTS step-size adaptation target
+    target_accept: float = 0.95  # NUTS step-size adaptation target
     random_seed: int = 42
     fit_timeout_sec: int = _DEFAULT_FIT_TIMEOUT_SEC
 
@@ -119,7 +119,8 @@ class BayesianFitResult:
 
 
 def _validate_panel(
-    panel: pd.DataFrame, cfg: BayesianRateDiffConfig,
+    panel: pd.DataFrame,
+    cfg: BayesianRateDiffConfig,
 ) -> tuple[list[str], np.ndarray, np.ndarray, np.ndarray]:
     """Convert a long-format panel into (pair_names, pair_idx, x, y)."""
     required = {cfg.pair_col, cfg.rate_diff_col, cfg.return_col}
@@ -140,7 +141,8 @@ def _validate_panel(
 
 
 def fit(
-    panel: pd.DataFrame, config: BayesianRateDiffConfig | None = None,
+    panel: pd.DataFrame,
+    config: BayesianRateDiffConfig | None = None,
 ) -> BayesianFitResult:
     """Fit the hierarchical model. Returns posterior summary + diagnostics.
 
@@ -165,6 +167,7 @@ def fit(
     import time as _time
 
     import arviz as az
+
     t0 = _time.time()
     with pm.Model():
         # Population hyperparameters — weakly informative.
@@ -180,7 +183,10 @@ def fit(
         # vectorizes; we index with pair_idx in the likelihood.
         alpha = pm.Normal("alpha", mu=0.0, sigma=1.0, shape=n_pairs)
         beta = pm.Normal(
-            "beta", mu=mu_beta, sigma=sigma_beta, shape=n_pairs,
+            "beta",
+            mu=mu_beta,
+            sigma=sigma_beta,
+            shape=n_pairs,
         )
 
         mu = alpha[pair_idx] + beta[pair_idx] * x
@@ -188,7 +194,9 @@ def fit(
 
         # progressbar=False keeps logs clean in production / tests.
         idata = pm.sample(
-            draws=cfg.draws, tune=cfg.tune, chains=cfg.chains,
+            draws=cfg.draws,
+            tune=cfg.tune,
+            chains=cfg.chains,
             target_accept=cfg.target_accept,
             random_seed=cfg.random_seed,
             progressbar=False,
@@ -226,15 +234,15 @@ def fit(
         alpha_summary=alpha_rows,
         mu_beta_summary={
             "mean": float(pop.loc["mu_beta", "mean"]),
-            "sd":   float(pop.loc["mu_beta", "sd"]),
+            "sd": float(pop.loc["mu_beta", "sd"]),
         },
         sigma_beta_summary={
             "mean": float(pop.loc["sigma_beta", "mean"]),
-            "sd":   float(pop.loc["sigma_beta", "sd"]),
+            "sd": float(pop.loc["sigma_beta", "sd"]),
         },
         sigma_y_summary={
             "mean": float(pop.loc["sigma_y", "mean"]),
-            "sd":   float(pop.loc["sigma_y", "sd"]),
+            "sd": float(pop.loc["sigma_y", "sd"]),
         },
         rhat_max=rhat_max,
         ess_min=ess_min,
@@ -275,22 +283,19 @@ def diagnose(result: BayesianFitResult) -> dict[str, Any]:
     if result.rhat_max > _RHAT_FAIL:
         verdict = "fail"
         reasons.append(
-            f"R-hat max {result.rhat_max:.3f} > {_RHAT_FAIL} — chains "
-            "disagree, mixing failed",
+            f"R-hat max {result.rhat_max:.3f} > {_RHAT_FAIL} — chains disagree, mixing failed",
         )
     elif result.rhat_max > _RHAT_WARN:
         verdict = "warn"
         reasons.append(
-            f"R-hat max {result.rhat_max:.3f} > {_RHAT_WARN} — borderline "
-            "mixing",
+            f"R-hat max {result.rhat_max:.3f} > {_RHAT_WARN} — borderline mixing",
         )
 
     ess_floor = _ESS_FAIL_PER_CHAIN * result.n_chains
     if result.ess_min < ess_floor:
         verdict = "fail" if verdict != "fail" else verdict
         reasons.append(
-            f"ESS min {result.ess_min:.0f} < {ess_floor} — posterior "
-            "autocorrelation too high",
+            f"ESS min {result.ess_min:.0f} < {ess_floor} — posterior autocorrelation too high",
         )
 
     div_rate = result.divergences / max(1, result.n_chains * result.n_draws)

@@ -31,7 +31,8 @@ class TestBuildBroker:
             build_broker("ghost")
 
     def test_oanda_practice_without_creds_fails_fast(
-        self, monkeypatch: pytest.MonkeyPatch,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.delenv("OANDA_API_KEY", raising=False)
         monkeypatch.delenv("OANDA_ACCOUNT_ID", raising=False)
@@ -40,7 +41,8 @@ class TestBuildBroker:
             build_broker("oanda-practice")
 
     def test_oanda_live_without_creds_fails_fast(
-        self, monkeypatch: pytest.MonkeyPatch,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.delenv("OANDA_API_KEY", raising=False)
         monkeypatch.delenv("OANDA_ACCOUNT_ID", raising=False)
@@ -49,7 +51,8 @@ class TestBuildBroker:
             build_broker("oanda-live")
 
     def test_explicit_fallback_optin_downgrades_to_paper(
-        self, monkeypatch: pytest.MonkeyPatch,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.delenv("OANDA_API_KEY", raising=False)
         monkeypatch.delenv("OANDA_ACCOUNT_ID", raising=False)
@@ -58,22 +61,26 @@ class TestBuildBroker:
         assert isinstance(broker, PaperBroker)
 
     def test_oanda_practice_with_creds_returns_oanda_broker(
-        self, monkeypatch: pytest.MonkeyPatch,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setenv("OANDA_API_KEY", "fake-key")
         monkeypatch.setenv("OANDA_ACCOUNT_ID", "fake-id")
         from src.execution.oanda_broker import OandaBroker
+
         broker = build_broker("oanda-practice")
         assert isinstance(broker, OandaBroker)
         # Practice URL set
         assert "fxpractice" in str(broker.client.base_url)
 
     def test_oanda_live_with_creds_returns_oanda_broker(
-        self, monkeypatch: pytest.MonkeyPatch,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setenv("OANDA_API_KEY", "fake-key")
         monkeypatch.setenv("OANDA_ACCOUNT_ID", "fake-id")
         from src.execution.oanda_broker import OandaBroker
+
         broker = build_broker("oanda-live")
         assert isinstance(broker, OandaBroker)
         assert "fxtrade" in str(broker.client.base_url)

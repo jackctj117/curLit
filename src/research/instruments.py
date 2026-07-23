@@ -87,7 +87,9 @@ def extract_candidate_instruments(code_path: Path | str) -> list[str]:
     except Exception as exc:
         logger.warning(
             "could not extract instruments from candidate %s: %s: %s",
-            path, type(exc).__name__, exc,
+            path,
+            type(exc).__name__,
+            exc,
         )
         return []
     finally:
@@ -105,11 +107,33 @@ def extract_candidate_instruments(code_path: Path | str) -> list[str]:
 
 # Currency codes accepted in 6-letter FX-pair tokens (both halves must
 # match). G10 + the liquid crosses the ingest layer knows about.
-_CCY_CODES = frozenset({
-    "USD", "EUR", "JPY", "GBP", "AUD", "NZD", "CAD", "CHF",
-    "NOK", "SEK", "DKK", "CNH", "CNY", "MXN", "ZAR", "PLN",
-    "HUF", "TRY", "SGD", "HKD", "KRW", "INR", "BRL",
-})
+_CCY_CODES = frozenset(
+    {
+        "USD",
+        "EUR",
+        "JPY",
+        "GBP",
+        "AUD",
+        "NZD",
+        "CAD",
+        "CHF",
+        "NOK",
+        "SEK",
+        "DKK",
+        "CNH",
+        "CNY",
+        "MXN",
+        "ZAR",
+        "PLN",
+        "HUF",
+        "TRY",
+        "SGD",
+        "HKD",
+        "KRW",
+        "INR",
+        "BRL",
+    }
+)
 
 _FX_PAIR_RE = re.compile(r"\b([A-Z]{6})\b")
 _POLY_RE = re.compile(r"\bPOLY:[A-Za-z0-9_-]+")
@@ -117,10 +141,25 @@ _POLY_RE = re.compile(r"\bPOLY:[A-Za-z0-9_-]+")
 # series ids: uppercase alnum, letter-first, no spaces/lowercase.
 _BACKTICK_TOKEN_RE = re.compile(r"`([A-Z][A-Z0-9]{2,11})`")
 # Words that match the series-id shape but are prose, not data series.
-_INPUT_STOPWORDS = frozenset({
-    "FRED", "POLY", "NOT", "YET", "INGESTED", "OHLCV", "CSV",
-    "JSON", "API", "OOS", "TODO", "NONE",
-}) | _CCY_CODES
+_INPUT_STOPWORDS = (
+    frozenset(
+        {
+            "FRED",
+            "POLY",
+            "NOT",
+            "YET",
+            "INGESTED",
+            "OHLCV",
+            "CSV",
+            "JSON",
+            "API",
+            "OOS",
+            "TODO",
+            "NONE",
+        }
+    )
+    | _CCY_CODES
+)
 
 _SECTION_RE = re.compile(
     r"^##\s+Data requirements\s*$(.*?)(?=^##\s|\Z)",
@@ -154,7 +193,9 @@ def extract_brief_instruments(
     except OSError as exc:
         logger.warning(
             "could not read hypothesis brief %s: %s: %s",
-            path, type(exc).__name__, exc,
+            path,
+            type(exc).__name__,
+            exc,
         )
         return [], []
     section_match = _SECTION_RE.search(text)
@@ -163,7 +204,8 @@ def extract_brief_instruments(
     else:
         logger.warning(
             "brief %s has no '## Data requirements' section; scanning "
-            "whole document for instruments", path,
+            "whole document for instruments",
+            path,
         )
         section = text
 

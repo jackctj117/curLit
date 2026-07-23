@@ -25,7 +25,9 @@ def _ok(url: str, timeout: float = 15.0) -> bool:
     """True if the URL returns 2xx after redirects."""
     try:
         resp = httpx.get(
-            url, timeout=timeout, follow_redirects=True,
+            url,
+            timeout=timeout,
+            follow_redirects=True,
             headers={"User-Agent": "curLit-research/1.0"},
         )
     except httpx.HTTPError:
@@ -36,14 +38,19 @@ def _ok(url: str, timeout: float = 15.0) -> bool:
 class TestRSSFeedURLs:
     """The new RSS feed URLs added in CL-kxcs must resolve and parse."""
 
-    @pytest.mark.parametrize("url", [
-        "https://www.nber.org/rss/new.xml",
-        "https://www.frbsf.org/feed/",
-        "https://www.bis.org/doclist/wppubls.rss",
-    ])
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://www.nber.org/rss/new.xml",
+            "https://www.frbsf.org/feed/",
+            "https://www.bis.org/doclist/wppubls.rss",
+        ],
+    )
     def test_resolves_to_xml(self, url: str) -> None:
         resp = httpx.get(
-            url, timeout=15, follow_redirects=True,
+            url,
+            timeout=15,
+            follow_redirects=True,
             headers={"User-Agent": "curLit-research/1.0"},
         )
         assert resp.status_code == 200, f"{url} returned {resp.status_code}"
@@ -58,21 +65,23 @@ class TestRSSFeedURLs:
 class TestCBHistoricalURLs:
     """The CL-qdns historical archive URLs must return 200 for a recent year."""
 
-    @pytest.mark.parametrize("url", [
-        # ECB 2024 (post-site-rebuild)
-        "https://www.ecb.europa.eu/press/pubbydate/html/index.en.html"
-        "?name_of_publication=Press%20release&year=2024",
-        # BoE 2024 via Taxonomies
-        "https://www.bankofengland.co.uk/news/news"
-        "?Taxonomies=ce90163e489841e0b66d06243d35d5cb"
-        "&NewsTypes=ce90163e489841e0b66d06243d35d5cb"
-        "&Direction=Latest&InfiniteScrolling=False&Page=1&Year=2024",
-        # BoJ 2023
-        "https://www.boj.or.jp/en/mopo/mpmsche_minu/minu_2023/index.htm",
-        # BoC 2024
-        "https://www.bankofcanada.ca/news/"
-        "?mtm_search_filter=monetary-policy&date_year=2024",
-    ])
+    @pytest.mark.parametrize(
+        "url",
+        [
+            # ECB 2024 (post-site-rebuild)
+            "https://www.ecb.europa.eu/press/pubbydate/html/index.en.html"
+            "?name_of_publication=Press%20release&year=2024",
+            # BoE 2024 via Taxonomies
+            "https://www.bankofengland.co.uk/news/news"
+            "?Taxonomies=ce90163e489841e0b66d06243d35d5cb"
+            "&NewsTypes=ce90163e489841e0b66d06243d35d5cb"
+            "&Direction=Latest&InfiniteScrolling=False&Page=1&Year=2024",
+            # BoJ 2023
+            "https://www.boj.or.jp/en/mopo/mpmsche_minu/minu_2023/index.htm",
+            # BoC 2024
+            "https://www.bankofcanada.ca/news/?mtm_search_filter=monetary-policy&date_year=2024",
+        ],
+    )
     def test_archive_resolves(self, url: str) -> None:
         assert _ok(url), f"CB archive URL did not resolve: {url}"
 
@@ -99,7 +108,4 @@ class TestPDFExtractionLive:
         assert len(text) > 500, f"PDF extraction yielded {len(text)} chars"
         # Sanity: should contain at least one common English word
         # in the body. arXiv abstracts always include one of these.
-        assert any(
-            word in text.lower()
-            for word in ("the", "this", "we", "in", "of")
-        )
+        assert any(word in text.lower() for word in ("the", "this", "we", "in", "of"))

@@ -27,7 +27,8 @@ SCENARIOS = {
 
 
 def run_stress_test(
-    strategies: list[Any], data_provider: Any,
+    strategies: list[Any],
+    data_provider: Any,
 ) -> dict[str, Any]:
     """Replay each crisis scenario through the strategies.
 
@@ -60,7 +61,10 @@ def run_stress_test(
             logger.warning(
                 "stress test %s: data fetch failed for %s..%s — "
                 "scenario skipped, NOT counted as zero loss",
-                name, start, end, exc_info=True,
+                name,
+                start,
+                end,
+                exc_info=True,
             )
             skipped.append(name)
             continue
@@ -68,7 +72,9 @@ def run_stress_test(
             logger.warning(
                 "stress test %s: no price data for %s..%s — "
                 "scenario skipped, NOT counted as zero loss",
-                name, start, end,
+                name,
+                start,
+                end,
             )
             skipped.append(name)
             continue
@@ -77,7 +83,10 @@ def run_stress_test(
                 "stress test %s: 'close' column missing for %s..%s "
                 "(columns: %s) — scenario skipped, NOT counted as "
                 "zero loss",
-                name, start, end, list(data.columns),
+                name,
+                start,
+                end,
+                list(data.columns),
             )
             skipped.append(name)
             continue
@@ -91,7 +100,11 @@ def run_stress_test(
                     returns = returns.add(ret, fill_value=0)
         cum = (1 + returns).prod() - 1
         dd = ((1 + returns).cumprod().div((1 + returns).cumprod().cummax()) - 1).min()
-        results[name] = {"total_return": float(cum), "max_drawdown": float(dd), "worst_day": float(returns.min())}
+        results[name] = {
+            "total_return": float(cum),
+            "max_drawdown": float(dd),
+            "worst_day": float(returns.min()),
+        }
 
     if not results:
         msg = (

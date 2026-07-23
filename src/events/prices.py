@@ -54,7 +54,9 @@ Downloader = Callable[[Sequence[str], datetime, datetime], pd.DataFrame]
 
 
 def _yf_download(
-    tickers: Sequence[str], start: datetime, end: datetime,
+    tickers: Sequence[str],
+    start: datetime,
+    end: datetime,
 ) -> pd.DataFrame:
     """Default downloader: one batched yfinance daily-bars request."""
     import yfinance as yf  # deferred — keep import cheap for non-price callers
@@ -106,15 +108,18 @@ def _entry_from_closes(closes: pd.Series) -> dict[str, Any] | None:
 
 
 def _equity_prices(
-    tickers: list[str], downloader: Downloader, now: datetime,
+    tickers: list[str],
+    downloader: Downloader,
+    now: datetime,
 ) -> dict[str, dict[str, Any]]:
     start = now - timedelta(days=WINDOW_DAYS)
     try:
         data = downloader(tickers, start, now)
     except Exception:
         logger.warning(
-            "price fetch: batch download failed for %d equities; "
-            "rendering without prices", len(tickers), exc_info=True,
+            "price fetch: batch download failed for %d equities; rendering without prices",
+            len(tickers),
+            exc_info=True,
         )
         return {}
     out: dict[str, dict[str, Any]] = {}
@@ -133,7 +138,9 @@ def _equity_prices(
 
 
 def _oanda_prices(
-    ids: list[str], engine: Any, now: datetime,
+    ids: list[str],
+    engine: Any,
+    now: datetime,
 ) -> dict[str, dict[str, Any]]:
     """OANDA-style ids via the DataProvider ``prices``-table closes.
     Any failure (no engine, table empty, DB down) → absent keys."""
@@ -154,7 +161,9 @@ def _oanda_prices(
             entry = _entry_from_closes(series)
         except Exception:
             logger.debug(
-                "price fetch: %s failed via DataProvider", instrument, exc_info=True,
+                "price fetch: %s failed via DataProvider",
+                instrument,
+                exc_info=True,
             )
             continue
         if entry is not None:

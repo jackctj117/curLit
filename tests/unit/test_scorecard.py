@@ -68,7 +68,7 @@ class TestParseHealthEquity:
 
     def test_naive_timestamp_coerced_to_utc(self):
         lines = [_jsonl("Health: equity=5.0", "2026-07-13T12:00:00")]
-        (ts, _eq), = parse_health_equity(lines)
+        ((ts, _eq),) = parse_health_equity(lines)
         assert ts.tzinfo is not None
 
 
@@ -84,8 +84,7 @@ class TestKillSwitchCount:
                 "KILL SWITCH: daily_loss triggered — action=flatten context={}",
                 "2026-07-13T12:00:00+00:00",
             ),
-            _jsonl("Kill switch daily_loss: OK (value=0.001)",
-                   "2026-07-13T12:01:00+00:00"),
+            _jsonl("Kill switch daily_loss: OK (value=0.001)", "2026-07-13T12:01:00+00:00"),
             _jsonl("Health: equity=1.0", "2026-07-13T12:02:00+00:00"),
         ]
         assert count_kill_switch_triggers(lines) == 1
@@ -98,13 +97,14 @@ class TestKillSwitchCount:
             mk("2026-07-20T00:00:00+00:00"),
         ]
         n = count_kill_switch_triggers(
-            lines, start=T0 - timedelta(days=1), end=T0 + timedelta(days=1),
+            lines,
+            start=T0 - timedelta(days=1),
+            end=T0 + timedelta(days=1),
         )
         assert n == 1
 
     def test_marker_in_payload_but_not_msg_not_counted(self):
-        lines = [_jsonl("routine note", "2026-07-13T12:00:00+00:00",
-                        context="KILL SWITCH history")]
+        lines = [_jsonl("routine note", "2026-07-13T12:00:00+00:00", context="KILL SWITCH history")]
         assert count_kill_switch_triggers(lines) == 0
 
 
@@ -117,37 +117,34 @@ class TestEquityStats:
     def _points(self):
         return [
             (T0, 100000.0),
-            (T0 + timedelta(hours=4), 100500.0),          # day 1 close
-            (T0 + timedelta(days=1), 100200.0),           # day 2 close
-            (T0 + timedelta(days=2), 101000.0),           # day 3 close
+            (T0 + timedelta(hours=4), 100500.0),  # day 1 close
+            (T0 + timedelta(days=1), 100200.0),  # day 2 close
+            (T0 + timedelta(days=2), 101000.0),  # day 3 close
         ]
 
     def test_weekly_pnl_and_pct(self):
-        stats = equity_stats(self._points(), T0 - timedelta(days=1),
-                             T0 + timedelta(days=7))
+        stats = equity_stats(self._points(), T0 - timedelta(days=1), T0 + timedelta(days=7))
         assert stats["weekly_pnl"] == pytest.approx(1000.0)
         assert stats["weekly_pnl_pct"] == pytest.approx(1.0)
         assert stats["n_samples"] == 4
 
     def test_daily_close_takes_last_sample_of_day(self):
-        stats = equity_stats(self._points(), T0 - timedelta(days=1),
-                             T0 + timedelta(days=7))
+        stats = equity_stats(self._points(), T0 - timedelta(days=1), T0 + timedelta(days=7))
         assert stats["daily_close"]["2026-07-13"] == 100500.0
 
     def test_daily_pnl_diffs(self):
-        stats = equity_stats(self._points(), T0 - timedelta(days=1),
-                             T0 + timedelta(days=7))
+        stats = equity_stats(self._points(), T0 - timedelta(days=1), T0 + timedelta(days=7))
         assert stats["daily_pnl"]["2026-07-14"] == pytest.approx(-300.0)
         assert stats["daily_pnl"]["2026-07-15"] == pytest.approx(800.0)
 
     def test_out_of_window_points_excluded(self):
-        stats = equity_stats(self._points(), T0 + timedelta(days=1, hours=-1),
-                             T0 + timedelta(days=7))
+        stats = equity_stats(
+            self._points(), T0 + timedelta(days=1, hours=-1), T0 + timedelta(days=7)
+        )
         assert stats["first_equity"] == 100200.0
 
     def test_empty_window_returns_empty_dict(self):
-        assert equity_stats(self._points(), T0 + timedelta(days=30),
-                            T0 + timedelta(days=37)) == {}
+        assert equity_stats(self._points(), T0 + timedelta(days=30), T0 + timedelta(days=37)) == {}
 
 
 # =============================================================================
@@ -158,10 +155,20 @@ class TestEquityStats:
 class TestResearchSummaries:
     def test_sums_verdicts_and_errors(self):
         runs = [
-            {"debates_run": 2, "verdicts_promote": 1, "verdicts_reject": 1,
-             "verdicts_escalate": 0, "errors": ["boom"]},
-            {"debates_run": 1, "verdicts_promote": 0, "verdicts_reject": 1,
-             "verdicts_escalate": 1, "errors": []},
+            {
+                "debates_run": 2,
+                "verdicts_promote": 1,
+                "verdicts_reject": 1,
+                "verdicts_escalate": 0,
+                "errors": ["boom"],
+            },
+            {
+                "debates_run": 1,
+                "verdicts_promote": 0,
+                "verdicts_reject": 1,
+                "verdicts_escalate": 1,
+                "errors": [],
+            },
         ]
         s = summarize_research_runs(runs)
         assert s["n_runs"] == 2
@@ -192,7 +199,9 @@ class TestDebateSpend:
 
     def test_sums_within_window(self):
         total = sum_debate_spend(
-            self._lines(), start=T0 - timedelta(days=1), end=T0 + timedelta(days=7),
+            self._lines(),
+            start=T0 - timedelta(days=1),
+            end=T0 + timedelta(days=7),
         )
         assert total == pytest.approx(2.0)
 
@@ -234,8 +243,9 @@ class TestBuildMetric:
 
 
 def _metric(key: str, passed: bool | None, critical: bool = False) -> Metric:
-    return Metric(key=key, name=key, value=0, display="0", target="t",
-                  passed=passed, critical=critical)
+    return Metric(
+        key=key, name=key, value=0, display="0", target="t", passed=passed, critical=critical
+    )
 
 
 class TestWeekVerdict:

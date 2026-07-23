@@ -174,6 +174,7 @@ class TestReporting:
 
     def test_to_dict_serializable(self) -> None:
         import json
+
         attr = FeatureEdgeAttributor(n_random_tests=5, seed=0)
         features = _make_features()
         report = attr.attribute(_score_with_real_feature_only, features)

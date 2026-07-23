@@ -212,7 +212,8 @@ class FeatureSnapshotStore:
             )
         logger.debug(
             "Stored feature snapshot %s (set=%s ver=%s)",
-            snapshot.snapshot_id, snapshot.feature_set_name,
+            snapshot.snapshot_id,
+            snapshot.feature_set_name,
             snapshot.feature_set_version,
         )
         return snapshot.snapshot_id
@@ -304,7 +305,8 @@ class FeatureVersionRegistry:
         self._current[definition.name] = definition.version
         logger.info(
             "Registered feature set %s v%s",
-            definition.name, definition.version,
+            definition.name,
+            definition.version,
         )
 
     def current_version(self, name: str) -> str:
@@ -314,7 +316,9 @@ class FeatureVersionRegistry:
         return self._current[name]
 
     def get_definition(
-        self, name: str, version: str | None = None,
+        self,
+        name: str,
+        version: str | None = None,
     ) -> FeatureSetDefinition:
         v = version or self.current_version(name)
         if name not in self._defs or v not in self._defs[name]:

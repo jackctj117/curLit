@@ -34,7 +34,8 @@ def _profile(
         sizing=SizingConfig(kelly_fraction=0.5, max_position_pct=0.4),
         kill_switches=KillSwitchConfig(daily_loss_limit_pct=-0.10),
         strategy_gates=StrategyGatesConfig(
-            min_r_squared=min_r2, entry_z_threshold=entry_z,
+            min_r_squared=min_r2,
+            entry_z_threshold=entry_z,
         ),
         holding=HoldingConfig(max_holding_days=max_hold),
         bias=BiasConfig(
@@ -66,7 +67,9 @@ class TestSignalTriplet:
 
 
 def _synthetic_fx_panel(
-    n: int = 300, seed: int = 7, drift: float = 0.0,
+    n: int = 300,
+    seed: int = 7,
+    drift: float = 0.0,
 ) -> pd.DataFrame:
     """Build a (date-indexed) FX panel with EURUSD vs a rate-spread.
     Slight drift parameter forces the price away from fair value, so
@@ -129,7 +132,10 @@ class TestMaxHolding:
         panel = _synthetic_fx_panel(n=300, drift=0.04)  # z > 0 → short
         cfg = AggressiveShortFXConfig(
             risk_profile=_profile(
-                long_mult=0.0, short_mult=1.0, entry_z=0.5, max_hold=3,
+                long_mult=0.0,
+                short_mult=1.0,
+                entry_z=0.5,
+                max_hold=3,
             ),
             poly_symbol=None,
             agreement_quorum=1,  # so single rate-diff signal triggers
@@ -143,8 +149,7 @@ class TestMaxHolding:
         first = entries[0]
         # By bar first+4 (5th bar held), position must be flat.
         assert positions.iloc[first + 4] == 0, (
-            f"expected flat by bar {first + 4} (max_hold=3), "
-            f"got {positions.iloc[first + 4]}"
+            f"expected flat by bar {first + 4} (max_hold=3), got {positions.iloc[first + 4]}"
         )
 
 
@@ -154,10 +159,13 @@ class TestRSquaredGate:
         n = 200
         rng = np.random.default_rng(42)
         idx = pd.date_range("2024-01-01", periods=n, freq="D")
-        panel = pd.DataFrame({
-            "EURUSD": 1.10 + rng.normal(0, 0.005, n),
-            "US10Y_MINUS_DE10Y": rng.normal(0, 0.1, n),
-        }, index=idx)
+        panel = pd.DataFrame(
+            {
+                "EURUSD": 1.10 + rng.normal(0, 0.005, n),
+                "US10Y_MINUS_DE10Y": rng.normal(0, 0.1, n),
+            },
+            index=idx,
+        )
         cfg = AggressiveShortFXConfig(
             risk_profile=_profile(min_r2=0.30),  # high R² gate
             poly_symbol=None,
@@ -174,8 +182,10 @@ class TestRiskProfileLoad:
         # active one. Set env var so we control which.
         monkeypatch.setenv("CURLIT_RISK_PROFILE", "aggressive_short")
         from src.risk.risk_profile import load_active_profile
+
         load_active_profile.cache_clear() if hasattr(
-            load_active_profile, "cache_clear",
+            load_active_profile,
+            "cache_clear",
         ) else None
         strategy = AggressiveShortFXStrategy()
         # aggressive_short → long_signal_multiplier=0.0.

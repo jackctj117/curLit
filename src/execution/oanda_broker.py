@@ -28,7 +28,9 @@ class SlippageRefUnavailableError(RuntimeError):
 
 
 def _price_bound_str(
-    side: str, reference_price: str, max_slippage_bps: float,
+    side: str,
+    reference_price: str,
+    max_slippage_bps: float,
 ) -> str:
     """Direction-aware FOK price bound as an OANDA PriceValue string (CL-qyav).
 
@@ -78,15 +80,21 @@ class OandaBroker(Broker):
         # once here and never mutated afterwards — per-request state goes
         # through local params=/json= arguments only.
         self.client = httpx.Client(
-            base_url=base, headers=self.headers, timeout=10.0,
+            base_url=base,
+            headers=self.headers,
+            timeout=10.0,
             follow_redirects=True,
         )
         self.write_client = httpx.Client(
-            base_url=base, headers=self.headers, timeout=10.0,
+            base_url=base,
+            headers=self.headers,
+            timeout=10.0,
             follow_redirects=False,
         )
         self.stream_client = httpx.AsyncClient(
-            base_url=stream, headers=self.headers, timeout=None,
+            base_url=stream,
+            headers=self.headers,
+            timeout=None,
             follow_redirects=True,
         )
         # Last streamed quote per OANDA-symbol, for the slippage reference
@@ -107,7 +115,10 @@ class OandaBroker(Broker):
     _REF_PRICE_MAX_AGE_SEC = 2.0
 
     def _send_following_307(
-        self, method: str, url: str, json_body: dict[str, Any] | None = None,
+        self,
+        method: str,
+        url: str,
+        json_body: dict[str, Any] | None = None,
     ) -> httpx.Response:
         """Write request that follows only method-preserving redirects
         (307/308). Any other 3xx raises instead of letting httpx downgrade
@@ -157,7 +168,10 @@ class OandaBroker(Broker):
             order.reject_reason = "SLIPPAGE_REF_UNAVAILABLE"
             logger.warning(
                 "OANDA REJECTED order %s %s x%s pre-flight: %s",
-                order.symbol, order.side, order.quantity, exc,
+                order.symbol,
+                order.side,
+                order.quantity,
+                exc,
             )
             return order
         if price_bound is not None:
@@ -178,7 +192,10 @@ class OandaBroker(Broker):
             order.reject_reason = str(reason)
             logger.warning(
                 "OANDA REJECTED order %s %s x%s: %s",
-                order.symbol, order.side, order.quantity, reason,
+                order.symbol,
+                order.side,
+                order.quantity,
+                reason,
             )
             return order
         if "orderFillTransaction" in data:
@@ -193,7 +210,9 @@ class OandaBroker(Broker):
             order.reject_reason = str(cancel.get("reason", "venue cancel"))
             logger.warning(
                 "OANDA order %s %s x%s cancelled by venue: %s",
-                order.symbol, order.side, order.quantity,
+                order.symbol,
+                order.side,
+                order.quantity,
                 cancel.get("reason", "?"),
             )
             return order
@@ -204,7 +223,10 @@ class OandaBroker(Broker):
             order.reject_reason = "no fill/reject/create transaction in response"
             logger.warning(
                 "OANDA response had no fill/reject/create txn for %s %s x%s: %s",
-                order.symbol, order.side, order.quantity, str(data)[:200],
+                order.symbol,
+                order.side,
+                order.quantity,
+                str(data)[:200],
             )
         return order
 
@@ -269,8 +291,7 @@ class OandaBroker(Broker):
             resp.raise_for_status()
             p = resp.json()["prices"][0]
             ref_str = (
-                str(p["asks"][0]["price"]) if order.side == "buy"
-                else str(p["bids"][0]["price"])
+                str(p["asks"][0]["price"]) if order.side == "buy" else str(p["bids"][0]["price"])
             )
         except Exception as exc:
             if order.emergency:
@@ -279,7 +300,10 @@ class OandaBroker(Broker):
                     "reference-price fetch failed for %s — %s x%s goes out "
                     "UNBOUND (max %.2f bps unenforced this order; "
                     "risk-reducing order takes precedence)",
-                    order.symbol, order.side, order.quantity, bps,
+                    order.symbol,
+                    order.side,
+                    order.quantity,
+                    bps,
                     exc_info=True,
                 )
                 return None
@@ -296,13 +320,16 @@ class OandaBroker(Broker):
         live while the OMS believed them cancelled)."""
         try:
             resp = self._send_following_307(
-                "PUT", f"/v3/accounts/{self.account_id}/orders/{order_id}/cancel",
+                "PUT",
+                f"/v3/accounts/{self.account_id}/orders/{order_id}/cancel",
             )
             if resp.status_code == 200:
                 return True
             logger.warning(
                 "OANDA cancel %s failed: HTTP %s %s",
-                order_id, resp.status_code, resp.text[:150],
+                order_id,
+                resp.status_code,
+                resp.text[:150],
             )
             return False
         except Exception as exc:
@@ -322,12 +349,16 @@ class OandaBroker(Broker):
             net = lq + sq
             if net == 0:
                 continue
-            avg_price = float(p["long"]["averagePrice"]) if net > 0 else float(p["short"]["averagePrice"])
-            positions.append(Position(
-                symbol=self._from_oanda(p["instrument"]),
-                quantity=net,
-                avg_price=avg_price,
-            ))
+            avg_price = (
+                float(p["long"]["averagePrice"]) if net > 0 else float(p["short"]["averagePrice"])
+            )
+            positions.append(
+                Position(
+                    symbol=self._from_oanda(p["instrument"]),
+                    quantity=net,
+                    avg_price=avg_price,
+                )
+            )
         return positions
 
     def get_account(self) -> Account:
@@ -354,7 +385,8 @@ class OandaBroker(Broker):
     _STREAM_BACKOFF_MAX = 30.0
 
     async def stream_prices(
-        self, symbols: list[str],
+        self,
+        symbols: list[str],
     ) -> AsyncIterator[dict[str, Any]]:
         """Self-healing OANDA price stream (CL-vff9).
 
@@ -372,8 +404,7 @@ class OandaBroker(Broker):
         """
         oanda_syms = ",".join(self._to_oanda(s) for s in symbols)
         base_url = (
-            self.STREAM_PRACTICE if "practice" in str(self.client.base_url)
-            else self.STREAM_LIVE
+            self.STREAM_PRACTICE if "practice" in str(self.client.base_url) else self.STREAM_LIVE
         )
         # Lazily ensure the streamed-quote cache exists (CL-7vn9) — the engine
         # builds the broker via __init__, but some tests construct it with
@@ -385,7 +416,9 @@ class OandaBroker(Broker):
             try:
                 async with (
                     httpx.AsyncClient(
-                        base_url=base_url, headers=self.headers, timeout=None,
+                        base_url=base_url,
+                        headers=self.headers,
+                        timeout=None,
                     ) as client,
                     client.stream(
                         "GET",
@@ -402,8 +435,9 @@ class OandaBroker(Broker):
                             )
                             resp.raise_for_status()
                         logger.warning(
-                            "OANDA price stream HTTP %d — reconnecting in "
-                            "%.0fs", resp.status_code, backoff,
+                            "OANDA price stream HTTP %d — reconnecting in %.0fs",
+                            resp.status_code,
+                            backoff,
                         )
                         await asyncio.sleep(backoff)
                         backoff = min(backoff * 2, self._STREAM_BACKOFF_MAX)
@@ -451,8 +485,10 @@ class OandaBroker(Broker):
                 raise
             except (httpx.HTTPError, OSError) as exc:
                 logger.warning(
-                    "OANDA price stream error (%s: %s) — reconnecting in "
-                    "%.0fs", type(exc).__name__, str(exc)[:120], backoff,
+                    "OANDA price stream error (%s: %s) — reconnecting in %.0fs",
+                    type(exc).__name__,
+                    str(exc)[:120],
+                    backoff,
                 )
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, self._STREAM_BACKOFF_MAX)
@@ -472,15 +508,16 @@ class OandaBroker(Broker):
         ``units`` and ``price`` for per-order attribution.
         """
         base_url = (
-            self.STREAM_PRACTICE if "practice" in str(self.client.base_url)
-            else self.STREAM_LIVE
+            self.STREAM_PRACTICE if "practice" in str(self.client.base_url) else self.STREAM_LIVE
         )
         backoff = self._STREAM_BACKOFF_START
         while True:
             try:
                 async with (
                     httpx.AsyncClient(
-                        base_url=base_url, headers=self.headers, timeout=None,
+                        base_url=base_url,
+                        headers=self.headers,
+                        timeout=None,
                     ) as client,
                     client.stream(
                         "GET",
@@ -496,8 +533,9 @@ class OandaBroker(Broker):
                             )
                             resp.raise_for_status()
                         logger.warning(
-                            "OANDA transaction stream HTTP %d — reconnecting "
-                            "in %.0fs", resp.status_code, backoff,
+                            "OANDA transaction stream HTTP %d — reconnecting in %.0fs",
+                            resp.status_code,
+                            backoff,
                         )
                         await asyncio.sleep(backoff)
                         backoff = min(backoff * 2, self._STREAM_BACKOFF_MAX)
@@ -531,8 +569,7 @@ class OandaBroker(Broker):
                             "ts": msg.get("time"),
                         }
                     logger.warning(
-                        "OANDA transaction stream closed by server — "
-                        "reconnecting",
+                        "OANDA transaction stream closed by server — reconnecting",
                     )
                     await asyncio.sleep(self._STREAM_BACKOFF_START)
             except asyncio.CancelledError:
@@ -541,8 +578,10 @@ class OandaBroker(Broker):
                 raise  # 4xx surfaced above is PERMANENT — don't retry
             except (httpx.HTTPError, OSError) as exc:
                 logger.warning(
-                    "OANDA transaction stream error (%s: %s) — reconnecting "
-                    "in %.0fs", type(exc).__name__, str(exc)[:120], backoff,
+                    "OANDA transaction stream error (%s: %s) — reconnecting in %.0fs",
+                    type(exc).__name__,
+                    str(exc)[:120],
+                    backoff,
                 )
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, self._STREAM_BACKOFF_MAX)

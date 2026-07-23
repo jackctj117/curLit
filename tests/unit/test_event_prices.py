@@ -39,8 +39,7 @@ def _yf_frame(closes_by_ticker: dict[str, list[float]]) -> pd.DataFrame:
 class Recorder:
     """Downloader shim that records requested tickers."""
 
-    def __init__(self, frame: pd.DataFrame | None = None,
-                 error: Exception | None = None) -> None:
+    def __init__(self, frame: pd.DataFrame | None = None, error: Exception | None = None) -> None:
         self.frame = frame if frame is not None else pd.DataFrame()
         self.error = error
         self.calls: list[list[str]] = []
@@ -66,16 +65,17 @@ def db() -> Any:
     engine = sa.create_engine("sqlite://")
     with engine.begin() as conn:
         conn.execute(text("CREATE TABLE prices (ts TEXT, symbol TEXT, close REAL)"))
-        conn.execute(text(
-            "CREATE TABLE macro_data (series_id TEXT, observation_date TEXT, "
-            "value REAL, release_date TEXT)",
-        ))
+        conn.execute(
+            text(
+                "CREATE TABLE macro_data (series_id TEXT, observation_date TEXT, "
+                "value REAL, release_date TEXT)",
+            )
+        )
         # Seed under OIL_WTI — the symbol BCO_USD normalizes to.
         for days_ago, close in ((2, 76.8), (1, 78.4)):
             conn.execute(
                 text("INSERT INTO prices VALUES (:ts, 'OIL_WTI', :close)"),
-                {"ts": (NOW - timedelta(days=days_ago)).isoformat(sep=" "),
-                 "close": close},
+                {"ts": (NOW - timedelta(days=days_ago)).isoformat(sep=" "), "close": close},
             )
     return engine
 
@@ -125,7 +125,8 @@ class TestEquities:
         dl = Recorder(_yf_frame({"FRO": [23.0, 24.0]}))
         out = get_prices(
             ["FRO", "strait-of-hormuz-closed", "lowercase", ""],
-            downloader=dl, now=NOW,
+            downloader=dl,
+            now=NOW,
         )
         assert dl.calls == [["FRO"]]
         assert list(out) == ["FRO"]
@@ -179,14 +180,11 @@ class TestOandaIds:
 
 class TestFormatPrice:
     def test_equity_dollar_two_dp(self) -> None:
-        assert format_price("FRO", {"price": 24.1, "change_pct": 3.2}) == \
-            "$24.10 (+3.2%)"
+        assert format_price("FRO", {"price": 24.1, "change_pct": 3.2}) == "$24.10 (+3.2%)"
 
     def test_oanda_no_dollar_sig_figs(self) -> None:
-        assert format_price("BCO_USD", {"price": 78.4, "change_pct": 2.08}) == \
-            "78.4 (+2.1%)"
-        assert format_price("EUR_USD", {"price": 1.0834, "change_pct": -0.31}) == \
-            "1.0834 (-0.3%)"
+        assert format_price("BCO_USD", {"price": 78.4, "change_pct": 2.08}) == "78.4 (+2.1%)"
+        assert format_price("EUR_USD", {"price": 1.0834, "change_pct": -0.31}) == "1.0834 (-0.3%)"
 
     def test_missing_info_empty(self) -> None:
         assert format_price("FRO", None) == ""
@@ -197,8 +195,7 @@ class TestFormatPrice:
         assert format_price("FRO", {"price": 24.1, "change_pct": None}) == "$24.10"
 
     def test_thousands_separator(self) -> None:
-        assert format_price("BRK-A", {"price": 731400.0, "change_pct": None}) == \
-            "$731,400.00"
+        assert format_price("BRK-A", {"price": 731400.0, "change_pct": None}) == "$731,400.00"
 
 
 class TestFormatAge:
@@ -234,7 +231,12 @@ class TestParseTs:
 
     def test_iso_string(self) -> None:
         assert parse_ts("2026-07-20T10:00:00+02:00") == datetime(
-            2026, 7, 20, 10, 0, tzinfo=timezone(timedelta(hours=2)),
+            2026,
+            7,
+            20,
+            10,
+            0,
+            tzinfo=timezone(timedelta(hours=2)),
         )
 
     def test_garbage_none(self) -> None:

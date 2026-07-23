@@ -42,12 +42,12 @@ def _run_cli(
     try:
         os.write(write_fd, plaintext)
         os.close(write_fd)
-        monkeypatch.setattr(
-            "sys.stdin", io.TextIOWrapper(io.BytesIO(passphrase), encoding="utf-8")
-        )
+        monkeypatch.setattr("sys.stdin", io.TextIOWrapper(io.BytesIO(passphrase), encoding="utf-8"))
         argv = [
-            "--plaintext", f"/dev/fd/{read_fd}",
-            "--encrypted", str(enc),
+            "--plaintext",
+            f"/dev/fd/{read_fd}",
+            "--encrypted",
+            str(enc),
             "--passphrase-stdin",
         ]
         if salt is not None:
@@ -89,9 +89,13 @@ def test_subprocess_matches_rotate_secrets_interface(tmp_path):
     try:
         proc = subprocess.Popen(
             [
-                sys.executable, "-m", "scripts.initialize_vault",
-                "--plaintext", f"/dev/fd/{read_fd}",
-                "--encrypted", str(enc),
+                sys.executable,
+                "-m",
+                "scripts.initialize_vault",
+                "--plaintext",
+                f"/dev/fd/{read_fd}",
+                "--encrypted",
+                str(enc),
                 "--passphrase-stdin",
             ],
             stdin=subprocess.PIPE,
@@ -115,8 +119,7 @@ def test_existing_salt_is_reused(tmp_path, monkeypatch):
     pinned = b"\x02" * 16
     salt_file.write_bytes(pinned)
 
-    rc = _run_cli(monkeypatch, b'{"K": "v"}', enc, STRONG.encode() + b"\n",
-                  salt=salt_file)
+    rc = _run_cli(monkeypatch, b'{"K": "v"}', enc, STRONG.encode() + b"\n", salt=salt_file)
 
     assert rc == 0
     assert salt_file.read_bytes() == pinned  # NOT regenerated
@@ -127,8 +130,7 @@ def test_explicit_salt_path_created_when_missing(tmp_path, monkeypatch):
     enc = tmp_path / "vault.enc"
     salt_file = tmp_path / "elsewhere.salt"
 
-    rc = _run_cli(monkeypatch, b'{"K": "v"}', enc, STRONG.encode() + b"\n",
-                  salt=salt_file)
+    rc = _run_cli(monkeypatch, b'{"K": "v"}', enc, STRONG.encode() + b"\n", salt=salt_file)
 
     assert rc == 0
     assert len(salt_file.read_bytes()) == 16
@@ -136,9 +138,7 @@ def test_explicit_salt_path_created_when_missing(tmp_path, monkeypatch):
     assert not (tmp_path / "vault.salt").exists()  # default path untouched
 
 
-def test_weak_passphrase_fails_on_new_vault_and_writes_nothing(
-    tmp_path, monkeypatch, capsys
-):
+def test_weak_passphrase_fails_on_new_vault_and_writes_nothing(tmp_path, monkeypatch, capsys):
     enc = tmp_path / "vault.enc"
 
     rc = _run_cli(monkeypatch, b'{"K": "v"}', enc, WEAK.encode() + b"\n")
@@ -149,9 +149,7 @@ def test_weak_passphrase_fails_on_new_vault_and_writes_nothing(
     assert not list(tmp_path.iterdir())  # not even a salt file or tmp litter
 
 
-def test_weak_passphrase_warns_but_reseals_existing_vault(
-    tmp_path, monkeypatch, capsys
-):
+def test_weak_passphrase_warns_but_reseals_existing_vault(tmp_path, monkeypatch, capsys):
     """The rotation path: the live vault's passphrase is known-weak — re-seal
     under the SAME phrase must succeed (warn-only), or rotation is bricked."""
     enc = tmp_path / "vault.enc"
@@ -168,9 +166,7 @@ def test_weak_passphrase_warns_but_reseals_existing_vault(
     assert not list(tmp_path.glob("*.tmp*"))
 
 
-def test_non_json_plaintext_rejected_before_touching_disk(
-    tmp_path, monkeypatch, capsys
-):
+def test_non_json_plaintext_rejected_before_touching_disk(tmp_path, monkeypatch, capsys):
     enc = tmp_path / "vault.enc"
 
     rc = _run_cli(monkeypatch, b"not json at all", enc, STRONG.encode() + b"\n")
@@ -180,9 +176,7 @@ def test_non_json_plaintext_rejected_before_touching_disk(
     assert not list(tmp_path.iterdir())
 
 
-def test_interactive_init_writes_atomically_with_0600(
-    tmp_path, monkeypatch, capsys
-):
+def test_interactive_init_writes_atomically_with_0600(tmp_path, monkeypatch, capsys):
     """Interactive one-time init (CL-8cw1): vault/salt/recovery must land
     via the same atomic tmp+os.replace path as reseal — mode 0600, no tmp
     litter. The old write_text-then-chmod left a umask-readable window."""
@@ -204,16 +198,12 @@ def test_interactive_init_writes_atomically_with_0600(
     assert not list(tmp_path.glob("*.tmp*"))  # staging files replaced away
     # The printed master passphrase must actually open the sealed vault.
     out = capsys.readouterr().out
-    passphrase = (
-        out.split("MASTER PASSPHRASE:")[1].strip().splitlines()[0].strip()
-    )
+    passphrase = out.split("MASTER PASSPHRASE:")[1].strip().splitlines()[0].strip()
     key = derive_key(passphrase, salt.read_bytes())
     assert unseal(json.loads(vault.read_text()), key) == b"{}"
 
 
-def test_interactive_init_crash_mid_write_leaves_no_sentinel(
-    tmp_path, monkeypatch
-):
+def test_interactive_init_crash_mid_write_leaves_no_sentinel(tmp_path, monkeypatch):
     """CL-9dhg finding 12: vault.enc existing is the refuse-to-reinitialize
     sentinel, so it must be written LAST. Simulate a crash between writes
     (second atomic write raises): the sentinel must be absent afterwards —

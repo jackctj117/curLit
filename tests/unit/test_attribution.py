@@ -39,34 +39,29 @@ _T0 = datetime(2026, 4, 1, 12, 0, tzinfo=UTC)
 
 def _ts(seconds: int) -> datetime:
     from datetime import timedelta as _td
+
     return _T0 + _td(seconds=seconds)
 
 
 class TestRealization:
     def test_long_round_trip(self, attr: PnLAttributor) -> None:
-        attr.attribute_fill("EURUSD", 1000.0, 1.10, ts=_ts(0),
-                            strategy_id="s1", fill_id="f1")
-        attr.attribute_fill("EURUSD", -1000.0, 1.12, ts=_ts(60),
-                            strategy_id="s1", fill_id="f2")
+        attr.attribute_fill("EURUSD", 1000.0, 1.10, ts=_ts(0), strategy_id="s1", fill_id="f1")
+        attr.attribute_fill("EURUSD", -1000.0, 1.12, ts=_ts(60), strategy_id="s1", fill_id="f2")
         pnl = attr.compute_strategy_pnl("s1")
         assert pnl.realized == pytest.approx(20.0)  # 0.02 * 1000
         assert pnl.open_quantity == pytest.approx(0.0)
         assert pnl.unrealized == pytest.approx(0.0)
 
     def test_short_round_trip(self, attr: PnLAttributor) -> None:
-        attr.attribute_fill("EURUSD", -1000.0, 1.12, ts=_ts(0),
-                            strategy_id="s1", fill_id="f1")
-        attr.attribute_fill("EURUSD", 1000.0, 1.10, ts=_ts(60),
-                            strategy_id="s1", fill_id="f2")
+        attr.attribute_fill("EURUSD", -1000.0, 1.12, ts=_ts(0), strategy_id="s1", fill_id="f1")
+        attr.attribute_fill("EURUSD", 1000.0, 1.10, ts=_ts(60), strategy_id="s1", fill_id="f2")
         pnl = attr.compute_strategy_pnl("s1")
         # Sold high (1.12), bought back low (1.10) → +0.02 * 1000.
         assert pnl.realized == pytest.approx(20.0)
 
     def test_partial_close(self, attr: PnLAttributor) -> None:
-        attr.attribute_fill("EURUSD", 1000.0, 1.10, ts=_ts(0),
-                            strategy_id="s1", fill_id="f1")
-        attr.attribute_fill("EURUSD", -400.0, 1.13, ts=_ts(60),
-                            strategy_id="s1", fill_id="f2")
+        attr.attribute_fill("EURUSD", 1000.0, 1.10, ts=_ts(0), strategy_id="s1", fill_id="f1")
+        attr.attribute_fill("EURUSD", -400.0, 1.13, ts=_ts(60), strategy_id="s1", fill_id="f2")
         pnl = attr.compute_strategy_pnl("s1", last_price={"EURUSD": 1.15})
         # Realized: 0.03 * 400 = 12
         assert pnl.realized == pytest.approx(12.0)
@@ -75,13 +70,10 @@ class TestRealization:
         assert pnl.unrealized == pytest.approx(30.0)
 
     def test_fifo_across_lots(self, attr: PnLAttributor) -> None:
-        attr.attribute_fill("EURUSD", 500.0, 1.10, ts=_ts(0),
-                            strategy_id="s1", fill_id="a")
-        attr.attribute_fill("EURUSD", 500.0, 1.15, ts=_ts(60),
-                            strategy_id="s1", fill_id="b")
+        attr.attribute_fill("EURUSD", 500.0, 1.10, ts=_ts(0), strategy_id="s1", fill_id="a")
+        attr.attribute_fill("EURUSD", 500.0, 1.15, ts=_ts(60), strategy_id="s1", fill_id="b")
         # Sell 700: closes all of lot1 (500@1.10) and 200 of lot2 (200@1.15)
-        attr.attribute_fill("EURUSD", -700.0, 1.20, ts=_ts(120),
-                            strategy_id="s1", fill_id="c")
+        attr.attribute_fill("EURUSD", -700.0, 1.20, ts=_ts(120), strategy_id="s1", fill_id="c")
         pnl = attr.compute_strategy_pnl("s1")
         # 500*(1.20-1.10) + 200*(1.20-1.15) = 50 + 10 = 60
         assert pnl.realized == pytest.approx(60.0)
@@ -90,10 +82,14 @@ class TestRealization:
 
 class TestMultiStrategySplit:
     def test_proportional_split_writes_two_rows(
-        self, attr: PnLAttributor,
+        self,
+        attr: PnLAttributor,
     ) -> None:
         attr.attribute_fill(
-            "EURUSD", 1000.0, 1.10, ts=_ts(0),
+            "EURUSD",
+            1000.0,
+            1.10,
+            ts=_ts(0),
             proportions={"s1": 0.6, "s2": 0.4},
             fill_id="shared",
         )
@@ -105,7 +101,10 @@ class TestMultiStrategySplit:
     def test_proportions_must_sum_to_one(self, attr: PnLAttributor) -> None:
         with pytest.raises(AssertionError):
             attr.attribute_fill(
-                "EURUSD", 1000.0, 1.10, ts=_ts(0),
+                "EURUSD",
+                1000.0,
+                1.10,
+                ts=_ts(0),
                 proportions={"s1": 0.6, "s2": 0.5},
                 fill_id="bad",
             )
@@ -114,8 +113,9 @@ class TestMultiStrategySplit:
 class TestIdempotency:
     def test_same_fill_id_does_not_duplicate(self, attr: PnLAttributor) -> None:
         for _ in range(3):
-            attr.attribute_fill("EURUSD", 1000.0, 1.10, ts=_ts(0),
-                                strategy_id="s1", fill_id="dedup")
+            attr.attribute_fill(
+                "EURUSD", 1000.0, 1.10, ts=_ts(0), strategy_id="s1", fill_id="dedup"
+            )
         pnl = attr.compute_strategy_pnl("s1")
         assert pnl.n_fills == 1
         assert pnl.open_quantity == pytest.approx(1000.0)
@@ -124,8 +124,12 @@ class TestIdempotency:
 class TestCostDecomposition:
     def test_components_sum_into_pnl(self, attr: PnLAttributor) -> None:
         attr.attribute_fill(
-            "EURUSD", 1000.0, 1.10, ts=_ts(0),
-            strategy_id="s1", fill_id="f1",
+            "EURUSD",
+            1000.0,
+            1.10,
+            ts=_ts(0),
+            strategy_id="s1",
+            fill_id="f1",
             cost_components={
                 "signal_bps": 5.0,
                 "spread_bps": 1.0,
@@ -134,8 +138,12 @@ class TestCostDecomposition:
             },
         )
         attr.attribute_fill(
-            "EURUSD", -1000.0, 1.12, ts=_ts(60),
-            strategy_id="s1", fill_id="f2",
+            "EURUSD",
+            -1000.0,
+            1.12,
+            ts=_ts(60),
+            strategy_id="s1",
+            fill_id="f2",
             cost_components={
                 "signal_bps": 5.0,
                 "spread_bps": 1.0,
@@ -150,10 +158,10 @@ class TestCostDecomposition:
         assert pnl.swap_cost == pytest.approx(0.0)
 
     def test_no_components_means_zero_decomposition(
-        self, attr: PnLAttributor,
+        self,
+        attr: PnLAttributor,
     ) -> None:
-        attr.attribute_fill("EURUSD", 1000.0, 1.10, ts=_ts(0),
-                            strategy_id="s1", fill_id="f1")
+        attr.attribute_fill("EURUSD", 1000.0, 1.10, ts=_ts(0), strategy_id="s1", fill_id="f1")
         pnl = attr.compute_strategy_pnl("s1")
         assert pnl.signal_alpha == 0
         assert pnl.spread_cost == 0
@@ -176,10 +184,8 @@ class TestListAndEmit:
 
 class TestSinceFilter:
     def test_since_excludes_earlier_fills(self, attr: PnLAttributor) -> None:
-        attr.attribute_fill("EURUSD", 1000, 1.10, ts=_ts(0),
-                            strategy_id="s1", fill_id="old")
-        attr.attribute_fill("EURUSD", -1000, 1.12, ts=_ts(60),
-                            strategy_id="s1", fill_id="recent")
+        attr.attribute_fill("EURUSD", 1000, 1.10, ts=_ts(0), strategy_id="s1", fill_id="old")
+        attr.attribute_fill("EURUSD", -1000, 1.12, ts=_ts(60), strategy_id="s1", fill_id="recent")
         # Only the recent fill is in scope — appears as a -1000 short open.
         pnl = attr.compute_strategy_pnl("s1", since=_ts(30))
         assert pnl.realized == 0

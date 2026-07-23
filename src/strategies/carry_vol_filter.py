@@ -61,9 +61,20 @@ _USD_BASE_PAIRS: frozenset[str] = frozenset(
 class CarryVolFilterConfig:
     """Configuration for the carry + vol filter strategy."""
 
-    currencies: list[str] = field(default_factory=lambda: [
-        "USD", "EUR", "JPY", "GBP", "CHF", "CAD", "AUD", "NZD", "NOK", "SEK",
-    ])
+    currencies: list[str] = field(
+        default_factory=lambda: [
+            "USD",
+            "EUR",
+            "JPY",
+            "GBP",
+            "CHF",
+            "CAD",
+            "AUD",
+            "NZD",
+            "NOK",
+            "SEK",
+        ]
+    )
     top_k: int = 3
     bottom_k: int = 3
 
@@ -78,12 +89,14 @@ class CarryVolFilterConfig:
     # is the value at the largest threshold key still ≤ |z|. So |z| 0 → 100%,
     # |z| 1 → 75%, |z| 2 → 50%, |z| 3 → 0%. Stepwise (not interpolated) for
     # operational clarity in alerts.
-    vol_z_thresholds: dict[float, float] = field(default_factory=lambda: {
-        0.0: 1.00,
-        1.0: 0.75,
-        2.0: 0.50,
-        3.0: 0.00,
-    })
+    vol_z_thresholds: dict[float, float] = field(
+        default_factory=lambda: {
+            0.0: 1.00,
+            1.0: 0.75,
+            2.0: 0.50,
+            3.0: 0.00,
+        }
+    )
 
     # Equal-weight per-pair sizing fraction relative to equity, capped here.
     max_position_pct: float = 0.15
@@ -158,9 +171,7 @@ class CarryVolFilterStrategy:
         qty are exposed so a restart's carry legs classify as MATCHED instead
         of being flattened as orphans."""
         return {
-            p.pair: p
-            for p in self.current_positions.values()
-            if p.pair and abs(p.quantity) > 1e-9
+            p.pair: p for p in self.current_positions.values() if p.pair and abs(p.quantity) > 1e-9
         }
 
     def _load_state(self) -> None:
@@ -170,6 +181,7 @@ class CarryVolFilterStrategy:
             return
         import json  # noqa: PLC0415
         import os  # noqa: PLC0415
+
         if not os.path.exists(self._state_path):
             return
         with open(self._state_path) as fh:
@@ -195,6 +207,7 @@ class CarryVolFilterStrategy:
         import json  # noqa: PLC0415
         import os  # noqa: PLC0415
         import tempfile  # noqa: PLC0415
+
         try:
             payload = {
                 "current_positions": {
@@ -210,8 +223,7 @@ class CarryVolFilterStrategy:
                     for ccy, p in self.current_positions.items()
                 },
                 "last_rebalance": (
-                    self._last_rebalance.isoformat()
-                    if self._last_rebalance else None
+                    self._last_rebalance.isoformat() if self._last_rebalance else None
                 ),
             }
             directory = os.path.dirname(os.path.abspath(self._state_path))
@@ -242,8 +254,7 @@ class CarryVolFilterStrategy:
             self.snapshot_store.store(snapshot)
         except Exception:
             logger.exception(
-                "Failed to store feature snapshot for %s — intent will lack "
-                "snapshot reference",
+                "Failed to store feature snapshot for %s — intent will lack snapshot reference",
                 self.id,
             )
             return {}
@@ -255,11 +266,7 @@ class CarryVolFilterStrategy:
 
     @property
     def symbols(self) -> list[str]:
-        return [
-            self._currency_to_pair(ccy, 1)[0]
-            for ccy in self.config.currencies
-            if ccy != "USD"
-        ]
+        return [self._currency_to_pair(ccy, 1)[0] for ccy in self.config.currencies if ccy != "USD"]
 
     @property
     def signal_interval_seconds(self) -> int:
@@ -313,7 +320,9 @@ class CarryVolFilterStrategy:
                 # which can leak slowly under repeated errors (CL-2yta).
                 logger.warning(
                     "get_latest_value failed for %s: %s: %s",
-                    series_id, type(exc).__name__, exc,
+                    series_id,
+                    type(exc).__name__,
+                    exc,
                 )
                 continue
             if rate is not None:
@@ -341,12 +350,8 @@ class CarryVolFilterStrategy:
             return {"long": [], "short": [], "spread": rate_spread}
 
         return {
-            "long": [
-                (c, r, 1.0 / self.config.top_k) for c, r in long_basket
-            ],
-            "short": [
-                (c, r, 1.0 / self.config.bottom_k) for c, r in short_basket
-            ],
+            "long": [(c, r, 1.0 / self.config.top_k) for c, r in long_basket],
+            "short": [(c, r, 1.0 / self.config.bottom_k) for c, r in short_basket],
             "spread": rate_spread,
         }
 
@@ -396,10 +401,7 @@ class CarryVolFilterStrategy:
         if self._last_rebalance is None:
             return today.day >= self.config.rebalance_day
         # Already rebalanced in this calendar month?
-        if (
-            self._last_rebalance.year == today.year
-            and self._last_rebalance.month == today.month
-        ):
+        if self._last_rebalance.year == today.year and self._last_rebalance.month == today.month:
             return False
         return today.day >= self.config.rebalance_day
 
@@ -440,10 +442,7 @@ class CarryVolFilterStrategy:
 
         # If exposure has been cut sharply (e.g. crisis regime), scale current
         # positions BEFORE waiting for the next monthly rebalance.
-        if (
-            new_exposure < self._current_exposure * 0.8
-            and self.current_positions
-        ):
+        if new_exposure < self._current_exposure * 0.8 and self.current_positions:
             intents.extend(self._scale_positions(prices, broker, new_exposure))
             self._current_exposure = new_exposure
 
@@ -461,7 +460,10 @@ class CarryVolFilterStrategy:
             self._current_exposure = new_exposure
             self._record_rebalance(now, rates, baskets, vol_z, new_exposure)
             self._tag_intents(
-                intents, vol_z, new_exposure, trigger="rebalance_flatten",
+                intents,
+                vol_z,
+                new_exposure,
+                trigger="rebalance_flatten",
                 baskets=baskets,
             )
             return intents
@@ -471,13 +473,19 @@ class CarryVolFilterStrategy:
         new_positions: dict[str, CarryPosition] = {}
         for ccy, rate, weight in baskets["long"]:
             new_positions[ccy] = CarryPosition(
-                currency=ccy, side=1, weight=weight,
-                entry_ts=now, reference_rate=rate,
+                currency=ccy,
+                side=1,
+                weight=weight,
+                entry_ts=now,
+                reference_rate=rate,
             )
         for ccy, rate, weight in baskets["short"]:
             new_positions[ccy] = CarryPosition(
-                currency=ccy, side=-1, weight=weight,
-                entry_ts=now, reference_rate=rate,
+                currency=ccy,
+                side=-1,
+                weight=weight,
+                entry_ts=now,
+                reference_rate=rate,
             )
 
         all_ccys = set(self.current_positions.keys()) | set(new_positions.keys())
@@ -517,14 +525,19 @@ class CarryVolFilterStrategy:
                     spread_bps = spread_bps_from_tick(prices.get(pair))
                     if spread_bps is not None:
                         liq_qty = PositionSizer.adjust_for_liquidity(
-                            target_qty, pair, now, spread_bps,
+                            target_qty,
+                            pair,
+                            now,
+                            spread_bps,
                             self._liquidity_profile,
                         )
                         if liq_qty == 0.0:
                             logger.info(
                                 "Carry leg %s (%s) not opened — dead liquidity "
                                 "window (spread=%.1fbps)",
-                                ccy, pair, spread_bps,
+                                ccy,
+                                pair,
+                                spread_bps,
                             )
                             blocked_new.append(ccy)
                             continue
@@ -556,7 +569,10 @@ class CarryVolFilterStrategy:
         self._save_state()  # after last_rebalance is set, so the reload is fresh
         self._record_rebalance(now, rates, baskets, vol_z, new_exposure)
         self._tag_intents(
-            intents, vol_z, new_exposure, trigger="rebalance",
+            intents,
+            vol_z,
+            new_exposure,
+            trigger="rebalance",
             baskets=baskets,
         )
         return intents
@@ -633,11 +649,10 @@ class CarryVolFilterStrategy:
             price = self._lookup_price(prices, pair)
             if price <= 0:
                 continue
-            old_notional = (
-                self._compute_position_size(
-                    weight=pos.weight, equity=account.equity,
-                    exposure=self._current_exposure,
-                )
+            old_notional = self._compute_position_size(
+                weight=pos.weight,
+                equity=account.equity,
+                exposure=self._current_exposure,
             )
             new_notional = old_notional * scale
             target_qty = pos.side * broker_side * new_notional / price

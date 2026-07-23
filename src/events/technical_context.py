@@ -54,13 +54,13 @@ class TechnicalContext:
     last_close: float
     sma20: float | None
     sma50: float | None
-    trend: str                      # uptrend | downtrend | sideways
-    pct_from_20d_high: float        # <= 0 (0 = at the high)
-    pct_from_20d_low: float         # >= 0 (0 = at the low)
-    support: float | None           # 20d swing low (excl. last bar)
-    resistance: float | None        # 20d swing high (excl. last bar)
-    breakout_state: str             # at_highs|at_lows|approaching_*|range
-    volume_ratio: float | None      # mean(5d vol) / mean(20d vol)
+    trend: str  # uptrend | downtrend | sideways
+    pct_from_20d_high: float  # <= 0 (0 = at the high)
+    pct_from_20d_low: float  # >= 0 (0 = at the low)
+    support: float | None  # 20d swing low (excl. last bar)
+    resistance: float | None  # 20d swing high (excl. last bar)
+    breakout_state: str  # at_highs|at_lows|approaching_*|range
+    volume_ratio: float | None  # mean(5d vol) / mean(20d vol)
     #: How many prior bars TESTED the resistance band (high within 1.5%) —
     #: a level tested many times is more meaningful when it breaks.
     resistance_tests: int = 0
@@ -71,11 +71,11 @@ def yfinance_history(ticker: str) -> Any:
     """Default fetch: ~3 months of daily bars. Fail-soft → None."""
     try:
         import yfinance as yf  # noqa: PLC0415 — deferred
+
         df = yf.Ticker(ticker).history(period="3mo", interval="1d")
         return df if df is not None and not df.empty else None
     except Exception:
-        logger.debug("technical context: history unavailable for %s", ticker,
-                     exc_info=True)
+        logger.debug("technical context: history unavailable for %s", ticker, exc_info=True)
         return None
 
 
@@ -143,22 +143,28 @@ def compute_context(ticker: str, df: Any) -> TechnicalContext | None:
                     volume_ratio = float(vol.tail(5).mean()) / base
 
         return TechnicalContext(
-            ticker=ticker, last_close=last, sma20=sma20, sma50=sma50,
-            trend=trend, pct_from_20d_high=pct_from_high,
-            pct_from_20d_low=pct_from_low, support=support,
-            resistance=resistance, breakout_state=breakout,
+            ticker=ticker,
+            last_close=last,
+            sma20=sma20,
+            sma50=sma50,
+            trend=trend,
+            pct_from_20d_high=pct_from_high,
+            pct_from_20d_low=pct_from_low,
+            support=support,
+            resistance=resistance,
+            breakout_state=breakout,
             volume_ratio=volume_ratio,
             resistance_tests=resistance_tests,
             support_tests=support_tests,
         )
     except Exception:
-        logger.debug("technical context: compute failed for %s", ticker,
-                     exc_info=True)
+        logger.debug("technical context: compute failed for %s", ticker, exc_info=True)
         return None
 
 
 def compute_for_ticker(
-    ticker: str, history_fn: HistoryFn | None = None,
+    ticker: str,
+    history_fn: HistoryFn | None = None,
 ) -> TechnicalContext | None:
     """Fetch + compute in one step. Fail-soft → None."""
     fetch = history_fn or yfinance_history
@@ -204,9 +210,11 @@ def format_context_block(ctx: TechnicalContext) -> str:
     if ctx.support is not None and ctx.resistance is not None:
         tests = ""
         if ctx.resistance_tests or ctx.support_tests:
-            tests = (f" (resistance tested {ctx.resistance_tests}x, "
-                     f"support {ctx.support_tests}x — well-tested levels "
-                     "mean more when broken)")
+            tests = (
+                f" (resistance tested {ctx.resistance_tests}x, "
+                f"support {ctx.support_tests}x — well-tested levels "
+                "mean more when broken)"
+            )
         lines.append(
             f"  swing support ~{ctx.support:.2f}, resistance "
             f"~{ctx.resistance:.2f} — use THESE for entry/invalidation "

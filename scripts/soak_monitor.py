@@ -21,6 +21,7 @@ def capture_state() -> dict:
     }
     try:
         import httpx
+
         r = httpx.get("http://localhost:8099/metrics", timeout=5)
         for line in r.text.split("\n"):
             if "fx_account_equity_usd" in line and not line.startswith("#"):
@@ -34,6 +35,7 @@ def capture_state() -> dict:
 
     try:
         import psutil
+
         proc = psutil.Process(state["engine_pid"]) if state["engine_pid"] else None
         if proc:
             mem = proc.memory_info()
@@ -59,13 +61,15 @@ def _find_engine_pid() -> int | None:
     try:
         result = subprocess.run(
             ["pgrep", "-f", "src\\.runtime\\.run_engine"],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         )
         pids = [int(p) for p in result.stdout.strip().split("\n") if p.strip().isdigit()]
         for pid in pids:
             comm = subprocess.run(
                 ["ps", "-p", str(pid), "-o", "comm="],
-                capture_output=True, text=True,
+                capture_output=True,
+                text=True,
             )
             basename = comm.stdout.strip().lower()
             if "python" in basename:

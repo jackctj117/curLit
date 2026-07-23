@@ -55,8 +55,7 @@ def _one_cycle(db_url: str, backfill_days: int) -> int:
     with engine.connect() as conn:
         for sid in SERIES_SOURCES:
             n, last = conn.execute(
-                text("SELECT COUNT(*), MAX(observation_date) FROM macro_data "
-                     "WHERE series_id = :s"),
+                text("SELECT COUNT(*), MAX(observation_date) FROM macro_data WHERE series_id = :s"),
                 {"s": sid},
             ).one()
             lines.append(f"  {sid:18} rows={n:5} last={last}")
@@ -71,25 +70,36 @@ def _one_cycle(db_url: str, backfill_days: int) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     from src.dotenv_bootstrap import load_project_env  # noqa: PLC0415
+
     load_project_env()
 
     parser = argparse.ArgumentParser(
         description="Refresh foreign/derived daily rate series (CL-gr8o).",
     )
     parser.add_argument(
-        "--once", action="store_true", default=True,
+        "--once",
+        action="store_true",
+        default=True,
         help="Run a single refresh and exit (default).",
     )
     parser.add_argument(
-        "--loop", type=int, metavar="SECONDS", default=0,
+        "--loop",
+        type=int,
+        metavar="SECONDS",
+        default=0,
         help="Refresh every SECONDS forever (e.g. 86400 for daily).",
     )
     parser.add_argument(
-        "--backfill-days", type=int, default=550,
+        "--backfill-days",
+        type=int,
+        default=550,
         help="Calendar-day backfill window per refresh (default 550).",
     )
     parser.add_argument(
-        "-v", "--verbose", action="store_true", help="DEBUG logging.",
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="DEBUG logging.",
     )
     args = parser.parse_args(argv)
 

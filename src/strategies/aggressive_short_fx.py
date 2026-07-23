@@ -68,7 +68,7 @@ class AggressiveShortFXConfig:
     # For EURUSD, hawkish ECB (foreign) → EUR strengthens → LONG EURUSD;
     # hawkish Fed (domestic USD) → USD strengthens → SHORT EURUSD.
     # The operator picks which CB's hawkish shift implies SHORT.
-    sentiment_short_on: str = "fed"   # hawkish fed shift → short EURUSD
+    sentiment_short_on: str = "fed"  # hawkish fed shift → short EURUSD
     # POLY: symbol providing the implied-probability feature. None
     # disables the third signal (strategy falls back to 2-signal
     # quorum, requiring both to agree).
@@ -141,9 +141,10 @@ class AggressiveShortFXStrategy:
         self._z_exit: float = 0.3
         self._max_hold: int = self.risk.holding.max_holding_days
         logger.info(
-            "AggressiveShortFXStrategy init: profile=%s z_entry=%.2f "
-            "max_hold=%d quorum=%d/3",
-            self.risk.name, self._z_entry, self._max_hold,
+            "AggressiveShortFXStrategy init: profile=%s z_entry=%.2f max_hold=%d quorum=%d/3",
+            self.risk.name,
+            self._z_entry,
+            self._max_hold,
             self.config.agreement_quorum,
         )
 
@@ -179,7 +180,8 @@ class AggressiveShortFXStrategy:
         df = train_data.dropna()
         if len(df) < 100:
             logger.warning(
-                "fit skipped: only %d rows, need >=100", len(df),
+                "fit skipped: only %d rows, need >=100",
+                len(df),
             )
             return
         df = df.tail(self.config.lookback_days).copy()
@@ -195,8 +197,10 @@ class AggressiveShortFXStrategy:
         }
         logger.debug(
             "fit: R²=%.3f β=%.4f σ=%.4f n=%d",
-            self._model["r_squared"], self._model["beta"],
-            self._model["residual_std"], len(df),
+            self._model["r_squared"],
+            self._model["beta"],
+            self._model["residual_std"],
+            len(df),
         )
 
     def generate_signals(self, data: pd.DataFrame) -> pd.Series:
@@ -217,16 +221,15 @@ class AggressiveShortFXStrategy:
         if self._model["r_squared"] < gate_r2:
             logger.info(
                 "R²=%.3f below profile gate %.3f — sitting out",
-                self._model["r_squared"], gate_r2,
+                self._model["r_squared"],
+                gate_r2,
             )
             return pd.Series(0.0, index=data.index)
 
         df = data.copy()
         df["spread"] = df.get(self.config.rate_spread_series, 0)
         df["fair"] = self._model["alpha"] + self._model["beta"] * df["spread"]
-        df["z"] = (
-            df[self.config.pair] - df["fair"]
-        ) / self._model["residual_std"]
+        df["z"] = (df[self.config.pair] - df["fair"]) / self._model["residual_std"]
 
         # Precompute the three signals as int Series.
         rd_signal = self._rate_diff_signal(df["z"])
@@ -264,15 +267,9 @@ class AggressiveShortFXStrategy:
             else:
                 days_held = i - entry_idx
                 # Stop-loss: z runs further against us than z_stop.
-                stop = (
-                    (pos > 0 and z < -self._z_stop)
-                    or (pos < 0 and z > self._z_stop)
-                )
+                stop = (pos > 0 and z < -self._z_stop) or (pos < 0 and z > self._z_stop)
                 # Exit: z reverts toward zero past the exit threshold.
-                exit_ok = (
-                    (pos > 0 and z >= -self._z_exit)
-                    or (pos < 0 and z <= self._z_exit)
-                )
+                exit_ok = (pos > 0 and z >= -self._z_exit) or (pos < 0 and z <= self._z_exit)
                 if stop or exit_ok or days_held >= self._max_hold:
                     pos = 0.0
             positions.append(pos)
@@ -318,8 +315,10 @@ class AggressiveShortFXStrategy:
             # failure, but a dead NLP feed is not "no sentiment" — log it
             # visibly (CL-gmr1). warning without traceback per CL-2yta.
             logger.warning(
-                "%s: sentiment signal NLP provider failed (%s: %s) — "
-                "sentiment leg contributes 0", self.id, type(exc).__name__, exc,
+                "%s: sentiment signal NLP provider failed (%s: %s) — sentiment leg contributes 0",
+                self.id,
+                type(exc).__name__,
+                exc,
             )
             return out
         if not events:
@@ -343,7 +342,8 @@ class AggressiveShortFXStrategy:
                 # index" — anything else should surface.
                 logger.debug(
                     "%s: skipping sentiment event with unusable ts %r",
-                    self.id, ev_ts,
+                    self.id,
+                    ev_ts,
                 )
                 continue
             if 0 <= pos < len(out):

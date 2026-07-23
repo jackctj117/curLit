@@ -102,13 +102,15 @@ class NullHypothesisReport:
 
     def passed_nulls(self) -> list[str]:
         return [
-            name for name, r in self.results.items()
+            name
+            for name, r in self.results.items()
             if r.evaluated and r.p_value is not None and r.p_value < self.alpha
         ]
 
     def failed_nulls(self) -> list[str]:
         return [
-            name for name, r in self.results.items()
+            name
+            for name, r in self.results.items()
             if r.evaluated and r.p_value is not None and r.p_value >= self.alpha
         ]
 
@@ -236,7 +238,10 @@ def _null_buy_and_hold(
     rng: np.random.Generator,
 ) -> _NDArray:
     return _stationary_bootstrap_sharpes(
-        asset_returns, n_simulations, _BOOTSTRAP_BLOCK_MEAN_LEN, rng,
+        asset_returns,
+        n_simulations,
+        _BOOTSTRAP_BLOCK_MEAN_LEN,
+        rng,
     )
 
 
@@ -250,7 +255,10 @@ def _null_equal_weight_basket(
         return np.full(n_simulations, np.nan)
     portfolio = basket_returns.mean(axis=1).values
     return _stationary_bootstrap_sharpes(
-        portfolio, n_simulations, _BOOTSTRAP_BLOCK_MEAN_LEN, rng,
+        portfolio,
+        n_simulations,
+        _BOOTSTRAP_BLOCK_MEAN_LEN,
+        rng,
     )
 
 
@@ -270,11 +278,13 @@ def _null_simple_momentum(
     signal = np.sign(trailing_return.values)
     # Strategy returns = signal × next-period asset return.
     strat_returns = (
-        pd.Series(signal, index=asset_returns.index).shift(1)
-        * asset_returns
-    ).dropna().values
+        (pd.Series(signal, index=asset_returns.index).shift(1) * asset_returns).dropna().values
+    )
     return _stationary_bootstrap_sharpes(
-        strat_returns, n_simulations, _BOOTSTRAP_BLOCK_MEAN_LEN, rng,
+        strat_returns,
+        n_simulations,
+        _BOOTSTRAP_BLOCK_MEAN_LEN,
+        rng,
     )
 
 
@@ -301,7 +311,10 @@ def _null_simple_carry(
         signal = np.where(rolling_mean.values > 0, 1, -1)
         strat_returns = (signal * asset_returns)[lookback:]
         return _stationary_bootstrap_sharpes(
-            strat_returns, n_simulations, _BOOTSTRAP_BLOCK_MEAN_LEN, rng,
+            strat_returns,
+            n_simulations,
+            _BOOTSTRAP_BLOCK_MEAN_LEN,
+            rng,
         ), "fallback (no yield data; used 12m return sign)"
     # With yields: asset (column 0) yield minus quote (column 1) yield is the
     # carry score. If positive, hold long; if negative, short.
@@ -312,7 +325,10 @@ def _null_simple_carry(
     signal = np.where(diff > 0, 1, -1)
     strat_returns = signal * asset_returns
     return _stationary_bootstrap_sharpes(
-        strat_returns, n_simulations, _BOOTSTRAP_BLOCK_MEAN_LEN, rng,
+        strat_returns,
+        n_simulations,
+        _BOOTSTRAP_BLOCK_MEAN_LEN,
+        rng,
     ), "carry from yield differential"
 
 
@@ -330,9 +346,7 @@ class NullHypothesisFramework:
         alpha: float = _DEFAULT_ALPHA,
         seed: int | None = None,
     ) -> None:
-        assert n_simulations >= 100, (
-            f"n_simulations must be >= 100, got {n_simulations}"
-        )
+        assert n_simulations >= 100, f"n_simulations must be >= 100, got {n_simulations}"
         assert 0 < alpha < 1, f"alpha must be in (0, 1), got {alpha}"
         self.n_simulations = n_simulations
         self.alpha = alpha
@@ -382,7 +396,9 @@ class NullHypothesisFramework:
         turnover = _signal_turnover(signal_arr)
         n1 = _null_random_longshort(asset_arr, turnover, self.n_simulations, self._rng)
         results["random_longshort"] = self._compile_result(
-            "random_longshort", strategy_sharpe, n1,
+            "random_longshort",
+            strategy_sharpe,
+            n1,
             note=f"turnover={turnover:.3f}",
         )
 
@@ -390,21 +406,28 @@ class NullHypothesisFramework:
         ar1 = _signal_ar1(signal_arr)
         n2 = _null_random_autocorr(asset_arr, ar1, self.n_simulations, self._rng)
         results["random_autocorr"] = self._compile_result(
-            "random_autocorr", strategy_sharpe, n2,
+            "random_autocorr",
+            strategy_sharpe,
+            n2,
             note=f"ar1={ar1:.3f}",
         )
 
         # Null 3: buy-and-hold the asset.
         n3 = _null_buy_and_hold(asset_arr, self.n_simulations, self._rng)
         results["buy_and_hold"] = self._compile_result(
-            "buy_and_hold", strategy_sharpe, n3, note="bootstrap of asset returns",
+            "buy_and_hold",
+            strategy_sharpe,
+            n3,
+            note="bootstrap of asset returns",
         )
 
         # Null 4: equal-weight basket (optional input).
         if basket_returns is not None and not basket_returns.empty:
             n4 = _null_equal_weight_basket(basket_returns, self.n_simulations, self._rng)
             results["equal_weight_basket"] = self._compile_result(
-                "equal_weight_basket", strategy_sharpe, n4,
+                "equal_weight_basket",
+                strategy_sharpe,
+                n4,
                 note=f"basket size={basket_returns.shape[1]}",
             )
         else:
@@ -422,26 +445,31 @@ class NullHypothesisFramework:
         # Null 5: simple momentum (12-1).
         n5 = _null_simple_momentum(asset_returns, self.n_simulations, self._rng)
         results["simple_momentum"] = self._compile_result(
-            "simple_momentum", strategy_sharpe, n5,
+            "simple_momentum",
+            strategy_sharpe,
+            n5,
             note=f"{_MOMENTUM_LOOKBACK_MONTHS}-{_MOMENTUM_SKIP_MONTHS} month",
         )
 
         # Null 6: simple carry (uses yields if provided).
         n6, note6 = _null_simple_carry(
-            asset_arr, yields, self.n_simulations, self._rng,
+            asset_arr,
+            yields,
+            self.n_simulations,
+            self._rng,
         )
         results["simple_carry"] = self._compile_result(
-            "simple_carry", strategy_sharpe, n6, note=note6,
+            "simple_carry",
+            strategy_sharpe,
+            n6,
+            note=note6,
         )
 
         # Edge exists iff strategy beats every EVALUATED null at p < alpha.
         evaluated_p_values: list[float] = [
-            r.p_value for r in results.values()
-            if r.evaluated and r.p_value is not None
+            r.p_value for r in results.values() if r.evaluated and r.p_value is not None
         ]
-        edge_exists = bool(evaluated_p_values) and all(
-            p < self.alpha for p in evaluated_p_values
-        )
+        edge_exists = bool(evaluated_p_values) and all(p < self.alpha for p in evaluated_p_values)
 
         return NullHypothesisReport(
             edge_exists=edge_exists,
@@ -468,8 +496,9 @@ class NullHypothesisFramework:
                 null_mean=None,
                 null_std=None,
                 n_simulations=0,
-                note=note + " (insufficient sims to compute p-value)" if note else
-                "insufficient sims to compute p-value",
+                note=note + " (insufficient sims to compute p-value)"
+                if note
+                else "insufficient sims to compute p-value",
             )
         # One-sided p-value: probability under H0 of observing a Sharpe at
         # least as extreme as the strategy's. Add 1 to numerator + denominator

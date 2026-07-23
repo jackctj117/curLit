@@ -48,8 +48,10 @@ def playbooks_yaml(tmp_path: Path) -> Path:
 
     def _inst(instrument: str, kind: str, direction: str) -> dict[str, str]:
         return {
-            "instrument": instrument, "kind": kind,
-            "direction": direction, "rationale": "r",
+            "instrument": instrument,
+            "kind": kind,
+            "direction": direction,
+            "rationale": "r",
         }
 
     doc = {
@@ -99,9 +101,11 @@ def sqlite_db_url(tmp_path: Path) -> str:
 
     db_url = f"sqlite:///{tmp_path / 'spikes.db'}"
     engine = create_engine(db_url)
-    sql = _shim_pg_types_for_sqlite(_strip_sql_comments(
-        (REPO_ROOT / "migrations/006_volume_spikes.sql").read_text(),
-    ))
+    sql = _shim_pg_types_for_sqlite(
+        _strip_sql_comments(
+            (REPO_ROOT / "migrations/006_volume_spikes.sql").read_text(),
+        )
+    )
     with engine.begin() as conn:
         for stmt in [s.strip() for s in sql.split(";") if s.strip()]:
             conn.execute(text(stmt))
@@ -109,14 +113,14 @@ def sqlite_db_url(tmp_path: Path) -> str:
 
 
 def _bars(
-    volumes: list[float], closes: list[float] | None = None,
+    volumes: list[float],
+    closes: list[float] | None = None,
 ) -> pd.DataFrame:
     n = len(volumes)
     idx = pd.bdate_range(end="2026-07-17", periods=n)
     closes = closes if closes is not None else [10.0] * n
     return pd.DataFrame(
-        {"Open": closes, "High": closes, "Low": closes,
-         "Close": closes, "Volume": volumes},
+        {"Open": closes, "High": closes, "Low": closes, "Close": closes, "Volume": volumes},
         index=idx,
     )
 
@@ -132,23 +136,26 @@ def _downloader(frames: dict[str, pd.DataFrame]) -> Any:
         if not present:
             return pd.DataFrame()
         return _batch(present)
+
     return download
 
 
 def _scanner(
-    db_url: str, playbooks: Path,
+    db_url: str,
+    playbooks: Path,
     frames: dict[str, pd.DataFrame] | None = None,
     **kwargs: Any,
 ) -> RelativeVolumeScanner:
     return RelativeVolumeScanner(
-        db_url, playbooks_path=playbooks,
-        downloader=_downloader(frames or {}), **kwargs,
+        db_url,
+        playbooks_path=playbooks,
+        downloader=_downloader(frames or {}),
+        **kwargs,
     )
 
 
 # 20 prior sessions at 100k + today at 300k → rvol 3.0
-_SPIKE = _bars([100_000.0] * 20 + [300_000.0],
-               closes=[10.0] * 20 + [11.0])
+_SPIKE = _bars([100_000.0] * 20 + [300_000.0], closes=[10.0] * 20 + [11.0])
 _QUIET = _bars([100_000.0] * 20 + [110_000.0])
 
 
@@ -168,12 +175,14 @@ class TestUniverse:
         from src.events.playbooks import load_playbooks
 
         universe = set(equity_watch_universe(load_playbooks(playbooks_yaml)))
-        assert "BCO_USD" not in universe          # tradable, not equity
+        assert "BCO_USD" not in universe  # tradable, not equity
         assert "some-market-slug-2026" not in universe  # polymarket slug
-        assert "lowercase-junk" not in universe   # non-ticker junk
+        assert "lowercase-junk" not in universe  # non-ticker junk
 
     def test_scanner_universe_rereads_config(
-        self, playbooks_yaml: Path, sqlite_db_url: str,
+        self,
+        playbooks_yaml: Path,
+        sqlite_db_url: str,
     ) -> None:
         scanner = _scanner(sqlite_db_url, playbooks_yaml)
         assert scanner.universe() == ("BRK-B", "FRO", "STNG", "XOM")
@@ -189,7 +198,9 @@ class TestRvolMath:
         return {r.ticker: r for r in scanner.scan(persist=False)}
 
     def test_rvol_and_price_change(
-        self, playbooks_yaml: Path, sqlite_db_url: str,
+        self,
+        playbooks_yaml: Path,
+        sqlite_db_url: str,
     ) -> None:
         frames = {t: _SPIKE for t in ("BRK-B", "FRO", "STNG", "XOM")}
         rows = self._rows(_scanner(sqlite_db_url, playbooks_yaml, frames))
@@ -200,32 +211,49 @@ class TestRvolMath:
         assert fro.price_change_pct == pytest.approx(10.0)
 
     def test_baseline_uses_only_last_20_prior_sessions(
-        self, playbooks_yaml: Path, sqlite_db_url: str,
+        self,
+        playbooks_yaml: Path,
+        sqlite_db_url: str,
     ) -> None:
         # 9 ancient huge-volume sessions must NOT inflate the baseline.
         bars = _bars([9_000_000.0] * 9 + [100_000.0] * 20 + [300_000.0])
-        rows = self._rows(_scanner(
-            sqlite_db_url, playbooks_yaml, {"FRO": bars},
-        ))
+        rows = self._rows(
+            _scanner(
+                sqlite_db_url,
+                playbooks_yaml,
+                {"FRO": bars},
+            )
+        )
         assert rows["FRO"].rvol == pytest.approx(3.0)
 
     def test_too_little_history_skipped(
-        self, playbooks_yaml: Path, sqlite_db_url: str,
+        self,
+        playbooks_yaml: Path,
+        sqlite_db_url: str,
     ) -> None:
-        rows = self._rows(_scanner(
-            sqlite_db_url, playbooks_yaml,
-            {"FRO": _bars([100_000.0] * 3 + [300_000.0])},
-        ))
+        rows = self._rows(
+            _scanner(
+                sqlite_db_url,
+                playbooks_yaml,
+                {"FRO": _bars([100_000.0] * 3 + [300_000.0])},
+            )
+        )
         assert "FRO" not in rows
 
     def test_zero_volume_days_excluded(
-        self, playbooks_yaml: Path, sqlite_db_url: str,
+        self,
+        playbooks_yaml: Path,
+        sqlite_db_url: str,
     ) -> None:
         # Zero-volume (halt/holiday artifact) days don't drag the mean.
         bars = _bars([0.0] * 5 + [100_000.0] * 20 + [300_000.0])
-        rows = self._rows(_scanner(
-            sqlite_db_url, playbooks_yaml, {"FRO": bars},
-        ))
+        rows = self._rows(
+            _scanner(
+                sqlite_db_url,
+                playbooks_yaml,
+                {"FRO": bars},
+            )
+        )
         assert rows["FRO"].rvol == pytest.approx(3.0)
 
 
@@ -236,7 +264,9 @@ class TestRvolMath:
 
 class TestThresholdAndFloor:
     def test_default_threshold_flags_at_2_5(
-        self, playbooks_yaml: Path, sqlite_db_url: str,
+        self,
+        playbooks_yaml: Path,
+        sqlite_db_url: str,
     ) -> None:
         assert DEFAULT_RVOL_THRESHOLD == 2.5
         frames = {"FRO": _SPIKE, "XOM": _QUIET}
@@ -246,11 +276,13 @@ class TestThresholdAndFloor:
                 persist=False,
             )
         }
-        assert rows["FRO"].is_unusual is True     # rvol 3.0
-        assert rows["XOM"].is_unusual is False    # rvol 1.1
+        assert rows["FRO"].is_unusual is True  # rvol 3.0
+        assert rows["XOM"].is_unusual is False  # rvol 1.1
 
     def test_thin_otc_floor_never_flags(
-        self, playbooks_yaml: Path, sqlite_db_url: str,
+        self,
+        playbooks_yaml: Path,
+        sqlite_db_url: str,
     ) -> None:
         # GLNCY-style tape: rvol 8.0 but avg volume 10k < 50k floor —
         # scanned and returned, never flagged.
@@ -259,27 +291,35 @@ class TestThresholdAndFloor:
         rows = {
             r.ticker: r
             for r in _scanner(
-                sqlite_db_url, playbooks_yaml, {"FRO": thin},
+                sqlite_db_url,
+                playbooks_yaml,
+                {"FRO": thin},
             ).scan(persist=False)
         }
         assert rows["FRO"].rvol == pytest.approx(8.0)
         assert rows["FRO"].is_unusual is False
 
     def test_env_threshold_override(
-        self, playbooks_yaml: Path, sqlite_db_url: str,
+        self,
+        playbooks_yaml: Path,
+        sqlite_db_url: str,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setenv("RVOL_THRESHOLD", "1.05")
         rows = {
             r.ticker: r
             for r in _scanner(
-                sqlite_db_url, playbooks_yaml, {"XOM": _QUIET},
+                sqlite_db_url,
+                playbooks_yaml,
+                {"XOM": _QUIET},
             ).scan(persist=False)
         }
-        assert rows["XOM"].is_unusual is True     # rvol 1.1 >= 1.05
+        assert rows["XOM"].is_unusual is True  # rvol 1.1 >= 1.05
 
     def test_garbage_env_falls_back_to_default(
-        self, playbooks_yaml: Path, sqlite_db_url: str,
+        self,
+        playbooks_yaml: Path,
+        sqlite_db_url: str,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setenv("RVOL_THRESHOLD", "very high")
@@ -294,17 +334,23 @@ class TestThresholdAndFloor:
 
 class TestFailureTolerance:
     def test_missing_ticker_skipped_others_survive(
-        self, playbooks_yaml: Path, sqlite_db_url: str,
+        self,
+        playbooks_yaml: Path,
+        sqlite_db_url: str,
     ) -> None:
         # Batch has FRO only; per-ticker retries for the rest return
         # nothing usable → they are skipped, FRO still scanned.
         rows = _scanner(
-            sqlite_db_url, playbooks_yaml, {"FRO": _SPIKE},
+            sqlite_db_url,
+            playbooks_yaml,
+            {"FRO": _SPIKE},
         ).scan(persist=False)
         assert [r.ticker for r in rows] == ["FRO"]
 
     def test_batch_failure_falls_back_to_per_ticker(
-        self, playbooks_yaml: Path, sqlite_db_url: str,
+        self,
+        playbooks_yaml: Path,
+        sqlite_db_url: str,
     ) -> None:
         def download(tickers: Any, _s: Any, _e: Any) -> pd.DataFrame:
             if len(tickers) > 1:
@@ -314,19 +360,24 @@ class TestFailureTolerance:
             raise RuntimeError("no data")
 
         scanner = RelativeVolumeScanner(
-            sqlite_db_url, playbooks_path=playbooks_yaml, downloader=download,
+            sqlite_db_url,
+            playbooks_path=playbooks_yaml,
+            downloader=download,
         )
         rows = scanner.scan(persist=False)
         assert [r.ticker for r in rows] == ["FRO"]
 
     def test_field_ticker_column_orientation_supported(
-        self, playbooks_yaml: Path, sqlite_db_url: str,
+        self,
+        playbooks_yaml: Path,
+        sqlite_db_url: str,
     ) -> None:
         # yf.download WITHOUT group_by="ticker" → (field, ticker) columns.
         flipped = _batch({"FRO": _SPIKE}).swaplevel(axis=1)
 
         scanner = RelativeVolumeScanner(
-            sqlite_db_url, playbooks_path=playbooks_yaml,
+            sqlite_db_url,
+            playbooks_path=playbooks_yaml,
             downloader=lambda *_a: flipped,
         )
         rows = scanner.scan(persist=False)
@@ -340,17 +391,21 @@ class TestFailureTolerance:
 
 class TestPersistence:
     def test_all_scanned_rows_persisted(
-        self, playbooks_yaml: Path, sqlite_db_url: str,
+        self,
+        playbooks_yaml: Path,
+        sqlite_db_url: str,
     ) -> None:
         frames = {"FRO": _SPIKE, "XOM": _QUIET}
         _scanner(sqlite_db_url, playbooks_yaml, frames).scan()
         engine = create_engine(sqlite_db_url)
         with engine.connect() as conn:
-            stored = conn.execute(text(
-                "SELECT ticker, rvol, volume, is_unusual, source "
-                "FROM volume_spikes ORDER BY ticker",
-            )).fetchall()
-        assert len(stored) == 2                    # quiet row persisted too
+            stored = conn.execute(
+                text(
+                    "SELECT ticker, rvol, volume, is_unusual, source "
+                    "FROM volume_spikes ORDER BY ticker",
+                )
+            ).fetchall()
+        assert len(stored) == 2  # quiet row persisted too
         by_ticker = {r[0]: r for r in stored}
         assert bool(by_ticker["FRO"][3]) is True
         assert bool(by_ticker["XOM"][3]) is False
@@ -359,7 +414,9 @@ class TestPersistence:
         assert by_ticker["FRO"][4] == "yfinance"
 
     def test_persist_false_writes_nothing(
-        self, playbooks_yaml: Path, sqlite_db_url: str,
+        self,
+        playbooks_yaml: Path,
+        sqlite_db_url: str,
     ) -> None:
         _scanner(sqlite_db_url, playbooks_yaml, {"FRO": _SPIKE}).scan(
             persist=False,
@@ -377,7 +434,8 @@ class TestPersistence:
 
 class TestRescanCadenceGuard:
     def _counting_downloader(
-        self, frames: dict[str, pd.DataFrame],
+        self,
+        frames: dict[str, pd.DataFrame],
     ) -> Any:
         base = _downloader(frames)
         calls: list[int] = []
@@ -390,19 +448,24 @@ class TestRescanCadenceGuard:
         return download
 
     def test_fresh_cache_skips_download_reuses_rows(
-        self, playbooks_yaml: Path, sqlite_db_url: str,
+        self,
+        playbooks_yaml: Path,
+        sqlite_db_url: str,
     ) -> None:
         # First scan persists rows; second (guarded) scan must NOT hit
         # the downloader and must return the same tickers.
         frames = {"FRO": _SPIKE, "XOM": _QUIET}
         RelativeVolumeScanner(
-            sqlite_db_url, playbooks_path=playbooks_yaml,
+            sqlite_db_url,
+            playbooks_path=playbooks_yaml,
             downloader=_downloader(frames),
         ).scan()
 
         dl = self._counting_downloader(frames)
         guarded = RelativeVolumeScanner(
-            sqlite_db_url, playbooks_path=playbooks_yaml, downloader=dl,
+            sqlite_db_url,
+            playbooks_path=playbooks_yaml,
+            downloader=dl,
             min_rescan_interval=timedelta(hours=6),
         )
         rows = guarded.scan()
@@ -413,15 +476,19 @@ class TestRescanCadenceGuard:
         assert by_ticker["XOM"].is_unusual is False
 
     def test_fresh_cache_does_not_double_persist(
-        self, playbooks_yaml: Path, sqlite_db_url: str,
+        self,
+        playbooks_yaml: Path,
+        sqlite_db_url: str,
     ) -> None:
         frames = {"FRO": _SPIKE, "XOM": _QUIET}
         RelativeVolumeScanner(
-            sqlite_db_url, playbooks_path=playbooks_yaml,
+            sqlite_db_url,
+            playbooks_path=playbooks_yaml,
             downloader=_downloader(frames),
         ).scan()
         RelativeVolumeScanner(
-            sqlite_db_url, playbooks_path=playbooks_yaml,
+            sqlite_db_url,
+            playbooks_path=playbooks_yaml,
             downloader=_downloader(frames),
             min_rescan_interval=timedelta(hours=6),
         ).scan()
@@ -431,7 +498,9 @@ class TestRescanCadenceGuard:
         assert n == 2  # cached reuse wrote nothing new
 
     def test_stale_cache_triggers_real_scan(
-        self, playbooks_yaml: Path, sqlite_db_url: str,
+        self,
+        playbooks_yaml: Path,
+        sqlite_db_url: str,
     ) -> None:
         # Seed an OLD scan directly, then a guard with a tiny window must
         # fall through to a real download.
@@ -447,68 +516,88 @@ class TestRescanCadenceGuard:
             )
         dl = self._counting_downloader({"FRO": _SPIKE, "XOM": _QUIET})
         rows = RelativeVolumeScanner(
-            sqlite_db_url, playbooks_path=playbooks_yaml, downloader=dl,
+            sqlite_db_url,
+            playbooks_path=playbooks_yaml,
+            downloader=dl,
             min_rescan_interval=timedelta(hours=6),
         ).scan()
         assert dl.calls != []  # type: ignore[attr-defined]  # stale → real scan
         assert {r.ticker for r in rows} == {"FRO", "XOM"}
 
     def test_no_guard_always_downloads(
-        self, playbooks_yaml: Path, sqlite_db_url: str,
+        self,
+        playbooks_yaml: Path,
+        sqlite_db_url: str,
     ) -> None:
         frames = {"FRO": _SPIKE}
         RelativeVolumeScanner(
-            sqlite_db_url, playbooks_path=playbooks_yaml,
+            sqlite_db_url,
+            playbooks_path=playbooks_yaml,
             downloader=_downloader(frames),
         ).scan()
         dl = self._counting_downloader(frames)
         RelativeVolumeScanner(  # no min_rescan_interval → old behavior
-            sqlite_db_url, playbooks_path=playbooks_yaml, downloader=dl,
+            sqlite_db_url,
+            playbooks_path=playbooks_yaml,
+            downloader=dl,
         ).scan()
         assert dl.calls != []  # type: ignore[attr-defined]
 
     def test_persist_false_ignores_guard(
-        self, playbooks_yaml: Path, sqlite_db_url: str,
+        self,
+        playbooks_yaml: Path,
+        sqlite_db_url: str,
     ) -> None:
         # A non-persisting scan (ad-hoc / dry run) must always compute,
         # never short-circuit on the cache.
         frames = {"FRO": _SPIKE}
         RelativeVolumeScanner(
-            sqlite_db_url, playbooks_path=playbooks_yaml,
+            sqlite_db_url,
+            playbooks_path=playbooks_yaml,
             downloader=_downloader(frames),
         ).scan()
         dl = self._counting_downloader(frames)
         RelativeVolumeScanner(
-            sqlite_db_url, playbooks_path=playbooks_yaml, downloader=dl,
+            sqlite_db_url,
+            playbooks_path=playbooks_yaml,
+            downloader=dl,
             min_rescan_interval=timedelta(hours=6),
         ).scan(persist=False)
         assert dl.calls != []  # type: ignore[attr-defined]
 
     def test_env_opt_in_enables_guard(
-        self, playbooks_yaml: Path, sqlite_db_url: str,
+        self,
+        playbooks_yaml: Path,
+        sqlite_db_url: str,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setenv("RVOL_RESCAN_HOURS", "6")
         frames = {"FRO": _SPIKE}
         RelativeVolumeScanner(
-            sqlite_db_url, playbooks_path=playbooks_yaml,
+            sqlite_db_url,
+            playbooks_path=playbooks_yaml,
             downloader=_downloader(frames),
         ).scan()
         dl = self._counting_downloader(frames)
         scanner = RelativeVolumeScanner(
-            sqlite_db_url, playbooks_path=playbooks_yaml, downloader=dl,
+            sqlite_db_url,
+            playbooks_path=playbooks_yaml,
+            downloader=dl,
         )
         assert scanner.min_rescan_interval == timedelta(hours=6)
         scanner.scan()
         assert dl.calls == []  # type: ignore[attr-defined]  # env enabled the skip
 
     def test_env_zero_keeps_old_behavior(
-        self, playbooks_yaml: Path, sqlite_db_url: str,
+        self,
+        playbooks_yaml: Path,
+        sqlite_db_url: str,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setenv("RVOL_RESCAN_HOURS", "0")
         scanner = RelativeVolumeScanner(
-            sqlite_db_url, playbooks_path=playbooks_yaml,
+            sqlite_db_url,
+            playbooks_path=playbooks_yaml,
             downloader=_downloader({"FRO": _SPIKE}),
         )
         assert scanner.min_rescan_interval is None
@@ -526,17 +615,23 @@ def _res(affected: list[dict[str, str]], urgency: int = 7) -> AssessmentResult:
         theme="energy_chokepoint",
         status="ASSESSED",
         assessment={
-            "core_event": "x", "direction": "bearish", "urgency": urgency,
-            "horizon": "hours", "confidence": 0.8,
-            "affected": affected, "rationale": "r",
+            "core_event": "x",
+            "direction": "bearish",
+            "urgency": urgency,
+            "horizon": "hours",
+            "confidence": 0.8,
+            "affected": affected,
+            "rationale": "r",
         },
     )
 
 
 def _watch_aff(ticker: str) -> dict[str, str]:
     return {
-        "instrument": ticker, "kind": "equity_watch",
-        "direction": "watch", "reason": "why",
+        "instrument": ticker,
+        "kind": "equity_watch",
+        "direction": "watch",
+        "reason": "why",
     }
 
 
@@ -549,7 +644,7 @@ class TestDigestAnnotation:
         assert built is not None
         _, message = built
         assert "FRO×3.2" in message
-        assert "STNG×" not in message   # unmarked ticker stays bare
+        assert "STNG×" not in message  # unmarked ticker stays bare
 
     def test_no_marks_renders_unannotated(self) -> None:
         for marks in (None, {}):
@@ -561,7 +656,8 @@ class TestDigestAnnotation:
 
     def test_hostile_ticker_still_escaped_with_mark(self) -> None:
         built = build_digest(
-            [_res([_watch_aff("<FRO>")])], volume_marks={"<FRO>": 3.0},
+            [_res([_watch_aff("<FRO>")])],
+            volume_marks={"<FRO>": 3.0},
         )
         assert built is not None
         _, message = built
@@ -569,12 +665,17 @@ class TestDigestAnnotation:
         assert "<FRO>" not in message
 
     def test_send_digest_forwards_marks(
-        self, monkeypatch: pytest.MonkeyPatch,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         sent: list[str] = []
 
         def fake_notify(
-            _title: str, message: str, priority: int = 0, *, html: bool = False,
+            _title: str,
+            message: str,
+            priority: int = 0,
+            *,
+            html: bool = False,
         ) -> DispatchResult:
             sent.append(message)
             return DispatchResult(telegram_attempted=True, telegram_succeeded=True)
@@ -587,8 +688,12 @@ class TestDigestAnnotation:
 
 class TestFetchVolumeMarks:
     def _insert(
-        self, db_url: str, ticker: str, age_hours: float,
-        rvol: float, unusual: bool,
+        self,
+        db_url: str,
+        ticker: str,
+        age_hours: float,
+        rvol: float,
+        unusual: bool,
     ) -> None:
         engine = create_engine(db_url)
         with engine.begin() as conn:
@@ -601,15 +706,16 @@ class TestFetchVolumeMarks:
                 {
                     "t": ticker,
                     "at": datetime.now(UTC) - timedelta(hours=age_hours),
-                    "r": rvol, "u": unusual,
+                    "r": rvol,
+                    "u": unusual,
                 },
             )
 
     def test_latest_unusual_within_24h(self, sqlite_db_url: str) -> None:
         self._insert(sqlite_db_url, "FRO", 2.0, 2.8, True)
-        self._insert(sqlite_db_url, "FRO", 1.0, 3.2, True)   # latest wins
+        self._insert(sqlite_db_url, "FRO", 1.0, 3.2, True)  # latest wins
         self._insert(sqlite_db_url, "STNG", 30.0, 9.9, True)  # too old
-        self._insert(sqlite_db_url, "XOM", 1.0, 1.1, False)   # not unusual
+        self._insert(sqlite_db_url, "XOM", 1.0, 1.1, False)  # not unusual
         marks = fetch_volume_marks(create_engine(sqlite_db_url))
         assert marks == {"FRO": 3.2}
 
@@ -659,10 +765,12 @@ def pipeline_mod(monkeypatch: pytest.MonkeyPatch) -> Any:
     _FakeScanner.calls = []
     _FakeScanner.boom = False
     monkeypatch.setattr(
-        "src.events.impact_agent.EventImpactAgent", _FakeAgent,
+        "src.events.impact_agent.EventImpactAgent",
+        _FakeAgent,
     )
     monkeypatch.setattr(
-        "src.scanners.relative_volume.RelativeVolumeScanner", _FakeScanner,
+        "src.scanners.relative_volume.RelativeVolumeScanner",
+        _FakeScanner,
     )
     monkeypatch.setattr("sqlalchemy.create_engine", lambda _url: None)
     return mod
@@ -696,7 +804,9 @@ class TestPipelineScanWiring:
         self._cycle(pipeline_mod, ["--assess", "--no-digest"])  # must not raise
 
     def test_digest_receives_volume_marks(
-        self, pipeline_mod: Any, monkeypatch: pytest.MonkeyPatch,
+        self,
+        pipeline_mod: Any,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         captured: list[Any] = []
 
@@ -757,7 +867,8 @@ def _import_dag(monkeypatch: pytest.MonkeyPatch) -> tuple[Any, list[Any]]:
 
     dag_path = REPO_ROOT / "airflow" / "dags" / "event_ingestion.py"
     spec = importlib.util.spec_from_file_location(
-        "_event_ingestion_dag_under_test", dag_path,
+        "_event_ingestion_dag_under_test",
+        dag_path,
     )
     assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
@@ -767,7 +878,8 @@ def _import_dag(monkeypatch: pytest.MonkeyPatch) -> tuple[Any, list[Any]]:
 
 class TestEventIngestionDag:
     def test_imports_cleanly_with_expected_shape(
-        self, monkeypatch: pytest.MonkeyPatch,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         mod, tasks = _import_dag(monkeypatch)
         assert mod.dag.dag_id == "event_ingestion"
@@ -782,7 +894,9 @@ class TestEventIngestionDag:
             assert callable(t.python_callable)
 
     def test_playbooks_path_skips_when_config_missing(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
     ) -> None:
         mod, _tasks = _import_dag(monkeypatch)
         monkeypatch.delenv("EVENT_PLAYBOOKS_PATH", raising=False)
@@ -791,7 +905,9 @@ class TestEventIngestionDag:
             mod._playbooks_path()
 
     def test_playbooks_path_env_override_wins(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
     ) -> None:
         mod, _tasks = _import_dag(monkeypatch)
         cfg = tmp_path / "pb.yaml"

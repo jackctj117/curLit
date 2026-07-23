@@ -103,7 +103,9 @@ class WalkForwardRunner:
             # apply (walk-forward is single-asset per run for Series
             # signals; DataFrame signals carry the pair per column).
             df = self._trades_for_signals(
-                signals=signals, data=data, cost_model=cost_model,
+                signals=signals,
+                data=data,
+                cost_model=cost_model,
                 pair=self._infer_pair(strategy),
                 legacy_flat_costs=cfg.legacy_flat_costs,
             )
@@ -117,28 +119,37 @@ class WalkForwardRunner:
             # window's first 80% (in-sample), compute net returns on
             # the remaining 20% (still in-sample), take Sharpe of those.
             train_sharpe = self._train_sharpe(
-                train, strategy_factory, cost_model,
+                train,
+                strategy_factory,
+                cost_model,
                 legacy_flat_costs=cfg.legacy_flat_costs,
             )
-            folds.append({
-                "fold_id": len(folds),
-                "train_start": train.index[0], "train_end": train.index[-1],
-                "test_start": test.index[0], "test_end": test.index[-1],
-                "train_sharpe": train_sharpe,
-                "test_sharpe": self._sharpe(df["net_return"]),
-            })
+            folds.append(
+                {
+                    "fold_id": len(folds),
+                    "train_start": train.index[0],
+                    "train_end": train.index[-1],
+                    "test_start": test.index[0],
+                    "test_end": test.index[-1],
+                    "train_sharpe": train_sharpe,
+                    "test_sharpe": self._sharpe(df["net_return"]),
+                }
+            )
             start += cfg.step_days
 
         return WalkForwardResult(
             oos_signals=pd.concat(oos_signals_all) if oos_signals_all else pd.Series(dtype=float),
-            oos_returns=pd.concat([t["net_return"] for t in trades_all]) if trades_all else pd.Series(dtype=float),
+            oos_returns=pd.concat([t["net_return"] for t in trades_all])
+            if trades_all
+            else pd.Series(dtype=float),
             trades=pd.concat(trades_all) if trades_all else pd.DataFrame(),
             fold_metrics=pd.DataFrame(folds),
         )
 
     @staticmethod
     def _apply_tradability(
-        data: pd.DataFrame, tf: Any,
+        data: pd.DataFrame,
+        tf: Any,
     ) -> pd.DataFrame:
         """Mask out non-tradable cells per CL-nt0c.
 
@@ -183,7 +194,9 @@ class WalkForwardRunner:
 
     @staticmethod
     def _resolve_cost_per_turn(
-        cost_model: Any, pair: str | None, legacy_flat_costs: bool,
+        cost_model: Any,
+        pair: str | None,
+        legacy_flat_costs: bool,
     ) -> float:
         """Per-turn cost fraction: per-pair when known and supported,
         else the legacy flat ``cost_per_turn`` (CL-x50g)."""
@@ -237,15 +250,20 @@ class WalkForwardRunner:
         """
         if isinstance(signals, pd.DataFrame):
             return WalkForwardRunner._trades_multi_asset(
-                signals=signals, data=data, cost_model=cost_model,
+                signals=signals,
+                data=data,
+                cost_model=cost_model,
                 legacy_flat_costs=legacy_flat_costs,
             )
         # Single-asset (Series) path — preserves the v1 behavior.
         per_turn = WalkForwardRunner._resolve_cost_per_turn(
-            cost_model, pair, legacy_flat_costs,
+            cost_model,
+            pair,
+            legacy_flat_costs,
         )
         funding_daily = WalkForwardRunner._funding_daily(
-            cost_model, legacy_flat_costs,
+            cost_model,
+            legacy_flat_costs,
         )
         df = pd.DataFrame(index=signals.index)
         df["signal"] = signals
@@ -317,14 +335,19 @@ class WalkForwardRunner:
         per_symbol_change = positions.diff().abs().fillna(0)
         # CL-x50g: per-pair per-turn costs (column name IS the pair) +
         # overnight funding on the held book, per symbol.
-        turn_costs = pd.Series({
-            sym: WalkForwardRunner._resolve_cost_per_turn(
-                cost_model, str(sym), legacy_flat_costs,
-            )
-            for sym in tradeable
-        })
+        turn_costs = pd.Series(
+            {
+                sym: WalkForwardRunner._resolve_cost_per_turn(
+                    cost_model,
+                    str(sym),
+                    legacy_flat_costs,
+                )
+                for sym in tradeable
+            }
+        )
         funding_daily = WalkForwardRunner._funding_daily(
-            cost_model, legacy_flat_costs,
+            cost_model,
+            legacy_flat_costs,
         )
         per_symbol_cost = per_symbol_change.mul(turn_costs, axis=1)
         per_symbol_funding = positions.abs() * funding_daily
@@ -393,7 +416,9 @@ class WalkForwardRunner:
         # both Series (single-asset) and DataFrame (multi-asset)
         # signal shapes uniformly. CL-x50g: same cost realism as OOS.
         df = WalkForwardRunner._trades_for_signals(
-            signals=inner_signals, data=train, cost_model=cost_model,
+            signals=inner_signals,
+            data=train,
+            cost_model=cost_model,
             pair=WalkForwardRunner._infer_pair(inner_strategy),
             legacy_flat_costs=legacy_flat_costs,
         )

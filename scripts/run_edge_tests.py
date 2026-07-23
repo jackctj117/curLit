@@ -124,10 +124,7 @@ def _send_alerts_if_configured(
     """
     if not actions:
         return
-    lines = [
-        f"[{action.value}] {sid}: {detail}"
-        for sid, action, detail in actions
-    ]
+    lines = [f"[{action.value}] {sid}: {detail}" for sid, action, detail in actions]
     message = "Edge run actions:\n" + "\n".join(lines)
     try:
         from src.research.notifications import notify_operator  # noqa: PLC0415
@@ -148,12 +145,21 @@ def main() -> None:
     # Auto-load .env so TELEGRAM_* / Postgres creds are available
     # without first sourcing the file. Explicit env vars still win.
     from src.dotenv_bootstrap import load_project_env  # noqa: PLC0415
+
     load_project_env()
     parser = argparse.ArgumentParser(description="Run weekly edge tests")
-    parser.add_argument("--output", type=Path, default=None,
-                        help="report output path (default: edge_reports/edge_<ts>.json)")
-    parser.add_argument("--policy", type=Path, default=None,
-                        help="path to edge_policy.yaml (default: configs/edge_policy.yaml)")
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=None,
+        help="report output path (default: edge_reports/edge_<ts>.json)",
+    )
+    parser.add_argument(
+        "--policy",
+        type=Path,
+        default=None,
+        help="path to edge_policy.yaml (default: configs/edge_policy.yaml)",
+    )
     args = parser.parse_args()
 
     log_dir = Path(os.environ.get("FX_LOG_DIR", "logs"))
@@ -198,6 +204,7 @@ def main() -> None:
     # below, never trade.
     from src.execution.oms import OrderManager
     from src.execution.paper_broker import PaperBroker
+
     broker = PaperBroker()
     oms = OrderManager(broker)
     strategies = build_strategies(config, broker, oms)

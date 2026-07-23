@@ -60,7 +60,7 @@ def _candidate_tickers(engine) -> list[str]:  # noqa: ANN001
             params,
         ).all()
     out: list[str] = []
-    for (ticker, _latest) in rows:
+    for ticker, _latest in rows:
         t = str(ticker or "").strip().upper()
         if _TICKER_RE.match(t):
             out.append(t)
@@ -71,6 +71,7 @@ def _candidate_tickers(engine) -> list[str]:  # noqa: ANN001
 
 def main(argv: list[str] | None = None) -> int:
     from src.dotenv_bootstrap import load_project_env  # noqa: PLC0415
+
     load_project_env()
 
     parser = argparse.ArgumentParser(description="Options-activity snapshots.")
@@ -90,11 +91,12 @@ def main(argv: list[str] | None = None) -> int:
 
     def _run() -> None:
         tickers = _candidate_tickers(engine)
-        logger.info("options activity: scanning %d candidate tickers",
-                    len(tickers))
+        logger.info("options activity: scanning %d candidate tickers", len(tickers))
         counts = snapshot_tickers(engine, tickers)
-        print(f"options-activity: written={counts['written']} "
-              f"skipped={counts['skipped']} of {len(tickers)}")
+        print(
+            f"options-activity: written={counts['written']} "
+            f"skipped={counts['skipped']} of {len(tickers)}"
+        )
 
     if args.loop:
         logger.info("looping every %ds (Ctrl-C to stop)", args.loop)

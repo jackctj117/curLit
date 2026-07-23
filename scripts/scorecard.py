@@ -57,24 +57,23 @@ _KILL_SWITCH_MARKER = "KILL SWITCH"
 TARGETS: dict[str, dict[str, Any]] = {
     # Losing more than 1% of equity in a practice week means sizing or
     # signal quality is off — critical.
-    "weekly_pnl_pct": {"mode": "min", "threshold": -1.0, "critical": True,
-                       "label": ">= -1.0%"},
+    "weekly_pnl_pct": {"mode": "min", "threshold": -1.0, "critical": True, "label": ">= -1.0%"},
     # Any kill-switch trigger is an incident — critical.
-    "kill_switch_triggers": {"mode": "max", "threshold": 0, "critical": True,
-                             "label": "0"},
+    "kill_switch_triggers": {"mode": "max", "threshold": 0, "critical": True, "label": "0"},
     # Over-trading guard; zero trades passes (practice run may be idle).
-    "trade_count": {"mode": "max", "threshold": 50, "critical": False,
-                    "label": "<= 50 / week"},
+    "trade_count": {"mode": "max", "threshold": 50, "critical": False, "label": "<= 50 / week"},
     # LLM research budget for the week.
-    "research_spend_usd": {"mode": "max", "threshold": 25.0, "critical": False,
-                           "label": "<= $25 / week"},
+    "research_spend_usd": {
+        "mode": "max",
+        "threshold": 25.0,
+        "critical": False,
+        "label": "<= $25 / week",
+    },
     # Daily price bars: 5 days tolerates weekend + one stalled ingest.
-    "prices_age_days": {"mode": "max", "threshold": 5.0, "critical": False,
-                        "label": "<= 5 days"},
+    "prices_age_days": {"mode": "max", "threshold": 5.0, "critical": False, "label": "<= 5 days"},
     # macro_data has daily series (DFF, DGS10) so a week of silence
     # means FRED ingest is stuck.
-    "macro_age_days": {"mode": "max", "threshold": 7.0, "critical": False,
-                       "label": "<= 7 days"},
+    "macro_age_days": {"mode": "max", "threshold": 7.0, "critical": False, "label": "<= 7 days"},
 }
 
 
@@ -196,8 +195,7 @@ def equity_stats(
         daily_close[ts.date().isoformat()] = eq
     days = sorted(daily_close)
     daily_pnl = {
-        days[i]: daily_close[days[i]] - daily_close[days[i - 1]]
-        for i in range(1, len(days))
+        days[i]: daily_close[days[i]] - daily_close[days[i - 1]] for i in range(1, len(days))
     }
     first_eq = window[0][1]
     last_eq = window[-1][1]
@@ -218,9 +216,14 @@ def summarize_research_runs(runs: list[dict[str, Any]]) -> dict[str, Any]:
     """Sum verdict/debate counters across research run summaries
     (data/research/runs/*.json, schema src/research/loop.py::RunSummary)."""
     keys = (
-        "debates_run", "verdicts_promote", "verdicts_reject",
-        "verdicts_escalate", "ideas_proposed", "ideas_declined",
-        "candidates_implemented", "candidates_rejected",
+        "debates_run",
+        "verdicts_promote",
+        "verdicts_reject",
+        "verdicts_escalate",
+        "ideas_proposed",
+        "ideas_declined",
+        "candidates_implemented",
+        "candidates_rejected",
     )
     out: dict[str, Any] = dict.fromkeys(keys, 0)
     errors = 0
@@ -276,7 +279,8 @@ def build_metric(
     value=None → UNKNOWN (source unavailable)."""
     spec = TARGETS[key]
     passed = (
-        None if value is None
+        None
+        if value is None
         else check_threshold(float(value), spec["mode"], float(spec["threshold"]))
     )
     return Metric(
@@ -365,6 +369,7 @@ def _collect_db(data: WeekData) -> None:
         from sqlalchemy import text
 
         from src.runtime.run_engine import _build_db_engine
+
         engine = _build_db_engine()
         with engine.connect() as conn:
             rows = conn.execute(
@@ -382,7 +387,7 @@ def _collect_db(data: WeekData) -> None:
                         contribs = json.loads(contribs)
                     except json.JSONDecodeError:
                         contribs = {}
-                for sid in (contribs or {}):
+                for sid in contribs or {}:
                     per_strategy[sid] = per_strategy.get(sid, 0) + 1
             data.per_strategy = per_strategy
             if not rows:
@@ -397,12 +402,13 @@ def _collect_db(data: WeekData) -> None:
                 if max_price_ts.tzinfo is None:
                     max_price_ts = max_price_ts.replace(tzinfo=UTC)
                 data.prices_age_days = (now - max_price_ts).total_seconds() / 86400.0
-            max_macro = conn.execute(
-                text("SELECT max(observation_date) FROM macro_data")
-            ).scalar()
+            max_macro = conn.execute(text("SELECT max(observation_date) FROM macro_data")).scalar()
             if max_macro is not None:
                 macro_ts = datetime(
-                    max_macro.year, max_macro.month, max_macro.day, tzinfo=UTC,
+                    max_macro.year,
+                    max_macro.month,
+                    max_macro.day,
+                    tzinfo=UTC,
                 )
                 data.macro_age_days = (now - macro_ts).total_seconds() / 86400.0
     except Exception as exc:  # DB down / table missing — report, don't crash
@@ -414,6 +420,7 @@ def _collect_db(data: WeekData) -> None:
 def collect_week_data(days: int = 7) -> WeekData:
     """Gather all real inputs for the scorecard window (last ``days``)."""
     from src.dotenv_bootstrap import load_project_env
+
     load_project_env()
 
     end = datetime.now(UTC)
@@ -464,45 +471,48 @@ def build_metrics(data: WeekData) -> list[Metric]:
     """Turn collected week data into the scorecard's Metric rows."""
     eq = data.equity
     pnl_pct = eq.get("weekly_pnl_pct") if eq else None
-    pnl_display = (
-        f"{eq['weekly_pnl']:+,.2f} ({eq['weekly_pnl_pct']:+.2f}%)" if eq else "n/a"
-    )
+    pnl_display = f"{eq['weekly_pnl']:+,.2f} ({eq['weekly_pnl_pct']:+.2f}%)" if eq else "n/a"
     metrics = [
         build_metric(
-            "weekly_pnl_pct", "Weekly P&L", pnl_pct, pnl_display,
-            note=data.log_note or (
-                "" if eq else "no Health equity samples in window"
-            ),
+            "weekly_pnl_pct",
+            "Weekly P&L",
+            pnl_pct,
+            pnl_display,
+            note=data.log_note or ("" if eq else "no Health equity samples in window"),
         ),
         build_metric(
-            "kill_switch_triggers", "Kill-switch triggers",
+            "kill_switch_triggers",
+            "Kill-switch triggers",
             data.kill_switches,
             note=data.log_note,
         ),
         build_metric(
-            "trade_count", "Portfolio orders", data.orders_count,
+            "trade_count",
+            "Portfolio orders",
+            data.orders_count,
             note=data.orders_note,
         ),
         build_metric(
-            "research_spend_usd", "Research LLM spend",
+            "research_spend_usd",
+            "Research LLM spend",
             data.spend_usd,
             display=("n/a" if data.spend_usd is None else f"${data.spend_usd:,.2f}"),
         ),
         build_metric(
-            "prices_age_days", "Prices freshness",
+            "prices_age_days",
+            "Prices freshness",
             data.prices_age_days,
             display=(
-                "n/a" if data.prices_age_days is None
-                else f"{data.prices_age_days:.1f} days old"
+                "n/a" if data.prices_age_days is None else f"{data.prices_age_days:.1f} days old"
             ),
             note=data.freshness_note,
         ),
         build_metric(
-            "macro_age_days", "Macro data freshness",
+            "macro_age_days",
+            "Macro data freshness",
             data.macro_age_days,
             display=(
-                "n/a" if data.macro_age_days is None
-                else f"{data.macro_age_days:.1f} days old"
+                "n/a" if data.macro_age_days is None else f"{data.macro_age_days:.1f} days old"
             ),
             note=data.freshness_note,
         ),
@@ -528,7 +538,8 @@ def render() -> None:
     import streamlit as st
 
     st.set_page_config(
-        page_title="curLit Weekly Scorecard", layout="wide",
+        page_title="curLit Weekly Scorecard",
+        layout="wide",
         initial_sidebar_state="collapsed",
     )
     st.title("curLit Weekly Scorecard")
@@ -548,7 +559,9 @@ def render() -> None:
     metrics = build_metrics(data)
     verdict = week_verdict(metrics)
     banner = {
-        "GREEN": st.success, "AMBER": st.warning, "RED": st.error,
+        "GREEN": st.success,
+        "AMBER": st.warning,
+        "RED": st.error,
     }[verdict]
     banner(f"Week verdict: {verdict}")
 
@@ -565,7 +578,8 @@ def render() -> None:
     st.subheader("Equity")
     if data.equity:
         eq_df = pd.DataFrame(
-            data.equity_points, columns=["ts", "equity"],
+            data.equity_points,
+            columns=["ts", "equity"],
         ).set_index("ts")
         eq_df = eq_df[(eq_df.index >= data.start) & (eq_df.index <= data.end)]
         st.line_chart(eq_df["equity"])
@@ -575,10 +589,7 @@ def render() -> None:
         else:
             st.caption("Fewer than two daily closes in window — no daily P&L bars.")
     else:
-        st.caption(
-            data.log_note
-            or "No Health equity samples found in this window — engine idle?"
-        )
+        st.caption(data.log_note or "No Health equity samples found in this window — engine idle?")
 
     st.subheader("Fills by strategy")
     if data.per_strategy:
@@ -587,7 +598,8 @@ def render() -> None:
                 sorted(data.per_strategy.items()),
                 columns=["strategy_id", "orders"],
             ),
-            width="stretch", hide_index=True,
+            width="stretch",
+            hide_index=True,
         )
     else:
         st.caption(data.orders_note or "No per-strategy fills recorded this window.")

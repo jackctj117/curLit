@@ -78,7 +78,7 @@ def _norm_hash(h: str) -> str:
 # redeployed; verify before each new test run via Polymarket docs.
 _HOSTS: dict[str, str] = {
     "mainnet": "https://clob.polymarket.com",
-    "amoy":    "https://clob-amoy.polymarket.com",
+    "amoy": "https://clob-amoy.polymarket.com",
 }
 
 # Polymarket signature_type values:
@@ -187,7 +187,9 @@ class PolymarketBroker(Broker):
         # anything is signed — handled upstream like any other
         # pre-trade rejection (RejectionHandler -> ABORT, no retry).
         self._loss_caps.check_order_allowed(
-            order.symbol, side=order.side, quantity=order.quantity,
+            order.symbol,
+            side=order.side,
+            quantity=order.quantity,
         )
 
         args = OrderArgs(
@@ -210,7 +212,10 @@ class PolymarketBroker(Broker):
         self._record_immediate_fill(order, resp)
         logger.info(
             "polymarket order placed: id=%s side=%s qty=%s @ %s status=%s",
-            order.order_id, order.side, order.quantity, order.limit_price,
+            order.order_id,
+            order.side,
+            order.quantity,
+            order.limit_price,
             order.status,
         )
         return order
@@ -240,8 +245,8 @@ class PolymarketBroker(Broker):
         balance = float(Decimal(usdc["balance"]) / Decimal(10**6))
         return Account(
             balance=balance,
-            equity=balance,         # No mark-to-market on the broker side
-            margin_used=0.0,        # Polymarket is fully collateralized
+            equity=balance,  # No mark-to-market on the broker side
+            margin_used=0.0,  # Polymarket is fully collateralized
         )
 
     def get_price(self, symbol: str) -> tuple[float, float]:
@@ -253,7 +258,8 @@ class PolymarketBroker(Broker):
         return bid, ask
 
     async def stream_prices(
-        self, symbols: list[str],
+        self,
+        symbols: list[str],
     ) -> AsyncIterator[dict[str, Any]]:
         """Polymarket WS at wss://ws-subscriptions-clob.polymarket.com/ws/market.
 
@@ -265,11 +271,14 @@ class PolymarketBroker(Broker):
         import asyncio as _asyncio
         from datetime import UTC as _UTC
         from datetime import datetime as _dt
+
         while True:
             for sym in symbols:
                 bid, ask = self.get_price(sym)
                 yield {
-                    "symbol": sym, "bid": bid, "ask": ask,
+                    "symbol": sym,
+                    "bid": bid,
+                    "ask": ask,
                     "ts": _dt.now(_UTC).isoformat(),
                 }
             await _asyncio.sleep(2.0)
@@ -321,18 +330,28 @@ class PolymarketBroker(Broker):
                     "polymarket loss caps: cannot interpret onchain fill "
                     "tx=%s order=%s (maker=%s taker=%s assets=%s/%s) — "
                     "NOT booked",
-                    f.tx_hash, f.order_hash, f.maker, f.taker,
-                    f.maker_asset_id, f.taker_asset_id,
+                    f.tx_hash,
+                    f.order_hash,
+                    f.maker,
+                    f.taker,
+                    f.maker_asset_id,
+                    f.taker_asset_id,
                 )
                 continue
             token_id, side, qty, price, fee = parsed
             if self._loss_caps.record_fill(
-                token_id, side, qty, price, fee=fee, fill_id=key,
+                token_id,
+                side,
+                qty,
+                price,
+                fee=fee,
+                fill_id=key,
             ):
                 booked += 1
         if booked:
             logger.info(
-                "polymarket loss caps: booked %d reconciled fill(s)", booked,
+                "polymarket loss caps: booked %d reconciled fill(s)",
+                booked,
             )
         return booked
 
@@ -340,7 +359,8 @@ class PolymarketBroker(Broker):
 
     @staticmethod
     def _parse_onchain_fill(
-        f: OnchainFill, funder_lower: str,
+        f: OnchainFill,
+        funder_lower: str,
     ) -> tuple[str, str, Decimal, Decimal, Decimal] | None:
         """Map an OrderFilled event to (token_id, side, qty, price, fee)
         from the funder's perspective. Returns None when the fill does
@@ -382,7 +402,9 @@ class PolymarketBroker(Broker):
         )
 
     def _record_immediate_fill(
-        self, order: Order, resp: dict[str, Any],
+        self,
+        order: Order,
+        resp: dict[str, Any],
     ) -> None:
         """Book a fill reported as matched by the post_order response.
 
@@ -402,9 +424,7 @@ class PolymarketBroker(Broker):
         try:
             making = Decimal(str(resp["makingAmount"]))
             taking = Decimal(str(resp["takingAmount"]))
-            m_qty, m_notional = (
-                (taking, making) if order.side == "buy" else (making, taking)
-            )
+            m_qty, m_notional = (taking, making) if order.side == "buy" else (making, taking)
             if m_qty > 0 and m_notional > 0:
                 qty, price = m_qty, m_notional / m_qty
         except (KeyError, InvalidOperation, TypeError):
@@ -412,7 +432,8 @@ class PolymarketBroker(Broker):
             # the limit price; reconciliation trues it up on-chain.
             logger.debug(
                 "polymarket: matched response without parsable amounts "
-                "(%s) — booking full order size", resp,
+                "(%s) — booking full order size",
+                resp,
             )
 
         order_hash = _norm_hash(order.order_id)
@@ -421,18 +442,24 @@ class PolymarketBroker(Broker):
             f"order:{order_hash}",
         ]
         self._loss_caps.record_fill(
-            order.symbol, order.side, qty, price, fill_id=keys[0],
+            order.symbol,
+            order.side,
+            qty,
+            price,
+            fill_id=keys[0],
         )
         for extra in keys[1:]:
             self._loss_caps.register_processed_fill(extra)
         order.status = (
-            OrderStatus.FILLED
-            if qty >= Decimal(str(order.quantity))
-            else OrderStatus.PARTIAL
+            OrderStatus.FILLED if qty >= Decimal(str(order.quantity)) else OrderStatus.PARTIAL
         )
         logger.info(
             "polymarket immediate fill: %s %s %s @ %s (order %s)",
-            order.side, qty, order.symbol, price, order.order_id,
+            order.side,
+            qty,
+            order.symbol,
+            price,
+            order.order_id,
         )
 
     def _record_book_mark(self, token_id: str) -> None:
@@ -443,7 +470,8 @@ class PolymarketBroker(Broker):
             bid, ask = self.get_price(token_id)
         except Exception:
             logger.debug(
-                "polymarket: book-mark fetch failed for %s", token_id,
+                "polymarket: book-mark fetch failed for %s",
+                token_id,
                 exc_info=True,
             )
             return
@@ -473,10 +501,7 @@ class PolymarketBroker(Broker):
         if not exposed:
             return
         self._unfed_order_count += 1
-        if (
-            self._unfed_order_count == 1
-            or self._unfed_order_count % _UNFED_WARN_EVERY == 0
-        ):
+        if self._unfed_order_count == 1 or self._unfed_order_count % _UNFED_WARN_EVERY == 0:
             logger.warning(
                 "polymarket loss caps: %d order(s) placed while the "
                 "tracker has received no fills or marks despite existing "
@@ -490,10 +515,7 @@ class PolymarketBroker(Broker):
     @staticmethod
     def _validate_order(order: Order) -> None:
         if order.order_type != OrderType.LIMIT:
-            msg = (
-                f"polymarket live: only LIMIT orders supported in v1, "
-                f"got {order.order_type}"
-            )
+            msg = f"polymarket live: only LIMIT orders supported in v1, got {order.order_type}"
             raise ValueError(msg)
         if order.limit_price is None:
             msg = "polymarket live: LIMIT order requires limit_price"

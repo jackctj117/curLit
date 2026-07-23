@@ -145,7 +145,8 @@ class PolymarketDataSource:
             data = self.http_get_json(url, {"market": token_id})
         except Exception:
             logger.warning(
-                "polymarket midpoint fetch failed for %s", token_id,
+                "polymarket midpoint fetch failed for %s",
+                token_id,
                 exc_info=True,
             )
             return None
@@ -177,7 +178,7 @@ class PolymarketDataSource:
         if not symbol.startswith("POLY:"):
             msg = f"not a POLY symbol: {symbol!r}"
             raise ValueError(msg)
-        body = symbol[len("POLY:"):]
+        body = symbol[len("POLY:") :]
         parts = body.split(":")
         if len(parts) == 1:
             return parts[0]  # already a token_id
@@ -186,17 +187,11 @@ class PolymarketDataSource:
             try:
                 outcome_idx = int(outcome_idx_str)
             except ValueError as exc:
-                msg = (
-                    f"outcome index must be int, got {outcome_idx_str!r} in "
-                    f"{symbol!r}"
-                )
+                msg = f"outcome index must be int, got {outcome_idx_str!r} in {symbol!r}"
                 raise ValueError(msg) from exc
             meta = self.get_market_metadata(condition_id)
             tokens_raw = meta.get("clobTokenIds")
-            tokens = (
-                json.loads(tokens_raw) if isinstance(tokens_raw, str)
-                else tokens_raw
-            )
+            tokens = json.loads(tokens_raw) if isinstance(tokens_raw, str) else tokens_raw
             if not isinstance(tokens, list) or outcome_idx >= len(tokens):
                 msg = (
                     f"market {condition_id} has no token at outcome index "

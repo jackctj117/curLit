@@ -33,7 +33,10 @@ def _account(
     category: str = "financial_flow",
 ) -> WatchAccount:
     return WatchAccount(
-        handle=handle, category=category, note="test", priority="high",
+        handle=handle,
+        category=category,
+        note="test",
+        priority="high",
     )
 
 
@@ -49,20 +52,23 @@ def _post(pid: str, text_out: str, created_at: str = "") -> Post:
 class TestMatchTheme:
     def test_war_term_matches_war_theme(self) -> None:
         theme = match_theme(
-            "BREAKING: Country X declares war on its neighbor", PLAYBOOKS,
+            "BREAKING: Country X declares war on its neighbor",
+            PLAYBOOKS,
         )
         assert theme == "war_escalation"
 
     def test_africa_term_matches_africa_theme(self) -> None:
         theme = match_theme(
-            "Military coup in Mali as the junta seizes power", PLAYBOOKS,
+            "Military coup in Mali as the junta seizes power",
+            PLAYBOOKS,
         )
         # africa_power_shift owns 'military coup', 'junta', 'seizes power'.
         assert theme == "africa_power_shift"
 
     def test_hormuz_phrase_matches_energy_chokepoint(self) -> None:
         theme = match_theme(
-            "Iran threatens to close the Strait of Hormuz", PLAYBOOKS,
+            "Iran threatens to close the Strait of Hormuz",
+            PLAYBOOKS,
         )
         assert theme == "energy_chokepoint"
 
@@ -74,17 +80,12 @@ class TestMatchTheme:
         assert match_theme("   ", PLAYBOOKS) is None
 
     def test_case_insensitive(self) -> None:
-        assert match_theme("HOUTHI ATTACK IN THE RED SEA", PLAYBOOKS) == (
-            "red_sea_shipping"
-        )
+        assert match_theme("HOUTHI ATTACK IN THE RED SEA", PLAYBOOKS) == ("red_sea_shipping")
 
     def test_strongest_match_wins_by_count(self) -> None:
         # Text hits three africa_power_shift terms but only one for any
         # other theme → africa_power_shift wins on count.
-        text_in = (
-            "Military coup: the junta seizes power and announces an "
-            "export ban on cobalt"
-        )
+        text_in = "Military coup: the junta seizes power and announces an export ban on cobalt"
         assert match_theme(text_in, PLAYBOOKS) == "africa_power_shift"
 
     def test_single_word_boundary_not_substring(self) -> None:
@@ -93,9 +94,13 @@ class TestMatchTheme:
 
     def test_phrase_term_is_substring(self) -> None:
         # Multi-word watch terms match as plain substrings.
-        assert match_theme(
-            "reports of a taiwan blockade emerging", PLAYBOOKS,
-        ) == "taiwan_semiconductor"
+        assert (
+            match_theme(
+                "reports of a taiwan blockade emerging",
+                PLAYBOOKS,
+            )
+            == "taiwan_semiconductor"
+        )
 
 
 # --------------------------------------------------------------------- #
@@ -173,9 +178,7 @@ class TestParseCreatedAt:
 
 def _shim(sql: str) -> str:
     return (
-        sql.replace("TIMESTAMPTZ", "TEXT")
-        .replace("JSONB", "TEXT")
-        .replace("BIGSERIAL", "INTEGER")
+        sql.replace("TIMESTAMPTZ", "TEXT").replace("JSONB", "TEXT").replace("BIGSERIAL", "INTEGER")
     )
 
 
@@ -184,9 +187,11 @@ def engine(tmp_path: Path) -> Engine:
     from migrations.run import _strip_sql_comments
 
     eng = create_engine(f"sqlite:///{tmp_path / 'geo.db'}")
-    sql = _shim(_strip_sql_comments(
-        Path("migrations/005_geo_events.sql").read_text(),
-    ))
+    sql = _shim(
+        _strip_sql_comments(
+            Path("migrations/005_geo_events.sql").read_text(),
+        )
+    )
     with eng.begin() as conn:
         for stmt in [s.strip() for s in sql.split(";") if s.strip()]:
             conn.execute(text(stmt))
@@ -197,17 +202,20 @@ def _rows(engine: Engine) -> list[dict]:
     with engine.connect() as conn:
         return [
             dict(r._mapping)
-            for r in conn.execute(text(
-                "SELECT seen_at, source, external_id, headline, url, "
-                "theme, status FROM geo_events ORDER BY external_id",
-            ))
+            for r in conn.execute(
+                text(
+                    "SELECT seen_at, source, external_id, headline, url, "
+                    "theme, status FROM geo_events ORDER BY external_id",
+                )
+            )
         ]
 
 
 class TestIngestPosts:
     def test_theme_matched_post_inserted(self, engine: Engine) -> None:
         post = _post(
-            "555", "Iran moves to close the Strait of Hormuz today",
+            "555",
+            "Iran moves to close the Strait of Hormuz today",
             created_at="2026-07-20T21:00:54.000Z",
         )
         result = ingest_posts(engine, _account(), [post], PLAYBOOKS)
@@ -231,7 +239,8 @@ class TestIngestPosts:
         assert _rows(engine) == []
 
     def test_small_traders_category_skipped_entirely(
-        self, engine: Engine,
+        self,
+        engine: Engine,
     ) -> None:
         # Even a war-themed post is dropped for small_traders.
         post = _post("9", "Country X declares war on its neighbor")
@@ -253,10 +262,7 @@ class TestIngestPosts:
 
     def test_cap_enforced(self, engine: Engine) -> None:
         # 5 relevant posts, cap 2 → only 2 inserted.
-        posts = [
-            _post(str(i), "Iran threatens the Strait of Hormuz again")
-            for i in range(5)
-        ]
+        posts = [_post(str(i), "Iran threatens the Strait of Hormuz again") for i in range(5)]
         result = ingest_posts(engine, _account(), posts, PLAYBOOKS, cap=2)
         assert result.ingested == 2
         assert len(_rows(engine)) == 2
@@ -271,9 +277,9 @@ class TestIngestPosts:
 
     def test_mixed_batch_counts(self, engine: Engine) -> None:
         posts = [
-            _post("a", "Iran closes the Strait of Hormuz"),   # theme
-            _post("b", "just had lunch"),                     # no theme
-            _post("c", "Houthi attack in the Red Sea"),       # theme
+            _post("a", "Iran closes the Strait of Hormuz"),  # theme
+            _post("b", "just had lunch"),  # no theme
+            _post("c", "Houthi attack in the Red Sea"),  # theme
         ]
         result = ingest_posts(engine, _account(), posts, PLAYBOOKS)
         assert result.ingested == 2
@@ -283,7 +289,8 @@ class TestIngestPosts:
     def test_bad_created_at_uses_now_fallback(self, engine: Engine) -> None:
         before = datetime.now(UTC)
         post = _post(
-            "12", "Iran closes the Strait of Hormuz",
+            "12",
+            "Iran closes the Strait of Hormuz",
             created_at="totally-bogus-timestamp",
         )
         ingest_posts(engine, _account(), [post], PLAYBOOKS)
@@ -304,7 +311,10 @@ class TestIngestPosts:
 
         post = _post("1", "Iran closes the Strait of Hormuz")
         result = ingest_posts(
-            BoomEngine(), _account(), [post], PLAYBOOKS,  # type: ignore[arg-type]
+            BoomEngine(),
+            _account(),
+            [post],
+            PLAYBOOKS,  # type: ignore[arg-type]
         )
         assert result.ingested == 0
         # The relevance gate still counted correctly before the write.
@@ -312,7 +322,8 @@ class TestIngestPosts:
 
     def test_headline_whitespace_normalised(self, engine: Engine) -> None:
         post = _post(
-            "42", "Iran   closes\n\n the  Strait of Hormuz\t now",
+            "42",
+            "Iran   closes\n\n the  Strait of Hormuz\t now",
         )
         ingest_posts(engine, _account(), [post], PLAYBOOKS)
         row = _rows(engine)[0]

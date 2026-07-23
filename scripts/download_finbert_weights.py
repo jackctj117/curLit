@@ -26,7 +26,8 @@ logger = logging.getLogger(__name__)
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument(
-        "--cbs", default=None,
+        "--cbs",
+        default=None,
         help=(
             "Comma-separated CB short names to download (default: all "
             "in CB_MODEL_REGISTRY). Example: --cbs fed,ecb,boe"
@@ -45,8 +46,7 @@ def main(argv: list[str] | None = None) -> int:
         unknown = [n for n in names if n not in CB_MODEL_REGISTRY]
         if unknown:
             print(
-                f"Unknown CB names: {unknown}. "
-                f"Known: {sorted(CB_MODEL_REGISTRY)}",
+                f"Unknown CB names: {unknown}. Known: {sorted(CB_MODEL_REGISTRY)}",
                 file=sys.stderr,
             )
             return 2
@@ -69,7 +69,9 @@ def main(argv: list[str] | None = None) -> int:
     for name, model_id in targets:
         logger.info("[%s] %s", name, model_id)
         AutoTokenizer.from_pretrained(
-            model_id, do_lower_case=True, do_basic_tokenize=True,
+            model_id,
+            do_lower_case=True,
+            do_basic_tokenize=True,
         )
         AutoModelForSequenceClassification.from_pretrained(model_id)
         logger.info("  cached")

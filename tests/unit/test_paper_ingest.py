@@ -66,8 +66,13 @@ class _IngestCannedDriver(Driver):
     ) -> LLMResponse:
         self.calls.append(messages)
         return LLMResponse(
-            text=self.canned_text, model=model, provider=self.name,
-            input_tokens=10, output_tokens=20, usd_cost=0.0001, elapsed_sec=0.01,
+            text=self.canned_text,
+            model=model,
+            provider=self.name,
+            input_tokens=10,
+            output_tokens=20,
+            usd_cost=0.0001,
+            elapsed_sec=0.01,
         )
 
 
@@ -109,13 +114,18 @@ _MALFORMED_XML = "<<not xml at all>>"
 class TestPaperHash:
     def test_doi_takes_precedence(self) -> None:
         a = Paper(
-            title="t", authors=("X",), year=2026,
-            url="http://example.com/a", doi="10.1000/abc",
+            title="t",
+            authors=("X",),
+            year=2026,
+            url="http://example.com/a",
+            doi="10.1000/abc",
         )
         b = Paper(
             title="completely different",
-            authors=("Different",), year=1999,
-            url="http://example.com/b", doi="10.1000/abc",
+            authors=("Different",),
+            year=1999,
+            url="http://example.com/b",
+            doi="10.1000/abc",
         )
         # Same DOI → same hash regardless of other fields
         assert paper_hash(a) == paper_hash(b)
@@ -146,7 +156,8 @@ class TestArxivFetcher:
     def test_parses_atom_into_papers(self) -> None:
         fetcher = ArxivFetcher(http_get=lambda _u: _SAMPLE_ATOM)
         feed = FeedConfig(
-            name="t", adapter="arxiv",
+            name="t",
+            adapter="arxiv",
             query_url="http://example.com/atom",
             source_label="arXiv test",
         )
@@ -166,7 +177,8 @@ class TestArxivFetcher:
 
         fetcher = ArxivFetcher(http_get=boom)
         feed = FeedConfig(
-            name="bad", adapter="arxiv",
+            name="bad",
+            adapter="arxiv",
             query_url="http://example.com",
             source_label="bad",
         )
@@ -175,20 +187,19 @@ class TestArxivFetcher:
     def test_malformed_xml_returns_empty(self) -> None:
         fetcher = ArxivFetcher(http_get=lambda _u: _MALFORMED_XML)
         feed = FeedConfig(
-            name="bad", adapter="arxiv",
+            name="bad",
+            adapter="arxiv",
             query_url="http://example.com",
             source_label="bad",
         )
         assert fetcher.fetch(feed) == []
 
     def test_empty_atom_feed_returns_empty(self) -> None:
-        empty = (
-            '<?xml version="1.0"?>'
-            '<feed xmlns="http://www.w3.org/2005/Atom"></feed>'
-        )
+        empty = '<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom"></feed>'
         fetcher = ArxivFetcher(http_get=lambda _u: empty)
         feed = FeedConfig(
-            name="empty", adapter="arxiv",
+            name="empty",
+            adapter="arxiv",
             query_url="http://example.com",
             source_label="empty",
         )
@@ -203,15 +214,19 @@ class TestArxivFetcher:
 class TestLoadFeedConfigs:
     def test_parses_yaml(self, tmp_path: Path) -> None:
         cfg = tmp_path / "f.yaml"
-        cfg.write_text(yaml.safe_dump({
-            "feeds": {
-                "test1": {
-                    "adapter": "arxiv",
-                    "query_url": "http://example.com/atom",
-                    "source_label": "T1",
-                },
-            },
-        }))
+        cfg.write_text(
+            yaml.safe_dump(
+                {
+                    "feeds": {
+                        "test1": {
+                            "adapter": "arxiv",
+                            "query_url": "http://example.com/atom",
+                            "source_label": "T1",
+                        },
+                    },
+                }
+            )
+        )
         feeds = load_feed_configs(cfg)
         assert len(feeds) == 1
         assert feeds[0].name == "test1"
@@ -236,9 +251,10 @@ class TestLoadFeedConfigs:
         # as new sources land (arxiv, rss, polymarket) — assert each
         # is registered in the runtime registry rather than pinning
         # to a single value.
-        from src.research.ingest import _FETCHER_REGISTRY  # noqa: PLC0415
         # Ensure self-registering modules (polymarket) ran
         import src.research  # noqa: F401, PLC0415
+        from src.research.ingest import _FETCHER_REGISTRY  # noqa: PLC0415
+
         for f in feeds:
             assert f.adapter in _FETCHER_REGISTRY, (
                 f"feed {f.name!r} uses unknown adapter {f.adapter!r}; "
@@ -271,7 +287,8 @@ class TestExtractStore:
         store = ExtractStore(root=tmp_path / "extracts")
         paper = Paper(
             title="A test paper",
-            authors=("Alice", "Bob"), year=2026,
+            authors=("Alice", "Bob"),
+            year=2026,
             url="http://arxiv.org/abs/test/1",
             source_label="arXiv test",
         )
@@ -288,7 +305,9 @@ class TestExtractStore:
     def test_has_returns_true_after_write(self, tmp_path: Path) -> None:
         store = ExtractStore(root=tmp_path / "extracts")
         paper = Paper(
-            title="A", authors=(), year=2026,
+            title="A",
+            authors=(),
+            year=2026,
             url="http://x.com/a",
         )
         assert not store.has(paper)
@@ -310,13 +329,15 @@ def extractor_prompt(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def cfg(
-    extractor_prompt: Path, monkeypatch: pytest.MonkeyPatch,
+    extractor_prompt: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> ResearchConfig:
     monkeypatch.setenv("INGEST_KEY", "fake")
     return ResearchConfig(
         providers={
             "ingest-canned": ProviderConfig(
-                api_key_env="INGEST_KEY", default_model="m1",
+                api_key_env="INGEST_KEY",
+                default_model="m1",
             ),
         },
         agents={
@@ -333,7 +354,8 @@ def cfg(
 
 def _make_extractor(cfg: ResearchConfig, canned: str) -> PaperExtractor:
     a = PaperExtractor.from_config(
-        name="paper_extractor", research_config=cfg,
+        name="paper_extractor",
+        research_config=cfg,
     )
     a.client.driver.canned_text = canned  # type: ignore[attr-defined]
     return a
@@ -350,16 +372,20 @@ _CANNED_EXTRACT = (
 
 class TestIngestRunner:
     def test_processes_new_papers_writes_extracts(
-        self, cfg: ResearchConfig, tmp_path: Path,
+        self,
+        cfg: ResearchConfig,
+        tmp_path: Path,
     ) -> None:
         extractor = _make_extractor(cfg, _CANNED_EXTRACT)
         store = ExtractStore(root=tmp_path / "extracts")
         runner = IngestRunner(
-            extractor=extractor, store=store,
+            extractor=extractor,
+            store=store,
             http_get=lambda _u: _SAMPLE_ATOM,
         )
         feed = FeedConfig(
-            name="t", adapter="arxiv",
+            name="t",
+            adapter="arxiv",
             query_url="http://example.com/atom",
             source_label="arXiv test",
         )
@@ -378,16 +404,20 @@ class TestIngestRunner:
             assert "**source**: arXiv test" in text
 
     def test_dedup_skips_already_extracted(
-        self, cfg: ResearchConfig, tmp_path: Path,
+        self,
+        cfg: ResearchConfig,
+        tmp_path: Path,
     ) -> None:
         extractor = _make_extractor(cfg, _CANNED_EXTRACT)
         store = ExtractStore(root=tmp_path / "extracts")
         runner = IngestRunner(
-            extractor=extractor, store=store,
+            extractor=extractor,
+            store=store,
             http_get=lambda _u: _SAMPLE_ATOM,
         )
         feed = FeedConfig(
-            name="t", adapter="arxiv",
+            name="t",
+            adapter="arxiv",
             query_url="http://example.com/atom",
             source_label="arXiv test",
         )
@@ -404,16 +434,21 @@ class TestIngestRunner:
         assert len(extractor.client.driver.calls) == 2  # type: ignore[attr-defined]
 
     def test_unknown_adapter_marks_feed_failed(
-        self, cfg: ResearchConfig, tmp_path: Path,
+        self,
+        cfg: ResearchConfig,
+        tmp_path: Path,
     ) -> None:
         extractor = _make_extractor(cfg, _CANNED_EXTRACT)
         runner = IngestRunner(
-            extractor=extractor, store=ExtractStore(root=tmp_path / "e"),
+            extractor=extractor,
+            store=ExtractStore(root=tmp_path / "e"),
             http_get=lambda _u: _SAMPLE_ATOM,
         )
         feed = FeedConfig(
-            name="bad", adapter="ghost",
-            query_url="http://example.com", source_label="bad",
+            name="bad",
+            adapter="ghost",
+            query_url="http://example.com",
+            source_label="bad",
         )
         summary = runner.run([feed])
         assert summary.feeds_total == 1
@@ -421,7 +456,9 @@ class TestIngestRunner:
         assert summary.papers_extracted == 0
 
     def test_extractor_failure_counts_but_doesnt_kill_run(
-        self, cfg: ResearchConfig, tmp_path: Path,
+        self,
+        cfg: ResearchConfig,
+        tmp_path: Path,
     ) -> None:
         # Build an extractor whose run() always raises.
         extractor = _make_extractor(cfg, _CANNED_EXTRACT)
@@ -431,11 +468,13 @@ class TestIngestRunner:
 
         extractor.run = boom  # type: ignore[method-assign]
         runner = IngestRunner(
-            extractor=extractor, store=ExtractStore(root=tmp_path / "e"),
+            extractor=extractor,
+            store=ExtractStore(root=tmp_path / "e"),
             http_get=lambda _u: _SAMPLE_ATOM,
         )
         feed = FeedConfig(
-            name="t", adapter="arxiv",
+            name="t",
+            adapter="arxiv",
             query_url="http://example.com/atom",
             source_label="arXiv test",
         )

@@ -56,7 +56,8 @@ def _check_interpreter_health() -> None:
             "Cellar 3.14.3_1?). Recovery: ln -sf /opt/homebrew/Cellar/"
             "python@3.14/<working-version>/bin/python3.14 .venv/bin/"
             "python3.14 — or rebuild the venv on a python whose pyexpat "
-            "imports cleanly (see bd show CL-169t). Error: %s", exc,
+            "imports cleanly (see bd show CL-169t). Error: %s",
+            exc,
         )
 
 

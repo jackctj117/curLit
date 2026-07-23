@@ -141,7 +141,8 @@ def load_active_profile(
     if name not in profiles:
         logger.warning(
             "risk profile %r not in config — falling back to %s",
-            name, _FALLBACK_PROFILE,
+            name,
+            _FALLBACK_PROFILE,
         )
         name = _FALLBACK_PROFILE
         if name not in profiles:
@@ -152,10 +153,7 @@ def load_active_profile(
     parent = body.pop("inherits", None)
     if parent:
         if parent not in profiles:
-            msg = (
-                f"risk profile {name!r} inherits from unknown profile "
-                f"{parent!r}"
-            )
+            msg = f"risk profile {name!r} inherits from unknown profile {parent!r}"
             raise ValueError(msg)
         merged: dict[str, Any] = dict(profiles[parent])
         # Per-section deep-merge: child keys override parent keys
@@ -175,8 +173,7 @@ def load_active_profile(
 
     profile = _build_profile(name, body)
     logger.info(
-        "risk profile active: %s (kelly_fraction=%s max_position_pct=%s "
-        "daily_loss=%s dd_limit=%s)",
+        "risk profile active: %s (kelly_fraction=%s max_position_pct=%s daily_loss=%s dd_limit=%s)",
         profile.name,
         profile.sizing.kelly_fraction,
         profile.sizing.max_position_pct,

@@ -104,12 +104,14 @@ def match_fifo(
 
         if not lots or (lots[0]["qty"] > 0) == (qty > 0):
             # Same-direction (or no open lot) — extends open position.
-            lots.append({
-                "qty": qty,
-                "price": price,
-                "ts": ts,
-                "intent_id": intent_id,
-            })
+            lots.append(
+                {
+                    "qty": qty,
+                    "price": price,
+                    "ts": ts,
+                    "intent_id": intent_id,
+                }
+            )
             continue
 
         # Opposite direction — closes oldest open lots.
@@ -160,12 +162,14 @@ def match_fifo(
         # opens a new opposite-direction lot (reversal trade).
         if remaining > 1e-12:
             sign = 1 if qty > 0 else -1
-            lots.append({
-                "qty": sign * remaining,
-                "price": price,
-                "ts": ts,
-                "intent_id": intent_id,
-            })
+            lots.append(
+                {
+                    "qty": sign * remaining,
+                    "price": price,
+                    "ts": ts,
+                    "intent_id": intent_id,
+                }
+            )
 
         # Suppress the unused-variable warning while preserving the side label
         # for future reporting use (matched lots already carry side directly).
@@ -196,24 +200,38 @@ def export_annual(
         if qty is None or price is None or ev.symbol is None:
             logger.warning(
                 "Skipping malformed fill event seq=%d (qty=%s price=%s symbol=%s)",
-                ev.seq, qty, price, ev.symbol,
+                ev.seq,
+                qty,
+                price,
+                ev.symbol,
             )
             continue
-        fills.append({
-            "symbol": ev.symbol,
-            "ts": ev.ts,
-            "quantity": qty,
-            "price": price,
-            "intent_id": ev.intent_id,
-        })
+        fills.append(
+            {
+                "symbol": ev.symbol,
+                "ts": ev.ts,
+                "quantity": qty,
+                "price": price,
+                "intent_id": ev.intent_id,
+            }
+        )
 
     closed_lots = match_fifo(fills)
     if not closed_lots:
-        return pd.DataFrame(columns=[
-            "symbol", "open_ts", "close_ts", "side", "quantity",
-            "open_price", "close_price", "open_intent_id", "close_intent_id",
-            "realized_pnl_quote_ccy",
-        ])
+        return pd.DataFrame(
+            columns=[
+                "symbol",
+                "open_ts",
+                "close_ts",
+                "side",
+                "quantity",
+                "open_price",
+                "close_price",
+                "open_intent_id",
+                "close_intent_id",
+                "realized_pnl_quote_ccy",
+            ]
+        )
 
     df = pd.DataFrame([lot.to_dict() for lot in closed_lots])
     return df
@@ -229,6 +247,8 @@ def export_annual_to_parquet(
     df.to_parquet(output_path, index=False)
     logger.info(
         "Wrote %d closed lots for %d to %s",
-        len(df), year, output_path,
+        len(df),
+        year,
+        output_path,
     )
     return len(df)

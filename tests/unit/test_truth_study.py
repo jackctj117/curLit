@@ -47,16 +47,16 @@ def engine(tmp_path):  # type: ignore[no-untyped-def]
     from migrations.run import _strip_sql_comments
 
     eng = create_engine(f"sqlite:///{tmp_path / 't.db'}")
-    sql = _strip_sql_comments(
-        Path("migrations/017_truth_study.sql").read_text())
-    sql = (sql.replace("TIMESTAMPTZ", "TEXT")
-              .replace("JSONB", "TEXT")
-              .replace("BIGSERIAL PRIMARY KEY", "INTEGER PRIMARY KEY")
-              .replace("DOUBLE PRECISION", "FLOAT")
-              .replace("BOOLEAN", "INTEGER"))
+    sql = _strip_sql_comments(Path("migrations/017_truth_study.sql").read_text())
+    sql = (
+        sql.replace("TIMESTAMPTZ", "TEXT")
+        .replace("JSONB", "TEXT")
+        .replace("BIGSERIAL PRIMARY KEY", "INTEGER PRIMARY KEY")
+        .replace("DOUBLE PRECISION", "FLOAT")
+        .replace("BOOLEAN", "INTEGER")
+    )
     with eng.begin() as conn:
-        conn.execute(text(
-            "CREATE TABLE symbols (ticker TEXT PRIMARY KEY)"))
+        conn.execute(text("CREATE TABLE symbols (ticker TEXT PRIMARY KEY)"))
         conn.execute(text("INSERT INTO symbols (ticker) VALUES ('DJT')"))
         for stmt in [s.strip() for s in sql.split(";") if s.strip()]:
             conn.execute(text(stmt))
@@ -91,11 +91,14 @@ def test_ingest_warns_on_zero_overlap_gap(engine, caplog):
     daemon was likely down past the window — posts in between are missing.
     Must WARN, never silently continue."""
     ingest_posts(engine, http_get=lambda _u: _FEED)
-    disjoint = _FEED.replace("116963738416841583", "999000000000000001") \
-                    .replace("116964025218558981", "999000000000000002") \
-                    .replace("statuses/40212", "statuses/50001") \
-                    .replace("statuses/40213", "statuses/50002")
+    disjoint = (
+        _FEED.replace("116963738416841583", "999000000000000001")
+        .replace("116964025218558981", "999000000000000002")
+        .replace("statuses/40212", "statuses/50001")
+        .replace("statuses/40213", "statuses/50002")
+    )
     import logging as _logging
+
     with caplog.at_level(_logging.WARNING, logger="src.data.truth_social"):
         assert ingest_posts(engine, http_get=lambda _u: disjoint) == 2
     assert any("GAP" in r.message for r in caplog.records)
@@ -118,33 +121,51 @@ class _FakeLLM:
     def complete(self, messages, model, max_tokens):  # noqa: ANN001, ANN201
         class _R:
             text = self._payload
+
         _R.text = self._payload
         return _R()
 
 
 def test_classifier_stores_and_fast_paths_empty(engine):
     ingest_posts(engine, http_get=lambda _u: _FEED)
-    llm = _FakeLLM(json.dumps([{
-        "id": 0, "relevant": True, "topic": "tariffs",
-        "secondary": ["china"], "tone": "threatening",
-        "entities": ["China"], "explicit_market": False,
-        "confidence": 0.9,
-    }]))
+    llm = _FakeLLM(
+        json.dumps(
+            [
+                {
+                    "id": 0,
+                    "relevant": True,
+                    "topic": "tariffs",
+                    "secondary": ["china"],
+                    "tone": "threatening",
+                    "entities": ["China"],
+                    "explicit_market": False,
+                    "confidence": 0.9,
+                }
+            ]
+        )
+    )
     n = classify_pending(engine, client=llm)
     assert n == 2  # 1 LLM-classified + 1 empty-text fast path
     with engine.connect() as c:
-        row = dict(c.execute(text(
-            "SELECT * FROM truth_classifications WHERE post_id = "
-            "'116963738416841583'")).one()._mapping)
+        row = dict(
+            c.execute(
+                text("SELECT * FROM truth_classifications WHERE post_id = '116963738416841583'")
+            )
+            .one()
+            ._mapping
+        )
     assert row["is_market_relevant"] in (True, 1)
     assert row["primary_topic"] == "tariffs"
     assert row["tone"] == "threatening"
     assert row["classifier_version"]
     empty = dict(c.execute if False else {})  # noqa: F841 — clarity below
     with engine.connect() as c:
-        empty_rel = c.execute(text(
-            "SELECT is_market_relevant FROM truth_classifications "
-            "WHERE post_id = '116964025218558981'")).scalar()
+        empty_rel = c.execute(
+            text(
+                "SELECT is_market_relevant FROM truth_classifications "
+                "WHERE post_id = '116964025218558981'"
+            )
+        ).scalar()
     assert empty_rel in (False, 0)
 
 
@@ -159,8 +180,7 @@ def test_classifier_llm_failure_retries(engine):
     assert n == 1  # only the empty-text fast path landed
     # text post still unclassified → retried next cycle
     with engine.connect() as c:
-        assert c.execute(text(
-            "SELECT COUNT(*) FROM truth_classifications")).scalar() == 1
+        assert c.execute(text("SELECT COUNT(*) FROM truth_classifications")).scalar() == 1
 
 
 # --------------------------------------------------------------------------- #
@@ -168,17 +188,27 @@ def test_classifier_llm_failure_retries(engine):
 # --------------------------------------------------------------------------- #
 
 
-def _bar(minutes_from_post: int, c: float, h: float | None = None,
-         l: float | None = None, v: float = 1000.0) -> dict:  # noqa: E741
+def _bar(
+    minutes_from_post: int,
+    c: float,
+    h: float | None = None,
+    l: float | None = None,  # noqa: E741 — OHLC 'low', mirrors the data schema
+    v: float = 1000.0,
+) -> dict:
     t = POSTED + timedelta(minutes=minutes_from_post)
-    return {"t": t.isoformat().replace("+00:00", "Z"), "o": c,
-            "h": h if h is not None else c,
-            "l": l if l is not None else c, "c": c, "v": v}
+    return {
+        "t": t.isoformat().replace("+00:00", "Z"),
+        "o": c,
+        "h": h if h is not None else c,
+        "l": l if l is not None else c,
+        "c": c,
+        "v": v,
+    }
 
 
 def test_measure_windows_math():
     bars = (
-        [_bar(m, 100.0) for m in range(-31, 1)]        # flat pre-post
+        [_bar(m, 100.0) for m in range(-31, 1)]  # flat pre-post
         + [_bar(1, 101.0, h=101.5, l=99.5, v=3000.0)]  # pop on 3x volume
         + [_bar(m, 100.5) for m in range(2, 6)]
     )
@@ -205,22 +235,27 @@ def test_measure_windows_no_bars_is_null():
 # --------------------------------------------------------------------------- #
 
 
-def _seed_relevant(engine, post_id="116963738416841583",
-                   entities='["China", "DJT"]'):
+def _seed_relevant(engine, post_id="116963738416841583", entities='["China", "DJT"]'):
     with engine.begin() as conn:
         # datetime objects (not .isoformat()) so sqlite's stored format
         # matches the bound-parameter format in maturity comparisons.
-        conn.execute(text("""
+        conn.execute(
+            text("""
             INSERT INTO truth_posts (post_id, posted_at, text, ingested_at)
             VALUES (:i, :t, 'Tariffs!', :t)
-        """), {"i": post_id, "t": POSTED})
-        conn.execute(text("""
+        """),
+            {"i": post_id, "t": POSTED},
+        )
+        conn.execute(
+            text("""
             INSERT INTO truth_classifications
                 (post_id, is_market_relevant, primary_topic,
                  named_entities, explicit_market_language,
                  classifier_version, classified_at)
             VALUES (:i, 1, 'tariffs', :e, 0, 'test', :t)
-        """), {"i": post_id, "e": entities, "t": POSTED})
+        """),
+            {"i": post_id, "e": entities, "t": POSTED},
+        )
 
 
 def test_measure_pending_writes_rows_and_verifies_tickers(engine):
@@ -236,8 +271,7 @@ def test_measure_pending_writes_rows_and_verifies_tickers(engine):
     # DJT is a literal ticker in the universe → included; "China" is not.
     assert "DJT" in calls[0] and "China" not in calls[0]
     with engine.connect() as c:
-        n = c.execute(text(
-            "SELECT COUNT(*) FROM truth_market_reactions")).scalar()
+        n = c.execute(text("SELECT COUNT(*) FROM truth_market_reactions")).scalar()
     assert n == 7 * 6  # 6 ETFs + DJT, 6 windows each
     # measured exactly once
     assert measure_pending(engine, fetch_bars=fake_bars, now=now) == 0

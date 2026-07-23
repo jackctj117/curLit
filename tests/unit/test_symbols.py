@@ -29,37 +29,42 @@ from src.data.symbols import (
 # mocked file bodies
 # --------------------------------------------------------------------------- #
 
-NASDAQ_BODY = "\n".join([
-    "Symbol|Security Name|Market Category|Test Issue|Financial Status|"
-    "Round Lot Size|ETF|NextShares",
-    "AAPL|Apple Inc. - Common Stock|Q|N|N|100|N|N",
-    "TEVA|Teva Pharmaceutical Industries Limited - ADS|Q|N|N|100|N|N",
-    "TSTQ|Nasdaq Test Ticker - Common Stock|Q|Y|N|100|N|N",  # test issue
-    "QQQ|Invesco QQQ Trust, Series 1|Q|N|N|100|Y|N",  # ETF
-    "File Creation Time: 0720202601:23|||||||",  # trailer
-])
+NASDAQ_BODY = "\n".join(
+    [
+        "Symbol|Security Name|Market Category|Test Issue|Financial Status|"
+        "Round Lot Size|ETF|NextShares",
+        "AAPL|Apple Inc. - Common Stock|Q|N|N|100|N|N",
+        "TEVA|Teva Pharmaceutical Industries Limited - ADS|Q|N|N|100|N|N",
+        "TSTQ|Nasdaq Test Ticker - Common Stock|Q|Y|N|100|N|N",  # test issue
+        "QQQ|Invesco QQQ Trust, Series 1|Q|N|N|100|Y|N",  # ETF
+        "File Creation Time: 0720202601:23|||||||",  # trailer
+    ]
+)
 
-OTHER_BODY = "\n".join([
-    "ACT Symbol|Security Name|Exchange|CQS Symbol|ETF|Round Lot Size|"
-    "Test Issue|NASDAQ Symbol",
-    "DHT|DHT Holdings, Inc. Common Stock|N|DHT|N|100|N|DHT",  # NYSE
-    "FRO|Frontline Ltd. Ordinary Shares|N|FRO|N|100|N|FRO",  # NYSE
-    "GLD|SPDR Gold Trust|P|GLD|Y|100|N|GLD",  # ARCA ETF
-    "IMO|Imperial Oil Limited|A|IMO|N|100|N|IMO",  # AMEX
-    "TESTX|NYSE Test Security|N|TESTX|N|100|Y|TESTX",  # test issue
-    "WEIRD|Weird Exchange Co|X|WEIRD|N|100|N|WEIRD",  # unknown -> OTHER
-    "File Creation Time: 0720202601:23||||||||",  # trailer
-])
+OTHER_BODY = "\n".join(
+    [
+        "ACT Symbol|Security Name|Exchange|CQS Symbol|ETF|Round Lot Size|Test Issue|NASDAQ Symbol",
+        "DHT|DHT Holdings, Inc. Common Stock|N|DHT|N|100|N|DHT",  # NYSE
+        "FRO|Frontline Ltd. Ordinary Shares|N|FRO|N|100|N|FRO",  # NYSE
+        "GLD|SPDR Gold Trust|P|GLD|Y|100|N|GLD",  # ARCA ETF
+        "IMO|Imperial Oil Limited|A|IMO|N|100|N|IMO",  # AMEX
+        "TESTX|NYSE Test Security|N|TESTX|N|100|Y|TESTX",  # test issue
+        "WEIRD|Weird Exchange Co|X|WEIRD|N|100|N|WEIRD",  # unknown -> OTHER
+        "File Creation Time: 0720202601:23||||||||",  # trailer
+    ]
+)
 
 
 def _fake_http(bodies: dict[str, str]):
     """Return an http_get shim that serves canned bodies, raising for URLs
     mapped to None (simulates a down file)."""
+
     def _get(url: str) -> str:
         body = bodies.get(url)
         if body is None:
             raise RuntimeError(f"simulated fetch failure for {url}")
         return body
+
     return _get
 
 
@@ -71,23 +76,24 @@ BOTH_OK = {NASDAQ_LISTED_URL: NASDAQ_BODY, OTHER_LISTED_URL: OTHER_BODY}
 # dropped at parse. WEIRD's SEC title deliberately shares NO word with its
 # NASDAQ "Weird Exchange Co" name, so a "Wonderful" query can only resolve via
 # the SEC name — proving resolve_name searches it.
-SEC_BODY = json.dumps({
-    "0": {"cik_str": 320193, "ticker": "AAPL", "title": "Apple Inc."},
-    "1": {"cik_str": 12345,
-          "ticker": "TEVA", "title": "Teva Pharmaceutical Industries Ltd"},
-    "2": {"cik_str": 99999,
-          "ticker": "WEIRD", "title": "Wonderful Alphabet Holdings Corp"},
-    "3": {"cik_str": 55555,
-          "ticker": "ZUEXTRA", "title": "Ghost Co Not In Universe"},
-    "4": {"cik_str": 0, "ticker": "", "title": "Blank Ticker Row"},
-})
+SEC_BODY = json.dumps(
+    {
+        "0": {"cik_str": 320193, "ticker": "AAPL", "title": "Apple Inc."},
+        "1": {"cik_str": 12345, "ticker": "TEVA", "title": "Teva Pharmaceutical Industries Ltd"},
+        "2": {"cik_str": 99999, "ticker": "WEIRD", "title": "Wonderful Alphabet Holdings Corp"},
+        "3": {"cik_str": 55555, "ticker": "ZUEXTRA", "title": "Ghost Co Not In Universe"},
+        "4": {"cik_str": 0, "ticker": "", "title": "Blank Ticker Row"},
+    }
+)
 
 
 def _fake_sec(body: str):
     """SEC http_get shim serving a canned JSON body (asserts the SEC URL)."""
+
     def _get(url: str) -> str:
         assert url == SEC_COMPANY_TICKERS_URL
         return body
+
     return _get
 
 
@@ -210,7 +216,8 @@ def test_refresh_updates_in_place_on_name_change(engine):
     uni.refresh()
     changed = {
         NASDAQ_LISTED_URL: NASDAQ_BODY.replace(
-            "Apple Inc. - Common Stock", "Apple Inc. NEW NAME",
+            "Apple Inc. - Common Stock",
+            "Apple Inc. NEW NAME",
         ),
         OTHER_LISTED_URL: OTHER_BODY,
     }
@@ -346,22 +353,27 @@ def test_refresh_both_files_down_returns_zero(engine):
 
 # A verbose "- Class A Common Stock" tail to prove the suffix trim, plus a
 # bare-ticker FX-style underscore symbol that must never resolve to a name.
-VG_BODY = "\n".join([
-    "ACT Symbol|Security Name|Exchange|CQS Symbol|ETF|Round Lot Size|"
-    "Test Issue|NASDAQ Symbol",
-    "VG|Venture Global, Inc. Class A Common Stock|N|VG|N|100|N|VG",  # verbose
-    "File Creation Time: 0720202601:23||||||||",
-])
+VG_BODY = "\n".join(
+    [
+        "ACT Symbol|Security Name|Exchange|CQS Symbol|ETF|Round Lot Size|Test Issue|NASDAQ Symbol",
+        "VG|Venture Global, Inc. Class A Common Stock|N|VG|N|100|N|VG",  # verbose
+        "File Creation Time: 0720202601:23||||||||",
+    ]
+)
 VG_ONLY = {NASDAQ_LISTED_URL: "", OTHER_LISTED_URL: VG_BODY}
 
 
 def test_company_name_prefers_clean_sec_name(engine):
     """SEC name ("Venture Global, Inc.") wins over the verbose NASDAQ name."""
-    sec = json.dumps({
-        "0": {"cik_str": 42, "ticker": "VG", "title": "Venture Global, Inc."},
-    })
+    sec = json.dumps(
+        {
+            "0": {"cik_str": 42, "ticker": "VG", "title": "Venture Global, Inc."},
+        }
+    )
     uni = SymbolUniverse(
-        engine, http_get=_fake_http(VG_ONLY), sec_http_get=_fake_sec(sec),
+        engine,
+        http_get=_fake_http(VG_ONLY),
+        sec_http_get=_fake_sec(sec),
     )
     uni.refresh()
     uni.refresh_sec_names()
@@ -439,10 +451,12 @@ def test_parse_sec_company_tickers_bad_json():
 
 
 def test_parse_sec_company_tickers_tolerates_missing_fields():
-    body = json.dumps({
-        "0": {"ticker": "NOCIK", "title": "No Cik Co"},  # cik_str absent
-        "1": {"cik_str": 7, "ticker": "NONAME"},          # title absent
-    })
+    body = json.dumps(
+        {
+            "0": {"ticker": "NOCIK", "title": "No Cik Co"},  # cik_str absent
+            "1": {"cik_str": 7, "ticker": "NONAME"},  # title absent
+        }
+    )
     rows = {r["symbol"]: r for r in parse_sec_company_tickers(body)}
     assert rows["NOCIK"]["cik"] is None
     assert rows["NONAME"]["sec_name"] is None
@@ -450,23 +464,29 @@ def test_parse_sec_company_tickers_tolerates_missing_fields():
 
 def test_refresh_sec_names_enriches_existing(engine):
     uni = SymbolUniverse(
-        engine, http_get=_fake_http(BOTH_OK), sec_http_get=_fake_sec(SEC_BODY),
+        engine,
+        http_get=_fake_http(BOTH_OK),
+        sec_http_get=_fake_sec(SEC_BODY),
     )
     uni.refresh()
     counts = uni.refresh_sec_names()
     # AAPL, TEVA, WEIRD are in the universe; ZUEXTRA is not.
     assert counts == {"matched": 3, "unmatched": 1, "skipped": 0}
     with engine.connect() as conn:
-        row = conn.execute(text(
-            "SELECT sec_name, cik FROM symbols WHERE symbol = 'AAPL'",
-        )).one()
+        row = conn.execute(
+            text(
+                "SELECT sec_name, cik FROM symbols WHERE symbol = 'AAPL'",
+            )
+        ).one()
     assert row[0] == "Apple Inc."
     assert row[1] == 320193
 
 
 def test_get_cik_after_enrichment(engine):
     uni = SymbolUniverse(
-        engine, http_get=_fake_http(BOTH_OK), sec_http_get=_fake_sec(SEC_BODY),
+        engine,
+        http_get=_fake_http(BOTH_OK),
+        sec_http_get=_fake_sec(SEC_BODY),
     )
     uni.refresh()
     assert uni.get_cik("AAPL") is None  # not yet enriched
@@ -485,7 +505,9 @@ def test_get_cik_none_without_columns(engine_no_sec):
 
 def test_refresh_sec_names_does_not_insert_unknown(engine):
     uni = SymbolUniverse(
-        engine, http_get=_fake_http(BOTH_OK), sec_http_get=_fake_sec(SEC_BODY),
+        engine,
+        http_get=_fake_http(BOTH_OK),
+        sec_http_get=_fake_sec(SEC_BODY),
     )
     uni.refresh()
     uni.refresh_sec_names()
@@ -498,7 +520,9 @@ def test_refresh_sec_names_does_not_insert_unknown(engine):
 
 def test_refresh_sec_names_preserves_nasdaq_display_name(engine):
     uni = SymbolUniverse(
-        engine, http_get=_fake_http(BOTH_OK), sec_http_get=_fake_sec(SEC_BODY),
+        engine,
+        http_get=_fake_http(BOTH_OK),
+        sec_http_get=_fake_sec(SEC_BODY),
     )
     uni.refresh()
     uni.refresh_sec_names()
@@ -513,7 +537,9 @@ def test_refresh_sec_names_preserves_nasdaq_display_name(engine):
 
 def test_resolve_name_matches_via_sec_name(engine):
     uni = SymbolUniverse(
-        engine, http_get=_fake_http(BOTH_OK), sec_http_get=_fake_sec(SEC_BODY),
+        engine,
+        http_get=_fake_http(BOTH_OK),
+        sec_http_get=_fake_sec(SEC_BODY),
     )
     uni.refresh()
     # Before enrichment: "Wonderful" matches nothing (NASDAQ name is
@@ -527,7 +553,9 @@ def test_resolve_name_matches_via_sec_name(engine):
 
 def test_refresh_sec_names_tolerates_fetch_failure(engine):
     uni = SymbolUniverse(
-        engine, http_get=_fake_http(BOTH_OK), sec_http_get=_raising_sec,
+        engine,
+        http_get=_fake_http(BOTH_OK),
+        sec_http_get=_raising_sec,
     )
     uni.refresh()
     counts = uni.refresh_sec_names()
@@ -539,11 +567,15 @@ def test_refresh_sec_names_tolerates_fetch_failure(engine):
 
 def test_refresh_sec_names_tolerates_bad_json(engine):
     uni = SymbolUniverse(
-        engine, http_get=_fake_http(BOTH_OK), sec_http_get=_fake_sec("garbage"),
+        engine,
+        http_get=_fake_http(BOTH_OK),
+        sec_http_get=_fake_sec("garbage"),
     )
     uni.refresh()
     assert uni.refresh_sec_names() == {
-        "matched": 0, "unmatched": 0, "skipped": 0,
+        "matched": 0,
+        "unmatched": 0,
+        "skipped": 0,
     }
 
 

@@ -72,7 +72,8 @@ def run(
     if failures:
         logger.error(
             "polymarket preflight FAILED for env=%s: %d issue(s)",
-            env, len(failures),
+            env,
+            len(failures),
         )
     else:
         logger.info("polymarket preflight PASSED for env=%s", env)
@@ -85,6 +86,7 @@ def run(
 def _check_creds_present(env: str) -> list[str]:
     try:
         from src.execution.polymarket_secrets import load_polymarket_creds
+
         load_polymarket_creds(env)
         return []
     except Exception as exc:
@@ -107,6 +109,7 @@ def _check_loaded_via_vault(env: str) -> list[str]:
         return []
     try:
         from src.execution.polymarket_secrets import loaded_via_vault
+
         if not loaded_via_vault(env):
             return [
                 "secrets came from env vars, not the vault. "
@@ -122,6 +125,7 @@ def _check_loaded_via_vault(env: str) -> list[str]:
 def _check_chain_connectivity(env: str) -> list[str]:
     try:
         from src.execution.polymarket_chain import assert_rpc_fresh, make_w3
+
         w3, _ = make_w3(env)
         assert_rpc_fresh(w3)
         return []
@@ -152,8 +156,7 @@ def _check_balances(env: str, min_usdc: Decimal) -> list[str]:
         matic = Decimal(wei_balance) / Decimal(10**18)
         if matic < _MIN_MATIC_GAS_FLOAT:
             failures.append(
-                f"funder MATIC balance {matic} below floor "
-                f"{_MIN_MATIC_GAS_FLOAT}",
+                f"funder MATIC balance {matic} below floor {_MIN_MATIC_GAS_FLOAT}",
             )
     except Exception as exc:
         failures.append(f"matic balance check: {type(exc).__name__}: {exc}")

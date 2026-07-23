@@ -75,11 +75,13 @@ def test_run_engine_threads_one_engine_to_every_builder(
 
     # Capture the engine each builder receives; return harmless stand-ins.
     monkeypatch.setattr(
-        re, "build_trade_journal",
+        re,
+        "build_trade_journal",
         lambda engine=None: seen_engines.setdefault("journal", engine),
     )
     monkeypatch.setattr(
-        re, "build_feature_snapshot_store",
+        re,
+        "build_feature_snapshot_store",
         lambda engine=None: seen_engines.setdefault("snapshot", engine),
     )
 
@@ -89,8 +91,14 @@ def test_run_engine_threads_one_engine_to_every_builder(
 
     monkeypatch.setattr(re, "build_strategies", fake_strategies)
 
-    def fake_coordinator(config, strategies, oms, broker,  # noqa: ANN001, ANN202
-                         blackout_evaluator=None, engine=None):
+    def fake_coordinator(
+        config,
+        strategies,
+        oms,
+        broker,  # noqa: ANN001, ANN202
+        blackout_evaluator=None,
+        engine=None,
+    ):
         seen_engines["coordinator"] = engine
         return None
 
@@ -108,8 +116,7 @@ def test_run_engine_threads_one_engine_to_every_builder(
     monkeypatch.setattr(re, "build_broker", lambda mode: object())
     monkeypatch.setattr(re, "effective_broker_mode", lambda mode, broker: mode)
     monkeypatch.setattr(re, "build_blackout_evaluator", lambda config: None)
-    monkeypatch.setattr(re, "build_cold_start_reconciler",
-                        lambda *a, **k: None)
+    monkeypatch.setattr(re, "build_cold_start_reconciler", lambda *a, **k: None)
 
     class _StopEngine:
         def __init__(self, *a: Any, **k: Any) -> None:
@@ -122,6 +129,7 @@ def test_run_engine_threads_one_engine_to_every_builder(
     # set_runtime import inside run_engine — stub the web api wiring.
     import sys
     import types
+
     fake_web = types.ModuleType("src.web.api")
     fake_web.set_runtime = lambda *a, **k: None  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "src.web.api", fake_web)
@@ -156,7 +164,9 @@ def test_builders_fall_back_to_local_engine_when_none(
     monkeypatch.setattr(re, "_build_db_engine", lambda: local)
     monkeypatch.setattr(re, "TradeJournal", lambda engine: ("journal", engine))
     monkeypatch.setattr(
-        re, "FeatureSnapshotStore", lambda engine: ("snap", engine),
+        re,
+        "FeatureSnapshotStore",
+        lambda engine: ("snap", engine),
     )
 
     assert re.build_trade_journal() == ("journal", local)

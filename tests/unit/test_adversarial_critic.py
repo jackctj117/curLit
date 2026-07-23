@@ -26,16 +26,27 @@ class MockLLMClient:
         if self.raises:
             raise RuntimeError("critic transport down")
         return SimpleNamespace(
-            text=self.text_out, model=model, provider="mock",
-            input_tokens=10, output_tokens=10, usd_cost=0.0, elapsed_sec=0.01,
+            text=self.text_out,
+            model=model,
+            provider="mock",
+            input_tokens=10,
+            output_tokens=10,
+            usd_cost=0.0,
+            elapsed_sec=0.01,
         )
 
 
 def _idea(ticker: str, conf: float = 0.7) -> NicheIdea:
     return NicheIdea(
-        ticker=ticker, company_name=f"{ticker} Corp", action="long",
-        direction="bullish", hop_count=3, torque_reason="junior",
-        rationale="hop chain", confidence=conf, verified=True,
+        ticker=ticker,
+        company_name=f"{ticker} Corp",
+        action="long",
+        direction="bullish",
+        hop_count=3,
+        torque_reason="junior",
+        rationale="hop chain",
+        confidence=conf,
+        verified=True,
     )
 
 
@@ -54,10 +65,18 @@ def _event() -> dict[str, Any]:
 
 def test_critique_parses_verdicts():
     body = _verdicts(
-        {"ticker": "AAA", "verdict": "confirmed", "strongest_attack": "none",
-         "adjusted_confidence": 0.7},
-        {"ticker": "BBB", "verdict": "refuted",
-         "strongest_attack": "already up 30%", "adjusted_confidence": 0.1},
+        {
+            "ticker": "AAA",
+            "verdict": "confirmed",
+            "strongest_attack": "none",
+            "adjusted_confidence": 0.7,
+        },
+        {
+            "ticker": "BBB",
+            "verdict": "refuted",
+            "strongest_attack": "already up 30%",
+            "adjusted_confidence": 0.1,
+        },
     )
     critic = AdversarialCritic(client=MockLLMClient(body), enabled=True)
     out = critic.critique([_idea("AAA"), _idea("BBB")], _event())
@@ -106,10 +125,14 @@ def test_apply_drops_refuted_keeps_others():
 
 
 def test_apply_weakened_annotates_and_lowers_confidence():
-    body = _verdicts({
-        "ticker": "AAA", "verdict": "weakened",
-        "strongest_attack": "thin borrow", "adjusted_confidence": 0.4,
-    })
+    body = _verdicts(
+        {
+            "ticker": "AAA",
+            "verdict": "weakened",
+            "strongest_attack": "thin borrow",
+            "adjusted_confidence": 0.4,
+        }
+    )
     critic = AdversarialCritic(client=MockLLMClient(body), enabled=True)
     idea = _idea("AAA", conf=0.8)
     survivors = critic.apply([idea], _event())
@@ -120,9 +143,13 @@ def test_apply_weakened_annotates_and_lowers_confidence():
 
 
 def test_apply_confidence_never_raised():
-    body = _verdicts({
-        "ticker": "AAA", "verdict": "confirmed", "adjusted_confidence": 0.99,
-    })
+    body = _verdicts(
+        {
+            "ticker": "AAA",
+            "verdict": "confirmed",
+            "adjusted_confidence": 0.99,
+        }
+    )
     critic = AdversarialCritic(client=MockLLMClient(body), enabled=True)
     idea = _idea("AAA", conf=0.5)
     survivors = critic.apply([idea], _event())

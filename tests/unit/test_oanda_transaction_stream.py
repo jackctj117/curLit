@@ -40,7 +40,8 @@ class _FakeResp:
     def raise_for_status(self) -> None:
         if self.status_code >= 400:
             raise httpx.HTTPStatusError(
-                "err", request=httpx.Request("GET", "http://x"),
+                "err",
+                request=httpx.Request("GET", "http://x"),
                 response=httpx.Response(self.status_code),
             )
 
@@ -81,8 +82,7 @@ class _FakeClient:
 
 def _patch(monkeypatch, script: list) -> None:
     state = {"i": 0}
-    monkeypatch.setattr(httpx, "AsyncClient",
-                        lambda **k: _FakeClient(script, state))
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **k: _FakeClient(script, state))
 
     async def _no_sleep(*_a: object) -> None:
         return None
@@ -108,7 +108,7 @@ def test_yields_normalized_order_fill(monkeypatch):
     assert ev["transaction_id"] == "1001"
     assert ev["order_id"] == "1000"
     assert ev["client_order_id"] == "intent-abc"
-    assert ev["instrument"] == "EURUSD"      # compact dialect
+    assert ev["instrument"] == "EURUSD"  # compact dialect
     assert ev["units"] == 1000.0 and ev["price"] == 1.0841
 
 
@@ -119,10 +119,13 @@ def test_skips_heartbeat_and_non_fill_transactions(monkeypatch):
 
 
 def test_reconnects_past_transient_error(monkeypatch):
-    ev = _first(monkeypatch, [
-        httpx.ConnectError("nodename nor servname provided"),
-        _FakeResp([_FILL]),
-    ])
+    ev = _first(
+        monkeypatch,
+        [
+            httpx.ConnectError("nodename nor servname provided"),
+            _FakeResp([_FILL]),
+        ],
+    )
     assert ev["order_id"] == "1000"
 
 

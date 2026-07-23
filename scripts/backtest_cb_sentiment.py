@@ -69,7 +69,8 @@ def _load_events(start: datetime, end: datetime) -> pd.DataFrame:
             WHERE ts BETWEEN :s AND :e
             ORDER BY ts
         """),
-        engine, params={"s": start, "e": end},
+        engine,
+        params={"s": start, "e": end},
     )
     if df.empty:
         return df
@@ -87,16 +88,25 @@ def _load_prices() -> pd.DataFrame:
             WHERE symbol = ANY(:pairs)
             ORDER BY ts
         """),
-        engine, params={"pairs": pairs},
+        engine,
+        params={"pairs": pairs},
     )
     df["ts"] = pd.to_datetime(df["ts"], utc=True).dt.tz_localize(None)
-    return df.pivot_table(
-        index="ts", columns="symbol", values="close", aggfunc="last",
-    ).astype(float).sort_index()
+    return (
+        df.pivot_table(
+            index="ts",
+            columns="symbol",
+            values="close",
+            aggfunc="last",
+        )
+        .astype(float)
+        .sort_index()
+    )
 
 
 def _classify_events(
-    events: pd.DataFrame, percentile: float,
+    events: pd.DataFrame,
+    percentile: float,
 ) -> pd.DataFrame:
     """Tag each event hawkish / dovish / neutral per per-CB percentile thresholds.
 
@@ -128,7 +138,9 @@ def _classify_events(
 
 
 def _backtest(
-    events: pd.DataFrame, prices: pd.DataFrame, holding_days: int,
+    events: pd.DataFrame,
+    prices: pd.DataFrame,
+    holding_days: int,
 ) -> tuple[pd.Series, list[dict[str, Any]]]:
     """Per-event return = forward-N-day return on the mapped FX pair, signed
     by hawkish/dovish direction.
@@ -169,19 +181,22 @@ def _backtest(
         position = int(ev["signal"]) * hawkish_dir
         ret = position * raw_pct
         returns.append(ret)
-        trades.append({
-            "event_ts": ts.isoformat(),
-            "cb": cb, "pair": pair,
-            "signal": int(ev["signal"]),
-            "position": position,
-            "entry_ts": entry_ts.isoformat(),
-            "exit_ts": exit_ts.isoformat(),
-            "entry_px": float(entry_px),
-            "exit_px": float(exit_px),
-            "raw_pct": float(raw_pct),
-            "trade_return": float(ret),
-            "net_shift": float(ev["net_shift"]),
-        })
+        trades.append(
+            {
+                "event_ts": ts.isoformat(),
+                "cb": cb,
+                "pair": pair,
+                "signal": int(ev["signal"]),
+                "position": position,
+                "entry_ts": entry_ts.isoformat(),
+                "exit_ts": exit_ts.isoformat(),
+                "entry_px": float(entry_px),
+                "exit_px": float(exit_px),
+                "raw_pct": float(raw_pct),
+                "trade_return": float(ret),
+                "net_shift": float(ev["net_shift"]),
+            }
+        )
 
     return pd.Series(returns, dtype=float), trades
 
@@ -208,10 +223,7 @@ def _print_summary(report: dict[str, Any]) -> None:
     cmp_ = report["architecture_comparison"]
     print()
     print("=" * 70)
-    print(
-        f"CB Sentiment-Shift — {report['data_window']['start']} → "
-        f"{report['data_window']['end']}"
-    )
+    print(f"CB Sentiment-Shift — {report['data_window']['start']} → {report['data_window']['end']}")
     print(
         f"events={report['n_events']}, signals={report['n_signals']}, "
         f"trades={report['n_trades']}, holding_days={report['config']['holding_days']}"
@@ -227,8 +239,10 @@ def _print_summary(report: dict[str, Any]) -> None:
     print(f"  Hit rate:          {m['hit_rate']:>7.1%}")
     print(f"  Profit factor:     {m['profit_factor']:>7.3f}")
     print(f"  Total return:      {m['total_return']:>+7.1%}")
-    print(f"  Max DD:            {m['max_drawdown']:>+7.1%}                        "
-          f"{cmp_['max_drawdown_in_expected_range']} (expect {cmp_['expected_max_drawdown_range']})")
+    print(
+        f"  Max DD:            {m['max_drawdown']:>+7.1%}                        "
+        f"{cmp_['max_drawdown_in_expected_range']} (expect {cmp_['expected_max_drawdown_range']})"
+    )
     print(f"  Skew/Kurt:         {m['skewness']:>+7.2f} / {m['kurtosis']:>5.2f}")
     print()
     print("  Trades by CB + signal:")
@@ -247,18 +261,25 @@ def main() -> int:
     )
     parser.add_argument("--start", type=str, default="2015-01-01")
     parser.add_argument(
-        "--end", type=str, default=datetime.now(UTC).strftime("%Y-%m-%d"),
+        "--end",
+        type=str,
+        default=datetime.now(UTC).strftime("%Y-%m-%d"),
     )
     parser.add_argument(
-        "--holding-days", type=int, default=10,
+        "--holding-days",
+        type=int,
+        default=10,
         help="Trading days to hold each trade (matches strategy default).",
     )
     parser.add_argument(
-        "--shift-percentile", type=float, default=0.15,
+        "--shift-percentile",
+        type=float,
+        default=0.15,
         help="Top/bottom percentile to fire signals (matches strategy default).",
     )
     parser.add_argument(
-        "--out", type=Path,
+        "--out",
+        type=Path,
         default=Path("reports/backtest_cb_sentiment.json"),
     )
     parser.add_argument("--bootstrap-n", type=int, default=5000)
@@ -311,8 +332,11 @@ def main() -> int:
 
     if len(returns) >= 5:
         ci_low_raw, ci_high_raw = stationary_bootstrap_sharpe_ci(
-            returns, block_mean_len=2, n_bootstrap=args.bootstrap_n,
-            confidence=0.95, periods_per_year=int(round(events_per_year)),
+            returns,
+            block_mean_len=2,
+            n_bootstrap=args.bootstrap_n,
+            confidence=0.95,
+            periods_per_year=int(round(events_per_year)),
         )
     else:
         ci_low_raw, ci_high_raw = 0.0, 0.0
@@ -326,14 +350,16 @@ def main() -> int:
     per_cb: list[dict[str, Any]] = []
     if not trades_df.empty:
         for (cb, sig), g in trades_df.groupby(["cb", "signal"]):
-            per_cb.append({
-                "cb": cb,
-                "signal": int(sig),
-                "signal_label": "hawkish" if sig == 1 else "dovish",
-                "n": int(len(g)),
-                "hit_rate": float((g["trade_return"] > 0).mean()),
-                "mean_return": float(g["trade_return"].mean()),
-            })
+            per_cb.append(
+                {
+                    "cb": cb,
+                    "signal": int(sig),
+                    "signal_label": "hawkish" if sig == 1 else "dovish",
+                    "n": int(len(g)),
+                    "hit_rate": float((g["trade_return"] > 0).mean()),
+                    "mean_return": float(g["trade_return"].mean()),
+                }
+            )
 
     metrics = {
         "n_trades": int(len(returns)),
@@ -344,7 +370,8 @@ def main() -> int:
         "hit_rate": float((returns > 0).mean()),
         "profit_factor": (
             float(returns[returns > 0].sum() / abs(returns[returns < 0].sum()))
-            if (returns < 0).any() else float("inf")
+            if (returns < 0).any()
+            else float("inf")
         ),
         "total_return": float((1 + returns).prod() - 1),
         "max_drawdown": max_dd,
@@ -368,16 +395,21 @@ def main() -> int:
         "n_trades": int(len(returns)),
         "metrics": metrics,
         "sharpe_ci_95": {
-            "low": float(ci_low_raw), "high": float(ci_high_raw),
+            "low": float(ci_low_raw),
+            "high": float(ci_high_raw),
         },
         "per_cb_signal": per_cb,
         "trades": trades,
         "architecture_comparison": {
             "sharpe_in_expected_range": _flag(
-                sharpe_ann, _EXPECT_SHARPE_LO, _EXPECT_SHARPE_HI,
+                sharpe_ann,
+                _EXPECT_SHARPE_LO,
+                _EXPECT_SHARPE_HI,
             ),
             "max_drawdown_in_expected_range": _flag(
-                max_dd, _EXPECT_DD_LO, _EXPECT_DD_HI,
+                max_dd,
+                _EXPECT_DD_LO,
+                _EXPECT_DD_HI,
             ),
             "expected_sharpe_range": [_EXPECT_SHARPE_LO, _EXPECT_SHARPE_HI],
             "expected_max_drawdown_range": [_EXPECT_DD_LO, _EXPECT_DD_HI],

@@ -66,7 +66,8 @@ class TestAlertConfirmed:
     def test_body_and_priority(self, sent: list[tuple[str, str, int]]) -> None:
         notifier = make_notifier()
         notifier.alert_confirmed(
-            _row(), {"urgency": 8, "confidence": 0.9},
+            _row(),
+            {"urgency": 8, "confidence": 0.9},
             entered=[("USD_CAD", "long", "50000", 1.0, "petro-fx")],
             skipped=[("XAU_USD", "concentration_cap")],
             prices={"XAU_USD": {"bid": 2400.0, "ask": 2400.0}},
@@ -88,24 +89,31 @@ class TestAlertConfirmed:
         assert "Confidence: 0.90" in message
 
     def test_injected_price_resolver_wins(
-        self, sent: list[tuple[str, str, int]],
+        self,
+        sent: list[tuple[str, str, int]],
     ) -> None:
         notifier = make_notifier(price_resolver=lambda sym, prices, now: 1.25)
         notifier.alert_confirmed(
-            _row(), {"urgency": 8, "confidence": 0.9},
-            entered=[], skipped=[("USD_CAD", "no_price")],
+            _row(),
+            {"urgency": 8, "confidence": 0.9},
+            entered=[],
+            skipped=[("USD_CAD", "no_price")],
         )
         assert "Skipped: USD_CAD (no_price) @ 1.25" in sent[0][1]
 
     def test_dispatch_failure_swallowed(
-        self, monkeypatch: pytest.MonkeyPatch,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         def _boom(*a: Any, **k: Any) -> None:
             raise RuntimeError("telegram down")
 
         monkeypatch.setattr("src.events.event_notifier.notify_operator", _boom)
         make_notifier().alert_confirmed(
-            _row(), {"urgency": 8, "confidence": 0.9}, entered=[], skipped=[],
+            _row(),
+            {"urgency": 8, "confidence": 0.9},
+            entered=[],
+            skipped=[],
         )  # must not raise — alerting is never allowed to break the strategy
 
 
@@ -133,8 +141,12 @@ def _row_with_ideas(**extra: Any) -> dict[str, Any]:
         "urgency": 8,
         "confidence": 0.9,
         "trade_ideas": [
-            {"ticker": "VG", "action": "buy_calls", "confidence": 0.78,
-             "rationale": "US LNG export tailwind"},
+            {
+                "ticker": "VG",
+                "action": "buy_calls",
+                "confidence": 0.78,
+                "rationale": "US LNG export tailwind",
+            },
         ],
     }
     row.update(extra)
@@ -143,46 +155,65 @@ def _row_with_ideas(**extra: Any) -> dict[str, Any]:
 
 class TestTickerNameEnrichment:
     def test_confirmed_ideas_show_company_name(
-        self, sent: list[tuple[str, str, int]],
+        self,
+        sent: list[tuple[str, str, int]],
     ) -> None:
         assessment = {
-            "urgency": 8, "confidence": 0.9,
+            "urgency": 8,
+            "confidence": 0.9,
             "trade_ideas": [
-                {"ticker": "VG", "action": "buy_calls", "confidence": 0.78,
-                 "rationale": "US LNG export tailwind"},
+                {
+                    "ticker": "VG",
+                    "action": "buy_calls",
+                    "confidence": 0.78,
+                    "rationale": "US LNG export tailwind",
+                },
             ],
         }
         make_notifier().alert_confirmed(
-            _row(), assessment, entered=[], skipped=[],
+            _row(),
+            assessment,
+            entered=[],
+            skipped=[],
             names={"VG": "Venture Global, Inc."},
         )
         assert "- VG (Venture Global, Inc.) buy_calls" in sent[0][1]
 
     def test_confirmed_ideas_degrade_to_bare_ticker(
-        self, sent: list[tuple[str, str, int]],
+        self,
+        sent: list[tuple[str, str, int]],
     ) -> None:
         assessment = {
-            "urgency": 8, "confidence": 0.9,
+            "urgency": 8,
+            "confidence": 0.9,
             "trade_ideas": [
                 {"ticker": "VG", "action": "buy_calls", "confidence": 0.78},
             ],
         }
         # No names map at all — must render exactly as before (bare ticker).
         make_notifier().alert_confirmed(
-            _row(), assessment, entered=[], skipped=[],
+            _row(),
+            assessment,
+            entered=[],
+            skipped=[],
         )
         assert "- VG buy_calls" in sent[0][1]
         assert "(" not in sent[0][1].split("- VG")[1].split("\n")[0]
 
     def test_long_name_truncated(
-        self, sent: list[tuple[str, str, int]],
+        self,
+        sent: list[tuple[str, str, int]],
     ) -> None:
         assessment = {
-            "urgency": 8, "confidence": 0.9,
+            "urgency": 8,
+            "confidence": 0.9,
             "trade_ideas": [{"ticker": "VG", "action": "buy_calls"}],
         }
         make_notifier().alert_confirmed(
-            _row(), assessment, entered=[], skipped=[],
+            _row(),
+            assessment,
+            entered=[],
+            skipped=[],
             names={"VG": "A" * 60},
         )
         line = next(li for li in sent[0][1].splitlines() if li.startswith("- VG"))
@@ -190,19 +221,25 @@ class TestTickerNameEnrichment:
         assert len(line) < 60  # bounded, not the full 60-char name
 
     def test_expired_top_idea_shows_company_name(
-        self, sent: list[tuple[str, str, int]],
+        self,
+        sent: list[tuple[str, str, int]],
     ) -> None:
         make_notifier().alert_expired(
-            _row_with_ideas(minutes_ago=300), urgency=9, confidence=0.9,
+            _row_with_ideas(minutes_ago=300),
+            urgency=9,
+            confidence=0.9,
             names={"VG": "Venture Global, Inc."},
         )
         assert "Top idea: VG (Venture Global, Inc.) buy_calls" in sent[0][1]
 
     def test_expired_top_idea_degrades_without_names(
-        self, sent: list[tuple[str, str, int]],
+        self,
+        sent: list[tuple[str, str, int]],
     ) -> None:
         make_notifier().alert_expired(
-            _row_with_ideas(minutes_ago=300), urgency=9, confidence=0.9,
+            _row_with_ideas(minutes_ago=300),
+            urgency=9,
+            confidence=0.9,
         )
         assert "Top idea: VG buy_calls" in sent[0][1]
 
@@ -215,13 +252,13 @@ class TestTickerNameEnrichment:
 def _ideas_db() -> Any:
     engine = sa.create_engine("sqlite://")
     with engine.begin() as conn:
-        conn.execute(text(
-            "CREATE TABLE trade_ideas ("
-            "id INTEGER PRIMARY KEY, geo_event_id INTEGER, notes TEXT)"
-        ))
-        conn.execute(text(
-            "INSERT INTO trade_ideas (geo_event_id, notes) VALUES (7, NULL)"
-        ))
+        conn.execute(
+            text(
+                "CREATE TABLE trade_ideas ("
+                "id INTEGER PRIMARY KEY, geo_event_id INTEGER, notes TEXT)"
+            )
+        )
+        conn.execute(text("INSERT INTO trade_ideas (geo_event_id, notes) VALUES (7, NULL)"))
     return engine
 
 
@@ -260,7 +297,8 @@ class TestStampCrossAssetOnIdeas:
 
     def test_no_db_or_unknown_result_is_noop(self) -> None:
         make_notifier(db=None).stamp_cross_asset_on_ideas(
-            7, _CAResult(True, [_Move("BCO_USD", 1.8, True)]),
+            7,
+            _CAResult(True, [_Move("BCO_USD", 1.8, True)]),
         )  # no db handle — silently skipped
         db = _ideas_db()
         make_notifier(db=db).stamp_cross_asset_on_ideas(7, _CAResult(None, []))
@@ -271,7 +309,8 @@ class TestStampCrossAssetOnIdeas:
     def test_db_error_swallowed(self) -> None:
         db = sa.create_engine("sqlite://")  # no trade_ideas table at all
         make_notifier(db=db).stamp_cross_asset_on_ideas(
-            7, _CAResult(True, [_Move("BCO_USD", 1.8, True)]),
+            7,
+            _CAResult(True, [_Move("BCO_USD", 1.8, True)]),
         )  # must not raise — annotation only
 
 
@@ -288,8 +327,9 @@ class _RecordingNotifier:
         self.expired: list[Any] = []
         self.stamped: list[Any] = []
 
-    def alert_confirmed(self, row: Any, assessment: Any, entered: Any,
-                        skipped: Any, **kwargs: Any) -> None:
+    def alert_confirmed(
+        self, row: Any, assessment: Any, entered: Any, skipped: Any, **kwargs: Any
+    ) -> None:
         self.confirmed.append((row, entered, skipped))
 
     def alert_expired(self, row: Any, urgency: int, confidence: float) -> None:

@@ -415,8 +415,11 @@ class TestPaperBrokerWiring:
         tracker.record_mark("tok-1", "0.20")  # -30: breached
         broker = _paper_broker(tracker)
         order = Order(
-            symbol="POLY:tok-1", side="buy", quantity=10,
-            order_type=OrderType.LIMIT, limit_price=0.50,
+            symbol="POLY:tok-1",
+            side="buy",
+            quantity=10,
+            order_type=OrderType.LIMIT,
+            limit_price=0.50,
         )
         with pytest.raises(LossCapExceededError, match="loss cap breached"):
             broker.place_order(order)
@@ -429,8 +432,11 @@ class TestPaperBrokerWiring:
         tracker = _tracker(market_cap="25", day_cap="50")
         broker = _paper_broker(tracker)
         order = Order(
-            symbol="POLY:tok-1", side="buy", quantity=10,
-            order_type=OrderType.LIMIT, limit_price=0.50,
+            symbol="POLY:tok-1",
+            side="buy",
+            quantity=10,
+            order_type=OrderType.LIMIT,
+            limit_price=0.50,
         )
         out = broker.place_order(order)
         assert out.status == OrderStatus.FILLED
@@ -440,42 +446,67 @@ class TestPaperBrokerWiring:
         # uses — the broker records its own fills.
         tracker = _tracker(market_cap="25", day_cap="50")
         broker = _paper_broker(tracker)
-        broker.place_order(Order(
-            symbol="POLY:tok-1", side="buy", quantity=10,
-            order_type=OrderType.LIMIT, limit_price=0.50,
-        ))
+        broker.place_order(
+            Order(
+                symbol="POLY:tok-1",
+                side="buy",
+                quantity=10,
+                order_type=OrderType.LIMIT,
+                limit_price=0.50,
+            )
+        )
         assert broker.loss_caps is tracker
         assert tracker.open_positions()["tok-1"].qty == Decimal("10")
 
     def test_reducing_exit_allowed_when_breached(self) -> None:
         tracker = _tracker(market_cap="25", day_cap="500")
         broker = _paper_broker(tracker)
-        broker.place_order(Order(
-            symbol="POLY:tok-1", side="buy", quantity=100,
-            order_type=OrderType.LIMIT, limit_price=0.50,
-        ))
+        broker.place_order(
+            Order(
+                symbol="POLY:tok-1",
+                side="buy",
+                quantity=100,
+                order_type=OrderType.LIMIT,
+                limit_price=0.50,
+            )
+        )
         tracker.record_mark("tok-1", "0.20")  # -30: breached
-        out = broker.place_order(Order(
-            symbol="POLY:tok-1", side="sell", quantity=100,
-            order_type=OrderType.LIMIT, limit_price=0.49,
-        ))
+        out = broker.place_order(
+            Order(
+                symbol="POLY:tok-1",
+                side="sell",
+                quantity=100,
+                order_type=OrderType.LIMIT,
+                limit_price=0.49,
+            )
+        )
         assert out.status == OrderStatus.FILLED
 
     def test_oversized_flip_through_breached_cap_refused(self) -> None:
         tracker = _tracker(market_cap="25", day_cap="500")
         broker = _paper_broker(tracker)
-        broker.place_order(Order(
-            symbol="POLY:tok-1", side="buy", quantity=100,
-            order_type=OrderType.LIMIT, limit_price=0.50,
-        ))
+        broker.place_order(
+            Order(
+                symbol="POLY:tok-1",
+                side="buy",
+                quantity=100,
+                order_type=OrderType.LIMIT,
+                limit_price=0.50,
+            )
+        )
         tracker.record_mark("tok-1", "0.20")  # -30: breached
         # Sell 300 against a 100-long would flip into a 200 short —
         # new risk in a capped market. Whole order refused.
         with pytest.raises(LossCapExceededError, match="loss cap breached"):
-            broker.place_order(Order(
-                symbol="POLY:tok-1", side="sell", quantity=300,
-                order_type=OrderType.LIMIT, limit_price=0.49,
-            ))
+            broker.place_order(
+                Order(
+                    symbol="POLY:tok-1",
+                    side="sell",
+                    quantity=300,
+                    order_type=OrderType.LIMIT,
+                    limit_price=0.49,
+                )
+            )
 
 
 class TestPaperMarkObservation:
@@ -486,10 +517,15 @@ class TestPaperMarkObservation:
     def test_get_price_records_mark_and_blocks_next_order(self) -> None:
         tracker = _tracker(market_cap="25", day_cap="500")
         broker = _paper_broker(tracker)
-        broker.place_order(Order(
-            symbol="POLY:tok-1", side="buy", quantity=100,
-            order_type=OrderType.LIMIT, limit_price=0.50,
-        ))
+        broker.place_order(
+            Order(
+                symbol="POLY:tok-1",
+                side="buy",
+                quantity=100,
+                order_type=OrderType.LIMIT,
+                limit_price=0.50,
+            )
+        )
         # Market collapses; the broker observes it via get_price.
         broker._data.get_book.return_value = _crashed_book()  # noqa: SLF001
         broker.get_price("POLY:tok-1")
@@ -497,24 +533,39 @@ class TestPaperMarkObservation:
         # -30 unrealized (plus the fill's fee against realized).
         assert tracker.market_pnl("tok-1") <= Decimal("-30.0")
         with pytest.raises(LossCapExceededError, match="scope=market"):
-            broker.place_order(Order(
-                symbol="POLY:tok-1", side="buy", quantity=10,
-                order_type=OrderType.LIMIT, limit_price=0.21,
-            ))
+            broker.place_order(
+                Order(
+                    symbol="POLY:tok-1",
+                    side="buy",
+                    quantity=10,
+                    order_type=OrderType.LIMIT,
+                    limit_price=0.21,
+                )
+            )
 
     def test_place_order_book_fetch_records_mark(self) -> None:
         tracker = _tracker(market_cap="25", day_cap="500")
         broker = _paper_broker(tracker)
-        broker.place_order(Order(
-            symbol="POLY:tok-1", side="buy", quantity=100,
-            order_type=OrderType.LIMIT, limit_price=0.50,
-        ))
+        broker.place_order(
+            Order(
+                symbol="POLY:tok-1",
+                side="buy",
+                quantity=100,
+                order_type=OrderType.LIMIT,
+                limit_price=0.50,
+            )
+        )
         broker._data.get_book.return_value = _crashed_book()  # noqa: SLF001
         # A (reducing, resting) sell still observes the crashed book.
-        broker.place_order(Order(
-            symbol="POLY:tok-1", side="sell", quantity=10,
-            order_type=OrderType.LIMIT, limit_price=0.99,
-        ))
+        broker.place_order(
+            Order(
+                symbol="POLY:tok-1",
+                side="sell",
+                quantity=10,
+                order_type=OrderType.LIMIT,
+                limit_price=0.99,
+            )
+        )
         assert tracker.open_positions()["tok-1"].last_mark == Decimal("0.20")
         assert tracker.market_pnl("tok-1") <= Decimal("-30.0")
 
@@ -562,14 +613,24 @@ class TestPaperBookDelegation:
         tracker = _tracker(market_cap="500", day_cap="500")
         broker = PolymarketPaperBroker(data_source=ds, loss_cap_tracker=tracker)
 
-        broker.place_order(Order(
-            symbol="POLY:tok-1", side="buy", quantity=10,
-            order_type=OrderType.LIMIT, limit_price=0.50,
-        ))
-        broker.place_order(Order(
-            symbol="POLY:tok-1", side="sell", quantity=30,
-            order_type=OrderType.LIMIT, limit_price=0.40,
-        ))
+        broker.place_order(
+            Order(
+                symbol="POLY:tok-1",
+                side="buy",
+                quantity=10,
+                order_type=OrderType.LIMIT,
+                limit_price=0.50,
+            )
+        )
+        broker.place_order(
+            Order(
+                symbol="POLY:tok-1",
+                side="sell",
+                quantity=30,
+                order_type=OrderType.LIMIT,
+                limit_price=0.40,
+            )
+        )
         positions = broker.get_positions()
         assert len(positions) == 1
         assert positions[0].quantity == -20.0
@@ -580,10 +641,15 @@ class TestPaperBookDelegation:
     def test_positions_view_is_the_tracker_view(self) -> None:
         tracker = _tracker(market_cap="500", day_cap="500")
         broker = _paper_broker(tracker)
-        broker.place_order(Order(
-            symbol="POLY:tok-1", side="buy", quantity=10,
-            order_type=OrderType.LIMIT, limit_price=0.50,
-        ))
+        broker.place_order(
+            Order(
+                symbol="POLY:tok-1",
+                side="buy",
+                quantity=10,
+                order_type=OrderType.LIMIT,
+                limit_price=0.50,
+            )
+        )
         # A fill recorded straight into the tracker (e.g. by the engine)
         # is visible through the broker — one book, no divergence.
         tracker.record_fill("tok-1", "buy", 5, "0.60")
@@ -605,8 +671,11 @@ def _live_broker(tracker: PolymarketLossCapTracker):
 
     creds = PolymarketCreds(
         signer_pk="0x" + "11" * 32,
-        api_key="k", api_secret="s", api_passphrase="p",
-        funder_address="0xFunder", chain_id=80002,
+        api_key="k",
+        api_secret="s",
+        api_passphrase="p",
+        funder_address="0xFunder",
+        chain_id=80002,
         rpc_url="https://example/rpc",
     )
     with (
@@ -630,8 +699,11 @@ class TestLiveBrokerWiring:
         broker, client = _live_broker(tracker)
 
         order = Order(
-            symbol="tok-live", side="buy", quantity=10,
-            order_type=OrderType.LIMIT, limit_price=0.50,
+            symbol="tok-live",
+            side="buy",
+            quantity=10,
+            order_type=OrderType.LIMIT,
+            limit_price=0.50,
         )
         with pytest.raises(LossCapExceededError, match="loss cap breached"):
             broker.place_order(order)
@@ -644,8 +716,11 @@ class TestLiveBrokerWiring:
         client.post_order.return_value = {"success": True, "orderID": "ord-9"}
 
         order = Order(
-            symbol="tok-live", side="buy", quantity=10,
-            order_type=OrderType.LIMIT, limit_price=0.50,
+            symbol="tok-live",
+            side="buy",
+            quantity=10,
+            order_type=OrderType.LIMIT,
+            limit_price=0.50,
         )
         out = broker.place_order(order)
         assert out.status == OrderStatus.PENDING
@@ -659,8 +734,11 @@ class TestLiveBrokerWiring:
         broker, client = _live_broker(tracker)
 
         order = Order(
-            symbol="tok-other", side="buy", quantity=10,
-            order_type=OrderType.LIMIT, limit_price=0.50,
+            symbol="tok-other",
+            side="buy",
+            quantity=10,
+            order_type=OrderType.LIMIT,
+            limit_price=0.50,
         )
         with pytest.raises(LossCapExceededError, match="scope=day"):
             broker.place_order(order)
@@ -673,10 +751,15 @@ class TestLiveBrokerWiring:
         broker, client = _live_broker(tracker)
 
         with pytest.raises(LossCapExceededError, match="loss cap breached"):
-            broker.place_order(Order(
-                symbol="tok-live", side="sell", quantity=150,
-                order_type=OrderType.LIMIT, limit_price=0.20,
-            ))
+            broker.place_order(
+                Order(
+                    symbol="tok-live",
+                    side="sell",
+                    quantity=150,
+                    order_type=OrderType.LIMIT,
+                    limit_price=0.20,
+                )
+            )
         client.create_order.assert_not_called()
 
     def test_tracker_exposed_for_fill_loop(self) -> None:
@@ -693,14 +776,19 @@ class TestLiveImmediateFills:
             "success": True,
             "orderID": "0x" + "ab" * 32,
             "status": "matched",
-            "makingAmount": "5",     # USDC paid
-            "takingAmount": "10",    # tokens received
+            "makingAmount": "5",  # USDC paid
+            "takingAmount": "10",  # tokens received
             "transactionsHashes": ["0x" + "cd" * 32],
         }
-        out = broker.place_order(Order(
-            symbol="tok-live", side="buy", quantity=10,
-            order_type=OrderType.LIMIT, limit_price=0.50,
-        ))
+        out = broker.place_order(
+            Order(
+                symbol="tok-live",
+                side="buy",
+                quantity=10,
+                order_type=OrderType.LIMIT,
+                limit_price=0.50,
+            )
+        )
         assert out.status == OrderStatus.FILLED
         st = tracker.open_positions()["tok-live"]
         assert st.qty == Decimal("10")
@@ -710,12 +798,19 @@ class TestLiveImmediateFills:
         tracker = _tracker(market_cap="25", day_cap="50")
         broker, client = _live_broker(tracker)
         client.post_order.return_value = {
-            "success": True, "orderID": "0xabc", "status": "matched",
+            "success": True,
+            "orderID": "0xabc",
+            "status": "matched",
         }
-        out = broker.place_order(Order(
-            symbol="tok-live", side="buy", quantity=10,
-            order_type=OrderType.LIMIT, limit_price=0.50,
-        ))
+        out = broker.place_order(
+            Order(
+                symbol="tok-live",
+                side="buy",
+                quantity=10,
+                order_type=OrderType.LIMIT,
+                limit_price=0.50,
+            )
+        )
         assert out.status == OrderStatus.FILLED
         assert tracker.open_positions()["tok-live"].qty == Decimal("10")
 
@@ -723,10 +818,15 @@ class TestLiveImmediateFills:
         tracker = _tracker(market_cap="25", day_cap="50")
         broker, client = _live_broker(tracker)
         client.post_order.return_value = {"success": True, "orderID": "ord-9"}
-        broker.place_order(Order(
-            symbol="tok-live", side="buy", quantity=10,
-            order_type=OrderType.LIMIT, limit_price=0.50,
-        ))
+        broker.place_order(
+            Order(
+                symbol="tok-live",
+                side="buy",
+                quantity=10,
+                order_type=OrderType.LIMIT,
+                limit_price=0.50,
+            )
+        )
         assert tracker.open_positions() == {}
 
 
@@ -736,10 +836,10 @@ def _onchain_fill(**overrides) -> OnchainFill:
         order_hash="aa" * 32,
         maker="0xFunder",
         taker="0xCounterparty",
-        maker_asset_id=0,                 # USDC out
-        taker_asset_id=123,               # tokens in
-        maker_amount_filled=5_000_000,    # 5 USDC (6 decimals)
-        taker_amount_filled=10_000_000,   # 10 tokens
+        maker_asset_id=0,  # USDC out
+        taker_asset_id=123,  # tokens in
+        maker_amount_filled=5_000_000,  # 5 USDC (6 decimals)
+        taker_amount_filled=10_000_000,  # 10 tokens
         fee=0,
         block_number=100,
         tx_hash="0x" + "ee" * 32,
@@ -774,11 +874,11 @@ class TestReconciledFillIngestion:
         sell = _onchain_fill(
             order_hash="bb" * 32,
             tx_hash="0x" + "ff" * 32,
-            maker_asset_id=123,              # tokens out
-            taker_asset_id=0,                # USDC in
+            maker_asset_id=123,  # tokens out
+            taker_asset_id=0,  # USDC in
             maker_amount_filled=10_000_000,  # 10 tokens
-            taker_amount_filled=4_000_000,   # 4 USDC -> sell @ 0.40
-            fee=100_000,                     # 0.10 USDC fee
+            taker_amount_filled=4_000_000,  # 4 USDC -> sell @ 0.40
+            fee=100_000,  # 0.10 USDC fee
         )
         assert broker.ingest_reconciled_fills([sell]) == 1
         # Realized: (0.40 - 0.50) * 10 - 0.10 fee = -1.10.
@@ -813,18 +913,27 @@ class TestReconciledFillIngestion:
         tx = "0x" + "cd" * 32
         order_hash = "0x" + "ab" * 32
         client.post_order.return_value = {
-            "success": True, "orderID": order_hash, "status": "matched",
-            "makingAmount": "5", "takingAmount": "10",
+            "success": True,
+            "orderID": order_hash,
+            "status": "matched",
+            "makingAmount": "5",
+            "takingAmount": "10",
             "transactionsHashes": [tx],
         }
-        broker.place_order(Order(
-            symbol="123", side="buy", quantity=10,
-            order_type=OrderType.LIMIT, limit_price=0.50,
-        ))
+        broker.place_order(
+            Order(
+                symbol="123",
+                side="buy",
+                quantity=10,
+                order_type=OrderType.LIMIT,
+                limit_price=0.50,
+            )
+        )
         # The same match later surfaces on-chain: same tx + order hash
         # (reconciler hex() strings carry no 0x prefix).
         onchain = _onchain_fill(
-            order_hash="ab" * 32, tx_hash="cd" * 32,
+            order_hash="ab" * 32,
+            tx_hash="cd" * 32,
         )
         assert broker.ingest_reconciled_fills([onchain]) == 0
         assert tracker.open_positions()["123"].qty == Decimal("10")
@@ -836,12 +945,16 @@ class TestUnfedTrackerWarning:
 
     def _order(self) -> Order:
         return Order(
-            symbol="tok-live", side="buy", quantity=10,
-            order_type=OrderType.LIMIT, limit_price=0.50,
+            symbol="tok-live",
+            side="buy",
+            quantity=10,
+            order_type=OrderType.LIMIT,
+            limit_price=0.50,
         )
 
     def test_warns_once_not_per_order(
-        self, caplog: pytest.LogCaptureFixture,
+        self,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         tracker = _tracker(market_cap="25", day_cap="50")
         broker, client = _live_broker(tracker)
@@ -851,14 +964,12 @@ class TestUnfedTrackerWarning:
         with caplog.at_level(logging.WARNING):
             for _ in range(3):
                 broker.place_order(self._order())
-        unfed = [
-            r for r in caplog.records
-            if "no fills or marks" in r.getMessage()
-        ]
+        unfed = [r for r in caplog.records if "no fills or marks" in r.getMessage()]
         assert len(unfed) == 1  # first offense only, not per-order spam
 
     def test_no_warning_without_exposure(
-        self, caplog: pytest.LogCaptureFixture,
+        self,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         tracker = _tracker(market_cap="25", day_cap="50")
         broker, client = _live_broker(tracker)
@@ -867,13 +978,11 @@ class TestUnfedTrackerWarning:
         client.post_order.return_value = {"success": True, "orderID": "x"}
         with caplog.at_level(logging.WARNING):
             broker.place_order(self._order())
-        assert not [
-            r for r in caplog.records
-            if "no fills or marks" in r.getMessage()
-        ]
+        assert not [r for r in caplog.records if "no fills or marks" in r.getMessage()]
 
     def test_no_warning_once_fed(
-        self, caplog: pytest.LogCaptureFixture,
+        self,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         tracker = _tracker(market_cap="25", day_cap="50")
         tracker.record_mark("tok-live", "0.50")  # any activity counts
@@ -882,7 +991,4 @@ class TestUnfedTrackerWarning:
         client.post_order.return_value = {"success": True, "orderID": "x"}
         with caplog.at_level(logging.WARNING):
             broker.place_order(self._order())
-        assert not [
-            r for r in caplog.records
-            if "no fills or marks" in r.getMessage()
-        ]
+        assert not [r for r in caplog.records if "no fills or marks" in r.getMessage()]

@@ -42,11 +42,13 @@ class TestAuthorBonus:
     def test_preferred_author_adds_bonus(self) -> None:
         s = RelevanceScorer()
         no_author = s.score(
-            title="Random Paper", abstract="some text",
+            title="Random Paper",
+            abstract="some text",
             authors=("J. Smith",),
         ).total
         with_author = s.score(
-            title="Random Paper", abstract="some text",
+            title="Random Paper",
+            abstract="some text",
             authors=("L. Sarno",),
         ).total
         assert with_author > no_author
@@ -56,7 +58,9 @@ class TestAuthorBonus:
         # "kelly" is a preferred author but shouldn't match "berkeley"
         s = RelevanceScorer()
         out = s.score(
-            title="t", abstract="a", authors=("UC Berkeley Press",),
+            title="t",
+            abstract="a",
+            authors=("UC Berkeley Press",),
         )
         assert out.author_score == 0
 
@@ -66,7 +70,9 @@ class TestCategoryBonus:
         s = RelevanceScorer()
         no_cat = s.score(title="t", abstract="a").total
         with_cat = s.score(
-            title="t", abstract="a", source_label="arXiv q-fin.PM",
+            title="t",
+            abstract="a",
+            source_label="arXiv q-fin.PM",
         ).total
         assert with_cat > no_cat
 
@@ -78,11 +84,13 @@ class TestMetaOverlay:
         s = RelevanceScorer(meta_overlay=overlay)
 
         baseline = s.score(
-            title="Carry Trade Returns", abstract="x",
+            title="Carry Trade Returns",
+            abstract="x",
             source_label="other",
         ).keyword_score
         boosted = s.score(
-            title="Carry Trade Returns", abstract="x",
+            title="Carry Trade Returns",
+            abstract="x",
             source_label="arXiv q-fin.PM",
         ).keyword_score
 
@@ -97,13 +105,17 @@ class TestScoreAndUpdate:
 
         engine = create_engine(f"sqlite:///{tmp_path / 'p.db'}")
         with engine.begin() as conn:
-            conn.execute(text(
-                "CREATE TABLE research_papers ("
-                "  paper_id TEXT PRIMARY KEY, relevance_score REAL DEFAULT 0)",
-            ))
-            conn.execute(text(
-                "INSERT INTO research_papers (paper_id) VALUES ('paper:1')",
-            ))
+            conn.execute(
+                text(
+                    "CREATE TABLE research_papers ("
+                    "  paper_id TEXT PRIMARY KEY, relevance_score REAL DEFAULT 0)",
+                )
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO research_papers (paper_id) VALUES ('paper:1')",
+                )
+            )
 
         s = RelevanceScorer()
         paper = _FakePaper(
@@ -116,9 +128,11 @@ class TestScoreAndUpdate:
         assert score > 0
 
         with engine.connect() as conn:
-            v = conn.execute(text(
-                "SELECT relevance_score FROM research_papers WHERE paper_id='paper:1'",
-            )).scalar()
+            v = conn.execute(
+                text(
+                    "SELECT relevance_score FROM research_papers WHERE paper_id='paper:1'",
+                )
+            ).scalar()
             assert v == pytest.approx(score)
 
 

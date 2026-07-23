@@ -73,9 +73,9 @@ _TAU_MODERATE: float = -0.5
 _TAU_POSSIBLE: float = -0.3
 _TREND_P_STRONG: float = 0.01
 _MW_P_MODERATE: float = 0.05
-_SLOPE_DECAY_RATE: float = -0.005       # rolling Sharpe drop per day
+_SLOPE_DECAY_RATE: float = -0.005  # rolling Sharpe drop per day
 _SLOPE_DECAY_P: float = 0.05
-_DD_AMPLIFY_FACTOR: float = 1.3         # recent dd > 1.3× historical
+_DD_AMPLIFY_FACTOR: float = 1.3  # recent dd > 1.3× historical
 
 
 class DecaySeverity(Enum):
@@ -218,16 +218,13 @@ class EdgeDecayMonitor:
                 severity=DecaySeverity.NO_DECAY,
                 recommendation=DecayRecommendation.NO_ACTION_EDGE_STABLE,
                 decaying=False,
-                note=(
-                    f"insufficient history: {n} < {self.min_history_days} days"
-                ),
+                note=(f"insufficient history: {n} < {self.min_history_days} days"),
             )
 
         # ---- Test 1: Mann-Kendall on quarterly Sharpes ----
         quarter_size = n // 4
         quarter_sharpes = [
-            _sharpe(returns.iloc[i * quarter_size : (i + 1) * quarter_size])
-            for i in range(4)
+            _sharpe(returns.iloc[i * quarter_size : (i + 1) * quarter_size]) for i in range(4)
         ]
         try:
             tau_result = stats.kendalltau(range(4), quarter_sharpes)
@@ -264,11 +261,7 @@ class EdgeDecayMonitor:
         # ---- Test 4: Recent drawdown vs historical max ----
         recent_dd = _max_drawdown(recent)
         historical_dd = _max_drawdown(historical)
-        dd_worse = (
-            (recent_dd < historical_dd * _DD_AMPLIFY_FACTOR)
-            if historical_dd < 0
-            else False
-        )
+        dd_worse = (recent_dd < historical_dd * _DD_AMPLIFY_FACTOR) if historical_dd < 0 else False
 
         # ---- Combine ----
         severity = self._severity(tau, trend_p, mw_p)
@@ -315,7 +308,10 @@ class EdgeDecayMonitor:
 
     @staticmethod
     def _recommend(
-        tau: float, trend_p: float, mw_p: float, slope: float,
+        tau: float,
+        trend_p: float,
+        mw_p: float,
+        slope: float,
     ) -> DecayRecommendation:
         if tau <= _TAU_STRONG and trend_p < _TREND_P_STRONG:
             return DecayRecommendation.RETIRE_STRATEGY

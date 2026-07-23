@@ -32,8 +32,13 @@ class MockLLMClient:
         if self.raises:
             raise RuntimeError("review LLM down")
         return SimpleNamespace(
-            text=self.text_out, model=model, provider="mock",
-            input_tokens=10, output_tokens=10, usd_cost=0.0, elapsed_sec=0.01,
+            text=self.text_out,
+            model=model,
+            provider="mock",
+            input_tokens=10,
+            output_tokens=10,
+            usd_cost=0.0,
+            elapsed_sec=0.01,
         )
 
 
@@ -43,26 +48,52 @@ def engine(tmp_path):  # type: ignore[no-untyped-def]
 
     eng = create_engine(f"sqlite:///{tmp_path / 'r.db'}")
     sql = _strip_sql_comments(Path("migrations/013_idea_outcomes.sql").read_text())
-    sql = (sql.replace("TIMESTAMPTZ", "TEXT").replace("NUMERIC", "FLOAT")
-           .replace("DEFAULT FALSE", "DEFAULT 0"))
+    sql = (
+        sql.replace("TIMESTAMPTZ", "TEXT")
+        .replace("NUMERIC", "FLOAT")
+        .replace("DEFAULT FALSE", "DEFAULT 0")
+    )
     with eng.begin() as conn:
         for stmt in [s.strip() for s in sql.split(";") if s.strip()]:
             conn.execute(text(stmt))
     return eng
 
 
-def _seed(engine, idea_id, outcome, ret, *, theme="hormuz", action="long",
-          direction="bullish", confidence=0.6, is_niche=0, hop=None,
-          red_team=0):
+def _seed(
+    engine,
+    idea_id,
+    outcome,
+    ret,
+    *,
+    theme="hormuz",
+    action="long",
+    direction="bullish",
+    confidence=0.6,
+    is_niche=0,
+    hop=None,
+    red_team=0,
+):
     with engine.begin() as conn:
-        conn.execute(text("""
+        conn.execute(
+            text("""
             INSERT INTO idea_outcomes (idea_id, ticker, action, direction, theme,
                 confidence, is_niche, hop_count, red_team_survived, return_pct,
                 outcome, updated_at)
             VALUES (:id,'T',:ac,:d,:th,:c,:n,:h,:rt,:r,:o,'2026-07-21')
-        """), {"id": idea_id, "ac": action, "d": direction, "th": theme,
-               "c": confidence, "n": is_niche, "h": hop, "rt": red_team,
-               "r": ret, "o": outcome})
+        """),
+            {
+                "id": idea_id,
+                "ac": action,
+                "d": direction,
+                "th": theme,
+                "c": confidence,
+                "n": is_niche,
+                "h": hop,
+                "rt": red_team,
+                "r": ret,
+                "o": outcome,
+            },
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -120,15 +151,20 @@ def test_review_produces_proposal(engine):
         _seed(engine, f"w{i}", "win", 0.08, action="long")
     for i in range(6):
         _seed(engine, f"l{i}", "loss", -0.09, action="short")
-    proposal = json.dumps({
-        "overall_read": "Longs work, shorts don't.",
-        "findings": ["short win rate 0%"],
-        "proposed_changes": [
-            {"knob": "min_confidence", "change": "raise shorts to 0.85",
-             "rationale": "0/6 shorts won"}],
-    })
-    result = ReflectiveReviewer(
-        engine, client=MockLLMClient(proposal), min_sample=5).review()
+    proposal = json.dumps(
+        {
+            "overall_read": "Longs work, shorts don't.",
+            "findings": ["short win rate 0%"],
+            "proposed_changes": [
+                {
+                    "knob": "min_confidence",
+                    "change": "raise shorts to 0.85",
+                    "rationale": "0/6 shorts won",
+                }
+            ],
+        }
+    )
+    result = ReflectiveReviewer(engine, client=MockLLMClient(proposal), min_sample=5).review()
     assert result.status == "ok"
     assert result.sample == 12
     assert result.proposal["proposed_changes"][0]["knob"] == "min_confidence"
@@ -139,10 +175,9 @@ def test_review_produces_proposal(engine):
 def test_review_fail_soft_on_bad_llm(engine):
     for i in range(6):
         _seed(engine, f"x{i}", "win", 0.05)
-    result = ReflectiveReviewer(
-        engine, client=MockLLMClient("not json"), min_sample=5).review()
-    assert result.status == "ok"       # aggregation still returned
-    assert result.proposal is None     # but no proposal
+    result = ReflectiveReviewer(engine, client=MockLLMClient("not json"), min_sample=5).review()
+    assert result.status == "ok"  # aggregation still returned
+    assert result.proposal is None  # but no proposal
     assert result.sample == 6
 
 
@@ -150,6 +185,7 @@ def test_review_fail_soft_on_transport(engine):
     for i in range(6):
         _seed(engine, f"x{i}", "win", 0.05)
     result = ReflectiveReviewer(
-        engine, client=MockLLMClient("", raises=True), min_sample=5).review()
+        engine, client=MockLLMClient("", raises=True), min_sample=5
+    ).review()
     assert result.status == "ok"
     assert result.proposal is None

@@ -127,9 +127,7 @@ def choose_instrument(
         option_action = "buy_puts" if bearish else "buy_calls"
         decision = InstrumentDecision(
             action=option_action,
-            preferred_instrument=(
-                f"{'puts' if bearish else 'calls'}, 1-3 weeks to expiry"
-            ),
+            preferred_instrument=(f"{'puts' if bearish else 'calls'}, 1-3 weeks to expiry"),
             reason=(
                 f"short horizon (~{days:g}d): defined-risk options — "
                 f"premium caps the loss if the event gaps; stop at "
@@ -144,9 +142,7 @@ def choose_instrument(
             option_action = "buy_puts" if bearish else "buy_calls"
             decision = InstrumentDecision(
                 action=option_action,
-                preferred_instrument=(
-                    f"{'puts' if bearish else 'calls'}, 3-6 weeks to expiry"
-                ),
+                preferred_instrument=(f"{'puts' if bearish else 'calls'}, 3-6 weeks to expiry"),
                 reason=(
                     f"medium horizon (~{days:g}d): defined-risk options "
                     f"preferred; stop at {OPTION_STOP_MEDIUM:.0%} of premium"
@@ -225,7 +221,8 @@ def decision_for_idea(idea: dict[str, Any]) -> InstrumentDecision | None:
             days = float(idea["time_stop_days"])
         except (KeyError, TypeError, ValueError):
             days = HORIZON_DEFAULT_DAYS.get(
-                str(idea.get("time_horizon") or "").strip().lower(), 4.0,
+                str(idea.get("time_horizon") or "").strip().lower(),
+                4.0,
             )
     try:
         return choose_instrument(direction, days)

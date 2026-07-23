@@ -165,9 +165,7 @@ class StrategyEdgeResult:
                 "avg_abs_diff_bps": self.g4_avg_abs_diff_bps,
                 "n_matched": self.g4_n_matched,
             },
-            "g8_verdict": (
-                self.g8_verdict.to_dict() if self.g8_verdict else None
-            ),
+            "g8_verdict": (self.g8_verdict.to_dict() if self.g8_verdict else None),
             "g9_action": self.g9_action.value if self.g9_action else None,
             "notes": list(self.notes),
         }
@@ -184,9 +182,7 @@ class EdgeRunReport:
         return {
             "ts": self.ts.isoformat(),
             "n_strategies": len(self.results),
-            "results": {
-                sid: r.to_dict() for sid, r in self.results.items()
-            },
+            "results": {sid: r.to_dict() for sid, r in self.results.items()},
         }
 
 
@@ -206,7 +202,8 @@ class EdgeRunner:
     ) -> None:
         self.policy = policy or load_edge_policy()
         self.null_framework = NullHypothesisFramework(
-            n_simulations=null_n_simulations, seed=seed,
+            n_simulations=null_n_simulations,
+            seed=seed,
         )
         self.multiple_testing = MultipleTestingCorrection(alpha=_G2_ALPHA)
         self.divergence = PaperLiveDivergence()
@@ -265,9 +262,7 @@ class EdgeRunner:
                 # We're lenient: any single Bonferroni-passing test means edge.
                 g2_passed = any(g2_report.bonferroni_reject)
                 result.g2_passed = g2_passed
-                result.g2_failed_metrics = (
-                    [] if g2_passed else ["bonferroni_all_rejected"]
-                )
+                result.g2_failed_metrics = [] if g2_passed else ["bonferroni_all_rejected"]
                 layer_inputs.multiple_testing_passed = g2_passed
                 layer_inputs.multiple_testing_detail = (
                     f"{int(sum(g2_report.bonferroni_reject))} of "
@@ -294,9 +289,7 @@ class EdgeRunner:
                 result.g3_severity = g3_assessment.severity.value
                 result.g3_sharpe_z = g3_assessment.sharpe_z_score
                 layer_inputs.live_tracker_severity = g3_assessment.severity.value
-                layer_inputs.live_tracker_detail = (
-                    f"sharpe_z={g3_assessment.sharpe_z_score:.2f}"
-                )
+                layer_inputs.live_tracker_detail = f"sharpe_z={g3_assessment.sharpe_z_score:.2f}"
             except Exception as exc:
                 result.notes.append(f"g3 failed: {exc}")
                 logger.exception("G3 live tracker failed for %s", inputs.strategy_id)
@@ -309,16 +302,14 @@ class EdgeRunner:
         if inputs.paper_fills is not None and inputs.live_fills is not None:
             try:
                 g4_report = self.divergence.compare(
-                    inputs.paper_fills, inputs.live_fills,
+                    inputs.paper_fills,
+                    inputs.live_fills,
                 )
                 result.g4_avg_abs_diff_bps = g4_report.avg_abs_price_diff_bps
                 result.g4_n_matched = g4_report.n_matched
-                layer_inputs.paper_live_avg_abs_diff_bps = (
-                    g4_report.avg_abs_price_diff_bps
-                )
+                layer_inputs.paper_live_avg_abs_diff_bps = g4_report.avg_abs_price_diff_bps
                 layer_inputs.paper_live_detail = (
-                    f"{g4_report.n_matched} matched, "
-                    f"{g4_report.n_flagged} flagged"
+                    f"{g4_report.n_matched} matched, {g4_report.n_flagged} flagged"
                 )
             except Exception as exc:
                 result.notes.append(f"g4 failed: {exc}")
@@ -334,7 +325,9 @@ class EdgeRunner:
 
         # ----- G8: compose verdict -----
         result.g8_verdict = self.dashboard.assess(
-            inputs.strategy_id, layer_inputs, ts=ts,
+            inputs.strategy_id,
+            layer_inputs,
+            ts=ts,
         )
 
         # ----- G9: pre-committed lifecycle action -----
@@ -342,8 +335,7 @@ class EdgeRunner:
             snap = LiveSnapshot(
                 sharpe_z=result.g3_sharpe_z,
                 live_mean_return=(
-                    inputs.live_mean_return if inputs.live_mean_return is not None
-                    else 0.0
+                    inputs.live_mean_return if inputs.live_mean_return is not None else 0.0
                 ),
                 decay_tau=inputs.decay_tau,
             )
@@ -354,7 +346,8 @@ class EdgeRunner:
         return result
 
     def run_all(
-        self, all_inputs: list[StrategyEdgeInputs],
+        self,
+        all_inputs: list[StrategyEdgeInputs],
     ) -> EdgeRunReport:
         """Run G1-G9 across many strategies. Independent failures are isolated."""
         report = EdgeRunReport(ts=datetime.now(UTC))
@@ -363,7 +356,8 @@ class EdgeRunner:
                 report.results[inputs.strategy_id] = self.run_strategy(inputs)
             except Exception:
                 logger.exception(
-                    "EdgeRunner crashed on %s — continuing", inputs.strategy_id,
+                    "EdgeRunner crashed on %s — continuing",
+                    inputs.strategy_id,
                 )
         return report
 

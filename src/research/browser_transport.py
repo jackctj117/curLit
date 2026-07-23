@@ -148,7 +148,8 @@ def browser_http_get(
             if wait_selector:
                 try:
                     page.wait_for_selector(
-                        wait_selector, timeout=selector_timeout_ms,
+                        wait_selector,
+                        timeout=selector_timeout_ms,
                     )
                 except Exception:
                     # Timeout (or challenge interstitial) — return what
@@ -157,7 +158,8 @@ def browser_http_get(
                     logger.warning(
                         "browser transport: selector %r never rendered at %s "
                         "— returning page as-is",
-                        wait_selector, url,
+                        wait_selector,
+                        url,
                     )
             html: str = page.content()
             return html

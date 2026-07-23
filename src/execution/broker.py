@@ -160,7 +160,8 @@ class Broker(ABC):
 
     @abstractmethod
     def stream_prices(
-        self, symbols: list[str],
+        self,
+        symbols: list[str],
     ) -> AsyncIterator[dict[str, Any]]:
         # Implementations are async generators (`async def ... yield`).
         # ABC uses non-async `def` so the declared return type is
@@ -207,8 +208,10 @@ def build_fx_broker(mode: str, *, initial_paper_capital: float = 100_000.0) -> B
         oanda_id = os.environ.get("OANDA_ACCOUNT_ID", "")
         if oanda_key and oanda_id:
             from .oanda_broker import OandaBroker
+
             return OandaBroker(
-                oanda_key, oanda_id,
+                oanda_key,
+                oanda_id,
                 practice=(mode == "oanda-practice"),
             )
         if os.environ.get(ALLOW_PAPER_FALLBACK_ENV) == "1":
@@ -218,14 +221,16 @@ def build_fx_broker(mode: str, *, initial_paper_capital: float = 100_000.0) -> B
                 "PaperBroker. THE SYSTEM IS NOT CONNECTED TO OANDA. All "
                 "mode/status reporting must reflect 'paper' "
                 "(effective_broker_mode).",
-                mode, ALLOW_PAPER_FALLBACK_ENV,
+                mode,
+                ALLOW_PAPER_FALLBACK_ENV,
             )
             return PaperBroker(initial_capital=initial_paper_capital)
         msg = (
             f"broker mode {mode!r} requires OANDA_API_KEY and "
             f"OANDA_ACCOUNT_ID in the environment (missing: "
             f"{'OANDA_API_KEY ' if not oanda_key else ''}"
-            f"{'OANDA_ACCOUNT_ID' if not oanda_id else ''}".rstrip() + "). "
+            f"{'OANDA_ACCOUNT_ID' if not oanda_id else ''}".rstrip()
+            + "). "
             f"Refusing to silently fall back to PaperBroker — set the "
             f"credentials, or set {ALLOW_PAPER_FALLBACK_ENV}=1 to explicitly "
             f"accept a paper fallback."

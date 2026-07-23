@@ -73,8 +73,7 @@ class LiveEngine:
                 data_provider=getattr(kill_switch_manager, "data_provider", None),
                 last_prices=self._last_prices,
                 position_mismatch=(
-                    self._current_position_mismatch
-                    if cold_start_reconciler is not None else None
+                    self._current_position_mismatch if cold_start_reconciler is not None else None
                 ),
                 in_trading_window=self._in_trading_window,
             )
@@ -126,7 +125,8 @@ class LiveEngine:
         if self.kill_switch_manager is not None:
             provided = (
                 self.risk_context_builder.provided_keys()
-                if self.risk_context_builder is not None else {"equity"}
+                if self.risk_context_builder is not None
+                else {"equity"}
             )
             self.kill_switch_manager.log_arming(provided)
 
@@ -147,12 +147,11 @@ class LiveEngine:
         # per-order fill confirmation — only when the broker exposes it (OANDA;
         # the paper broker fills synchronously and has no stream).
         if hasattr(self.broker, "stream_transactions") and hasattr(
-            self.oms, "on_fill",
+            self.oms,
+            "on_fill",
         ):
             coros.append(("transaction_stream", self._transaction_stream_task()))
-        self._tasks = [
-            asyncio.create_task(coro, name=name) for name, coro in coros
-        ]
+        self._tasks = [asyncio.create_task(coro, name=name) for name, coro in coros]
         try:
             await asyncio.gather(*self._tasks)
         except asyncio.CancelledError:
@@ -162,12 +161,15 @@ class LiveEngine:
         import uvicorn
 
         from src.web.api import app, set_runtime
+
         # CL-8lv6: pass the kill-switch manager so this re-call can't
         # clobber the /api/system/resume re-arm wiring; TypeError fallback
         # covers a set_runtime that predates the parameter.
         try:
             set_runtime(
-                self.broker, self.oms, self.strategies,
+                self.broker,
+                self.oms,
+                self.strategies,
                 kill_switch_manager=self.kill_switch_manager,
             )
         except TypeError:
@@ -221,7 +223,8 @@ class LiveEngine:
                 with LogContext(strategy_id=strategy.id):
                     try:
                         last = self._last_signal_times.get(
-                            strategy.id, datetime.min.replace(tzinfo=UTC),
+                            strategy.id,
+                            datetime.min.replace(tzinfo=UTC),
                         )
                         interval = getattr(strategy, "signal_interval_seconds", 60)
                         if (now - last).total_seconds() < interval:
@@ -245,7 +248,8 @@ class LiveEngine:
                         intents = await asyncio.to_thread(
                             asyncio.run,
                             strategy.generate_intents(
-                                dict(self._last_prices), self.broker,
+                                dict(self._last_prices),
+                                self.broker,
                             ),
                         )
                         if intents:
@@ -273,9 +277,7 @@ class LiveEngine:
             try:
                 await self.coordinator.process_intents(intents_by_strategy)
             except Exception:
-                logger.exception(
-                    "Coordinator process_intents failed; intents dropped this tick"
-                )
+                logger.exception("Coordinator process_intents failed; intents dropped this tick")
             return
 
         # Legacy fallback: submit each intent directly. Preserved so the engine
@@ -341,14 +343,13 @@ class LiveEngine:
             return
         if report.has_mismatches:
             self._alignment_mismatch_streak += 1
-            mismatched = [
-                e.to_dict() for e in report.entries
-                if e.status.value != "matched"
-            ]
+            mismatched = [e.to_dict() for e in report.entries if e.status.value != "matched"]
             logger.warning(
                 "Alignment check: %d/%d entries mismatched (streak=%d): %s",
-                len(mismatched), len(report.entries),
-                self._alignment_mismatch_streak, mismatched,
+                len(mismatched),
+                len(report.entries),
+                self._alignment_mismatch_streak,
+                mismatched,
             )
         else:
             self._alignment_mismatch_streak = 0

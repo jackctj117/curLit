@@ -35,15 +35,24 @@ class MockClient:
         if self.raises:
             raise RuntimeError("simulated transport failure")
         return SimpleNamespace(
-            text=self.text_out, model=model, provider="mock",
-            input_tokens=10, output_tokens=10, usd_cost=0.0, elapsed_sec=0.01,
+            text=self.text_out,
+            model=model,
+            provider="mock",
+            input_tokens=10,
+            output_tokens=10,
+            usd_cost=0.0,
+            elapsed_sec=0.01,
         )
 
 
 def _rows() -> list[dict[str, Any]]:
     return [
         {"id": 1, "theme": "energy_chokepoint", "headline": "Iran moves to close Hormuz"},
-        {"id": 2, "theme": "energy_chokepoint", "headline": "Opinion: oil forecasts are usually wrong"},
+        {
+            "id": 2,
+            "theme": "energy_chokepoint",
+            "headline": "Opinion: oil forecasts are usually wrong",
+        },
     ]
 
 
@@ -83,10 +92,12 @@ def test_extract_object_only_raises():
 
 
 def test_score_batch_escalates_high_skips_low():
-    resp = json.dumps([
-        {"id": 1, "relevance": 9, "tradable": True, "reason": "chokepoint"},
-        {"id": 2, "relevance": 1, "tradable": False, "reason": "opinion"},
-    ])
+    resp = json.dumps(
+        [
+            {"id": 1, "relevance": 9, "tradable": True, "reason": "chokepoint"},
+            {"id": 2, "relevance": 1, "tradable": False, "reason": "opinion"},
+        ]
+    )
     triage = EventTriage(client=MockClient(resp), enabled=True, min_relevance=4)
     verdicts = triage.score_batch(_rows())
     assert verdicts[1].escalate is True
@@ -96,10 +107,12 @@ def test_score_batch_escalates_high_skips_low():
 
 
 def test_score_batch_threshold_is_inclusive():
-    resp = json.dumps([
-        {"id": 1, "relevance": 4},  # exactly at the bar -> escalate
-        {"id": 2, "relevance": 3},  # below -> skip
-    ])
+    resp = json.dumps(
+        [
+            {"id": 1, "relevance": 4},  # exactly at the bar -> escalate
+            {"id": 2, "relevance": 3},  # below -> skip
+        ]
+    )
     triage = EventTriage(client=MockClient(resp), enabled=True, min_relevance=4)
     verdicts = triage.score_batch(_rows())
     assert verdicts[1].escalate is True

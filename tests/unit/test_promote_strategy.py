@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any
 
 import pandas as pd
@@ -39,12 +39,17 @@ class _FakeOMS:
 
 class _FakeState:
     def record_reallocation(
-        self, ts: datetime, weights: dict[str, float],
+        self,
+        ts: datetime,
+        weights: dict[str, float],
         regime: dict[str, Any],
     ) -> None: ...
 
     def record_portfolio_order(
-        self, ts: datetime, symbol: str, target_position: float,
+        self,
+        ts: datetime,
+        symbol: str,
+        target_position: float,
         strategy_contributions: dict[str, float],
     ) -> None: ...
 
@@ -52,7 +57,9 @@ class _FakeState:
         return []
 
     def load_strategy_returns_history(
-        self, strategy_ids: list[str], lookback_days: int,
+        self,
+        strategy_ids: list[str],
+        lookback_days: int,
     ) -> pd.DataFrame:
         return pd.DataFrame()
 
@@ -83,7 +90,9 @@ class TestPromote:
         live1 = _FakeStrategy("live1")
         coord = _build_coordinator(seed_strategies=[live1])
         coord.allocations["live1"] = StrategyAllocation(
-            strategy_id="live1", target_weight=1.0, current_exposure_mult=1.0,
+            strategy_id="live1",
+            target_weight=1.0,
+            current_exposure_mult=1.0,
             paper_mode=False,
         )
         # New paper strategy
@@ -95,16 +104,15 @@ class TestPromote:
         # Live1 scaled from 1.0 to 0.95 to make room for s2
         assert coord.allocations["live1"].target_weight == 0.95
         assert coord.allocations["s2"].target_weight == 0.05
-        assert sum(
-            a.target_weight for a in coord.allocations.values()
-            if not a.paper_mode
-        ) == 1.0
+        assert sum(a.target_weight for a in coord.allocations.values() if not a.paper_mode) == 1.0
 
     def test_promote_already_live_is_noop(self) -> None:
         s1 = _FakeStrategy("s1")
         coord = _build_coordinator(seed_strategies=[s1])
         coord.allocations["s1"] = StrategyAllocation(
-            strategy_id="s1", target_weight=0.5, current_exposure_mult=1.0,
+            strategy_id="s1",
+            target_weight=0.5,
+            current_exposure_mult=1.0,
             paper_mode=False,
         )
         coord.promote_strategy_to_live("s1", initial_weight=0.10)
@@ -116,7 +124,9 @@ class TestRemoveAfterPromote:
         s1 = _FakeStrategy("s1")
         coord = _build_coordinator(seed_strategies=[s1])
         coord.allocations["s1"] = StrategyAllocation(
-            strategy_id="s1", target_weight=0.5, current_exposure_mult=1.0,
+            strategy_id="s1",
+            target_weight=0.5,
+            current_exposure_mult=1.0,
             paper_mode=False,
         )
         coord.remove_strategy("s1")

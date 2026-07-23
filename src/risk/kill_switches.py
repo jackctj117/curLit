@@ -168,7 +168,8 @@ class EquityTrailingStop:
                 logger.warning(
                     "equity_trailing_stop: cooldown active — new trades stay "
                     "halted; trading resumes at %s (frozen peak=%s)",
-                    self.cooldown_until.isoformat(), self.peak_equity,
+                    self.cooldown_until.isoformat(),
+                    self.peak_equity,
                 )
                 return True
             if equity is None:
@@ -183,7 +184,9 @@ class EquityTrailingStop:
             logger.warning(
                 "equity_trailing_stop: cooldown expired at %s — peak reset "
                 "%s -> %.2f; trading may resume",
-                self.cooldown_until.isoformat(), self.peak_equity, float(equity),
+                self.cooldown_until.isoformat(),
+                self.peak_equity,
+                float(equity),
             )
             self.peak_equity = float(equity)
             self.cooldown_until = None
@@ -206,8 +209,11 @@ class EquityTrailingStop:
             logger.critical(
                 "equity_trailing_stop: equity %.2f is %.2f%% below peak %.2f "
                 "(limit %.2f%%) — halting new trades; trading resumes at %s",
-                eq, drawdown * 100, self.peak_equity,
-                -self.trailing_stop_pct * 100, self.cooldown_until.isoformat(),
+                eq,
+                drawdown * 100,
+                self.peak_equity,
+                -self.trailing_stop_pct * 100,
+                self.cooldown_until.isoformat(),
             )
             return True
         return False
@@ -222,8 +228,7 @@ class EquityTrailingStop:
             "version": _TRAILING_STATE_VERSION,
             "peak_equity": self.peak_equity,
             "cooldown_until": (
-                self.cooldown_until.isoformat()
-                if self.cooldown_until is not None else None
+                self.cooldown_until.isoformat() if self.cooldown_until is not None else None
             ),
         }
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -246,9 +251,7 @@ class EquityTrailingStop:
             peak = raw.get("peak_equity")
             until = raw.get("cooldown_until")
             self.peak_equity = float(peak) if peak is not None else None
-            self.cooldown_until = (
-                datetime.fromisoformat(until) if until is not None else None
-            )
+            self.cooldown_until = datetime.fromisoformat(until) if until is not None else None
         except (ValueError, KeyError, TypeError) as exc:
             msg = (
                 f"equity trailing-stop state at {path} is corrupt or "
@@ -258,7 +261,9 @@ class EquityTrailingStop:
             raise ValueError(msg) from exc
         logger.info(
             "equity_trailing_stop: loaded state from %s (peak=%s cooldown_until=%s)",
-            path, self.peak_equity, self.cooldown_until,
+            path,
+            self.peak_equity,
+            self.cooldown_until,
         )
 
 
@@ -332,7 +337,9 @@ class OpenPositionCorrelationEvaluator:
         if len(returns) < self.min_observations:
             logger.info(
                 "open_position_correlation: only %d overlapping daily returns "
-                "(< %d required) — skipping", len(returns), self.min_observations,
+                "(< %d required) — skipping",
+                len(returns),
+                self.min_observations,
             )
             return False
 
@@ -353,12 +360,15 @@ class OpenPositionCorrelationEvaluator:
             logger.critical(
                 "open_position_correlation: mean direction-adjusted pairwise "
                 "correlation %.3f > %.3f across %s — the open book is one bet",
-                mean_adjusted, self.threshold, self.last_directions,
+                mean_adjusted,
+                self.threshold,
+                self.last_directions,
             )
             return True
         logger.debug(
             "open_position_correlation: OK (mean_adjusted=%.3f threshold=%.3f)",
-            mean_adjusted, self.threshold,
+            mean_adjusted,
+            self.threshold,
         )
         return False
 
@@ -414,10 +424,7 @@ class KillSwitchManager:
             ),
             # Path|str|None accepted at this boundary; EquityTrailingStop
             # stores Path|None (pre-existing mypy error fixed in CL-i4tx).
-            state_path=(
-                Path(trailing_state_path)
-                if trailing_state_path is not None else None
-            ),
+            state_path=(Path(trailing_state_path) if trailing_state_path is not None else None),
             clock=clk,
         )
         self.open_position_corr = OpenPositionCorrelationEvaluator(
@@ -465,89 +472,102 @@ class KillSwitchManager:
             # a regime where its assumptions are broken (not just noise).
             # Halt new trades to preserve capital until human review.
             # (Arch §5.5; threshold from risk_profile.yaml — CL-i4tx)
-            KillSwitch(name="daily_loss_limit",
-                       condition=lambda ctx: (
-                           ctx.get("daily_pnl_pct", 0.0)
-                           < self.daily_loss_limit_pct
-                       ),
-                       action="halt_new",
-                       required_keys=("daily_pnl_pct",)),
+            KillSwitch(
+                name="daily_loss_limit",
+                condition=lambda ctx: ctx.get("daily_pnl_pct", 0.0) < self.daily_loss_limit_pct,
+                action="halt_new",
+                required_keys=("daily_pnl_pct",),
+            ),
             # Drawdown beyond the profile limit: recovery from -20% needs
             # +25% just to get back to even, which may exceed strategy Sharpe
             # over the relevant horizon. Flatten all open positions.
             # (Arch §5.5; threshold from risk_profile.yaml — CL-i4tx)
-            KillSwitch(name="drawdown_limit",
-                       condition=lambda ctx: (
-                           ctx.get("portfolio_dd", 0.0) < self.drawdown_limit_pct
-                       ),
-                       action="flatten_all",
-                       required_keys=("portfolio_dd",)),
+            KillSwitch(
+                name="drawdown_limit",
+                condition=lambda ctx: ctx.get("portfolio_dd", 0.0) < self.drawdown_limit_pct,
+                action="flatten_all",
+                required_keys=("portfolio_dd",),
+            ),
             # VIX >35 AND +50% vs prior close: historically signals panic
             # selling or extreme risk-off (March 2020, August 2024). Daily
             # closes via the context builder — fires up to a day late, which
             # is honest about the data we actually have. Reduce 50%.
             # (Arch §5.5)
-            KillSwitch(name="vix_spike",
-                       condition=lambda ctx: (
-                           ctx.get("vix_level", 0.0) > _VIX_SPIKE_LEVEL
-                           and ctx.get("vix_change_1d", 0.0) > _VIX_SPIKE_CHANGE_1D
-                       ),
-                       action="reduce_50pct",
-                       required_keys=("vix_level", "vix_change_1d")),
+            KillSwitch(
+                name="vix_spike",
+                condition=lambda ctx: (
+                    ctx.get("vix_level", 0.0) > _VIX_SPIKE_LEVEL
+                    and ctx.get("vix_change_1d", 0.0) > _VIX_SPIKE_CHANGE_1D
+                ),
+                action="reduce_50pct",
+                required_keys=("vix_level", "vix_change_1d"),
+            ),
             # CVIX Z-score >3: extreme FX vol relative to its own
             # distribution. 3σ event — about 0.3% probability. Halt new
             # trades. (Arch §5.5)
-            KillSwitch(name="fx_vol_spike",
-                       condition=lambda ctx: (
-                           ctx.get("cvix_zscore", 0.0) > _CVIX_ZSCORE_LIMIT
-                       ),
-                       action="halt_new",
-                       required_keys=("cvix_zscore",)),
+            KillSwitch(
+                name="fx_vol_spike",
+                condition=lambda ctx: ctx.get("cvix_zscore", 0.0) > _CVIX_ZSCORE_LIMIT,
+                action="halt_new",
+                required_keys=("cvix_zscore",),
+            ),
             # Position reconciliation mismatch: internal state disagrees with
             # broker (fed by the engine's periodic PositionReconciler
             # alignment check — CL-i4tx). Trading with stale state risks
             # duplicates or missed exits. Halt.
-            KillSwitch(name="reconciliation_failure",
-                       condition=lambda ctx: bool(
-                           ctx.get("position_mismatch", False),
-                       ),
-                       action="halt_new",
-                       required_keys=("position_mismatch",)),
+            KillSwitch(
+                name="reconciliation_failure",
+                condition=lambda ctx: bool(
+                    ctx.get("position_mismatch", False),
+                ),
+                action="halt_new",
+                required_keys=("position_mismatch",),
+            ),
             # No tick from the price stream for 10 minutes inside the
             # trading window: the engine is blind to market reality; the
             # broker connection is likely lost. Halt new trades. (Arch §5.5)
-            KillSwitch(name="stale_prices",
-                       condition=lambda ctx: (
-                           ctx.get("price_stream_age_sec", 0.0)
-                           > _PRICE_STREAM_STALE_SEC
-                       ),
-                       action="halt_new",
-                       required_keys=("price_stream_age_sec",)),
+            KillSwitch(
+                name="stale_prices",
+                condition=lambda ctx: (
+                    ctx.get("price_stream_age_sec", 0.0) > _PRICE_STREAM_STALE_SEC
+                ),
+                action="halt_new",
+                required_keys=("price_stream_age_sec",),
+            ),
             # CL-ep0c equity-curve trailing stop. Peak equity persists in
             # data/equity_trailing_stop_state.json; a breach halts new
             # trades for trailing_stop_cooldown_days ACROSS restarts.
             # Fires idempotently every day of the cooldown (the manager's
             # daily dedup rate-limits the action, the evaluator's own
             # persisted state carries the cooldown).
-            KillSwitch(name="equity_trailing_stop",
-                       condition=lambda ctx: self.trailing_stop.evaluate(
-                           self._equity_from(ctx),
-                       ),
-                       action="halt_new"),
+            KillSwitch(
+                name="equity_trailing_stop",
+                condition=lambda ctx: self.trailing_stop.evaluate(
+                    self._equity_from(ctx),
+                ),
+                action="halt_new",
+            ),
             # CL-ep0c open-position correlation. Self-contained (broker
             # positions + DataProvider closes) — unlike the two context-fed
             # correlation switches above, this one does not depend on any
             # caller wiring correlation numbers into the context.
-            KillSwitch(name="open_position_correlation",
-                       condition=lambda ctx: self.open_position_corr.evaluate(),
-                       action="reduce_50pct"),
+            KillSwitch(
+                name="open_position_correlation",
+                condition=lambda ctx: self.open_position_corr.evaluate(),
+                action="reduce_50pct",
+            ),
         ]
 
     def check(self, context: dict[str, Any]) -> list[dict[str, Any]]:
         triggered = []
         log_keys = (
-            "equity", "daily_pnl_pct", "portfolio_dd", "vix_level",
-            "vix_change_1d", "cvix_zscore", "position_mismatch",
+            "equity",
+            "daily_pnl_pct",
+            "portfolio_dd",
+            "vix_level",
+            "vix_change_1d",
+            "cvix_zscore",
+            "position_mismatch",
             "price_stream_age_sec",
         )
         for sw in self.switches:
@@ -564,7 +584,8 @@ class KillSwitchManager:
                 self._consecutive_failures[sw.name] = failures
                 logger.exception(
                     "Kill switch %s evaluation failed (consecutive=%d)",
-                    sw.name, failures,
+                    sw.name,
+                    failures,
                 )
                 if failures >= _EVAL_FAILURES_BEFORE_HALT:
                     # CL-7zwp (P1): >= not == so a broken evaluator RE-halts
@@ -579,7 +600,8 @@ class KillSwitchManager:
                         "failing CLOSED: halting new trades. OPERATOR ACTION "
                         "REQUIRED: fix the data path, then resume via "
                         "/api/system/resume.",
-                        sw.name, failures,
+                        sw.name,
+                        failures,
                     )
                     self.oms.halt_new_trades()
                     self._active_halt_causes.add(sw.name)
@@ -589,7 +611,9 @@ class KillSwitchManager:
                 log_ctx = {k: v for k, v in context.items() if k in log_keys}
                 logger.critical(
                     "KILL SWITCH: %s triggered — action=%s context=%s",
-                    sw.name, sw.action, log_ctx,
+                    sw.name,
+                    sw.action,
+                    log_ctx,
                 )
                 effective = True
                 try:
@@ -602,7 +626,9 @@ class KillSwitchManager:
                     # leaves the trigger unspent so it re-fires next tick
                     # while open risk persists (CL-8cw1).
                     logger.exception(
-                        "Kill switch %s action %s failed", sw.name, sw.action,
+                        "Kill switch %s action %s failed",
+                        sw.name,
+                        sw.action,
                     )
                 if effective:
                     self._triggered_today.add(sw.name)
@@ -612,18 +638,25 @@ class KillSwitchManager:
                 else:
                     logger.warning(
                         "Kill switch %s: action ineffective — trigger NOT "
-                        "spent, will re-fire next evaluation", sw.name,
+                        "spent, will re-fire next evaluation",
+                        sw.name,
                     )
                 kill_switch_triggered.labels(
-                    switch_name=sw.name, action=sw.action,
+                    switch_name=sw.name,
+                    action=sw.action,
                 ).inc()
-                triggered.append({
-                    "switch": sw.name, "action": sw.action, "context": context,
-                    "effective": effective,
-                })
+                triggered.append(
+                    {
+                        "switch": sw.name,
+                        "action": sw.action,
+                        "context": context,
+                        "effective": effective,
+                    }
+                )
             else:
                 logger.debug(
-                    "Kill switch %s: OK (value=%s)", sw.name,
+                    "Kill switch %s: OK (value=%s)",
+                    sw.name,
                     {k: v for k, v in context.items() if k in log_keys},
                 )
         return triggered
@@ -643,7 +676,8 @@ class KillSwitchManager:
             # intent per net open position through the OMS, then halt new
             # trades and page the operator with the evidence.
             result = self._submit_position_intents(
-                target_fraction=0.5, strategy_id="kill_switch_reduce",
+                target_fraction=0.5,
+                strategy_id="kill_switch_reduce",
             )
             self.oms.halt_new_trades()
             if not result or result[0] < result[1] or result[0] == 0:
@@ -657,7 +691,8 @@ class KillSwitchManager:
                 logger.critical(
                     "reduce_50pct INCOMPLETE (%d/%s legs) — halted only; "
                     "trigger NOT spent, switch re-fires next tick to retry",
-                    sub, "fetch-failed" if result is None else act,
+                    sub,
+                    "fetch-failed" if result is None else act,
                 )
                 return False
             logger.critical(
@@ -677,7 +712,8 @@ class KillSwitchManager:
             # broker position through the OMS, then halt new trades. Was a
             # log-stub before ("requires broker integration").
             result = self._submit_position_intents(
-                target_fraction=0.0, strategy_id="kill_switch_flatten",
+                target_fraction=0.0,
+                strategy_id="kill_switch_flatten",
             )
             self.oms.halt_new_trades()
             if not result or result[0] < result[1] or result[0] == 0:
@@ -693,7 +729,8 @@ class KillSwitchManager:
                     "flatten_all INCOMPLETE (%d/%s legs) — halted only; "
                     "trigger NOT spent, switch re-fires next tick to retry "
                     "the unclosed legs",
-                    sub, "fetch-failed" if result is None else act,
+                    sub,
+                    "fetch-failed" if result is None else act,
                 )
                 return False
             logger.critical(
@@ -709,12 +746,15 @@ class KillSwitchManager:
             self.oms.halt_new_trades()
             logger.critical(
                 "Kill switch action %r is not implemented — halted new "
-                "trades as the fail-closed fallback", action,
+                "trades as the fail-closed fallback",
+                action,
             )
         return True
 
     def _submit_position_intents(
-        self, target_fraction: float, strategy_id: str,
+        self,
+        target_fraction: float,
+        strategy_id: str,
     ) -> tuple[int, int] | None:
         """Submit ``target = net_qty * target_fraction`` intents for every
         net open broker position. Returns ``(submitted, actionable)`` — how
@@ -735,8 +775,8 @@ class KillSwitchManager:
             positions = self.broker.get_positions() or []
         except Exception:
             logger.exception(
-                "%s: broker.get_positions() failed — no intents submitted; "
-                "halting only", strategy_id,
+                "%s: broker.get_positions() failed — no intents submitted; halting only",
+                strategy_id,
             )
             # None (not 0) so the caller can distinguish "couldn't
             # enumerate positions" from "genuinely flat" — an ineffective
@@ -770,11 +810,15 @@ class KillSwitchManager:
                 submitted += 1
                 logger.warning(
                     "%s: intent %s target %.4f (was %.4f)",
-                    strategy_id, route_symbol[key], qty * target_fraction, qty,
+                    strategy_id,
+                    route_symbol[key],
+                    qty * target_fraction,
+                    qty,
                 )
             except Exception:
                 logger.exception(
-                    "%s: submit_intent failed for %s", strategy_id,
+                    "%s: submit_intent failed for %s",
+                    strategy_id,
                     route_symbol[key],
                 )
         return submitted, actionable
@@ -794,13 +838,15 @@ class KillSwitchManager:
                 missing.append("data_provider")
             if missing:
                 logger.critical(
-                    "kill switch %s: UNARMED — missing inputs %s; this "
-                    "switch will NEVER fire", sw.name, missing,
+                    "kill switch %s: UNARMED — missing inputs %s; this switch will NEVER fire",
+                    sw.name,
+                    missing,
                 )
             else:
                 logger.info(
                     "kill switch %s: ARMED (action=%s, inputs=%s)",
-                    sw.name, sw.action,
+                    sw.name,
+                    sw.action,
                     ", ".join(sw.required_keys) or "self-feeding",
                 )
 
@@ -858,14 +904,14 @@ class KillSwitchManager:
                 still_bad = bool(sw.condition(context))
             except Exception:
                 # Can't confirm the gate cleared — leave the halt in place.
-                logger.debug("auto-resume: %s re-eval failed", name,
-                             exc_info=True)
+                logger.debug("auto-resume: %s re-eval failed", name, exc_info=True)
                 continue
             if not still_bad:
                 self._active_halt_causes.discard(name)
                 self._triggered_today.discard(name)  # re-arm
                 logger.info(
-                    "Data-gate %s cleared — condition no longer true", name,
+                    "Data-gate %s cleared — condition no longer true",
+                    name,
                 )
         if not self._active_halt_causes:
             try:

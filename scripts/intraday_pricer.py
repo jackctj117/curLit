@@ -42,28 +42,41 @@ def _instruments(explicit: str | None) -> list[str]:
         all_tradable_instruments,
         load_playbooks,
     )
+
     return sorted(all_tradable_instruments(load_playbooks(DEFAULT_PLAYBOOKS_PATH)))
 
 
 def main(argv: list[str] | None = None) -> int:
     from src.dotenv_bootstrap import load_project_env  # noqa: PLC0415
+
     load_project_env()
 
     parser = argparse.ArgumentParser(
         description="Poll OANDA pricing into intraday_quotes (CL-dz71).",
     )
-    parser.add_argument("--once", action="store_true",
-                        help="Poll once and exit.")
-    parser.add_argument("--loop", type=int, metavar="SECONDS", default=None,
-                        help="Poll every SECONDS (daemon mode).")
-    parser.add_argument("--instruments", default=None,
-                        help="Comma-separated OANDA ids (default: playbook set).")
-    parser.add_argument("--retention-hours", type=int, default=24,
-                        help="Prune quotes older than this each cycle.")
-    parser.add_argument("--no-candles", action="store_true",
-                        help="Skip the daily-candle vol backfill (CL-lb03).")
-    parser.add_argument("--candles-count", type=int, default=60,
-                        help="Daily candles to backfill per unmapped instrument.")
+    parser.add_argument("--once", action="store_true", help="Poll once and exit.")
+    parser.add_argument(
+        "--loop",
+        type=int,
+        metavar="SECONDS",
+        default=None,
+        help="Poll every SECONDS (daemon mode).",
+    )
+    parser.add_argument(
+        "--instruments", default=None, help="Comma-separated OANDA ids (default: playbook set)."
+    )
+    parser.add_argument(
+        "--retention-hours", type=int, default=24, help="Prune quotes older than this each cycle."
+    )
+    parser.add_argument(
+        "--no-candles", action="store_true", help="Skip the daily-candle vol backfill (CL-lb03)."
+    )
+    parser.add_argument(
+        "--candles-count",
+        type=int,
+        default=60,
+        help="Daily candles to backfill per unmapped instrument.",
+    )
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args(argv)
 
@@ -75,7 +88,10 @@ def main(argv: list[str] | None = None) -> int:
     api_key = os.environ.get("OANDA_API_KEY", "")
     account_id = os.environ.get("OANDA_ACCOUNT_ID", "")
     practice = os.environ.get("OANDA_PRACTICE", "true").strip().lower() in (
-        "1", "true", "yes", "on",
+        "1",
+        "true",
+        "yes",
+        "on",
     )
     if not api_key or not account_id:
         logger.error("OANDA_API_KEY / OANDA_ACCOUNT_ID not set — cannot poll")
@@ -86,12 +102,18 @@ def main(argv: list[str] | None = None) -> int:
     instruments = _instruments(args.instruments)
     engine = create_engine(build_db_url())
     pricer = IntradayPricer(
-        engine, instruments, api_key, account_id, practice=practice,
+        engine,
+        instruments,
+        api_key,
+        account_id,
+        practice=practice,
         retention_hours=args.retention_hours,
     )
     logger.info(
         "intraday pricer: %d instruments, practice=%s, retention=%dh",
-        len(instruments), practice, args.retention_hours,
+        len(instruments),
+        practice,
+        args.retention_hours,
     )
 
     # Daily-candle vol backfill (CL-lb03) for the unmapped instruments — the
@@ -103,6 +125,7 @@ def main(argv: list[str] | None = None) -> int:
         refresh_daily_candles,
         unmapped_tradables,
     )
+
     candle_instruments = [] if args.no_candles else unmapped_tradables(instruments)
     last_candle_date: Any = None
 
@@ -114,14 +137,21 @@ def main(argv: list[str] | None = None) -> int:
         if today == last_candle_date:
             return
         refresh_daily_candles(
-            engine, candle_instruments, api_key, account_id,
-            practice=practice, count=args.candles_count,
+            engine,
+            candle_instruments,
+            api_key,
+            account_id,
+            practice=practice,
+            count=args.candles_count,
         )
         last_candle_date = today
 
     if candle_instruments:
-        logger.info("daily-candle backfill for %d unmapped instruments: %s",
-                    len(candle_instruments), ", ".join(candle_instruments))
+        logger.info(
+            "daily-candle backfill for %d unmapped instruments: %s",
+            len(candle_instruments),
+            ", ".join(candle_instruments),
+        )
 
     if args.loop:
         logger.info("looping every %ds (Ctrl-C to stop)", args.loop)

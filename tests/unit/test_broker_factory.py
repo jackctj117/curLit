@@ -52,14 +52,16 @@ class TestBuildFxBroker:
             build_fx_broker(mode)
 
     def test_partial_creds_fail_fast_and_name_missing_var(
-        self, monkeypatch: pytest.MonkeyPatch,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setenv("OANDA_API_KEY", "fake-key")
         with pytest.raises(BrokerCredentialsError, match="OANDA_ACCOUNT_ID"):
             build_fx_broker("oanda-practice")
 
     def test_fallback_opt_in_must_be_exactly_1(
-        self, monkeypatch: pytest.MonkeyPatch,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         for value in ("0", "true", "yes", ""):
             monkeypatch.setenv(ALLOW_PAPER_FALLBACK_ENV, value)
@@ -80,7 +82,8 @@ class TestBuildFxBroker:
         assert "NOT CONNECTED TO OANDA" in crit[0].getMessage()
 
     def test_with_creds_returns_practice_oanda_broker(
-        self, monkeypatch: pytest.MonkeyPatch,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setenv("OANDA_API_KEY", "fake-key")
         monkeypatch.setenv("OANDA_ACCOUNT_ID", "fake-id")
@@ -89,7 +92,8 @@ class TestBuildFxBroker:
         assert "fxpractice" in str(broker.client.base_url)
 
     def test_with_creds_returns_live_oanda_broker(
-        self, monkeypatch: pytest.MonkeyPatch,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setenv("OANDA_API_KEY", "fake-key")
         monkeypatch.setenv("OANDA_ACCOUNT_ID", "fake-id")
@@ -100,14 +104,16 @@ class TestBuildFxBroker:
 
 class TestEffectiveBrokerMode:
     def test_fallback_reports_paper_not_oanda(
-        self, monkeypatch: pytest.MonkeyPatch,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setenv(ALLOW_PAPER_FALLBACK_ENV, "1")
         broker = build_fx_broker("oanda-practice")
         assert effective_broker_mode("oanda-practice", broker) == "paper"
 
     def test_real_oanda_reports_requested_mode(
-        self, monkeypatch: pytest.MonkeyPatch,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setenv("OANDA_API_KEY", "fake-key")
         monkeypatch.setenv("OANDA_ACCOUNT_ID", "fake-id")

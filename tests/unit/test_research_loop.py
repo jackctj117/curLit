@@ -130,10 +130,7 @@ class _FakeImplementer:
         self.candidate_dir = candidate_dir
         # Default to the candidate_dir's sibling so tests never write
         # outside tmp_path.
-        self.code_dir = (
-            code_dir if code_dir is not None
-            else candidate_dir.parent / "experimental"
-        )
+        self.code_dir = code_dir if code_dir is not None else candidate_dir.parent / "experimental"
         self.calls: list[str] = []
 
     def implement(
@@ -236,6 +233,7 @@ def _approve_all_pending(state_path: Path) -> int:
 def _silent_notifier(*_args: Any, **_kwargs: Any) -> Any:
     """No-op notifier so tests don't try to dispatch over the network."""
     from src.research.notifications import DispatchResult
+
     return DispatchResult()
 
 
@@ -255,12 +253,15 @@ class _FakeRegistrar:
         verdict_reason: str = "",
     ) -> Any:
         from src.research.promote import RegistrationResult
-        self.calls.append({
-            "slug": strategy_slug,
-            "report": str(candidate_report_path),
-            "transcript": str(debate_transcript_path),
-            "reason": verdict_reason,
-        })
+
+        self.calls.append(
+            {
+                "slug": strategy_slug,
+                "report": str(candidate_report_path),
+                "transcript": str(debate_transcript_path),
+                "reason": verdict_reason,
+            }
+        )
         return RegistrationResult(
             succeeded=self._succeeded,
             strategy_slug=strategy_slug,
@@ -268,8 +269,7 @@ class _FakeRegistrar:
             pr_url="https://example.com/pr/1" if self._succeeded else "",
             branch_name=f"experiment/{strategy_slug}",
             steps_completed=(
-                ["move_file", "portfolio_yaml", "git", "pr"]
-                if self._succeeded else ["move_file"]
+                ["move_file", "portfolio_yaml", "git", "pr"] if self._succeeded else ["move_file"]
             ),
         )
 
@@ -305,21 +305,32 @@ class TestStatePersistence:
         path = tmp_path / "state.json"
         original = LoopState(
             ideas_processed={"abc": {"status": "PROPOSED", "slug": "x", "reason": ""}},
-            candidates_processed={"x": {
-                "status": "IMPLEMENTED", "reason": "",
-                "code_path": "p", "report_path": "r",
-            }},
-            debates_completed={"x": {
-                "verdict": "PROMOTE", "reason": "all gates pass",
-                "transcript_path": "t", "bull": "PROMOTE", "bear": "PROMOTE",
-            }},
+            candidates_processed={
+                "x": {
+                    "status": "IMPLEMENTED",
+                    "reason": "",
+                    "code_path": "p",
+                    "report_path": "r",
+                }
+            },
+            debates_completed={
+                "x": {
+                    "verdict": "PROMOTE",
+                    "reason": "all gates pass",
+                    "transcript_path": "t",
+                    "bull": "PROMOTE",
+                    "bear": "PROMOTE",
+                }
+            },
         )
         save_state(original, path)
         loaded = load_state(path)
         assert loaded == original
 
     def test_crash_mid_write_leaves_original_intact(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """save_state is atomic (tmp + os.replace): a crash mid-write
         must never corrupt the existing state file — it is the whole
@@ -328,11 +339,16 @@ class TestStatePersistence:
 
         path = tmp_path / "state.json"
         original = LoopState(
-            ideas_processed={"abc": {
-                "status": "ERROR", "slug": "x", "reason": "boom",
-                # CL-837v transient-retry fields must survive verbatim
-                "transient": True, "attempts": 2,
-            }},
+            ideas_processed={
+                "abc": {
+                    "status": "ERROR",
+                    "slug": "x",
+                    "reason": "boom",
+                    # CL-837v transient-retry fields must survive verbatim
+                    "transient": True,
+                    "attempts": 2,
+                }
+            },
         )
         save_state(original, path)
 
@@ -367,11 +383,12 @@ class TestFullPipelineRun:
                 ("hash2", "# Paper B\nbody"),
             ],
         )
-        idea = _FakeIdeaAgent(responses={
-            "hash1": {"status": "PROPOSED", "slug": "alpha"},
-            "hash2": {"status": "DECLINED", "slug": "beta",
-                      "reason": "extract too thin"},
-        })
+        idea = _FakeIdeaAgent(
+            responses={
+                "hash1": {"status": "PROPOSED", "slug": "alpha"},
+                "hash2": {"status": "DECLINED", "slug": "beta", "reason": "extract too thin"},
+            }
+        )
         impl = _FakeImplementer(
             responses={
                 "alpha": {
@@ -384,12 +401,16 @@ class TestFullPipelineRun:
         debate_transcript = loop_paths["transcripts"] / "alpha" / "transcript.md"
         debate_transcript.parent.mkdir(parents=True)
         debate_transcript.write_text("(stub transcript)")
-        orch = _FakeOrchestrator(results={
-            "alpha": _make_debate_result(
-                "alpha", Position.PROMOTE, Position.PROMOTE,
-                transcript=debate_transcript,
-            ),
-        })
+        orch = _FakeOrchestrator(
+            results={
+                "alpha": _make_debate_result(
+                    "alpha",
+                    Position.PROMOTE,
+                    Position.PROMOTE,
+                    transcript=debate_transcript,
+                ),
+            }
+        )
         loop = ResearchLoop(
             ingest_runner=ingest,
             idea_agent=idea,  # type: ignore[arg-type]
@@ -415,9 +436,7 @@ class TestFullPipelineRun:
         assert summary.debates_run == 0
 
         state = load_state(loop_paths["state"])
-        assert state.ideas_processed["hash1"]["status"] == (
-            "PENDING_OPERATOR_APPROVAL"
-        )
+        assert state.ideas_processed["hash1"]["status"] == ("PENDING_OPERATOR_APPROVAL")
         assert state.ideas_processed["hash2"]["status"] == "DECLINED"
 
         # Operator approves via the helper.
@@ -447,16 +466,19 @@ class TestFullPipelineRun:
 
 class TestIdempotency:
     def test_second_run_skips_processed_work(
-        self, loop_paths: dict[str, Path],
+        self,
+        loop_paths: dict[str, Path],
     ) -> None:
         store = _FakeExtractStore(root=loop_paths["extracts"])
         ingest = _FakeIngestRunner(
             extract_store=store,
             new_extracts=[("hash1", "# Paper A\nbody")],
         )
-        idea = _FakeIdeaAgent(responses={
-            "hash1": {"status": "PROPOSED", "slug": "alpha"},
-        })
+        idea = _FakeIdeaAgent(
+            responses={
+                "hash1": {"status": "PROPOSED", "slug": "alpha"},
+            }
+        )
         impl = _FakeImplementer(
             responses={"alpha": {"status": "IMPLEMENTED"}},
             candidate_dir=loop_paths["candidates"],
@@ -464,17 +486,23 @@ class TestIdempotency:
         debate_transcript = loop_paths["transcripts"] / "alpha" / "transcript.md"
         debate_transcript.parent.mkdir(parents=True)
         debate_transcript.write_text("(stub)")
-        orch = _FakeOrchestrator(results={
-            "alpha": _make_debate_result(
-                "alpha", Position.PROMOTE, Position.PROMOTE,
-                transcript=debate_transcript,
-            ),
-        })
+        orch = _FakeOrchestrator(
+            results={
+                "alpha": _make_debate_result(
+                    "alpha",
+                    Position.PROMOTE,
+                    Position.PROMOTE,
+                    transcript=debate_transcript,
+                ),
+            }
+        )
         loop = ResearchLoop(
-            ingest_runner=ingest, idea_agent=idea,  # type: ignore[arg-type]
+            ingest_runner=ingest,
+            idea_agent=idea,  # type: ignore[arg-type]
             implementer=impl,  # type: ignore[arg-type]
             debate_orchestrator=orch,  # type: ignore[arg-type]
-            rules_loader=lambda: [], feed_configs=[],
+            rules_loader=lambda: [],
+            feed_configs=[],
             extract_store=store,  # type: ignore[arg-type]
             state_path=loop_paths["state"],
             runs_dir=loop_paths["runs"],
@@ -500,7 +528,8 @@ class TestIdempotency:
 
 class TestErrorHandling:
     def test_idea_failure_doesnt_kill_run(
-        self, loop_paths: dict[str, Path],
+        self,
+        loop_paths: dict[str, Path],
     ) -> None:
         store = _FakeExtractStore(root=loop_paths["extracts"])
         ingest = _FakeIngestRunner(
@@ -510,10 +539,12 @@ class TestErrorHandling:
                 ("hash2", "# Paper B\n"),
             ],
         )
-        idea = _FakeIdeaAgent(responses={
-            "hash1": {"raise": "LLM timed out"},
-            "hash2": {"status": "PROPOSED", "slug": "beta"},
-        })
+        idea = _FakeIdeaAgent(
+            responses={
+                "hash1": {"raise": "LLM timed out"},
+                "hash2": {"status": "PROPOSED", "slug": "beta"},
+            }
+        )
         impl = _FakeImplementer(
             responses={"beta": {"status": "IMPLEMENTED"}},
             candidate_dir=loop_paths["candidates"],
@@ -521,17 +552,23 @@ class TestErrorHandling:
         debate_transcript = loop_paths["transcripts"] / "beta" / "transcript.md"
         debate_transcript.parent.mkdir(parents=True)
         debate_transcript.write_text("(stub)")
-        orch = _FakeOrchestrator(results={
-            "beta": _make_debate_result(
-                "beta", Position.PROMOTE, Position.PROMOTE,
-                transcript=debate_transcript,
-            ),
-        })
+        orch = _FakeOrchestrator(
+            results={
+                "beta": _make_debate_result(
+                    "beta",
+                    Position.PROMOTE,
+                    Position.PROMOTE,
+                    transcript=debate_transcript,
+                ),
+            }
+        )
         loop = ResearchLoop(
-            ingest_runner=ingest, idea_agent=idea,  # type: ignore[arg-type]
+            ingest_runner=ingest,
+            idea_agent=idea,  # type: ignore[arg-type]
             implementer=impl,  # type: ignore[arg-type]
             debate_orchestrator=orch,  # type: ignore[arg-type]
-            rules_loader=lambda: [], feed_configs=[],
+            rules_loader=lambda: [],
+            feed_configs=[],
             extract_store=store,  # type: ignore[arg-type]
             state_path=loop_paths["state"],
             runs_dir=loop_paths["runs"],
@@ -545,9 +582,7 @@ class TestErrorHandling:
         assert summary.candidates_implemented == 0
         state = load_state(loop_paths["state"])
         assert state.ideas_processed["hash1"]["status"] == "ERROR"
-        assert state.ideas_processed["hash2"]["status"] == (
-            "PENDING_OPERATOR_APPROVAL"
-        )
+        assert state.ideas_processed["hash2"]["status"] == ("PENDING_OPERATOR_APPROVAL")
 
         # Pass 2: operator approves hash2 → it makes it through.
         _approve_all_pending(loop_paths["state"])
@@ -556,27 +591,31 @@ class TestErrorHandling:
         assert summary2.verdicts_promote == 1
 
     def test_implementer_rejected_skips_debate(
-        self, loop_paths: dict[str, Path],
+        self,
+        loop_paths: dict[str, Path],
     ) -> None:
         store = _FakeExtractStore(root=loop_paths["extracts"])
         ingest = _FakeIngestRunner(
             extract_store=store,
             new_extracts=[("hash1", "# A\n")],
         )
-        idea = _FakeIdeaAgent(responses={
-            "hash1": {"status": "PROPOSED", "slug": "alpha"},
-        })
+        idea = _FakeIdeaAgent(
+            responses={
+                "hash1": {"status": "PROPOSED", "slug": "alpha"},
+            }
+        )
         impl = _FakeImplementer(
-            responses={"alpha": {"status": "REJECTED",
-                                 "reason": "syntax gate failed"}},
+            responses={"alpha": {"status": "REJECTED", "reason": "syntax gate failed"}},
             candidate_dir=loop_paths["candidates"],
         )
         orch = _FakeOrchestrator(results={})
         loop = ResearchLoop(
-            ingest_runner=ingest, idea_agent=idea,  # type: ignore[arg-type]
+            ingest_runner=ingest,
+            idea_agent=idea,  # type: ignore[arg-type]
             implementer=impl,  # type: ignore[arg-type]
             debate_orchestrator=orch,  # type: ignore[arg-type]
-            rules_loader=lambda: [], feed_configs=[],
+            rules_loader=lambda: [],
+            feed_configs=[],
             extract_store=store,  # type: ignore[arg-type]
             state_path=loop_paths["state"],
             runs_dir=loop_paths["runs"],
@@ -602,9 +641,11 @@ class TestVerdictTally:
             extract_store=store,
             new_extracts=[("hash1", "# A\n")],
         )
-        idea = _FakeIdeaAgent(responses={
-            "hash1": {"status": "PROPOSED", "slug": "alpha"},
-        })
+        idea = _FakeIdeaAgent(
+            responses={
+                "hash1": {"status": "PROPOSED", "slug": "alpha"},
+            }
+        )
         impl = _FakeImplementer(
             responses={"alpha": {"status": "IMPLEMENTED"}},
             candidate_dir=loop_paths["candidates"],
@@ -612,18 +653,23 @@ class TestVerdictTally:
         debate_transcript = loop_paths["transcripts"] / "alpha" / "transcript.md"
         debate_transcript.parent.mkdir(parents=True)
         debate_transcript.write_text("(stub)")
-        orch = _FakeOrchestrator(results={
-            "alpha": _make_debate_result(
-                "alpha",
-                Position.PROMOTE, Position.REJECT,  # mixed
-                transcript=debate_transcript,
-            ),
-        })
+        orch = _FakeOrchestrator(
+            results={
+                "alpha": _make_debate_result(
+                    "alpha",
+                    Position.PROMOTE,
+                    Position.REJECT,  # mixed
+                    transcript=debate_transcript,
+                ),
+            }
+        )
         loop = ResearchLoop(
-            ingest_runner=ingest, idea_agent=idea,  # type: ignore[arg-type]
+            ingest_runner=ingest,
+            idea_agent=idea,  # type: ignore[arg-type]
             implementer=impl,  # type: ignore[arg-type]
             debate_orchestrator=orch,  # type: ignore[arg-type]
-            rules_loader=lambda: [], feed_configs=[],
+            rules_loader=lambda: [],
+            feed_configs=[],
             extract_store=store,  # type: ignore[arg-type]
             state_path=loop_paths["state"],
             runs_dir=loop_paths["runs"],
@@ -654,12 +700,14 @@ class TestRunSummaryDataclass:
 
 class TestGate1:
     def test_propose_holds_at_pending_and_fires_notification(
-        self, loop_paths: dict[str, Path],
+        self,
+        loop_paths: dict[str, Path],
     ) -> None:
         notifications: list[tuple[str, str, int]] = []
 
         def recorder(title: str, message: str, priority: int) -> Any:
             from src.research.notifications import DispatchResult
+
             notifications.append((title, message, priority))
             r = DispatchResult()
             r.telegram_attempted = True
@@ -668,24 +716,30 @@ class TestGate1:
 
         store = _FakeExtractStore(root=loop_paths["extracts"])
         ingest = _FakeIngestRunner(
-            extract_store=store, new_extracts=[("h1", "# A\n")],
+            extract_store=store,
+            new_extracts=[("h1", "# A\n")],
         )
-        idea = _FakeIdeaAgent(responses={
-            "h1": {
-                "status": "PROPOSED", "slug": "alpha",
-                "brief": (
-                    "# Hypothesis: SCI filter beats momentum\n\n"
-                    "## Data requirements\n"
-                    "- `prices.{symbol}` for EURUSD and GBPUSD\n"
-                    "- Macro input: FRED `DGS10`\n"
-                ),
-            },
-        })
+        idea = _FakeIdeaAgent(
+            responses={
+                "h1": {
+                    "status": "PROPOSED",
+                    "slug": "alpha",
+                    "brief": (
+                        "# Hypothesis: SCI filter beats momentum\n\n"
+                        "## Data requirements\n"
+                        "- `prices.{symbol}` for EURUSD and GBPUSD\n"
+                        "- Macro input: FRED `DGS10`\n"
+                    ),
+                },
+            }
+        )
         loop = ResearchLoop(
-            ingest_runner=ingest, idea_agent=idea,  # type: ignore[arg-type]
+            ingest_runner=ingest,
+            idea_agent=idea,  # type: ignore[arg-type]
             implementer=_FakeImplementer({}, loop_paths["candidates"]),  # type: ignore[arg-type]
             debate_orchestrator=_FakeOrchestrator({}),  # type: ignore[arg-type]
-            rules_loader=lambda: [], feed_configs=[],
+            rules_loader=lambda: [],
+            feed_configs=[],
             extract_store=store,  # type: ignore[arg-type]
             state_path=loop_paths["state"],
             runs_dir=loop_paths["runs"],
@@ -700,9 +754,7 @@ class TestGate1:
         assert summary.candidates_implemented == 0
 
         state = load_state(loop_paths["state"])
-        assert state.ideas_processed["h1"]["status"] == (
-            "PENDING_OPERATOR_APPROVAL"
-        )
+        assert state.ideas_processed["h1"]["status"] == ("PENDING_OPERATOR_APPROVAL")
         assert "pending_since" in state.ideas_processed["h1"]
         assert state.ideas_processed["h1"]["hypothesis_path"]
 
@@ -719,24 +771,30 @@ class TestGate1:
         assert priority == 0
 
     def test_skipped_entry_doesnt_reach_implementer(
-        self, loop_paths: dict[str, Path],
+        self,
+        loop_paths: dict[str, Path],
     ) -> None:
         store = _FakeExtractStore(root=loop_paths["extracts"])
         ingest = _FakeIngestRunner(
-            extract_store=store, new_extracts=[("h1", "# A\n")],
+            extract_store=store,
+            new_extracts=[("h1", "# A\n")],
         )
-        idea = _FakeIdeaAgent(responses={
-            "h1": {"status": "PROPOSED", "slug": "alpha"},
-        })
+        idea = _FakeIdeaAgent(
+            responses={
+                "h1": {"status": "PROPOSED", "slug": "alpha"},
+            }
+        )
         impl = _FakeImplementer(
             responses={"alpha": {"status": "IMPLEMENTED"}},
             candidate_dir=loop_paths["candidates"],
         )
         loop = ResearchLoop(
-            ingest_runner=ingest, idea_agent=idea,  # type: ignore[arg-type]
+            ingest_runner=ingest,
+            idea_agent=idea,  # type: ignore[arg-type]
             implementer=impl,  # type: ignore[arg-type]
             debate_orchestrator=_FakeOrchestrator({}),  # type: ignore[arg-type]
-            rules_loader=lambda: [], feed_configs=[],
+            rules_loader=lambda: [],
+            feed_configs=[],
             extract_store=store,  # type: ignore[arg-type]
             state_path=loop_paths["state"],
             runs_dir=loop_paths["runs"],
@@ -755,7 +813,8 @@ class TestGate1:
         assert impl.calls == []  # implementer NEVER ran
 
     def test_auto_skip_after_timeout(
-        self, loop_paths: dict[str, Path],
+        self,
+        loop_paths: dict[str, Path],
     ) -> None:
         from datetime import UTC, datetime, timedelta
 
@@ -767,17 +826,22 @@ class TestGate1:
 
         store = _FakeExtractStore(root=loop_paths["extracts"])
         ingest = _FakeIngestRunner(
-            extract_store=store, new_extracts=[("h1", "# A\n")],
+            extract_store=store,
+            new_extracts=[("h1", "# A\n")],
         )
-        idea = _FakeIdeaAgent(responses={
-            "h1": {"status": "PROPOSED", "slug": "alpha"},
-        })
+        idea = _FakeIdeaAgent(
+            responses={
+                "h1": {"status": "PROPOSED", "slug": "alpha"},
+            }
+        )
         impl = _FakeImplementer({}, loop_paths["candidates"])
         loop = ResearchLoop(
-            ingest_runner=ingest, idea_agent=idea,  # type: ignore[arg-type]
+            ingest_runner=ingest,
+            idea_agent=idea,  # type: ignore[arg-type]
             implementer=impl,  # type: ignore[arg-type]
             debate_orchestrator=_FakeOrchestrator({}),  # type: ignore[arg-type]
-            rules_loader=lambda: [], feed_configs=[],
+            rules_loader=lambda: [],
+            feed_configs=[],
             extract_store=store,  # type: ignore[arg-type]
             state_path=loop_paths["state"],
             runs_dir=loop_paths["runs"],
@@ -791,9 +855,7 @@ class TestGate1:
         # First run: PROPOSED → PENDING (with pending_since=t0)
         loop.run()
         state = load_state(loop_paths["state"])
-        assert state.ideas_processed["h1"]["status"] == (
-            "PENDING_OPERATOR_APPROVAL"
-        )
+        assert state.ideas_processed["h1"]["status"] == ("PENDING_OPERATOR_APPROVAL")
 
         # Advance clock past the timeout. Don't re-ingest (idea already
         # processed) — second run only does the GATE 1 sweep + downstream.
@@ -812,23 +874,29 @@ class TestGate1:
         assert impl.calls == []
 
     def test_notifier_failure_doesnt_kill_run(
-        self, loop_paths: dict[str, Path],
+        self,
+        loop_paths: dict[str, Path],
     ) -> None:
         def boom(*_a: Any, **_kw: Any) -> Any:
             raise ConnectionError("telegram unreachable")
 
         store = _FakeExtractStore(root=loop_paths["extracts"])
         ingest = _FakeIngestRunner(
-            extract_store=store, new_extracts=[("h1", "# A\n")],
+            extract_store=store,
+            new_extracts=[("h1", "# A\n")],
         )
-        idea = _FakeIdeaAgent(responses={
-            "h1": {"status": "PROPOSED", "slug": "alpha"},
-        })
+        idea = _FakeIdeaAgent(
+            responses={
+                "h1": {"status": "PROPOSED", "slug": "alpha"},
+            }
+        )
         loop = ResearchLoop(
-            ingest_runner=ingest, idea_agent=idea,  # type: ignore[arg-type]
+            ingest_runner=ingest,
+            idea_agent=idea,  # type: ignore[arg-type]
             implementer=_FakeImplementer({}, loop_paths["candidates"]),  # type: ignore[arg-type]
             debate_orchestrator=_FakeOrchestrator({}),  # type: ignore[arg-type]
-            rules_loader=lambda: [], feed_configs=[],
+            rules_loader=lambda: [],
+            feed_configs=[],
             extract_store=store,  # type: ignore[arg-type]
             state_path=loop_paths["state"],
             runs_dir=loop_paths["runs"],
@@ -843,9 +911,7 @@ class TestGate1:
         assert summary.gate1_notifications_sent == 0
         # State still records the entry as PENDING
         state = load_state(loop_paths["state"])
-        assert state.ideas_processed["h1"]["status"] == (
-            "PENDING_OPERATOR_APPROVAL"
-        )
+        assert state.ideas_processed["h1"]["status"] == ("PENDING_OPERATOR_APPROVAL")
 
 
 # --------------------------------------------------------------------------- #
@@ -868,11 +934,14 @@ def _build_promote_loop(
     test can drive GATE 2 transitions."""
     store = _FakeExtractStore(root=loop_paths["extracts"])
     ingest = _FakeIngestRunner(
-        extract_store=store, new_extracts=[("h1", "# A\n")],
+        extract_store=store,
+        new_extracts=[("h1", "# A\n")],
     )
-    idea = _FakeIdeaAgent(responses={
-        "h1": {"status": "PROPOSED", "slug": "alpha"},
-    })
+    idea = _FakeIdeaAgent(
+        responses={
+            "h1": {"status": "PROPOSED", "slug": "alpha"},
+        }
+    )
     impl = _FakeImplementer(
         responses={"alpha": impl_spec or {"status": "IMPLEMENTED"}},
         candidate_dir=loop_paths["candidates"],
@@ -880,11 +949,16 @@ def _build_promote_loop(
     transcript = loop_paths["transcripts"] / "alpha" / "transcript.md"
     transcript.parent.mkdir(parents=True)
     transcript.write_text("(stub)")
-    orch = _FakeOrchestrator(results={
-        "alpha": _make_debate_result(
-            "alpha", bull, bear, transcript=transcript,
-        ),
-    })
+    orch = _FakeOrchestrator(
+        results={
+            "alpha": _make_debate_result(
+                "alpha",
+                bull,
+                bear,
+                transcript=transcript,
+            ),
+        }
+    )
     used_registrar = registrar if registrar is not None else _FakeRegistrar()
     kwargs: dict[str, Any] = {
         "notify_fn": notify_fn or _silent_notifier,
@@ -895,10 +969,12 @@ def _build_promote_loop(
     if gate2_timeout_sec is not None:
         kwargs["gate2_timeout_sec"] = gate2_timeout_sec
     loop = ResearchLoop(
-        ingest_runner=ingest, idea_agent=idea,  # type: ignore[arg-type]
+        ingest_runner=ingest,
+        idea_agent=idea,  # type: ignore[arg-type]
         implementer=impl,  # type: ignore[arg-type]
         debate_orchestrator=orch,  # type: ignore[arg-type]
-        rules_loader=lambda: [], feed_configs=[],
+        rules_loader=lambda: [],
+        feed_configs=[],
         extract_store=store,  # type: ignore[arg-type]
         state_path=loop_paths["state"],
         runs_dir=loop_paths["runs"],
@@ -911,12 +987,14 @@ def _build_promote_loop(
 
 class TestGate2:
     def test_promote_holds_pending_and_fires_priority1_notification(
-        self, loop_paths: dict[str, Path],
+        self,
+        loop_paths: dict[str, Path],
     ) -> None:
         notifications: list[tuple[str, str, int]] = []
 
         def recorder(title: str, message: str, priority: int) -> Any:
             from src.research.notifications import DispatchResult
+
             notifications.append((title, message, priority))
             r = DispatchResult()
             r.telegram_attempted = True
@@ -924,7 +1002,8 @@ class TestGate2:
             return r
 
         loop, registrar = _build_promote_loop(
-            loop_paths, notify_fn=recorder,
+            loop_paths,
+            notify_fn=recorder,
             impl_spec={
                 "status": "IMPLEMENTED",
                 # Real-shaped candidate code so the notification can
@@ -937,9 +1016,13 @@ class TestGate2:
                     "    def generate_signals(self, data):\n"
                     "        return None\n"
                 ),
-                "report": {"oos_metrics": {
-                    "sharpe": 0.45, "max_drawdown": -0.021, "n_trades": 12,
-                }},
+                "report": {
+                    "oos_metrics": {
+                        "sharpe": 0.45,
+                        "max_drawdown": -0.021,
+                        "n_trades": 12,
+                    }
+                },
             },
         )
         # Pass 1: gate 1 holds.
@@ -975,7 +1058,8 @@ class TestGate2:
         assert "Reply: approve alpha | reject alpha" in message
 
     def test_approved_runs_registrar_on_next_pass(
-        self, loop_paths: dict[str, Path],
+        self,
+        loop_paths: dict[str, Path],
     ) -> None:
         loop, registrar = _build_promote_loop(loop_paths)
         loop.run()  # gate 1
@@ -984,30 +1068,31 @@ class TestGate2:
 
         # Operator approves deploy
         state = load_state(loop_paths["state"])
-        state.debates_completed["alpha"]["deploy_status"] = (
-            "DEPLOY_APPROVED"
-        )
+        state.debates_completed["alpha"]["deploy_status"] = "DEPLOY_APPROVED"
         save_state(state, loop_paths["state"])
 
         summary = loop.run()
         assert summary.deployments_succeeded == 1
-        assert registrar.calls == [{
-            "slug": "alpha",
-            "report": str(
-                loop_paths["candidates"] / "alpha.json",
-            ),
-            "transcript": str(
-                loop_paths["transcripts"] / "alpha" / "transcript.md",
-            ),
-            "reason": "All gates pass; both reviewers PROMOTE",
-        }]
+        assert registrar.calls == [
+            {
+                "slug": "alpha",
+                "report": str(
+                    loop_paths["candidates"] / "alpha.json",
+                ),
+                "transcript": str(
+                    loop_paths["transcripts"] / "alpha" / "transcript.md",
+                ),
+                "reason": "All gates pass; both reviewers PROMOTE",
+            }
+        ]
         state = load_state(loop_paths["state"])
         assert state.debates_completed["alpha"]["deploy_status"] == "DEPLOYED"
         assert state.debates_completed["alpha"]["pr_url"]
         assert state.debates_completed["alpha"]["branch_name"]
 
     def test_rejected_doesnt_run_registrar(
-        self, loop_paths: dict[str, Path],
+        self,
+        loop_paths: dict[str, Path],
     ) -> None:
         loop, registrar = _build_promote_loop(loop_paths)
         loop.run()
@@ -1016,12 +1101,8 @@ class TestGate2:
 
         # Operator rejects deploy
         state = load_state(loop_paths["state"])
-        state.debates_completed["alpha"]["deploy_status"] = (
-            "DEPLOY_REJECTED"
-        )
-        state.debates_completed["alpha"]["deploy_reason"] = (
-            "duplicates carry strategy"
-        )
+        state.debates_completed["alpha"]["deploy_status"] = "DEPLOY_REJECTED"
+        state.debates_completed["alpha"]["deploy_reason"] = "duplicates carry strategy"
         save_state(state, loop_paths["state"])
 
         summary = loop.run()
@@ -1030,7 +1111,8 @@ class TestGate2:
         assert registrar.calls == []
 
     def test_auto_reject_after_timeout(
-        self, loop_paths: dict[str, Path],
+        self,
+        loop_paths: dict[str, Path],
     ) -> None:
         from datetime import UTC, datetime, timedelta
 
@@ -1040,16 +1122,16 @@ class TestGate2:
             return clock_time[0]
 
         loop, registrar = _build_promote_loop(
-            loop_paths, clock=fake_clock, gate2_timeout_sec=60.0,
+            loop_paths,
+            clock=fake_clock,
+            gate2_timeout_sec=60.0,
         )
         loop.run()
         _approve_all_pending(loop_paths["state"])
         loop.run()  # gate 2 holds at t=0
 
         state = load_state(loop_paths["state"])
-        assert state.debates_completed["alpha"]["deploy_status"] == (
-            "PENDING_DEPLOY_CONFIRMATION"
-        )
+        assert state.debates_completed["alpha"]["deploy_status"] == ("PENDING_DEPLOY_CONFIRMATION")
 
         # Advance clock past timeout
         clock_time[0] = datetime(2026, 1, 1, tzinfo=UTC) + timedelta(
@@ -1058,19 +1140,18 @@ class TestGate2:
         summary = loop.run()
         assert summary.gate2_auto_rejected_expired == 1
         state = load_state(loop_paths["state"])
-        assert state.debates_completed["alpha"]["deploy_status"] == (
-            "DEPLOY_REJECTED"
-        )
-        assert "auto-REJECTED" in state.debates_completed["alpha"][
-            "deploy_reason"]
+        assert state.debates_completed["alpha"]["deploy_status"] == ("DEPLOY_REJECTED")
+        assert "auto-REJECTED" in state.debates_completed["alpha"]["deploy_reason"]
         # Registrar never ran
         assert registrar.calls == []
 
     def test_registrar_failure_marks_deploy_failed(
-        self, loop_paths: dict[str, Path],
+        self,
+        loop_paths: dict[str, Path],
     ) -> None:
         bad_registrar = _FakeRegistrar(
-            succeeded=False, error="git: branch already exists",
+            succeeded=False,
+            error="git: branch already exists",
         )
         loop, _ = _build_promote_loop(loop_paths, registrar=bad_registrar)
         loop.run()
@@ -1079,29 +1160,25 @@ class TestGate2:
 
         # Operator approves
         state = load_state(loop_paths["state"])
-        state.debates_completed["alpha"]["deploy_status"] = (
-            "DEPLOY_APPROVED"
-        )
+        state.debates_completed["alpha"]["deploy_status"] = "DEPLOY_APPROVED"
         save_state(state, loop_paths["state"])
 
         summary = loop.run()
         assert summary.deployments_failed == 1
         assert summary.deployments_succeeded == 0
-        assert any(
-            "branch already exists" in e for e in summary.errors
-        )
+        assert any("branch already exists" in e for e in summary.errors)
         state = load_state(loop_paths["state"])
-        assert state.debates_completed["alpha"]["deploy_status"] == (
-            "DEPLOY_FAILED"
-        )
+        assert state.debates_completed["alpha"]["deploy_status"] == ("DEPLOY_FAILED")
 
     def test_non_promote_verdict_no_gate2(
-        self, loop_paths: dict[str, Path],
+        self,
+        loop_paths: dict[str, Path],
     ) -> None:
         # Mixed positions → ESCALATE; no gate 2 entry created
         loop, registrar = _build_promote_loop(
             loop_paths,
-            bull=Position.PROMOTE, bear=Position.REJECT,  # ESCALATE
+            bull=Position.PROMOTE,
+            bear=Position.REJECT,  # ESCALATE
         )
         loop.run()
         _approve_all_pending(loop_paths["state"])
@@ -1123,12 +1200,14 @@ class TestGate2:
 
 class TestEscalateAlert:
     def test_escalate_fires_priority1_alert_with_context(
-        self, loop_paths: dict[str, Path],
+        self,
+        loop_paths: dict[str, Path],
     ) -> None:
         notifications: list[tuple[str, str, int]] = []
 
         def recorder(title: str, message: str, priority: int) -> Any:
             from src.research.notifications import DispatchResult
+
             notifications.append((title, message, priority))
             r = DispatchResult()
             r.telegram_attempted = True
@@ -1138,7 +1217,8 @@ class TestEscalateAlert:
         # Mixed positions → ESCALATE
         loop, _ = _build_promote_loop(
             loop_paths,
-            bull=Position.PROMOTE, bear=Position.REJECT,
+            bull=Position.PROMOTE,
+            bear=Position.REJECT,
             notify_fn=recorder,
         )
         loop.run()
@@ -1159,7 +1239,8 @@ class TestEscalateAlert:
         assert "report" in message.lower()
 
     def test_escalate_notification_deduped_across_runs(
-        self, loop_paths: dict[str, Path],
+        self,
+        loop_paths: dict[str, Path],
     ) -> None:
         # Outer loop skips already-debated slugs, so an ESCALATE alert
         # naturally fires only once across reruns of the same slug.
@@ -1167,6 +1248,7 @@ class TestEscalateAlert:
 
         def recorder(title: str, message: str, priority: int) -> Any:
             from src.research.notifications import DispatchResult
+
             notifications.append((title, message, priority))
             r = DispatchResult()
             r.telegram_attempted = True
@@ -1174,7 +1256,8 @@ class TestEscalateAlert:
 
         loop, _ = _build_promote_loop(
             loop_paths,
-            bull=Position.PROMOTE, bear=Position.REJECT,
+            bull=Position.PROMOTE,
+            bear=Position.REJECT,
             notify_fn=recorder,
         )
         loop.run()
@@ -1183,20 +1266,20 @@ class TestEscalateAlert:
         # Re-run twice; ESCALATE notification should NOT fire again.
         loop.run()
         loop.run()
-        escalate_count = sum(
-            1 for n in notifications if "ESCALATE" in n[0]
-        )
+        escalate_count = sum(1 for n in notifications if "ESCALATE" in n[0])
         assert escalate_count == 1
 
     def test_escalate_notifier_failure_doesnt_kill_run(
-        self, loop_paths: dict[str, Path],
+        self,
+        loop_paths: dict[str, Path],
     ) -> None:
         def boom(*_a: Any, **_kw: Any) -> Any:
             raise ConnectionError("telegram unreachable")
 
         loop, _ = _build_promote_loop(
             loop_paths,
-            bull=Position.PROMOTE, bear=Position.REJECT,
+            bull=Position.PROMOTE,
+            bear=Position.REJECT,
             notify_fn=boom,
         )
         loop.run()
@@ -1264,14 +1347,16 @@ class TestTransientErrorRetry:
     def _make_loop(self, loop_paths, idea):
         store = _FakeExtractStore(root=loop_paths["extracts"])
         ingest = _FakeIngestRunner(
-            extract_store=store, new_extracts=[("hash1", "# Paper A\nbody")],
+            extract_store=store,
+            new_extracts=[("hash1", "# Paper A\nbody")],
         )
         return ResearchLoop(
-            ingest_runner=ingest, idea_agent=idea,  # type: ignore[arg-type]
-            implementer=_FakeImplementer(
-                responses={}, candidate_dir=loop_paths["candidates"]),  # type: ignore[arg-type]
+            ingest_runner=ingest,
+            idea_agent=idea,  # type: ignore[arg-type]
+            implementer=_FakeImplementer(responses={}, candidate_dir=loop_paths["candidates"]),  # type: ignore[arg-type]
             debate_orchestrator=_FakeOrchestrator(results={}),  # type: ignore[arg-type]
-            rules_loader=lambda: [], feed_configs=[],
+            rules_loader=lambda: [],
+            feed_configs=[],
             extract_store=store,  # type: ignore[arg-type]
             state_path=loop_paths["state"],
             runs_dir=loop_paths["runs"],
@@ -1281,11 +1366,13 @@ class TestTransientErrorRetry:
         )
 
     def test_idea_phase_retries_transient_then_succeeds(
-        self, loop_paths: dict[str, Path],
+        self,
+        loop_paths: dict[str, Path],
     ) -> None:
         idea = _FlakyIdeaAgent(
             responses={"hash1": {"status": "PROPOSED", "slug": "alpha"}},
-            exc=TimeoutError("network outage"), fail_times=1,
+            exc=TimeoutError("network outage"),
+            fail_times=1,
         )
         loop = self._make_loop(loop_paths, idea)
         loop.run()  # run 1: transient ERROR recorded
@@ -1295,16 +1382,17 @@ class TestTransientErrorRetry:
         assert entry["transient"] is True and entry["attempts"] == 1
         loop.run()  # run 2: retried -> PROPOSED (previously wedged forever)
         state2 = json.loads(loop_paths["state"].read_text())
-        assert state2["ideas_processed"]["hash1"]["status"] == (
-            "PENDING_OPERATOR_APPROVAL")
+        assert state2["ideas_processed"]["hash1"]["status"] == ("PENDING_OPERATOR_APPROVAL")
         assert len(idea.calls) == 2
 
     def test_idea_phase_content_error_stays_terminal(
-        self, loop_paths: dict[str, Path],
+        self,
+        loop_paths: dict[str, Path],
     ) -> None:
         idea = _FlakyIdeaAgent(
             responses={"hash1": {"status": "PROPOSED", "slug": "alpha"}},
-            exc=ValueError("unparseable output"), fail_times=99,
+            exc=ValueError("unparseable output"),
+            fail_times=99,
         )
         loop = self._make_loop(loop_paths, idea)
         loop.run()

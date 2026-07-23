@@ -52,7 +52,9 @@ class TestEvent:
 
     def test_tz_aware_accepted(self) -> None:
         e = EconomicEvent(
-            ts=T0, event_type="NFP", severity_tier=SeverityTier.TIER_1,
+            ts=T0,
+            event_type="NFP",
+            severity_tier=SeverityTier.TIER_1,
         )
         assert e.event_type == "NFP"
 
@@ -64,31 +66,39 @@ class TestEvent:
 
 class TestCalendar:
     def test_upcoming_filters_by_horizon(self) -> None:
-        cal = EconomicCalendar([
-            _evt(hours_from_t0=2),    # in horizon
-            _evt(hours_from_t0=72),   # outside 48h horizon
-            _evt(hours_from_t0=-1),   # in past
-        ])
+        cal = EconomicCalendar(
+            [
+                _evt(hours_from_t0=2),  # in horizon
+                _evt(hours_from_t0=72),  # outside 48h horizon
+                _evt(hours_from_t0=-1),  # in past
+            ]
+        )
         upcoming = cal.upcoming(now=T0, horizon_hours=48.0)
         assert len(upcoming) == 1
 
     def test_upcoming_filters_by_tier(self) -> None:
-        cal = EconomicCalendar([
-            _evt(hours_from_t0=1, tier=SeverityTier.TIER_1),
-            _evt(hours_from_t0=2, tier=SeverityTier.TIER_2),
-        ])
+        cal = EconomicCalendar(
+            [
+                _evt(hours_from_t0=1, tier=SeverityTier.TIER_1),
+                _evt(hours_from_t0=2, tier=SeverityTier.TIER_2),
+            ]
+        )
         only_t1 = cal.upcoming(
-            now=T0, horizon_hours=48.0, tiers=[SeverityTier.TIER_1],
+            now=T0,
+            horizon_hours=48.0,
+            tiers=[SeverityTier.TIER_1],
         )
         assert len(only_t1) == 1
         assert only_t1[0].severity_tier == SeverityTier.TIER_1
 
     def test_upcoming_filters_by_currency(self) -> None:
-        cal = EconomicCalendar([
-            _evt(hours_from_t0=1, currency="USD"),
-            _evt(hours_from_t0=2, currency="EUR"),
-            _evt(hours_from_t0=3, currency=None),  # global
-        ])
+        cal = EconomicCalendar(
+            [
+                _evt(hours_from_t0=1, currency="USD"),
+                _evt(hours_from_t0=2, currency="EUR"),
+                _evt(hours_from_t0=3, currency=None),  # global
+            ]
+        )
         usd_only = cal.upcoming(now=T0, horizon_hours=48.0, currency="USD")
         # USD event AND global event (currency=None) match.
         assert len(usd_only) == 2
@@ -181,18 +191,22 @@ class TestEvaluator:
     def test_most_restrictive_wins_across_events(self) -> None:
         # One event 12h out (size-down), another 15min out (exit-flat) —
         # exit-flat must win.
-        cal = EconomicCalendar([
-            _evt(hours_from_t0=12),
-            _evt(hours_from_t0=0.25),
-        ])
+        cal = EconomicCalendar(
+            [
+                _evt(hours_from_t0=12),
+                _evt(hours_from_t0=0.25),
+            ]
+        )
         ev = BlackoutEvaluator(cal)
         decision = ev.evaluate(now=T0)
         assert decision.action == BlackoutAction.EXIT_FLAT
 
     def test_tier_3_does_not_trigger_by_default(self) -> None:
-        cal = EconomicCalendar([
-            _evt(hours_from_t0=0.1, tier=SeverityTier.TIER_3),
-        ])
+        cal = EconomicCalendar(
+            [
+                _evt(hours_from_t0=0.1, tier=SeverityTier.TIER_3),
+            ]
+        )
         ev = BlackoutEvaluator(cal)
         decision = ev.evaluate(now=T0)
         # All tier-3 windows are 0 by default.
@@ -200,9 +214,11 @@ class TestEvaluator:
 
     def test_currency_filter_excludes_unrelated_events(self) -> None:
         # JPY event in 12h, but we ask for USD currency only.
-        cal = EconomicCalendar([
-            _evt(hours_from_t0=12, currency="JPY"),
-        ])
+        cal = EconomicCalendar(
+            [
+                _evt(hours_from_t0=12, currency="JPY"),
+            ]
+        )
         ev = BlackoutEvaluator(cal)
         decision = ev.evaluate(now=T0, currency="USD")
         # JPY event filtered out — no upcoming for USD-relevant trades.

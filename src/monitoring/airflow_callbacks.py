@@ -35,11 +35,14 @@ logger = logging.getLogger(__name__)
 def _record(dag_id: str, status: str) -> None:
     try:
         from src.monitoring.metrics import dag_runs
+
         dag_runs.labels(dag_id=dag_id, status=status).inc()
     except Exception:
         logger.warning(
             "Airflow callback could not emit dag_runs metric (dag=%s status=%s)",
-            dag_id, status, exc_info=True,
+            dag_id,
+            status,
+            exc_info=True,
         )
 
 

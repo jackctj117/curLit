@@ -25,6 +25,7 @@ class _Broker:
     def place_order(self, order):  # noqa: ANN001, ANN201
         self.orders.append((order.symbol, order.side, order.quantity))
         from src.execution.broker import OrderStatus
+
         order.status = OrderStatus.FILLED
         order.order_id = "t1"
         return order
@@ -89,6 +90,7 @@ class _RejectingBroker:
 
     def place_order(self, order):  # noqa: ANN001, ANN201
         from src.execution.broker import OrderStatus
+
         self.calls += 1
         order.status = OrderStatus.REJECTED
         order.reject_reason = "INSUFFICIENT_MARGIN"
@@ -101,10 +103,15 @@ class _RecordingRejectionHandler:
 
     def handle(self, intent, order, exc, attempt, response_text=None):  # noqa: ANN001, ANN201
         from types import SimpleNamespace
+
         self.handled.append(str(exc))
-        return SimpleNamespace(should_retry=False, halt_strategy=False,
-                               sleep_sec=0.0, next_size_fraction=1.0,
-                               final_resolution=SimpleNamespace(value="abort"))
+        return SimpleNamespace(
+            should_retry=False,
+            halt_strategy=False,
+            sleep_sec=0.0,
+            next_size_fraction=1.0,
+            final_resolution=SimpleNamespace(value="abort"),
+        )
 
 
 def test_rejected_status_routes_through_rejection_handler():
@@ -115,7 +122,7 @@ def test_rejected_status_routes_through_rejection_handler():
     oms = OrderManager(broker, rejection_handler=handler)  # type: ignore[arg-type]
     oms.submit_intent(_intent("USD_CAD", -8916.0))
     assert handler.handled == ["INSUFFICIENT_MARGIN"]  # policy path fired
-    assert oms.has_pending() is False                  # no poisoned pending
+    assert oms.has_pending() is False  # no poisoned pending
 
 
 def test_rejected_status_without_handler_drops_cleanly():

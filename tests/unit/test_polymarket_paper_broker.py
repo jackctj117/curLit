@@ -16,9 +16,11 @@ from src.execution.polymarket_data_source import (
 from src.execution.polymarket_paper_broker import PolymarketPaperBroker
 
 
-def _book(asks: list[tuple[str, str]] | None = None,
-          bids: list[tuple[str, str]] | None = None,
-          token_id: str = "tok-1") -> OrderBookSnapshot:
+def _book(
+    asks: list[tuple[str, str]] | None = None,
+    bids: list[tuple[str, str]] | None = None,
+    token_id: str = "tok-1",
+) -> OrderBookSnapshot:
     return OrderBookSnapshot(
         token_id=token_id,
         bids=[BookLevel(Decimal(p), Decimal(s)) for p, s in (bids or [])],
@@ -37,14 +39,19 @@ def _ds_with_book(book: OrderBookSnapshot) -> PolymarketDataSource:
 
 class TestImmediateFill:
     def test_buy_at_top_ask_fills(self) -> None:
-        ds = _ds_with_book(_book(
-            asks=[("0.50", "100"), ("0.51", "100")],
-            bids=[("0.49", "100")],
-        ))
+        ds = _ds_with_book(
+            _book(
+                asks=[("0.50", "100"), ("0.51", "100")],
+                bids=[("0.49", "100")],
+            )
+        )
         broker = PolymarketPaperBroker(data_source=ds)
         order = Order(
-            symbol="POLY:tok-1", side="buy", quantity=10,
-            order_type=OrderType.LIMIT, limit_price=0.50,
+            symbol="POLY:tok-1",
+            side="buy",
+            quantity=10,
+            order_type=OrderType.LIMIT,
+            limit_price=0.50,
         )
         out = broker.place_order(order)
         assert out.status == OrderStatus.FILLED
@@ -59,13 +66,18 @@ class TestImmediateFill:
         # Wait — this v1 simulator fills at the LIMIT price (0.55)
         # for simplicity. That's an operator-favorable assumption
         # documented in the broker's _simulate_fill docstring.
-        ds = _ds_with_book(_book(
-            asks=[("0.50", "100"), ("0.55", "50")],
-        ))
+        ds = _ds_with_book(
+            _book(
+                asks=[("0.50", "100"), ("0.55", "50")],
+            )
+        )
         broker = PolymarketPaperBroker(data_source=ds)
         order = Order(
-            symbol="POLY:tok-1", side="buy", quantity=200,
-            order_type=OrderType.LIMIT, limit_price=0.55,
+            symbol="POLY:tok-1",
+            side="buy",
+            quantity=200,
+            order_type=OrderType.LIMIT,
+            limit_price=0.55,
         )
         out = broker.place_order(order)
         assert out.status == OrderStatus.FILLED
@@ -73,27 +85,36 @@ class TestImmediateFill:
         assert broker.get_positions()[0].quantity == 150
 
     def test_sell_above_top_bid_rests(self) -> None:
-        ds = _ds_with_book(_book(
-            asks=[("0.51", "100")],
-            bids=[("0.49", "100")],
-        ))
+        ds = _ds_with_book(
+            _book(
+                asks=[("0.51", "100")],
+                bids=[("0.49", "100")],
+            )
+        )
         broker = PolymarketPaperBroker(data_source=ds)
         order = Order(
-            symbol="POLY:tok-1", side="sell", quantity=10,
-            order_type=OrderType.LIMIT, limit_price=0.55,
+            symbol="POLY:tok-1",
+            side="sell",
+            quantity=10,
+            order_type=OrderType.LIMIT,
+            limit_price=0.55,
         )
         out = broker.place_order(order)
         assert out.status == OrderStatus.PENDING
         assert broker.get_positions() == []
 
     def test_market_order_takes_top_of_book(self) -> None:
-        ds = _ds_with_book(_book(
-            asks=[("0.50", "100")],
-            bids=[("0.49", "100")],
-        ))
+        ds = _ds_with_book(
+            _book(
+                asks=[("0.50", "100")],
+                bids=[("0.49", "100")],
+            )
+        )
         broker = PolymarketPaperBroker(data_source=ds)
         order = Order(
-            symbol="POLY:tok-1", side="buy", quantity=10,
+            symbol="POLY:tok-1",
+            side="buy",
+            quantity=10,
             order_type=OrderType.MARKET,
         )
         out = broker.place_order(order)
@@ -106,8 +127,11 @@ class TestValidation:
         ds = _ds_with_book(_book())
         broker = PolymarketPaperBroker(data_source=ds)
         order = Order(
-            symbol="POLY:tok-1", side="buy", quantity=10,
-            order_type=OrderType.LIMIT, limit_price=0.005,  # below floor
+            symbol="POLY:tok-1",
+            side="buy",
+            quantity=10,
+            order_type=OrderType.LIMIT,
+            limit_price=0.005,  # below floor
         )
         with pytest.raises(ValueError, match="outside"):
             broker.place_order(order)
@@ -116,8 +140,11 @@ class TestValidation:
         ds = _ds_with_book(_book())
         broker = PolymarketPaperBroker(data_source=ds)
         order = Order(
-            symbol="POLY:tok-1", side="buy", quantity=10,
-            order_type=OrderType.LIMIT, limit_price=0.505,  # off tick
+            symbol="POLY:tok-1",
+            side="buy",
+            quantity=10,
+            order_type=OrderType.LIMIT,
+            limit_price=0.505,  # off tick
         )
         with pytest.raises(ValueError, match="not on"):
             broker.place_order(order)
@@ -126,8 +153,11 @@ class TestValidation:
         ds = _ds_with_book(_book())
         broker = PolymarketPaperBroker(data_source=ds)
         order = Order(
-            symbol="POLY:tok-1", side="buy", quantity=0,
-            order_type=OrderType.LIMIT, limit_price=0.50,
+            symbol="POLY:tok-1",
+            side="buy",
+            quantity=0,
+            order_type=OrderType.LIMIT,
+            limit_price=0.50,
         )
         with pytest.raises(ValueError, match="quantity must be positive"):
             broker.place_order(order)
@@ -135,36 +165,60 @@ class TestValidation:
 
 class TestPositionLifecycle:
     def test_buy_then_sell_zeros_out(self) -> None:
-        ds = _ds_with_book(_book(
-            asks=[("0.50", "100")],
-            bids=[("0.50", "100")],
-        ))
+        ds = _ds_with_book(
+            _book(
+                asks=[("0.50", "100")],
+                bids=[("0.50", "100")],
+            )
+        )
         broker = PolymarketPaperBroker(data_source=ds)
-        broker.place_order(Order(
-            symbol="POLY:tok-1", side="buy", quantity=10,
-            order_type=OrderType.LIMIT, limit_price=0.50,
-        ))
-        broker.place_order(Order(
-            symbol="POLY:tok-1", side="sell", quantity=10,
-            order_type=OrderType.LIMIT, limit_price=0.50,
-        ))
+        broker.place_order(
+            Order(
+                symbol="POLY:tok-1",
+                side="buy",
+                quantity=10,
+                order_type=OrderType.LIMIT,
+                limit_price=0.50,
+            )
+        )
+        broker.place_order(
+            Order(
+                symbol="POLY:tok-1",
+                side="sell",
+                quantity=10,
+                order_type=OrderType.LIMIT,
+                limit_price=0.50,
+            )
+        )
         # Position closed → not in positions list.
         assert broker.get_positions() == []
 
     def test_partial_close_preserves_avg_price(self) -> None:
-        ds = _ds_with_book(_book(
-            asks=[("0.50", "100")],
-            bids=[("0.55", "100")],
-        ))
+        ds = _ds_with_book(
+            _book(
+                asks=[("0.50", "100")],
+                bids=[("0.55", "100")],
+            )
+        )
         broker = PolymarketPaperBroker(data_source=ds)
-        broker.place_order(Order(
-            symbol="POLY:tok-1", side="buy", quantity=20,
-            order_type=OrderType.LIMIT, limit_price=0.50,
-        ))
-        broker.place_order(Order(
-            symbol="POLY:tok-1", side="sell", quantity=5,
-            order_type=OrderType.LIMIT, limit_price=0.55,
-        ))
+        broker.place_order(
+            Order(
+                symbol="POLY:tok-1",
+                side="buy",
+                quantity=20,
+                order_type=OrderType.LIMIT,
+                limit_price=0.50,
+            )
+        )
+        broker.place_order(
+            Order(
+                symbol="POLY:tok-1",
+                side="sell",
+                quantity=5,
+                order_type=OrderType.LIMIT,
+                limit_price=0.55,
+            )
+        )
         positions = broker.get_positions()
         assert len(positions) == 1
         assert positions[0].quantity == 15
@@ -188,12 +242,18 @@ class TestAccount:
     def test_buy_reduces_cash(self) -> None:
         ds = _ds_with_book(_book(asks=[("0.50", "100")]))
         broker = PolymarketPaperBroker(
-            data_source=ds, initial_capital_usdc=Decimal("1000"),
+            data_source=ds,
+            initial_capital_usdc=Decimal("1000"),
         )
-        broker.place_order(Order(
-            symbol="POLY:tok-1", side="buy", quantity=10,
-            order_type=OrderType.LIMIT, limit_price=0.50,
-        ))
+        broker.place_order(
+            Order(
+                symbol="POLY:tok-1",
+                side="buy",
+                quantity=10,
+                order_type=OrderType.LIMIT,
+                limit_price=0.50,
+            )
+        )
         acct = broker.get_account()
         # Spent 5 USDC on 10 shares at 0.50, plus 0.01 gas = 994.99 cash.
         # Equity = cash + position notional (0.50 * 10) = 994.99 + 5 = 999.99.
@@ -206,8 +266,11 @@ class TestCancelOrder:
         ds = _ds_with_book(_book(asks=[("0.51", "100")]))
         broker = PolymarketPaperBroker(data_source=ds)
         order = Order(
-            symbol="POLY:tok-1", side="buy", quantity=10,
-            order_type=OrderType.LIMIT, limit_price=0.40,  # below ask
+            symbol="POLY:tok-1",
+            side="buy",
+            quantity=10,
+            order_type=OrderType.LIMIT,
+            limit_price=0.40,  # below ask
         )
         broker.place_order(order)
         assert broker.cancel_order(order.order_id) is True

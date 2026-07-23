@@ -79,27 +79,35 @@ def _build_parser() -> argparse.ArgumentParser:
         description="X account watchlist monitor → Telegram (CL-3j86)",
     )
     p.add_argument(
-        "--once", action="store_true",
+        "--once",
+        action="store_true",
         help="Run one poll cycle and exit",
     )
     p.add_argument(
-        "--loop", type=int, default=DEFAULT_LOOP_INTERVAL_SEC, metavar="SEC",
+        "--loop",
+        type=int,
+        default=DEFAULT_LOOP_INTERVAL_SEC,
+        metavar="SEC",
         help=f"Seconds between cycles (default {DEFAULT_LOOP_INTERVAL_SEC})",
     )
     p.add_argument(
-        "--dry-run", action="store_true",
+        "--dry-run",
+        action="store_true",
         help="Print notifications to stdout instead of sending to Telegram",
     )
     p.add_argument(
-        "--watchlist", default=str(DEFAULT_WATCHLIST_PATH),
+        "--watchlist",
+        default=str(DEFAULT_WATCHLIST_PATH),
         help="Path to the watchlist YAML",
     )
     p.add_argument(
-        "--state-file", default=str(DEFAULT_STATE_PATH),
+        "--state-file",
+        default=str(DEFAULT_STATE_PATH),
         help="Path to the since_id / budget state file",
     )
     p.add_argument(
-        "--user-ids-file", default=str(DEFAULT_USER_IDS_PATH),
+        "--user-ids-file",
+        default=str(DEFAULT_USER_IDS_PATH),
         help="Path to the handle → user-id cache file",
     )
     return p
@@ -118,14 +126,18 @@ def _log_summary(summary: CycleSummary) -> None:
         logger.info("cycle stopped: monthly read budget exhausted")
         return
     logger.info(
-        "cycle complete: polled=%d new_posts=%d ingested=%d "
-        "notifications=%d reads_used=%d", summary.polled, summary.new_posts,
-        summary.ingested, summary.notifications, summary.reads_used,
+        "cycle complete: polled=%d new_posts=%d ingested=%d notifications=%d reads_used=%d",
+        summary.polled,
+        summary.new_posts,
+        summary.ingested,
+        summary.notifications,
+        summary.reads_used,
     )
 
 
 def main(argv: list[str] | None = None) -> int:
     from src.dotenv_bootstrap import load_project_env  # noqa: PLC0415
+
     load_project_env()
     logging.basicConfig(
         level=logging.INFO,
@@ -159,7 +171,9 @@ def main(argv: list[str] | None = None) -> int:
 
     logger.info(
         "x_monitor starting: %d accounts, backend=%s, cap=%d reads/mo",
-        len(accounts), type(transport).__name__, config.monthly_cap,
+        len(accounts),
+        type(transport).__name__,
+        config.monthly_cap,
     )
 
     if args.once:

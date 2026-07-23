@@ -165,7 +165,8 @@ class OrderManager:
             sym_lock.acquire()
         try:
             return self._submit_reserved(
-                intent, bypass_halt=bypass_halt,
+                intent,
+                bypass_halt=bypass_halt,
                 positions=None if contended else positions,
             )
         finally:
@@ -188,13 +189,8 @@ class OrderManager:
             # exit deltas of 0 (positions never closed at the broker) and
             # entries that stacked on an existing position. Routing below
             # still uses intent.symbol (broker _to_oanda is idempotent).
-            snapshot = (
-                positions if positions is not None
-                else self.broker.get_positions()
-            )
-            current_positions = {
-                canonical_symbol(p.symbol): p.quantity for p in snapshot
-            }
+            snapshot = positions if positions is not None else self.broker.get_positions()
+            current_positions = {canonical_symbol(p.symbol): p.quantity for p in snapshot}
             current_qty = current_positions.get(canonical_symbol(intent.symbol), 0.0)
             delta = intent.target_position - current_qty
 
@@ -206,24 +202,25 @@ class OrderManager:
             # the lock (halt-TOCTOU, CL-8lv6): halt_new_trades takes the same
             # lock, so the flag read and the place decision are atomic.
             if self._halted and not bypass_halt:
-                reducing = (
-                    abs(intent.target_position) < abs(current_qty)
-                    and (intent.target_position == 0.0
-                         or intent.target_position * current_qty > 0)
+                reducing = abs(intent.target_position) < abs(current_qty) and (
+                    intent.target_position == 0.0 or intent.target_position * current_qty > 0
                 )
                 if not reducing:
                     logger.warning(
                         "OMS halted — rejecting non-reducing intent %s "
                         "(%s target=%.4f current=%.4f)",
-                        intent.intent_id, intent.symbol,
-                        intent.target_position, current_qty,
+                        intent.intent_id,
+                        intent.symbol,
+                        intent.target_position,
+                        current_qty,
                     )
                     return intent.intent_id
                 logger.warning(
-                    "OMS halted — allowing risk-REDUCING intent %s "
-                    "(%s target=%.4f current=%.4f)",
-                    intent.intent_id, intent.symbol,
-                    intent.target_position, current_qty,
+                    "OMS halted — allowing risk-REDUCING intent %s (%s target=%.4f current=%.4f)",
+                    intent.intent_id,
+                    intent.symbol,
+                    intent.target_position,
+                    current_qty,
                 )
 
             intent_payload: dict[str, Any] = {
@@ -254,8 +251,7 @@ class OrderManager:
         # concurrent bypass_halt emergency de-risk isn't queued behind a slow
         # strategy order. _submit_with_retry re-acquires the lock only for its
         # short _pending mutations.
-        self._submit_with_retry(intent, side, abs(delta),
-                                emergency=bypass_halt)
+        self._submit_with_retry(intent, side, abs(delta), emergency=bypass_halt)
         return intent.intent_id
 
     async def submit_intent_async(
@@ -275,8 +271,10 @@ class OrderManager:
         kill switches, reconciler).
         """
         return await asyncio.to_thread(
-            self.submit_intent, intent,
-            bypass_halt=bypass_halt, positions=positions,
+            self.submit_intent,
+            intent,
+            bypass_halt=bypass_halt,
+            positions=positions,
         )
 
     def _submit_with_retry(
@@ -304,24 +302,26 @@ class OrderManager:
                 # as before — strictly no worse than the old behavior.
                 try:
                     fresh = {
-                        canonical_symbol(p.symbol): p.quantity
-                        for p in self.broker.get_positions()
+                        canonical_symbol(p.symbol): p.quantity for p in self.broker.get_positions()
                     }
                     residual = intent.target_position - fresh.get(
-                        canonical_symbol(intent.symbol), 0.0,
+                        canonical_symbol(intent.symbol),
+                        0.0,
                     )
                     if abs(residual) < self._min_trade_size(intent.symbol):
                         logger.warning(
                             "Retry ABORTED for %s — position already at target "
                             "%.4f (a prior attempt filled despite the error); "
                             "not double-submitting",
-                            intent.symbol, intent.target_position,
+                            intent.symbol,
+                            intent.target_position,
                         )
                         return
                 except Exception:
                     logger.debug(
                         "retry re-read failed for %s; proceeding with retry",
-                        intent.symbol, exc_info=True,
+                        intent.symbol,
+                        exc_info=True,
                     )
             qty = original_qty * size_fraction
             order = Order(
@@ -380,7 +380,11 @@ class OrderManager:
                         self._pending_intents[intent.intent_id] = intent
                 logger.info(
                     "Placed %s %s %.4f (attempt=%d, fraction=%.2f)",
-                    intent.symbol, side, qty, attempt, size_fraction,
+                    intent.symbol,
+                    side,
+                    qty,
+                    attempt,
+                    size_fraction,
                 )
                 self._journal_event(
                     EventType.ORDER_PLACED,
@@ -432,7 +436,9 @@ class OrderManager:
                 if not outcome.should_retry:
                     logger.warning(
                         "Giving up on %s after %d attempts (resolution=%s)",
-                        intent.intent_id, attempt, outcome.final_resolution.value,
+                        intent.intent_id,
+                        attempt,
+                        outcome.final_resolution.value,
                     )
                     return
 
@@ -473,10 +479,7 @@ class OrderManager:
                     # Bounded: redeliveries are always recent, so dropping old
                     # ids is safe. Keep the one we just processed.
                     self._seen_fills = {fill_id}
-            intent = (
-                self._pending_intents.pop(str(client_id), None)
-                if client_id else None
-            )
+            intent = self._pending_intents.pop(str(client_id), None) if client_id else None
             if client_id:
                 self._pending.pop(str(client_id), None)
         symbol = str(fill.get("instrument") or (intent.symbol if intent else ""))
@@ -504,8 +507,11 @@ class OrderManager:
         )
         logger.info(
             "ORDER_FILLED (stream): client=%s order=%s %s units=%s @ %s",
-            client_id, fill.get("order_id"), symbol,
-            fill.get("units"), fill.get("price"),
+            client_id,
+            fill.get("order_id"),
+            symbol,
+            fill.get("units"),
+            fill.get("price"),
         )
         return True
 
@@ -553,5 +559,6 @@ class OrderManager:
         except Exception:
             logger.exception(
                 "Trade journal append failed (event=%s intent=%s) — continuing",
-                event_type.value, intent.intent_id,
+                event_type.value,
+                intent.intent_id,
             )

@@ -92,9 +92,8 @@ class GPRateDiffModel:
         self._train_mean = float(y_raw.mean())
         y = y_raw - self._train_mean
 
-        kernel = (
-            RBF(length_scale=_RBF_LENGTH_SCALE_INIT)
-            + WhiteKernel(noise_level=_WHITE_NOISE_INIT)
+        kernel = RBF(length_scale=_RBF_LENGTH_SCALE_INIT) + WhiteKernel(
+            noise_level=_WHITE_NOISE_INIT
         )
         self._model = GaussianProcessRegressor(
             kernel=kernel,
@@ -129,7 +128,9 @@ class GPRateDiffModel:
 
 
 def position_size_from_uncertainty(
-    base_size: float, std: float, std_floor: float = 1e-6,
+    base_size: float,
+    std: float,
+    std_floor: float = 1e-6,
 ) -> float:
     """Scale base position size inversely with prediction std.
 

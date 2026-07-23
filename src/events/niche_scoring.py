@@ -42,16 +42,39 @@ _BULLISH_NICHE_ACTIONS = frozenset({"long", "buy_calls"})
 #: prose ("torque_reason"); we look for leverage keywords rather than
 #: trusting a self-scored number it has no calibration for.
 _TORQUE_KEYWORDS: dict[str, float] = {
-    "single-asset": 1.0, "single asset": 1.0, "pure-play": 0.9,
-    "pure play": 0.9, "one mine": 1.0, "sole": 0.9, "only producer": 0.9,
-    "high fixed cost": 0.8, "operating leverage": 0.85, "operational leverage": 0.85,
-    "financial leverage": 0.8, "levered": 0.8, "high debt": 0.75,
-    "net debt": 0.7, "royalty": 0.7, "streaming": 0.7, "offtake": 0.7,
-    "junior": 0.85, "microcap": 0.8, "micro-cap": 0.8, "small-cap": 0.6,
-    "small cap": 0.6, "under-followed": 0.7, "underfollowed": 0.7,
-    "no coverage": 0.8, "uncovered": 0.75, "non-consensus": 0.6,
-    "sole supplier": 1.0, "bottleneck": 0.85, "chokepoint": 0.8,
-    "convert": 0.6, "convertible": 0.6, "distress": 0.75,
+    "single-asset": 1.0,
+    "single asset": 1.0,
+    "pure-play": 0.9,
+    "pure play": 0.9,
+    "one mine": 1.0,
+    "sole": 0.9,
+    "only producer": 0.9,
+    "high fixed cost": 0.8,
+    "operating leverage": 0.85,
+    "operational leverage": 0.85,
+    "financial leverage": 0.8,
+    "levered": 0.8,
+    "high debt": 0.75,
+    "net debt": 0.7,
+    "royalty": 0.7,
+    "streaming": 0.7,
+    "offtake": 0.7,
+    "junior": 0.85,
+    "microcap": 0.8,
+    "micro-cap": 0.8,
+    "small-cap": 0.6,
+    "small cap": 0.6,
+    "under-followed": 0.7,
+    "underfollowed": 0.7,
+    "no coverage": 0.8,
+    "uncovered": 0.75,
+    "non-consensus": 0.6,
+    "sole supplier": 1.0,
+    "bottleneck": 0.85,
+    "chokepoint": 0.8,
+    "convert": 0.6,
+    "convertible": 0.6,
+    "distress": 0.75,
 }
 
 
@@ -88,8 +111,8 @@ class AsymmetryConfig:
     #: Market-cap band for the "smallness" (under-followed) bonus. A cap
     #: at/under ``small_cap_ceiling`` earns the full smallness weight; at/
     #: over ``large_cap_floor`` earns none; linear in log-space between.
-    small_cap_ceiling: float = 300_000_000.0     # $300M — micro/small
-    large_cap_floor: float = 20_000_000_000.0     # $20B — well-covered
+    small_cap_ceiling: float = 300_000_000.0  # $300M — micro/small
+    large_cap_floor: float = 20_000_000_000.0  # $20B — well-covered
 
     #: Only ideas scoring >= this surface; the rest are logged, not shown.
     asymmetry_threshold: float = 0.45
@@ -208,16 +231,18 @@ def parse_niche_ideas(raw_text: str) -> list[NicheIdea]:
         direction = str(entry.get("direction", "")).strip().lower()
         if direction not in ("bullish", "bearish"):
             direction = "bullish" if action in _BULLISH_NICHE_ACTIONS else "bearish"
-        ideas.append(NicheIdea(
-            ticker=ticker,
-            company_name=company,
-            action=action,
-            direction=direction,
-            hop_count=clamp_int(entry.get("hop_count"), 1, 8, 1),
-            torque_reason=str(entry.get("torque_reason", "")).strip(),
-            rationale=str(entry.get("rationale", "")).strip(),
-            confidence=clamp_float(entry.get("confidence"), 0.0, 1.0, 0.4),
-        ))
+        ideas.append(
+            NicheIdea(
+                ticker=ticker,
+                company_name=company,
+                action=action,
+                direction=direction,
+                hop_count=clamp_int(entry.get("hop_count"), 1, 8, 1),
+                torque_reason=str(entry.get("torque_reason", "")).strip(),
+                rationale=str(entry.get("rationale", "")).strip(),
+                confidence=clamp_float(entry.get("confidence"), 0.0, 1.0, 0.4),
+            )
+        )
         if len(ideas) >= MAX_NICHE_IDEAS:
             break
     return ideas
@@ -266,9 +291,10 @@ def verify_ideas(ideas: list[NicheIdea], universe: Any) -> list[NicheIdea]:
             resolved = str(best.get("symbol") or "").strip()
             if resolved and universe.exists(resolved):
                 logger.info(
-                    "niche verify: corrected ticker %r -> %s (%s) via company "
-                    "name %r",
-                    idea.ticker or "?", resolved, best.get("security_name"),
+                    "niche verify: corrected ticker %r -> %s (%s) via company name %r",
+                    idea.ticker or "?",
+                    resolved,
+                    best.get("security_name"),
                     idea.company_name,
                 )
                 idea.ticker = resolved.upper()
@@ -283,7 +309,8 @@ def verify_ideas(ideas: list[NicheIdea], universe: Any) -> list[NicheIdea]:
         # (c) drop
         logger.info(
             "niche verify: unverified niche ticker %r/%r dropped",
-            idea.ticker or "?", idea.company_name or "?",
+            idea.ticker or "?",
+            idea.company_name or "?",
         )
         idea.dropped_reason = "unverified"
     return survivors
@@ -370,9 +397,7 @@ def asymmetry_score(
         smallness = 0.0
 
     score = (
-        cfg.hop_weight * hop_norm
-        + cfg.torque_weight * torque
-        + cfg.smallness_weight * smallness
+        cfg.hop_weight * hop_norm + cfg.torque_weight * torque + cfg.smallness_weight * smallness
     )
     if liquidity_flag:
         score -= cfg.illiquid_penalty
@@ -415,7 +440,10 @@ def score_and_gate(
             logger.info(
                 "niche gate: %s (%s, %d hops) score=%.3f below threshold "
                 "%.2f%s — logged not surfaced",
-                idea.ticker, idea.company_name, idea.hop_count, score,
+                idea.ticker,
+                idea.company_name,
+                idea.hop_count,
+                score,
                 cfg.asymmetry_threshold,
                 " [illiquid]" if idea.liquidity_flag else "",
             )

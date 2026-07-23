@@ -37,7 +37,9 @@ class TestEvaluate:
         policy = AllocationPolicy()
         paper_start = datetime.now(UTC) - timedelta(days=30)
         d = policy.evaluate(
-            "s1", paper_start, _returns_with_sharpe(1.0, 30),
+            "s1",
+            paper_start,
+            _returns_with_sharpe(1.0, 30),
         )
         assert d.verdict is PromotionVerdict.HOLD
         assert "Paper days" in d.reason
@@ -47,7 +49,9 @@ class TestEvaluate:
         paper_start = datetime.now(UTC) - timedelta(days=120)
         # Sharpe below floor (default 0.5) → REJECT
         d = policy.evaluate(
-            "s1", paper_start, _returns_with_sharpe(0.1, 100),
+            "s1",
+            paper_start,
+            _returns_with_sharpe(0.1, 100),
         )
         assert d.verdict is PromotionVerdict.REJECT
 
@@ -55,7 +59,9 @@ class TestEvaluate:
         policy = AllocationPolicy()
         paper_start = datetime.now(UTC) - timedelta(days=120)
         d = policy.evaluate(
-            "s1", paper_start, _returns_with_sharpe(1.5, 100),
+            "s1",
+            paper_start,
+            _returns_with_sharpe(1.5, 100),
         )
         assert d.verdict is PromotionVerdict.PROMOTE
         assert d.initial_weight == pytest.approx(0.05)
@@ -67,7 +73,9 @@ class TestEvaluate:
         policy = AllocationPolicy(cfg)
         paper_start = datetime.now(UTC) - timedelta(days=5)
         d = policy.evaluate(
-            "flagship", paper_start, _returns_with_sharpe(1.5, 30),
+            "flagship",
+            paper_start,
+            _returns_with_sharpe(1.5, 30),
         )
         assert d.verdict is PromotionVerdict.PROMOTE
         assert d.initial_weight == pytest.approx(0.10)

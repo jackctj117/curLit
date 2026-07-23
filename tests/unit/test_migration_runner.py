@@ -6,9 +6,8 @@ sql.split(';') to emit empty fragments → psycopg2 'empty query' error.
 
 from __future__ import annotations
 
-from sqlalchemy import create_engine, text
-
 from migrations.run import _strip_sql_comments, run_migrations
+from sqlalchemy import create_engine, text
 
 
 class TestStripComments:

@@ -154,7 +154,8 @@ def _truncate(text: str, limit: int = _HEADLINE_MAX) -> str:
 
 
 def _price_part(
-    instrument: str, prices: Mapping[str, Mapping[str, Any]] | None,
+    instrument: str,
+    prices: Mapping[str, Mapping[str, Any]] | None,
 ) -> str:
     """`` $24.10 (+3.2%)`` (leading space) or ``""`` — format_price
     output is HTML-safe by construction (digits and ``$%().+-``)."""
@@ -226,7 +227,9 @@ def _idea_line(
     ticker = str(idea.get("ticker") or "")
     info = (prices or {}).get(ticker) or {}
     card = build_trade_card(
-        dict(idea), info.get("price"), info.get("change_pct"),
+        dict(idea),
+        info.get("price"),
+        info.get("change_pct"),
     )
 
     # A multi-line block (CL-jiqq follow-up: single truncated lines hid
@@ -236,8 +239,13 @@ def _idea_line(
     # the assembler.
     head = f"<b>{html_escape(ticker)}</b>{_price_part(ticker, prices)} — "
     call = _action_label(str(idea.get("action") or "?"))
-    dte = str(card.get("dte_window") or "").replace(" weeks", "wk").replace(
-        " months", "mo",
+    dte = (
+        str(card.get("dte_window") or "")
+        .replace(" weeks", "wk")
+        .replace(
+            " months",
+            "mo",
+        )
     )
     if dte:
         call += f" {dte}"
@@ -302,16 +310,15 @@ def _idea_line(
             tag += f" — {html_escape(torque)}"
         block.append(tag)
         if idea.get("liquidity_flag"):
-            block.append(
-                "  ⚠ small/illiquid — size small, check spread"
-            )
+            block.append("  ⚠ small/illiquid — size small, check spread")
 
     # Robinhood execution proxy (CL-vowz): the operator trades Robinhood,
     # which has no FX/CFDs/futures — so a raw 'XAU_USD LONG' idea is not
     # placeable. Show the tradable version on its own indented line.
     # ``direction`` (falling back to ``action``) picks the short side.
     proxy = compact_label(
-        ticker, str(idea.get("direction") or idea.get("action") or ""),
+        ticker,
+        str(idea.get("direction") or idea.get("action") or ""),
     )
     block.append(f"  RH: {html_escape(proxy)}")
     return "\n".join(block)
@@ -380,10 +387,7 @@ def _concentration_notes(ideas: Sequence[Mapping[str, Any]]) -> list[str]:
             corroborated[ticker] = True
 
     # Over-weight = corroborated by >1 event OR appears in >= 2 ideas.
-    overweight = [
-        t for t in order
-        if corroborated[t] or distinct[t] >= 2
-    ]
+    overweight = [t for t in order if corroborated[t] or distinct[t] >= 2]
 
     notes: list[str] = []
     for ticker in overweight[:_MAX_CONCENTRATION_NOTES]:
@@ -400,7 +404,8 @@ def _concentration_notes(ideas: Sequence[Mapping[str, Any]]) -> list[str]:
     # double-warning — the specific line wins).
     overweight_havens = {t for t in overweight if t.upper() in _HAVEN_TICKERS}
     cluster_ideas = [
-        i for i in ideas
+        i
+        for i in ideas
         if str(i.get("ticker") or "").upper() in _HAVEN_TICKERS
         and str(i.get("ticker") or "") not in overweight_havens
     ]
@@ -425,7 +430,8 @@ def _fade_line(fade: Mapping[str, Any]) -> str:
 
 
 def _advisory_entries(
-    qualifying: Sequence[AssessmentResult], key: str,
+    qualifying: Sequence[AssessmentResult],
+    key: str,
 ) -> list[dict[str, Any]]:
     """Union the assessments' advisory lists (``trade_ideas`` /
     ``fade_candidates``) across qualifying events, urgency-desc order,
@@ -449,7 +455,8 @@ def _advisory_entries(
             if not isinstance(entry, dict):
                 continue
             dedup = (
-                str(entry.get("ticker") or ""), str(entry.get("action") or ""),
+                str(entry.get("ticker") or ""),
+                str(entry.get("action") or ""),
             )
             if not dedup[0]:
                 continue
@@ -629,15 +636,19 @@ def build_digest(
         lines.append("")
 
     if tradable:
-        lines.extend(_token_lines(
-            "<b>Tradable:</b>",
-            [_instrument_token(i, d, prices) for i, d in tradable.items()],
-        ))
+        lines.extend(
+            _token_lines(
+                "<b>Tradable:</b>",
+                [_instrument_token(i, d, prices) for i, d in tradable.items()],
+            )
+        )
     if watch:
-        lines.extend(_token_lines(
-            "<b>Watch:</b>",
-            [_watch_token(i, volume_marks, prices) for i in watch],
-        ))
+        lines.extend(
+            _token_lines(
+                "<b>Watch:</b>",
+                [_watch_token(i, volume_marks, prices) for i in watch],
+            )
+        )
 
     ideas = _advisory_entries(qualifying, "trade_ideas")
     if ideas:
@@ -699,8 +710,12 @@ def send_digest(
     only, never a gate.
     """
     built = build_digest(
-        results, min_urgency=min_urgency, max_events=max_events,
-        volume_marks=volume_marks, prices=prices, seen_ats=seen_ats,
+        results,
+        min_urgency=min_urgency,
+        max_events=max_events,
+        volume_marks=volume_marks,
+        prices=prices,
+        seen_ats=seen_ats,
         poly_signal=poly_signal,
     )
     if built is None:

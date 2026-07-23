@@ -64,13 +64,17 @@ def peer_uid(conn: socket.socket) -> int | None:
         if sys.platform.startswith("linux"):
             so_peercred = getattr(socket, "SO_PEERCRED", 17)
             data = conn.getsockopt(
-                socket.SOL_SOCKET, so_peercred, struct.calcsize(_UCRED_FMT),
+                socket.SOL_SOCKET,
+                so_peercred,
+                struct.calcsize(_UCRED_FMT),
             )
             _pid, uid, _gid = struct.unpack(_UCRED_FMT, data)
             return int(uid)
         if sys.platform == "darwin":
             data = conn.getsockopt(
-                _SOL_LOCAL, _LOCAL_PEERCRED, struct.calcsize(_XUCRED_FMT),
+                _SOL_LOCAL,
+                _LOCAL_PEERCRED,
+                struct.calcsize(_XUCRED_FMT),
             )
             _version, uid, _ngroups = struct.unpack_from("IIh", data)
             return int(uid)
@@ -89,13 +93,15 @@ def peer_authorized(conn: socket.socket) -> bool:
             _warned_unsupported = True
             logger.warning(
                 "vault agent: no peer-credential support on platform %r — "
-                "rejecting ALL connections (fail closed)", sys.platform,
+                "rejecting ALL connections (fail closed)",
+                sys.platform,
             )
         return False
     if uid != os.getuid():
         logger.warning(
             "vault agent: rejected connection from uid %d (expected %d)",
-            uid, os.getuid(),
+            uid,
+            os.getuid(),
         )
         return False
     return True
@@ -112,13 +118,17 @@ def _harden_socket_path(path: str) -> None:
             os.chmod(parent, mode & ~0o077)
             logger.info(
                 "vault agent: tightened socket dir %s from %o to %o",
-                parent, mode, mode & ~0o077,
+                parent,
+                mode,
+                mode & ~0o077,
             )
     elif mode & 0o022:
         logger.warning(
             "vault agent: socket dir %s (uid %d, mode %o) is writable by "
             "group/other — the socket can be replaced by another user",
-            parent, st.st_uid, mode,
+            parent,
+            st.st_uid,
+            mode,
         )
 
 
@@ -129,7 +139,9 @@ def decrypt_vault(path: Path, key: bytes) -> dict[str, Any]:
     return json.loads(unseal(data, key))  # type: ignore[no-any-return]
 
 
-async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, creds: dict[str, Any]) -> None:
+async def handle_client(
+    reader: asyncio.StreamReader, writer: asyncio.StreamWriter, creds: dict[str, Any]
+) -> None:
     try:
         sock = writer.get_extra_info("socket")
         if sock is None or not peer_authorized(sock):
@@ -145,7 +157,11 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
             return
         req = json.loads(data)
         if req.get("action") == "get":
-            resp = {"ok": True, "value": creds.get(req.get("name", ""))} if req.get("name") in creds else {"ok": False, "error": "not_found"}
+            resp = (
+                {"ok": True, "value": creds.get(req.get("name", ""))}
+                if req.get("name") in creds
+                else {"ok": False, "error": "not_found"}
+            )
         elif req.get("action") == "list":
             resp = {"ok": True, "names": list(creds.keys())}
         else:
@@ -192,7 +208,8 @@ async def main_async() -> None:
         logger.warning(
             "Vault passphrase is WEAK (%s). Rotate it: re-seal the vault "
             "with a stronger passphrase (see scripts/rotate_secrets.py); "
-            "old sealed data stays readable.", weakness,
+            "old sealed data stays readable.",
+            weakness,
         )
 
     # The passphrase CANNOT be wiped from memory: Python str is immutable, so

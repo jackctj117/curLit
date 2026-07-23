@@ -27,12 +27,18 @@ logger = logging.getLogger(__name__)
 
 def main(argv: list[str] | None = None) -> int:
     from src.dotenv_bootstrap import load_project_env  # noqa: PLC0415
+
     load_project_env()
 
     parser = argparse.ArgumentParser(description="Score trade-idea outcomes.")
     parser.add_argument("--once", action="store_true", help="Score once, exit.")
-    parser.add_argument("--loop", type=int, metavar="SECONDS", default=None,
-                        help="Score every SECONDS (daemon mode).")
+    parser.add_argument(
+        "--loop",
+        type=int,
+        metavar="SECONDS",
+        default=None,
+        help="Score every SECONDS (daemon mode).",
+    )
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args(argv)
 

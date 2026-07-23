@@ -27,7 +27,8 @@ def test_change_me_placeholder_refuses_everyone(monkeypatch):
     read-only dashboard does, even for a caller who knows the value."""
     monkeypatch.setenv("WEB_API_SECRET", "CHANGE_ME_WEB_API_SECRET")
     r = client.get(
-        "/api/system", headers={"X-API-Key": "CHANGE_ME_WEB_API_SECRET"},
+        "/api/system",
+        headers={"X-API-Key": "CHANGE_ME_WEB_API_SECRET"},
     )
     assert r.status_code == 503
 

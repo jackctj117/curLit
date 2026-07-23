@@ -34,23 +34,23 @@ logger = logging.getLogger(__name__)
 # self-contained. Adjust when a provider re-prices. Format: (input, output).
 _PRICING_USD_PER_MTOK: dict[str, tuple[float, float]] = {
     # Claude
-    "claude-fable-5":           (10.0, 50.0),
-    "claude-opus-4-8":          (5.0,  25.0),
-    "claude-opus-4-7":          (5.0,  25.0),
-    "claude-sonnet-4-6":        (3.0,  15.0),
-    "claude-haiku-4-5-20251001": (1.0,   5.0),
+    "claude-fable-5": (10.0, 50.0),
+    "claude-opus-4-8": (5.0, 25.0),
+    "claude-opus-4-7": (5.0, 25.0),
+    "claude-sonnet-4-6": (3.0, 15.0),
+    "claude-haiku-4-5-20251001": (1.0, 5.0),
     # DeepSeek (kept for the comparison harness; no longer a pipeline
     # default provider).
-    "deepseek-chat":            (0.27, 1.10),
-    "deepseek-reasoner":        (0.55, 2.19),
-    "deepseek-v4-pro":          (0.55, 2.19),
+    "deepseek-chat": (0.27, 1.10),
+    "deepseek-reasoner": (0.55, 2.19),
+    "deepseek-v4-pro": (0.55, 2.19),
     # Grok (xAI). NOTE: the grok-4.5 model id contains a DOT — the
     # dashed form "grok-4-5" is a 404 at the API. $0.50/MTok cached
     # input not modeled here.
-    "grok-4.5":                 (2.0,  6.0),
-    "grok-4":                   (3.0,  15.0),
-    "grok-3":                   (3.0,  15.0),
-    "grok-3-mini":              (0.30, 0.50),
+    "grok-4.5": (2.0, 6.0),
+    "grok-4": (3.0, 15.0),
+    "grok-3": (3.0, 15.0),
+    "grok-3-mini": (0.30, 0.50),
 }
 
 # Claude models that reject sampling parameters (`temperature`, `top_p`,
@@ -141,6 +141,7 @@ class _ClaudeDriver(Driver):
     def __init__(self, api_key: str) -> None:
         super().__init__(api_key)
         from anthropic import Anthropic  # lazy: only import if used
+
         self._client = Anthropic(api_key=api_key)
 
     def complete(
@@ -155,7 +156,8 @@ class _ClaudeDriver(Driver):
         system_text = "\n\n".join(m.content for m in messages if m.role == "system")
         chat: Any = [
             {"role": m.role, "content": m.content}
-            for m in messages if m.role in ("user", "assistant")
+            for m in messages
+            if m.role in ("user", "assistant")
         ]
         request_args: dict[str, Any] = {
             "model": model,
@@ -195,12 +197,10 @@ class _ClaudeDriver(Driver):
                 resp = self._client.messages.create(**request_args)
         except Exception as exc:  # anthropic.BadRequestError + base
             msg = str(exc).lower()
-            if "temperature" in msg and (
-                "deprecated" in msg or "not supported" in msg
-            ):
+            if "temperature" in msg and ("deprecated" in msg or "not supported" in msg):
                 logger.info(
-                    "Claude model %s rejects `temperature`; "
-                    "retrying without it (CL-xo0t)", model,
+                    "Claude model %s rejects `temperature`; retrying without it (CL-xo0t)",
+                    model,
                 )
                 request_args.pop("temperature", None)
                 resp = self._client.messages.create(**request_args)
@@ -213,18 +213,14 @@ class _ClaudeDriver(Driver):
             # rather than parsing an empty brief.
             details = getattr(resp, "stop_details", None)
             category = getattr(details, "category", None) if details else None
-            msg = (
-                f"Claude {model} refused the request "
-                f"(stop_reason=refusal, category={category!r})"
-            )
+            msg = f"Claude {model} refused the request (stop_reason=refusal, category={category!r})"
             raise RuntimeError(msg)
         # Anthropic returns a union of block types — only TextBlock has
         # .text. Fable-class responses may also carry `thinking` /
         # `fallback` blocks before the text, so take the first text
         # block rather than content[0].
         text = next(
-            (b.text for b in (resp.content or [])
-             if getattr(b, "type", "") == "text"),
+            (b.text for b in (resp.content or []) if getattr(b, "type", "") == "text"),
             "",
         )
         # On a fallback rescue the serving model differs from the
@@ -234,10 +230,14 @@ class _ClaudeDriver(Driver):
         in_tok = int(getattr(usage, "input_tokens", 0))
         out_tok = int(getattr(usage, "output_tokens", 0))
         return LLMResponse(
-            text=text, model=served_model, provider=self.name,
-            input_tokens=in_tok, output_tokens=out_tok,
+            text=text,
+            model=served_model,
+            provider=self.name,
+            input_tokens=in_tok,
+            output_tokens=out_tok,
             usd_cost=_cost_usd(served_model, in_tok, out_tok),
-            elapsed_sec=elapsed, raw=resp,
+            elapsed_sec=elapsed,
+            raw=resp,
         )
 
 
@@ -254,6 +254,7 @@ class _OpenAICompatDriver(Driver):
     def __init__(self, api_key: str) -> None:
         super().__init__(api_key)
         from openai import OpenAI  # lazy
+
         self._client = OpenAI(api_key=api_key, base_url=self.base_url)
 
     def complete(
@@ -279,10 +280,14 @@ class _OpenAICompatDriver(Driver):
         in_tok = int(getattr(usage, "prompt_tokens", 0))
         out_tok = int(getattr(usage, "completion_tokens", 0))
         return LLMResponse(
-            text=text, model=model, provider=self.name,
-            input_tokens=in_tok, output_tokens=out_tok,
+            text=text,
+            model=model,
+            provider=self.name,
+            input_tokens=in_tok,
+            output_tokens=out_tok,
             usd_cost=_cost_usd(model, in_tok, out_tok),
-            elapsed_sec=elapsed, raw=resp,
+            elapsed_sec=elapsed,
+            raw=resp,
         )
 
 
@@ -341,8 +346,10 @@ class LLMClient:
         **kwargs: Any,
     ) -> LLMResponse:
         resp = self.driver.complete(
-            messages=messages, model=model,
-            max_tokens=max_tokens, temperature=temperature,
+            messages=messages,
+            model=model,
+            max_tokens=max_tokens,
+            temperature=temperature,
             **kwargs,
         )
         self.calls += 1
@@ -351,9 +358,12 @@ class LLMClient:
         self.usd_total += resp.usd_cost
         logger.debug(
             "llm[%s/%s] in=%d out=%d cost=$%.4f elapsed=%.2fs",
-            resp.provider, resp.model,
-            resp.input_tokens, resp.output_tokens,
-            resp.usd_cost, resp.elapsed_sec,
+            resp.provider,
+            resp.model,
+            resp.input_tokens,
+            resp.output_tokens,
+            resp.usd_cost,
+            resp.elapsed_sec,
         )
         return resp
 

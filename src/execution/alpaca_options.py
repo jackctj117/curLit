@@ -77,7 +77,9 @@ def parse_dte_days(text: str | None, default: int) -> int:
 
 
 def contract_target(
-    idea: dict[str, Any], underlying_price: float, today: date,
+    idea: dict[str, Any],
+    underlying_price: float,
+    today: date,
     cfg: ContractSelectionConfig,
 ) -> tuple[str, float, date]:
     """(right, target_strike, target_expiry) for one options idea."""
@@ -86,8 +88,11 @@ def contract_target(
     moneyness = parse_moneyness(pref, cfg.default_moneyness)
     dte = parse_dte_days(pref, cfg.default_dte_days)
     # OTM by convention: calls above spot, puts below spot.
-    strike = (underlying_price * (1 + moneyness) if right == "call"
-              else underlying_price * (1 - moneyness))
+    strike = (
+        underlying_price * (1 + moneyness)
+        if right == "call"
+        else underlying_price * (1 - moneyness)
+    )
     return right, strike, today + timedelta(days=dte)
 
 
@@ -110,22 +115,28 @@ class AlpacaOptionsClient:
 
     @staticmethod
     def _default_request(
-        method: str, url: str, headers: dict[str, str],
-        params: dict[str, str] | None, json_body: dict[str, Any] | None,
+        method: str,
+        url: str,
+        headers: dict[str, str],
+        params: dict[str, str] | None,
+        json_body: dict[str, Any] | None,
     ) -> Any:
         import httpx  # noqa: PLC0415 — lazy
-        resp = httpx.request(method, url, headers=headers, params=params,
-                             json=json_body, timeout=20.0)
+
+        resp = httpx.request(
+            method, url, headers=headers, params=params, json=json_body, timeout=20.0
+        )
         resp.raise_for_status()
         return resp.json()
 
     def _req(
-        self, method: str, path: str,
+        self,
+        method: str,
+        path: str,
         params: dict[str, str] | None = None,
         json_body: dict[str, Any] | None = None,
     ) -> Any:
-        return self._request_fn(method, f"{self.base}{path}", self._headers,
-                                params, json_body)
+        return self._request_fn(method, f"{self.base}{path}", self._headers, params, json_body)
 
     def get_account(self) -> dict[str, Any]:
         result: dict[str, Any] = self._req("GET", "/v2/account")
@@ -143,8 +154,14 @@ class AlpacaOptionsClient:
             return False
 
     def find_contracts(
-        self, underlying: str, right: str, exp_gte: date, exp_lte: date,
-        strike_gte: float, strike_lte: float, limit: int = 100,
+        self,
+        underlying: str,
+        right: str,
+        exp_gte: date,
+        exp_lte: date,
+        strike_gte: float,
+        strike_lte: float,
+        limit: int = 100,
     ) -> list[dict[str, Any]]:
         """Live option contracts for ``underlying`` within an expiry+strike box."""
         params = {
@@ -161,7 +178,10 @@ class AlpacaOptionsClient:
         return list(data.get("option_contracts") or [])
 
     def submit_option_order(
-        self, occ_symbol: str, qty: int, side: str = "buy",
+        self,
+        occ_symbol: str,
+        qty: int,
+        side: str = "buy",
         client_order_id: str | None = None,
     ) -> dict[str, Any]:
         """Submit a market option order.
@@ -172,8 +192,11 @@ class AlpacaOptionsClient:
         which the executor recovers as already-executed.
         """
         body = {
-            "symbol": occ_symbol, "qty": str(int(qty)), "side": side,
-            "type": "market", "time_in_force": "day",
+            "symbol": occ_symbol,
+            "qty": str(int(qty)),
+            "side": side,
+            "type": "market",
+            "time_in_force": "day",
         }
         if client_order_id:
             body["client_order_id"] = client_order_id
@@ -188,24 +211,22 @@ class AlpacaOptionsClient:
         """
         try:
             data = self._request_fn(
-                "GET", f"{DATA_BASE}/v1beta1/options/quotes/latest",
-                self._headers, {"symbols": occ_symbol, "feed": "indicative"},
+                "GET",
+                f"{DATA_BASE}/v1beta1/options/quotes/latest",
+                self._headers,
+                {"symbols": occ_symbol, "feed": "indicative"},
                 None,
             )
             quote = (data.get("quotes") or {}).get(occ_symbol) or {}
             ask = quote.get("ap")
             return float(ask) if ask else None
         except Exception:
-            logger.warning("alpaca: option quote failed for %s", occ_symbol,
-                           exc_info=True)
+            logger.warning("alpaca: option quote failed for %s", occ_symbol, exc_info=True)
             return None
 
     def list_option_positions(self) -> list[dict[str, Any]]:
         positions = self._req("GET", "/v2/positions")
-        return [
-            p for p in (positions or [])
-            if str(p.get("asset_class")) == "us_option"
-        ]
+        return [p for p in (positions or []) if str(p.get("asset_class")) == "us_option"]
 
 
 def resolve_contract(
@@ -223,19 +244,18 @@ def resolve_contract(
     cfg = cfg or ContractSelectionConfig()
     if underlying_price <= 0:
         return None
-    right, target_strike, target_exp = contract_target(
-        idea, underlying_price, today, cfg)
+    right, target_strike, target_exp = contract_target(idea, underlying_price, today, cfg)
     try:
         contracts = client.find_contracts(
-            str(idea.get("ticker")), right,
+            str(idea.get("ticker")),
+            right,
             exp_gte=target_exp - timedelta(days=cfg.exp_window_days),
             exp_lte=target_exp + timedelta(days=cfg.exp_window_days),
             strike_gte=target_strike * (1 - cfg.strike_window),
             strike_lte=target_strike * (1 + cfg.strike_window),
         )
     except Exception:
-        logger.warning("alpaca: contract lookup failed for %s",
-                       idea.get("ticker"), exc_info=True)
+        logger.warning("alpaca: contract lookup failed for %s", idea.get("ticker"), exc_info=True)
         return None
     if not contracts:
         return None

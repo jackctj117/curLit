@@ -64,7 +64,7 @@ class RegistrationResult:
     succeeded: bool
     strategy_slug: str
     error: str = ""
-    code_path: Path | None = None     # final destination path
+    code_path: Path | None = None  # final destination path
     branch_name: str = ""
     pr_url: str = ""
     yaml_diff: str = ""
@@ -89,14 +89,18 @@ GhRunner = Callable[[list[str]], str]
 def _default_git_runner(args: list[str]) -> str:
     """Production git wrapper. Raises CalledProcessError on non-zero."""
     return subprocess.check_output(
-        ["git", *args], stderr=subprocess.STDOUT, text=True,
+        ["git", *args],
+        stderr=subprocess.STDOUT,
+        text=True,
     )
 
 
 def _default_gh_runner(args: list[str]) -> str:
     """Production gh wrapper. Raises CalledProcessError on non-zero."""
     return subprocess.check_output(
-        ["gh", *args], stderr=subprocess.STDOUT, text=True,
+        ["gh", *args],
+        stderr=subprocess.STDOUT,
+        text=True,
     )
 
 
@@ -121,8 +125,9 @@ def _extract_pr_url(stdout: str, strategy_slug: str) -> str:
     lines = [line.strip() for line in stdout.splitlines() if line.strip()]
     if lines:
         logger.warning(
-            "gh stdout for %s had no canonical PR URL; falling back to "
-            "last line: %r", strategy_slug, lines[-1][:120],
+            "gh stdout for %s had no canonical PR URL; falling back to last line: %r",
+            strategy_slug,
+            lines[-1][:120],
         )
         return lines[-1]
     logger.warning("gh stdout for %s was empty; PR URL unknown", strategy_slug)
@@ -162,11 +167,13 @@ def add_strategy_to_portfolio_yaml(
 
     strategies = raw.setdefault("strategies", [])
     if not any(s.get("id") == strategy_slug for s in strategies):
-        strategies.append({
-            "id": strategy_slug,
-            "class": class_path,
-            "config": {},
-        })
+        strategies.append(
+            {
+                "id": strategy_slug,
+                "class": class_path,
+                "config": {},
+            }
+        )
         added_strategy = True
     else:
         added_strategy = False
@@ -183,10 +190,7 @@ def add_strategy_to_portfolio_yaml(
             yaml.safe_dump(raw, sort_keys=False, default_flow_style=False),
         )
 
-    return (
-        f"strategies+={int(added_strategy)} "
-        f"initial_weights+={int(added_weight)}"
-    )
+    return f"strategies+={int(added_strategy)} initial_weights+={int(added_weight)}"
 
 
 # --------------------------------------------------------------------------- #
@@ -231,7 +235,8 @@ class PromoteRegistrar:
         steps_completed listing exactly what ran — useful for the
         operator when partial-failure recovery is needed."""
         result = RegistrationResult(
-            succeeded=False, strategy_slug=strategy_slug,
+            succeeded=False,
+            strategy_slug=strategy_slug,
         )
 
         # Step 1: move the file
@@ -249,7 +254,9 @@ class PromoteRegistrar:
             module_dotted = self._module_dotted_path(final_path)
             class_path = f"{module_dotted}.{class_name}"
             result.yaml_diff = add_strategy_to_portfolio_yaml(
-                self.portfolio_yaml, strategy_slug, class_path,
+                self.portfolio_yaml,
+                strategy_slug,
+                class_path,
             )
             result.steps_completed.append("portfolio_yaml")
         except Exception as exc:
@@ -369,18 +376,22 @@ class PromoteRegistrar:
         # Create + switch to the branch. -B handles the case where the
         # branch already exists on a partial-failure retry.
         self.git_runner(["checkout", "-B", branch_name])
-        self.git_runner([
-            "add",
-            str(self.experimental_dir),
-            str(self.production_dir / f"{strategy_slug}.py"),
-            str(final_path.parent),  # in case parent dir is new
-            str(self.portfolio_yaml),
-        ])
-        self.git_runner([
-            "commit",
-            "-m",
-            f"feat(promote): paper-shadow {strategy_slug} (allocation=0)",
-        ])
+        self.git_runner(
+            [
+                "add",
+                str(self.experimental_dir),
+                str(self.production_dir / f"{strategy_slug}.py"),
+                str(final_path.parent),  # in case parent dir is new
+                str(self.portfolio_yaml),
+            ]
+        )
+        self.git_runner(
+            [
+                "commit",
+                "-m",
+                f"feat(promote): paper-shadow {strategy_slug} (allocation=0)",
+            ]
+        )
         self.git_runner(["push", "-u", "origin", branch_name])
 
     # ------------------------------------------------------------------ #
@@ -403,12 +414,18 @@ class PromoteRegistrar:
             verdict_reason=verdict_reason,
             branch_name=branch_name,
         )
-        out = self.gh_runner([
-            "pr", "create",
-            "--title", title,
-            "--body", body,
-            "--head", branch_name,
-        ])
+        out = self.gh_runner(
+            [
+                "pr",
+                "create",
+                "--title",
+                title,
+                "--body",
+                body,
+                "--head",
+                branch_name,
+            ]
+        )
         return _extract_pr_url(out, strategy_slug)
 
     @staticmethod

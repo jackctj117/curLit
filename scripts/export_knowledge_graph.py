@@ -61,7 +61,7 @@ VALID_KINDS = frozenset({"oanda", "fx", "equity_watch", "polymarket"})
 TRADABLE_KINDS = frozenset({"oanda", "fx"})
 REQUIRED_THEME_FIELDS = ("name", "description", "watch_terms", "instruments")
 OVERLAP_THRESHOLD = 3  # themes sharing >= this many instruments are "overlapping"
-THIN_THRESHOLD = 8     # a theme with fewer than this many instruments is THIN
+THIN_THRESHOLD = 8  # a theme with fewer than this many instruments is THIN
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_PLAYBOOKS = _REPO_ROOT / "configs" / "event_playbooks.yaml"
@@ -115,9 +115,9 @@ _WIKILINK_RE = re.compile(r"\[\[([^\]|#]+?)(?:#[^\]|]+)?(?:\|[^\]]+)?\]\]")
 # concepts. This file overwrites whatever Obsidian last wrote — accepted per
 # the operator (the vault is a regeneratable mirror, not a hand-edited vault).
 GRAPH_COLOR_GROUPS: list[dict[str, object]] = [
-    {"query": "tag:#theme", "color": {"a": 1, "rgb": 0xE8A838}},       # amber
+    {"query": "tag:#theme", "color": {"a": 1, "rgb": 0xE8A838}},  # amber
     {"query": "tag:#instrument", "color": {"a": 1, "rgb": 0x28A9A2}},  # teal
-    {"query": "tag:#concept", "color": {"a": 1, "rgb": 0x9B59B6}},     # violet
+    {"query": "tag:#concept", "color": {"a": 1, "rgb": 0x9B59B6}},  # violet
 ]
 
 # The 4th colour group, added ONLY on the --discovered run: green so the live
@@ -278,9 +278,7 @@ def load_themes(
             raise ValueError(f"theme {key!r} is not a mapping")
         missing = [f for f in REQUIRED_THEME_FIELDS if f not in body]
         if missing:
-            raise ValueError(
-                f"theme {key!r} missing required field(s): {', '.join(missing)}"
-            )
+            raise ValueError(f"theme {key!r} missing required field(s): {', '.join(missing)}")
         instruments = _parse_instruments(key, body["instruments"])
         watch_terms = body["watch_terms"]
         if not isinstance(watch_terms, list):
@@ -305,9 +303,7 @@ def _parse_instruments(theme_key: str, rows: object) -> list[Instrument]:
             raise ValueError(f"theme {theme_key!r} has a non-mapping instrument row")
         for f in ("instrument", "kind", "direction"):
             if f not in row:
-                raise ValueError(
-                    f"theme {theme_key!r} instrument row missing {f!r}: {row}"
-                )
+                raise ValueError(f"theme {theme_key!r} instrument row missing {f!r}: {row}")
         kind = str(row["kind"])
         if kind not in VALID_KINDS:
             raise ValueError(
@@ -474,9 +470,7 @@ def render_theme_note(
     lines.append("| --- | --- | --- | --- |")
     for inst in theme.instruments:
         rationale = inst.rationale.replace("|", "\\|").replace("\n", " ")
-        lines.append(
-            f"| [[{inst.symbol}]] | {inst.kind} | {inst.direction} | {rationale} |"
-        )
+        lines.append(f"| [[{inst.symbol}]] | {inst.kind} | {inst.direction} | {rationale} |")
     lines.append("")
 
     lines.append("## Cross-asset corroborators")
@@ -492,9 +486,7 @@ def render_theme_note(
 
     lines.append("## Overlapping themes")
     lines.append("")
-    lines.append(
-        f"_Themes sharing at least {OVERLAP_THRESHOLD} instruments with this one._"
-    )
+    lines.append(f"_Themes sharing at least {OVERLAP_THRESHOLD} instruments with this one._")
     lines.append("")
     if overlaps:
         for other in overlaps:
@@ -1279,8 +1271,7 @@ def export_vault(
     # .obsidian/graph.json  (colour-grouped graph, JSON not Markdown — not a node)
     guard.write(
         out_dir / ".obsidian" / "graph.json",
-        json.dumps(build_graph_json(include_discovered=discovered_included), indent=2)
-        + "\n",
+        json.dumps(build_graph_json(include_discovered=discovered_included), indent=2) + "\n",
     )
 
     node_count = len(themes) + len(all_symbols) + len(concepts) + len(discovered_tickers)
@@ -1310,8 +1301,7 @@ def export_vault(
         )
 
     logger.info(
-        "vault generated: %d themes, %d instruments, %d concepts, "
-        "%d discovered, %d links -> %s",
+        "vault generated: %d themes, %d instruments, %d concepts, %d discovered, %d links -> %s",
         result.theme_count,
         result.instrument_count,
         result.concept_count,
@@ -1337,9 +1327,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--cross-asset", type=Path, default=DEFAULT_CROSS_ASSET, help="cross-asset YAML"
     )
-    parser.add_argument(
-        "--retail", type=Path, default=DEFAULT_RETAIL, help="retail proxies YAML"
-    )
+    parser.add_argument("--retail", type=Path, default=DEFAULT_RETAIL, help="retail proxies YAML")
     parser.add_argument(
         "--manifest", type=Path, default=DEFAULT_MANIFEST, help="staleness manifest path"
     )

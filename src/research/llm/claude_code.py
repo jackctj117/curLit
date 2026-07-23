@@ -87,9 +87,7 @@ class ClaudeCodeDriver(Driver):
         temperature: float = 0.0,
         **kwargs: Any,
     ) -> LLMResponse:
-        system_text = "\n\n".join(
-            m.content for m in messages if m.role == "system"
-        )
+        system_text = "\n\n".join(m.content for m in messages if m.role == "system")
         # The CLI takes one prompt string; flatten multi-turn
         # transcripts with role labels (single [system, user] calls —
         # the common case — pass through unlabelled).
@@ -97,9 +95,7 @@ class ClaudeCodeDriver(Driver):
         if len(chat) == 1:
             prompt = chat[0].content
         else:
-            prompt = "\n\n".join(
-                f"[{m.role.upper()}]\n{m.content}" for m in chat
-            )
+            prompt = "\n\n".join(f"[{m.role.upper()}]\n{m.content}" for m in chat)
 
         # Prompt goes over STDIN, not argv (CL-8s2a). ``claude -p`` with no
         # trailing prompt argument reads the prompt from stdin (the documented
@@ -109,9 +105,12 @@ class ClaudeCodeDriver(Driver):
         # the OS ARG_MAX ceiling on long research prompts. Flags/behavior are
         # otherwise unchanged.
         cmd = [
-            self._bin, "-p",
-            "--model", model,
-            "--output-format", "json",
+            self._bin,
+            "-p",
+            "--model",
+            model,
+            "--output-format",
+            "json",
             "--exclude-dynamic-system-prompt-sections",
         ]
         if system_text:
@@ -120,22 +119,25 @@ class ClaudeCodeDriver(Driver):
         # Strip API credentials so the CLI cannot silently bill the
         # API org — an env API key outranks the subscription login.
         env = {
-            k: v for k, v in os.environ.items()
+            k: v
+            for k, v in os.environ.items()
             if k not in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
         }
 
         t0 = time.time()
         proc = subprocess.run(
-            cmd, capture_output=True, text=True, input=prompt,
-            timeout=_CALL_TIMEOUT_SEC, env=env, cwd=self._workdir,
+            cmd,
+            capture_output=True,
+            text=True,
+            input=prompt,
+            timeout=_CALL_TIMEOUT_SEC,
+            env=env,
+            cwd=self._workdir,
             check=False,
         )
         elapsed = time.time() - t0
         if proc.returncode != 0:
-            msg = (
-                f"claude -p exited {proc.returncode}: "
-                f"{(proc.stderr or proc.stdout)[-500:]}"
-            )
+            msg = f"claude -p exited {proc.returncode}: {(proc.stderr or proc.stdout)[-500:]}"
             raise RuntimeError(msg)
         try:
             payload = json.loads(proc.stdout)
@@ -161,7 +163,9 @@ class ClaudeCodeDriver(Driver):
         nominal = float(payload.get("total_cost_usd") or 0.0)
         logger.debug(
             "claude-code[%s] nominal API-equivalent cost $%.4f "
-            "(billed to subscription, not the API org)", model, nominal,
+            "(billed to subscription, not the API org)",
+            model,
+            nominal,
         )
         # modelUsage can include Claude Code's internal utility calls
         # (haiku) alongside the responder — the serving model is the
@@ -174,10 +178,13 @@ class ClaudeCodeDriver(Driver):
         )
         return LLMResponse(
             text=str(payload.get("result", "")),
-            model=served, provider=self.name,
-            input_tokens=in_tok, output_tokens=out_tok,
+            model=served,
+            provider=self.name,
+            input_tokens=in_tok,
+            output_tokens=out_tok,
             usd_cost=0.0,  # subscription — nothing bills to the API org
-            elapsed_sec=elapsed, raw=payload,
+            elapsed_sec=elapsed,
+            raw=payload,
         )
 
 

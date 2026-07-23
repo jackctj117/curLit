@@ -22,6 +22,7 @@ from src.risk.liquidity_window import load_profile
 
 def _ts(dow: int, hour: int) -> datetime:
     from datetime import timedelta as _td
+
     return datetime(2026, 4, 6, hour, 0, tzinfo=UTC) + _td(days=dow)  # Mon base
 
 
@@ -66,8 +67,8 @@ class TestSpreadsFromRows:
 
     def test_drops_crossed_and_nonpositive(self) -> None:
         rows = [
-            (_ts(0, 12), "EUR_USD", 1.09, 1.08),   # crossed
-            (_ts(0, 12), "EUR_USD", 0.0, 1.08),    # non-positive mid side
+            (_ts(0, 12), "EUR_USD", 1.09, 1.08),  # crossed
+            (_ts(0, 12), "EUR_USD", 0.0, 1.08),  # non-positive mid side
             (_ts(0, 12), "EUR_USD", 1.0840, 1.0840),  # zero spread
         ]
         assert spreads_from_rows(rows) == []
@@ -81,10 +82,7 @@ class TestRefresh:
     def test_refresh_writes_loadable_profile(self, tmp_path) -> None:
         # 6 samples in one bucket (>= n=5 floor) → bucket persists, keyed
         # canonical (EUR_USD → EURUSD).
-        rows = [
-            (_ts(0, 12), "EUR_USD", 1.0840, 1.0840 + 0.0002 + i * 1e-6)
-            for i in range(6)
-        ]
+        rows = [(_ts(0, 12), "EUR_USD", 1.0840, 1.0840 + 0.0002 + i * 1e-6) for i in range(6)]
         path = str(tmp_path / "liq.json")
         stats = refresh(_FakeEngine(rows), path, lookback_hours=24)
         assert stats["new_buckets"] == 1
@@ -95,18 +93,12 @@ class TestRefresh:
     def test_merge_accumulates_across_runs(self, tmp_path) -> None:
         path = str(tmp_path / "liq.json")
         # Run 1: Monday-noon bucket.
-        rows1 = [
-            (_ts(0, 12), "EUR_USD", 1.0840, 1.0842 + i * 1e-7)
-            for i in range(6)
-        ]
+        rows1 = [(_ts(0, 12), "EUR_USD", 1.0840, 1.0842 + i * 1e-7) for i in range(6)]
         refresh(_FakeEngine(rows1), path, lookback_hours=24)
         # Run 2: a DIFFERENT (Tuesday-3am) bucket — must not erase Monday's.
-        rows2 = [
-            (_ts(1, 3), "EUR_USD", 1.0840, 1.0850 + i * 1e-7)
-            for i in range(6)
-        ]
+        rows2 = [(_ts(1, 3), "EUR_USD", 1.0840, 1.0850 + i * 1e-7) for i in range(6)]
         refresh(_FakeEngine(rows2), path, lookback_hours=24)
         prof = load_profile(path)
         assert prof is not None
         assert ("EURUSD", 0, 12) in prof.median_spread_bps  # run 1 survived
-        assert ("EURUSD", 1, 3) in prof.median_spread_bps    # run 2 added
+        assert ("EURUSD", 1, 3) in prof.median_spread_bps  # run 2 added

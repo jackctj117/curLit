@@ -54,36 +54,51 @@ class FedStatementScraper(CBScraper):
                 date = datetime.strptime(m.group(1), "%Y%m%d")
                 if date < since:
                     continue
-                url = (
-                    f"https://www.federalreserve.gov{href}"
-                    if href.startswith("/") else href
-                )
+                url = f"https://www.federalreserve.gov{href}" if href.startswith("/") else href
                 if url in urls_seen:
                     continue
                 urls_seen.add(url)
-                docs.append({
-                    "url": url, "date": date, "doc_type": "statement",
-                    "title": f"FOMC Statement {date.strftime('%Y-%m-%d')}",
-                })
+                docs.append(
+                    {
+                        "url": url,
+                        "date": date,
+                        "doc_type": "statement",
+                        "title": f"FOMC Statement {date.strftime('%Y-%m-%d')}",
+                    }
+                )
 
         return docs
 
     def parse_document(self, html: str, meta: dict[str, Any]) -> Document:
         soup = BeautifulSoup(html, "html.parser")
-        content = soup.find("div", id="article") or soup.find("div", class_="col-md-8") or soup.find("body")
+        content = (
+            soup.find("div", id="article")
+            or soup.find("div", class_="col-md-8")
+            or soup.find("body")
+        )
         if content is None:
             return Document(
-                cb="fed", doc_type=meta["doc_type"], title=meta["title"],
-                date=meta["date"], url=meta["url"], raw_html=html, raw_text="",
+                cb="fed",
+                doc_type=meta["doc_type"],
+                title=meta["title"],
+                date=meta["date"],
+                url=meta["url"],
+                raw_html=html,
+                raw_text="",
             )
         for tag in content.find_all(["script", "style", "nav", "footer"]):
             tag.decompose()
         paragraphs = [
-            p.get_text(strip=True) for p in content.find_all("p")
+            p.get_text(strip=True)
+            for p in content.find_all("p")
             if p.get_text(strip=True) and "For release" not in p.get_text()
         ]
         return Document(
-            cb="fed", doc_type=meta["doc_type"], title=meta["title"],
-            date=meta["date"], url=meta["url"], raw_html=html,
+            cb="fed",
+            doc_type=meta["doc_type"],
+            title=meta["title"],
+            date=meta["date"],
+            url=meta["url"],
+            raw_html=html,
             raw_text="\n\n".join(paragraphs),
         )

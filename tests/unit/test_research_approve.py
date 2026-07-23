@@ -51,14 +51,18 @@ class TestList:
         assert "No GATE 1 entries pending" in out
 
     def test_list_shows_pending_entries(self, state_path: Path) -> None:
-        _seed_state(state_path, {
-            "h1": {
-                "status": "PENDING_OPERATOR_APPROVAL", "slug": "alpha",
-                "pending_since": "2026-04-28T00:00:00",
-                "hypothesis_path": "docs/research/hypotheses/alpha.md",
+        _seed_state(
+            state_path,
+            {
+                "h1": {
+                    "status": "PENDING_OPERATOR_APPROVAL",
+                    "slug": "alpha",
+                    "pending_since": "2026-04-28T00:00:00",
+                    "hypothesis_path": "docs/research/hypotheses/alpha.md",
+                },
+                "h2": {"status": "DECLINED", "slug": "beta"},
             },
-            "h2": {"status": "DECLINED", "slug": "beta"},
-        })
+        )
         rc, out, _ = _run(["--state", str(state_path), "--list"])
         assert rc == 0
         assert "alpha" in out
@@ -68,33 +72,54 @@ class TestList:
 
 class TestApprove:
     def test_go_flips_to_approved(self, state_path: Path) -> None:
-        _seed_state(state_path, {
-            "h1": {
-                "status": "PENDING_OPERATOR_APPROVAL", "slug": "alpha",
-                "pending_since": "2026-04-28T00:00:00",
+        _seed_state(
+            state_path,
+            {
+                "h1": {
+                    "status": "PENDING_OPERATOR_APPROVAL",
+                    "slug": "alpha",
+                    "pending_since": "2026-04-28T00:00:00",
+                },
             },
-        })
-        rc, out, _ = _run([
-            "--state", str(state_path), "--slug", "alpha", "--action", "GO",
-        ])
+        )
+        rc, out, _ = _run(
+            [
+                "--state",
+                str(state_path),
+                "--slug",
+                "alpha",
+                "--action",
+                "GO",
+            ]
+        )
         assert rc == 0
         assert "APPROVED" in out
         state = load_state(state_path)
         assert state.ideas_processed["h1"]["status"] == "APPROVED"
 
     def test_skip_flips_to_skipped_with_reason(self, state_path: Path) -> None:
-        _seed_state(state_path, {
-            "h1": {
-                "status": "PENDING_OPERATOR_APPROVAL", "slug": "alpha",
-                "pending_since": "2026-04-28T00:00:00",
+        _seed_state(
+            state_path,
+            {
+                "h1": {
+                    "status": "PENDING_OPERATOR_APPROVAL",
+                    "slug": "alpha",
+                    "pending_since": "2026-04-28T00:00:00",
+                },
             },
-        })
-        rc, out, _ = _run([
-            "--state", str(state_path),
-            "--slug", "alpha",
-            "--action", "SKIP",
-            "--reason", "duplicate of existing strategy",
-        ])
+        )
+        rc, out, _ = _run(
+            [
+                "--state",
+                str(state_path),
+                "--slug",
+                "alpha",
+                "--action",
+                "SKIP",
+                "--reason",
+                "duplicate of existing strategy",
+            ]
+        )
         assert rc == 0
         assert "SKIPPED" in out
         state = load_state(state_path)
@@ -103,38 +128,65 @@ class TestApprove:
         assert "duplicate" in entry["reason"]
 
     def test_unknown_slug_returns_error(self, state_path: Path) -> None:
-        _seed_state(state_path, {
-            "h1": {
-                "status": "PENDING_OPERATOR_APPROVAL", "slug": "alpha",
-                "pending_since": "2026-04-28T00:00:00",
+        _seed_state(
+            state_path,
+            {
+                "h1": {
+                    "status": "PENDING_OPERATOR_APPROVAL",
+                    "slug": "alpha",
+                    "pending_since": "2026-04-28T00:00:00",
+                },
             },
-        })
-        rc, _out, err = _run([
-            "--state", str(state_path),
-            "--slug", "ghost", "--action", "GO",
-        ])
+        )
+        rc, _out, err = _run(
+            [
+                "--state",
+                str(state_path),
+                "--slug",
+                "ghost",
+                "--action",
+                "GO",
+            ]
+        )
         assert rc == 2
         assert "no entry found" in err
 
     def test_already_approved_refuses_to_act(self, state_path: Path) -> None:
         # Status is APPROVED, not PENDING — refuse to clobber.
-        _seed_state(state_path, {
-            "h1": {"status": "APPROVED", "slug": "alpha"},
-        })
-        rc, _out, err = _run([
-            "--state", str(state_path),
-            "--slug", "alpha", "--action", "SKIP",
-        ])
+        _seed_state(
+            state_path,
+            {
+                "h1": {"status": "APPROVED", "slug": "alpha"},
+            },
+        )
+        rc, _out, err = _run(
+            [
+                "--state",
+                str(state_path),
+                "--slug",
+                "alpha",
+                "--action",
+                "SKIP",
+            ]
+        )
         assert rc == 2
         assert "not 'PENDING_OPERATOR_APPROVAL'" in err
 
     def test_missing_action_returns_error(self, state_path: Path) -> None:
-        _seed_state(state_path, {
-            "h1": {"status": "PENDING_OPERATOR_APPROVAL", "slug": "alpha"},
-        })
-        rc, _out, err = _run([
-            "--state", str(state_path), "--slug", "alpha",
-        ])
+        _seed_state(
+            state_path,
+            {
+                "h1": {"status": "PENDING_OPERATOR_APPROVAL", "slug": "alpha"},
+            },
+        )
+        rc, _out, err = _run(
+            [
+                "--state",
+                str(state_path),
+                "--slug",
+                "alpha",
+            ]
+        )
         assert rc == 2
         assert "required" in err
 
@@ -151,22 +203,25 @@ def _seed_gate2(state_path: Path, debates: dict[str, dict]) -> None:
 
 class TestGate2List:
     def test_list_pending_only(self, state_path: Path) -> None:
-        _seed_gate2(state_path, {
-            "alpha": {
-                "verdict": "PROMOTE",
-                "deploy_status": "PENDING_DEPLOY_CONFIRMATION",
-                "pending_since": "2026-04-28T00:00:00",
-                "transcript_path": "docs/research/debates/alpha/transcript.md",
-                "candidate_report_path": "reports/candidates/alpha.json",
+        _seed_gate2(
+            state_path,
+            {
+                "alpha": {
+                    "verdict": "PROMOTE",
+                    "deploy_status": "PENDING_DEPLOY_CONFIRMATION",
+                    "pending_since": "2026-04-28T00:00:00",
+                    "transcript_path": "docs/research/debates/alpha/transcript.md",
+                    "candidate_report_path": "reports/candidates/alpha.json",
+                },
+                "beta": {
+                    "verdict": "PROMOTE",
+                    "deploy_status": "DEPLOYED",
+                },
+                "gamma": {
+                    "verdict": "REJECT",
+                },
             },
-            "beta": {
-                "verdict": "PROMOTE",
-                "deploy_status": "DEPLOYED",
-            },
-            "gamma": {
-                "verdict": "REJECT",
-            },
-        })
+        )
         rc, out, _ = _run(["--state", str(state_path), "--gate=2", "--list"])
         assert rc == 0
         assert "alpha" in out
@@ -183,62 +238,95 @@ class TestGate2List:
 
 class TestGate2Approve:
     def test_go_flips_to_deploy_approved(self, state_path: Path) -> None:
-        _seed_gate2(state_path, {
-            "alpha": {
-                "verdict": "PROMOTE",
-                "deploy_status": "PENDING_DEPLOY_CONFIRMATION",
-                "pending_since": "2026-04-28T00:00:00",
+        _seed_gate2(
+            state_path,
+            {
+                "alpha": {
+                    "verdict": "PROMOTE",
+                    "deploy_status": "PENDING_DEPLOY_CONFIRMATION",
+                    "pending_since": "2026-04-28T00:00:00",
+                },
             },
-        })
-        rc, out, _ = _run([
-            "--state", str(state_path), "--gate=2",
-            "--slug", "alpha", "--action", "GO",
-        ])
+        )
+        rc, out, _ = _run(
+            [
+                "--state",
+                str(state_path),
+                "--gate=2",
+                "--slug",
+                "alpha",
+                "--action",
+                "GO",
+            ]
+        )
         assert rc == 0
         assert "DEPLOY_APPROVED" in out
         state = load_state(state_path)
-        assert state.debates_completed["alpha"]["deploy_status"] == (
-            "DEPLOY_APPROVED"
-        )
+        assert state.debates_completed["alpha"]["deploy_status"] == ("DEPLOY_APPROVED")
 
     def test_skip_flips_to_deploy_rejected(self, state_path: Path) -> None:
-        _seed_gate2(state_path, {
-            "alpha": {
-                "verdict": "PROMOTE",
-                "deploy_status": "PENDING_DEPLOY_CONFIRMATION",
-                "pending_since": "2026-04-28T00:00:00",
+        _seed_gate2(
+            state_path,
+            {
+                "alpha": {
+                    "verdict": "PROMOTE",
+                    "deploy_status": "PENDING_DEPLOY_CONFIRMATION",
+                    "pending_since": "2026-04-28T00:00:00",
+                },
             },
-        })
-        rc, out, _ = _run([
-            "--state", str(state_path), "--gate=2",
-            "--slug", "alpha", "--action", "SKIP",
-            "--reason", "duplicates existing strategy",
-        ])
+        )
+        rc, out, _ = _run(
+            [
+                "--state",
+                str(state_path),
+                "--gate=2",
+                "--slug",
+                "alpha",
+                "--action",
+                "SKIP",
+                "--reason",
+                "duplicates existing strategy",
+            ]
+        )
         assert rc == 0
         assert "DEPLOY_REJECTED" in out
         state = load_state(state_path)
-        assert state.debates_completed["alpha"]["deploy_status"] == (
-            "DEPLOY_REJECTED"
-        )
-        assert "duplicates" in state.debates_completed["alpha"][
-            "deploy_reason"]
+        assert state.debates_completed["alpha"]["deploy_status"] == ("DEPLOY_REJECTED")
+        assert "duplicates" in state.debates_completed["alpha"]["deploy_reason"]
 
     def test_already_deployed_refuses(self, state_path: Path) -> None:
-        _seed_gate2(state_path, {
-            "alpha": {"verdict": "PROMOTE", "deploy_status": "DEPLOYED"},
-        })
-        rc, _out, err = _run([
-            "--state", str(state_path), "--gate=2",
-            "--slug", "alpha", "--action", "GO",
-        ])
+        _seed_gate2(
+            state_path,
+            {
+                "alpha": {"verdict": "PROMOTE", "deploy_status": "DEPLOYED"},
+            },
+        )
+        rc, _out, err = _run(
+            [
+                "--state",
+                str(state_path),
+                "--gate=2",
+                "--slug",
+                "alpha",
+                "--action",
+                "GO",
+            ]
+        )
         assert rc == 2
         assert "PENDING_DEPLOY_CONFIRMATION" in err
 
     def test_unknown_slug(self, state_path: Path) -> None:
         save_state(LoopState(), state_path)
-        rc, _out, err = _run([
-            "--state", str(state_path), "--gate=2",
-            "--slug", "ghost", "--action", "GO",
-        ])
+        rc, _out, err = _run(
+            [
+                "--state",
+                str(state_path),
+                "--gate=2",
+                "--slug",
+                "ghost",
+                "--action",
+                "GO",
+            ]
+        )
         assert rc == 2
         assert "no debate entry" in err

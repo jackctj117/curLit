@@ -14,12 +14,14 @@ from src.events.technical_context import (
 
 def _df(closes, volumes=None):
     n = len(closes)
-    return pd.DataFrame({
-        "Close": closes,
-        "High": [c * 1.01 for c in closes],
-        "Low": [c * 0.99 for c in closes],
-        "Volume": volumes or [1000] * n,
-    })
+    return pd.DataFrame(
+        {
+            "Close": closes,
+            "High": [c * 1.01 for c in closes],
+            "Low": [c * 0.99 for c in closes],
+            "Volume": volumes or [1000] * n,
+        }
+    )
 
 
 def test_uptrend_at_highs():
@@ -55,7 +57,7 @@ def test_volume_ratio():
 def test_alignment_scores():
     up = compute_context("UP", _df([100 + i for i in range(60)]))
     dn = compute_context("DN", _df([160 - i for i in range(60)]))
-    assert alignment_score(up, "bullish") == 1.0    # uptrend + highs
+    assert alignment_score(up, "bullish") == 1.0  # uptrend + highs
     assert alignment_score(up, "bearish") == -1.0
     assert alignment_score(dn, "bearish") == 1.0
     assert alignment_score(dn, "bullish") == -1.0
@@ -72,8 +74,10 @@ def test_format_block_has_levels_no_pattern_names():
 
 def test_compute_for_ticker_fail_soft():
     assert compute_for_ticker("X", history_fn=lambda t: None) is None
+
     def boom(t):
         raise RuntimeError("no net")
+
     # fetch raising inside default path is caught by yfinance_history only;
     # an injected raiser propagates to compute_for_ticker's fetch call —
     # verify the module-level contract via a None-returning fetch instead.

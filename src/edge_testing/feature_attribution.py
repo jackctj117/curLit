@@ -92,17 +92,11 @@ class AttributionReport:
 
     @property
     def features_above_floor(self) -> list[str]:
-        return [
-            name for name, c in self.contributions.items()
-            if c.above_noise_floor
-        ]
+        return [name for name, c in self.contributions.items() if c.above_noise_floor]
 
     @property
     def features_below_floor(self) -> list[str]:
-        return [
-            name for name, c in self.contributions.items()
-            if not c.above_noise_floor
-        ]
+        return [name for name, c in self.contributions.items() if not c.above_noise_floor]
 
     @property
     def edge_concentration(self) -> float:
@@ -129,9 +123,7 @@ class AttributionReport:
             "edge_concentration": self.edge_concentration,
             "features_above_floor": list(self.features_above_floor),
             "features_below_floor": list(self.features_below_floor),
-            "contributions": {
-                name: c.to_dict() for name, c in self.contributions.items()
-            },
+            "contributions": {name: c.to_dict() for name, c in self.contributions.items()},
         }
 
 
@@ -210,8 +202,7 @@ class FeatureEdgeAttributor:
 
         if len(random_contributions) >= 2:
             noise_floor = float(
-                _NOISE_FLOOR_SIGMA_MULTIPLIER
-                * np.std(random_contributions, ddof=1),
+                _NOISE_FLOOR_SIGMA_MULTIPLIER * np.std(random_contributions, ddof=1),
             )
         else:
             # Degenerate case: not enough random tests succeeded — fall back
@@ -221,9 +212,7 @@ class FeatureEdgeAttributor:
         # ---- Per-feature ablation ----
         contributions: dict[str, FeatureContribution] = {}
         for feat in feature_names:
-            ablated_features = {
-                k: v for k, v in baseline_features.items() if k != feat
-            }
+            ablated_features = {k: v for k, v in baseline_features.items() if k != feat}
             try:
                 ablated_sharpe = float(score_fn(ablated_features))
             except Exception:

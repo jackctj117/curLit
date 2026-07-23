@@ -42,7 +42,10 @@ class _FakeProvider:
         self.latest = latest or {}
 
     def get_series(
-        self, series_id: str, start: datetime, end: datetime,
+        self,
+        series_id: str,
+        start: datetime,
+        end: datetime,
     ) -> pd.Series:
         return pd.Series(self.series.get(series_id, []))
 
@@ -191,10 +194,12 @@ class TestVolInputs:
         history = [8.0, 8.1, 7.9, 8.0, 8.2, 8.1, 8.0, 7.8, 8.1, 8.0] * 6
         history[-1] = 15.0
         provider = _FakeProvider(
-            series={"CVIX": history}, latest={"CVIX": 15.0},
+            series={"CVIX": history},
+            latest={"CVIX": 15.0},
         )
         ctx = _builder(
-            data_provider=provider, cvix_z_lookback_days=20,
+            data_provider=provider,
+            cvix_z_lookback_days=20,
         ).build(100_000.0)
         assert ctx["cvix_zscore"] > 3.0
 
@@ -252,7 +257,8 @@ class TestPriceStreamAge:
     def test_outside_trading_window_omits_key(self) -> None:
         prices = {"EURUSD": {"ts": (_T0 - timedelta(hours=40)).isoformat()}}
         ctx = _builder(
-            last_prices=prices, in_trading_window=lambda ts: False,
+            last_prices=prices,
+            in_trading_window=lambda ts: False,
         ).build(100_000.0)
         # Weekend close is not a dead stream.
         assert "price_stream_age_sec" not in ctx
@@ -269,10 +275,8 @@ class TestPriceStreamAge:
 
 class TestPositionMismatch:
     def test_supplier_true_false(self) -> None:
-        assert _builder(position_mismatch=lambda: True).build(1.0)[
-            "position_mismatch"] is True
-        assert _builder(position_mismatch=lambda: False).build(1.0)[
-            "position_mismatch"] is False
+        assert _builder(position_mismatch=lambda: True).build(1.0)["position_mismatch"] is True
+        assert _builder(position_mismatch=lambda: False).build(1.0)["position_mismatch"] is False
 
     def test_supplier_none_omits_key(self) -> None:
         ctx = _builder(position_mismatch=lambda: None).build(1.0)
@@ -290,7 +294,9 @@ class TestPositionMismatch:
 class TestProvidedKeys:
     def test_minimal_wiring(self) -> None:
         assert _builder().provided_keys() == {
-            "equity", "daily_pnl_pct", "portfolio_dd",
+            "equity",
+            "daily_pnl_pct",
+            "portfolio_dd",
         }
 
     def test_full_wiring(self) -> None:
@@ -300,8 +306,13 @@ class TestProvidedKeys:
             position_mismatch=lambda: None,
         ).provided_keys()
         assert keys == {
-            "equity", "daily_pnl_pct", "portfolio_dd", "vix_level",
-            "vix_change_1d", "cvix_zscore", "price_stream_age_sec",
+            "equity",
+            "daily_pnl_pct",
+            "portfolio_dd",
+            "vix_level",
+            "vix_change_1d",
+            "cvix_zscore",
+            "price_stream_age_sec",
             "position_mismatch",
         }
 

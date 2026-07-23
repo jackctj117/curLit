@@ -78,8 +78,7 @@ def _config_from_env():  # noqa: ANN202
         # Open-spread protection: no entries in the first N minutes of the
         # session (0 disables); conf >= override enters immediately.
         entry_delay_min=_i("ALPACA_OPT_ENTRY_DELAY_MIN", 15),
-        entry_delay_override_conf=_f("ALPACA_OPT_ENTRY_DELAY_OVERRIDE_CONF",
-                                     0.80),
+        entry_delay_override_conf=_f("ALPACA_OPT_ENTRY_DELAY_OVERRIDE_CONF", 0.80),
     )
 
 
@@ -88,8 +87,7 @@ def _exit_config_from_env():  # noqa: ANN202
 
     return OptionsExitConfig(
         stop_loss_pct=_f("ALPACA_OPT_STOP_LOSS_PCT", 0.40),
-        entry_day_extreme_stop_pct=_f("ALPACA_OPT_ENTRY_DAY_EXTREME_STOP",
-                                      0.60),
+        entry_day_extreme_stop_pct=_f("ALPACA_OPT_ENTRY_DAY_EXTREME_STOP", 0.60),
         profit_target_pct=_f("ALPACA_OPT_PROFIT_TARGET_PCT", 0.80),
         expiry_protect_days=_i("ALPACA_OPT_EXPIRY_PROTECT_DAYS", 4),
         expiry_protect_min_profit=_f("ALPACA_OPT_EXPIRY_MIN_PROFIT", 0.25),
@@ -128,16 +126,18 @@ def _live_gate_error(*, paper: bool, confirm_live: bool) -> str | None:
 
 def main(argv: list[str] | None = None) -> int:
     from src.dotenv_bootstrap import load_project_env  # noqa: PLC0415
+
     load_project_env()
 
     parser = argparse.ArgumentParser(description="Alpaca paper options executor.")
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--loop", type=int, metavar="SECONDS", default=None)
     parser.add_argument(
-        "--confirm-live", action="store_true",
+        "--confirm-live",
+        action="store_true",
         help="Second half of the LIVE-trading dual gate (with "
-             "ALPACA_LIVE_UNLOCK=1). Required when ALPACA_PAPER=false; "
-             "a no-op in paper mode.",
+        "ALPACA_LIVE_UNLOCK=1). Required when ALPACA_PAPER=false; "
+        "a no-op in paper mode.",
     )
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args(argv)
@@ -153,7 +153,10 @@ def main(argv: list[str] | None = None) -> int:
         logger.error("ALPACA_API_KEY / ALPACA_API_SECRET not set — cannot run")
         return 2
     if os.environ.get("ALPACA_OPTIONS_ENABLED", "").strip().lower() not in (
-        "1", "true", "yes", "on",
+        "1",
+        "true",
+        "yes",
+        "on",
     ):
         logger.error("ALPACA_OPTIONS_ENABLED is not set — refusing to trade")
         return 3
@@ -182,8 +185,9 @@ def main(argv: list[str] | None = None) -> int:
     cfg = _config_from_env()
     exit_enabled = _b("ALPACA_OPT_EXIT_ENABLED", default=True)
     exit_cfg = _exit_config_from_env()
-    logger.info("alpaca options executor: paper=%s policy=%s exit=%s %s",
-                paper, cfg, exit_enabled, exit_cfg)
+    logger.info(
+        "alpaca options executor: paper=%s policy=%s exit=%s %s", paper, cfg, exit_enabled, exit_cfg
+    )
 
     def _run() -> None:
         # Exits BEFORE entries (CL-3rho): manage what we hold, then buy.

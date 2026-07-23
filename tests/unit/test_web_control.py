@@ -61,8 +61,7 @@ def runtime():
 @pytest.fixture
 def unwired(runtime):
     runtime.update(
-        {"broker": None, "oms": None, "strategies": [],
-         "kill_switch_manager": None},
+        {"broker": None, "oms": None, "strategies": [], "kill_switch_manager": None},
     )
     return runtime
 
@@ -76,11 +75,15 @@ def oms(unwired):
 
 # ---------------------------------------------------------------- 503s
 
-@pytest.mark.parametrize("method,path", [
-    ("post", "/api/system/halt"),
-    ("post", "/api/system/resume"),
-    ("delete", "/api/positions/EUR_USD"),
-])
+
+@pytest.mark.parametrize(
+    "method,path",
+    [
+        ("post", "/api/system/halt"),
+        ("post", "/api/system/resume"),
+        ("delete", "/api/positions/EUR_USD"),
+    ],
+)
 def test_control_endpoints_503_when_unwired(unwired, method, path):
     r = getattr(client, method)(path, headers=AUTH)
     assert r.status_code == 503
@@ -88,13 +91,13 @@ def test_control_endpoints_503_when_unwired(unwired, method, path):
 
 
 def test_trade_503_when_unwired(unwired):
-    r = client.post("/api/trade", headers=AUTH,
-                    json={"symbol": "EUR_USD", "target_position": 100})
+    r = client.post("/api/trade", headers=AUTH, json={"symbol": "EUR_USD", "target_position": 100})
     assert r.status_code == 503
     assert "not wired" in r.json()["detail"]
 
 
 # ------------------------------------------------------- halt / resume
+
 
 def test_halt_reports_halted_state(oms):
     r = client.post("/api/system/halt", headers=AUTH)
@@ -138,6 +141,7 @@ def test_set_runtime_none_preserves_kill_switch_manager(runtime):
 
 # ------------------------------------------------------- system status
 
+
 def test_system_status_honest_when_unwired(unwired):
     r = client.get("/api/system", headers=AUTH)
     body = r.json()
@@ -155,6 +159,7 @@ def test_system_status_wired(oms):
 
 
 # ----------------------------------------------------------- close
+
 
 def test_close_position_submits_flatten_intent(oms):
     r = client.delete("/api/positions/EUR_USD", headers=AUTH)
@@ -182,6 +187,7 @@ def test_close_position_allows_non_fx_instruments(oms):
 
 # ---------------------------------------------------- trade validation
 
+
 def _trade(payload):
     return client.post("/api/trade", headers=AUTH, json=payload)
 
@@ -199,9 +205,17 @@ def test_trade_valid_fx_submits_intent(oms):
     assert intent.strategy_id == "manual"
 
 
-@pytest.mark.parametrize("symbol", [
-    "DOGE", "SPX500_USD", "EURUSDX", "EUR", "..", "EUR_US1",
-])
+@pytest.mark.parametrize(
+    "symbol",
+    [
+        "DOGE",
+        "SPX500_USD",
+        "EURUSDX",
+        "EUR",
+        "..",
+        "EUR_US1",
+    ],
+)
 def test_trade_rejects_non_fx_symbols(oms, symbol):
     r = _trade({"symbol": symbol, "target_position": 100})
     assert r.status_code == 400
@@ -221,7 +235,8 @@ def test_trade_rejects_non_finite_size(oms, bad):
     # non-standard tokens, and pydantic floats allow inf/nan by default —
     # exactly the hole the endpoint's isfinite check closes.
     r = client.post(
-        "/api/trade", headers={**AUTH, "Content-Type": "application/json"},
+        "/api/trade",
+        headers={**AUTH, "Content-Type": "application/json"},
         content=f'{{"symbol": "EUR_USD", "target_position": {bad}}}',
     )
     assert r.status_code == 400
@@ -233,34 +248,48 @@ def test_trade_rejects_over_default_cap(oms):
     assert r.status_code == 400
     assert "cap" in r.json()["detail"]
     assert oms.intents == []
-    assert _trade(
-        {"symbol": "EUR_USD", "target_position": -999_999},
-    ).status_code == 200
+    assert (
+        _trade(
+            {"symbol": "EUR_USD", "target_position": -999_999},
+        ).status_code
+        == 200
+    )
 
 
 def test_trade_cap_env_override(oms, monkeypatch):
     monkeypatch.setenv("WEB_API_MAX_TRADE_UNITS", "100")
-    assert _trade(
-        {"symbol": "EUR_USD", "target_position": 150},
-    ).status_code == 400
-    assert _trade(
-        {"symbol": "EUR_USD", "target_position": 50},
-    ).status_code == 200
+    assert (
+        _trade(
+            {"symbol": "EUR_USD", "target_position": 150},
+        ).status_code
+        == 400
+    )
+    assert (
+        _trade(
+            {"symbol": "EUR_USD", "target_position": 50},
+        ).status_code
+        == 200
+    )
 
 
 def test_trade_cap_garbage_env_falls_back_to_default(oms, monkeypatch):
     monkeypatch.setenv("WEB_API_MAX_TRADE_UNITS", "lots")
-    assert _trade(
-        {"symbol": "EUR_USD", "target_position": 1_000_001},
-    ).status_code == 400
-    assert _trade(
-        {"symbol": "EUR_USD", "target_position": 500},
-    ).status_code == 200
+    assert (
+        _trade(
+            {"symbol": "EUR_USD", "target_position": 1_000_001},
+        ).status_code
+        == 400
+    )
+    assert (
+        _trade(
+            {"symbol": "EUR_USD", "target_position": 500},
+        ).status_code
+        == 200
+    )
 
 
 def test_trade_rejects_unknown_urgency(oms):
-    r = _trade({"symbol": "EUR_USD", "target_position": 100,
-                "urgency": "high"})
+    r = _trade({"symbol": "EUR_USD", "target_position": 100, "urgency": "high"})
     assert r.status_code == 400
     assert oms.intents == []
 

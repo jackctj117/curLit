@@ -63,13 +63,22 @@ DEFAULT_REGISTRY: dict[str, InstrumentMetadata] = {
     # last_tradable_date in the past so any backtest treating them as
     # tradable instruments fails the filter.
     "US_2Y": InstrumentMetadata(
-        "US_2Y", date(1990, 1, 1), 0.0, last_tradable_date=date(1990, 1, 1),
+        "US_2Y",
+        date(1990, 1, 1),
+        0.0,
+        last_tradable_date=date(1990, 1, 1),
     ),
     "US_10Y": InstrumentMetadata(
-        "US_10Y", date(1990, 1, 1), 0.0, last_tradable_date=date(1990, 1, 1),
+        "US_10Y",
+        date(1990, 1, 1),
+        0.0,
+        last_tradable_date=date(1990, 1, 1),
     ),
     "DE_10Y": InstrumentMetadata(
-        "DE_10Y", date(1990, 1, 1), 0.0, last_tradable_date=date(1990, 1, 1),
+        "DE_10Y",
+        date(1990, 1, 1),
+        0.0,
+        last_tradable_date=date(1990, 1, 1),
     ),
 }
 
@@ -88,7 +97,9 @@ class TradabilityFilter:
     )
 
     def is_tradable(
-        self, symbol: str, on_date: date,
+        self,
+        symbol: str,
+        on_date: date,
         observed_volume: float | None = None,
     ) -> bool:
         meta = self.registry.get(symbol)
@@ -98,7 +109,8 @@ class TradabilityFilter:
             # WARN once and permit — operator will see and add it.
             logger.warning(
                 "TradabilityFilter: %s not in registry — assuming tradable. "
-                "Add to DEFAULT_REGISTRY to silence.", symbol,
+                "Add to DEFAULT_REGISTRY to silence.",
+                symbol,
             )
             return True
         if on_date < meta.first_tradable_date:
@@ -118,6 +130,7 @@ class TradabilityFilter:
             return df
         # `df` is a pandas DataFrame indexed by Timestamp.
         import pandas as pd
+
         idx = pd.to_datetime(df.index)
         first = pd.Timestamp(meta.first_tradable_date)
         mask = idx >= first
@@ -130,13 +143,14 @@ class TradabilityFilter:
 def from_yaml(path: str) -> dict[str, InstrumentMetadata]:
     """Load registry from a YAML file. Schema:
 
-        instruments:
-          EURUSD:
-            first_tradable_date: 2002-01-01
-            liquidity_floor_units: 1000000
-            last_tradable_date: null   # optional
+    instruments:
+      EURUSD:
+        first_tradable_date: 2002-01-01
+        liquidity_floor_units: 1000000
+        last_tradable_date: null   # optional
     """
     import yaml
+
     with open(path) as f:
         doc = yaml.safe_load(f) or {}
     out: dict[str, InstrumentMetadata] = {}

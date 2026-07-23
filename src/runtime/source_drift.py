@@ -66,7 +66,8 @@ def _hash_file(path: Path) -> str:
 
 
 def _resolve_paths(
-    patterns: Iterable[str], root: Path,
+    patterns: Iterable[str],
+    root: Path,
 ) -> list[Path]:
     """Expand glob patterns relative to ``root``."""
     out: list[Path] = []
@@ -92,9 +93,7 @@ class SourceDriftWatcher:
         self.root = root or Path.cwd()
         patterns = tuple(watch_patterns or _DEFAULT_WATCH_PATTERNS)
         self.watched = _resolve_paths(patterns, self.root)
-        self.baseline: dict[Path, str] = {
-            p: _hash_file(p) for p in self.watched
-        }
+        self.baseline: dict[Path, str] = {p: _hash_file(p) for p in self.watched}
         logger.info(
             "SourceDriftWatcher monitoring %d files; baseline captured",
             len(self.watched),
@@ -115,7 +114,8 @@ class SourceDriftWatcher:
         return drifted
 
     async def run_forever(
-        self, interval_sec: int = _DEFAULT_CHECK_INTERVAL_SEC,
+        self,
+        interval_sec: int = _DEFAULT_CHECK_INTERVAL_SEC,
     ) -> None:
         """Background task: periodic check, log + emit gauge on drift.
 

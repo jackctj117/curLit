@@ -85,10 +85,7 @@ class PolymarketCostModel:
         del side  # kept for signature symmetry with FX cost models
         notional = price * size
 
-        fee_bps = (
-            self.maker_fee_bps if role.lower() == "maker"
-            else self.taker_fee_bps
-        )
+        fee_bps = self.maker_fee_bps if role.lower() == "maker" else self.taker_fee_bps
         fee = notional * fee_bps / Decimal("10000")
 
         slippage = Decimal("0")
@@ -98,13 +95,15 @@ class PolymarketCostModel:
             and book_depth_at_price > 0
             and size > book_depth_at_price * _DEEP_TAKER_BOOK_FRACTION
         ):
-            slippage = (
-                notional * self.slippage_bps_on_deep_taker / Decimal("10000")
-            )
+            slippage = notional * self.slippage_bps_on_deep_taker / Decimal("10000")
 
         total = fee + slippage + self.gas_usdc_estimate
         logger.debug(
             "poly cost: notional=%s fee=%s slip=%s gas=%s total=%s",
-            notional, fee, slippage, self.gas_usdc_estimate, total,
+            notional,
+            fee,
+            slippage,
+            self.gas_usdc_estimate,
+            total,
         )
         return max(Decimal("0"), total)

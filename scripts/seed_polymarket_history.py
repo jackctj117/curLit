@@ -38,6 +38,7 @@ def _parse_iso_date(s: str) -> datetime:
 
 def main(argv: list[str] | None = None) -> int:
     from src.dotenv_bootstrap import load_project_env  # noqa: PLC0415
+
     load_project_env()
 
     parser = argparse.ArgumentParser(
@@ -47,27 +48,33 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
-        "--config", default=str(DEFAULT_CONFIG_PATH),
+        "--config",
+        default=str(DEFAULT_CONFIG_PATH),
         help="Path to polymarket_markets.yaml",
     )
     parser.add_argument(
-        "--start", required=True,
+        "--start",
+        required=True,
         type=_parse_iso_date,
         help="ISO date for the lower bound (e.g. 2024-01-01)",
     )
     parser.add_argument(
-        "--end", required=True,
+        "--end",
+        required=True,
         type=_parse_iso_date,
         help="ISO date for the upper bound (e.g. 2026-05-01)",
     )
     parser.add_argument(
-        "--verify", action="store_true",
+        "--verify",
+        action="store_true",
         help="After seeding, query Postgres for per-symbol counts + "
-             "latest probability. Useful as the operator sanity-check "
-             "step from the runbook.",
+        "latest probability. Useful as the operator sanity-check "
+        "step from the runbook.",
     )
     parser.add_argument(
-        "-v", "--verbose", action="store_true",
+        "-v",
+        "--verbose",
+        action="store_true",
         help="Enable DEBUG-level logging",
     )
     args = parser.parse_args(argv)
@@ -104,9 +111,11 @@ def main(argv: list[str] | None = None) -> int:
     # operator can sanity-check at a glance after seeding.
     if args.verify:
         from sqlalchemy import create_engine, text  # noqa: PLC0415
+
         engine = create_engine(db_url)
         with engine.connect() as conn:
-            result = conn.execute(text("""
+            result = conn.execute(
+                text("""
                 SELECT symbol,
                        COUNT(*) AS n,
                        MAX(ts) AS latest_ts,
@@ -119,7 +128,8 @@ def main(argv: list[str] | None = None) -> int:
                 WHERE symbol LIKE 'POLY:%'
                 GROUP BY symbol
                 ORDER BY n DESC
-            """)).fetchall()
+            """)
+            ).fetchall()
         if not result:
             print("(verification: no POLY:* rows in prices table)")
         else:

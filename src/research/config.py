@@ -32,6 +32,7 @@ def _known_providers() -> set[str]:
     """Inspect the LLM client registry. Late binding so test code that
     registers a custom driver before loading config gets accepted."""
     from src.research.llm.client import _DRIVERS  # noqa: PLC0415
+
     return set(_DRIVERS.keys())
 
 
@@ -151,11 +152,13 @@ class ResearchConfig(BaseModel):
             # The default model must have a known cost row; warn (not error)
             # if it doesn't — unknown-model cost is logged $0 (see client.py)
             from src.research.llm.client import _PRICING_USD_PER_MTOK  # noqa: PLC0415
+
             if p.default_model not in _PRICING_USD_PER_MTOK:
                 logger.warning(
                     "provider %r default_model %r missing from pricing table — "
                     "cost will log as $0 for this model",
-                    name, p.default_model,
+                    name,
+                    p.default_model,
                 )
 
         # Every agent's provider must be in providers.

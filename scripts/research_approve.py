@@ -48,29 +48,37 @@ def _build_parser() -> argparse.ArgumentParser:
         description="Operator approval CLI for the research loop",
     )
     p.add_argument(
-        "--state", default=str(DEFAULT_STATE_PATH),
+        "--state",
+        default=str(DEFAULT_STATE_PATH),
         help="Path to the loop state file",
     )
     p.add_argument(
-        "--gate", type=int, choices=(1, 2), default=1,
+        "--gate",
+        type=int,
+        choices=(1, 2),
+        default=1,
         help="Which gate to act on: 1 = pre-research, 2 = pre-deploy",
     )
     p.add_argument(
-        "--list", action="store_true",
+        "--list",
+        action="store_true",
         help="List all pending entries for the chosen gate and exit",
     )
     p.add_argument(
-        "--slug", help="Strategy slug to act on (required without --list)",
+        "--slug",
+        help="Strategy slug to act on (required without --list)",
     )
     p.add_argument(
-        "--action", choices=("GO", "SKIP"),
+        "--action",
+        choices=("GO", "SKIP"),
         help=(
             "GATE 1: GO = approve for implementer; SKIP = archive. "
             "GATE 2: GO = run paper-shadow registrar; SKIP = reject deploy."
         ),
     )
     p.add_argument(
-        "--reason", default="",
+        "--reason",
+        default="",
         help="Free-text reason recorded with the action",
     )
     return p
@@ -80,6 +88,7 @@ def main(argv: list[str] | None = None) -> int:
     # Auto-load .env so credentials/paths are available without first
     # sourcing the file. Explicit env vars still win.
     from src.dotenv_bootstrap import load_project_env  # noqa: PLC0415
+
     load_project_env()
     args = _build_parser().parse_args(argv)
     state = load_state(args.state)
@@ -118,9 +127,7 @@ def _list_gate1(state: Any) -> int:
     print(f"GATE 1 pending: {len(pending)}")
     for h, e in pending:
         print(
-            f"  - slug={e.get('slug')} "
-            f"extract={h[:12]}... "
-            f"since={e.get('pending_since')}",
+            f"  - slug={e.get('slug')} extract={h[:12]}... since={e.get('pending_since')}",
         )
         if e.get("hypothesis_path"):
             print(f"      hypothesis: {e['hypothesis_path']}")
@@ -134,7 +141,10 @@ def _act_gate1(state: Any, slug: str, action: str, reason: str) -> int:
         return 2
 
     result = act_gate1(
-        state, target_hash, approve=(action == "GO"), reason=reason,
+        state,
+        target_hash,
+        approve=(action == "GO"),
+        reason=reason,
     )
     if not result.ok:
         print(f"ERROR: {result.message}", file=sys.stderr)
@@ -156,8 +166,7 @@ def _list_gate2(state: Any) -> int:
     print(f"GATE 2 pending: {len(pending)}")
     for slug, e in pending:
         print(
-            f"  - slug={slug} verdict={e.get('verdict')} "
-            f"since={e.get('pending_since')}",
+            f"  - slug={slug} verdict={e.get('verdict')} since={e.get('pending_since')}",
         )
         if e.get("transcript_path"):
             print(f"      transcript: {e['transcript_path']}")

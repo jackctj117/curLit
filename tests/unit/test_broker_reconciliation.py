@@ -29,13 +29,20 @@ class TestDialectNormalization:
 
 
 def _o(ts: datetime, instrument: str, units: float, price: float, tid: str = "txn") -> FillRecord:
-    return FillRecord(ts=ts, instrument=instrument, units=units,
-                      price=price, transaction_id=tid, source="oanda")
+    return FillRecord(
+        ts=ts, instrument=instrument, units=units, price=price, transaction_id=tid, source="oanda"
+    )
 
 
 def _i(ts: datetime, instrument: str, units: float, price: float, iid: str = "iid") -> FillRecord:
-    return FillRecord(ts=ts, instrument=instrument, units=units,
-                      price=price, transaction_id=iid, source="internal")
+    return FillRecord(
+        ts=ts,
+        instrument=instrument,
+        units=units,
+        price=price,
+        transaction_id=iid,
+        source="internal",
+    )
 
 
 T0 = datetime(2026, 4, 1, 12, 0, tzinfo=UTC)
@@ -115,7 +122,7 @@ class TestTimeWindow:
 
 class TestSideSensitivity:
     def test_opposite_side_does_not_match(self) -> None:
-        oanda = [_o(T0, "EURUSD", 1000, 1.10)]      # buy
+        oanda = [_o(T0, "EURUSD", 1000, 1.10)]  # buy
         internal = [_i(T0, "EURUSD", -1000, 1.10)]  # sell
         rep = reconcile_fills(oanda, internal)
         # Different signs → matched as separate, both flagged

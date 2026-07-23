@@ -67,8 +67,15 @@ class BoEStatementScraper(CBScraper):
         soup = BeautifulSoup(html, "html.parser")
         main = soup.find("main") or soup.find("div", class_="content") or soup.find("body")
         text = main.get_text(separator="\n", strip=True) if main else html[:2000]
-        return Document(cb="boe", doc_type=meta["doc_type"], title=meta["title"],
-                        date=meta["date"], url=meta["url"], raw_html=html, raw_text=text)
+        return Document(
+            cb="boe",
+            doc_type=meta["doc_type"],
+            title=meta["title"],
+            date=meta["date"],
+            url=meta["url"],
+            raw_html=html,
+            raw_text=text,
+        )
 
 
 class BoJStatementScraper(CBScraper):
@@ -112,15 +119,24 @@ class BoJStatementScraper(CBScraper):
         soup = BeautifulSoup(html, "html.parser")
         main = soup.find("div", id="contents") or soup.find("main") or soup.find("body")
         text = main.get_text(separator="\n", strip=True) if main else html[:2000]
-        return Document(cb="boj", doc_type=meta["doc_type"], title=meta["title"],
-                        date=meta["date"], url=meta["url"], raw_html=html, raw_text=text)
+        return Document(
+            cb="boj",
+            doc_type=meta["doc_type"],
+            title=meta["title"],
+            date=meta["date"],
+            url=meta["url"],
+            raw_html=html,
+            raw_text=text,
+        )
 
 
 class BoCStatementScraper(CBScraper):
     cb_name = "boc"
     BASE = "https://www.bankofcanada.ca/news/"
     # CL-qdns: BoC archives via year query parameter on news listing.
-    HISTORICAL_URL_FMT = "https://www.bankofcanada.ca/news/?mtm_search_filter=monetary-policy&date_year={year}"
+    HISTORICAL_URL_FMT = (
+        "https://www.bankofcanada.ca/news/?mtm_search_filter=monetary-policy&date_year={year}"
+    )
 
     def list_documents(self, since: datetime) -> list[dict[str, Any]]:
         urls_seen: set[str] = set()
@@ -163,5 +179,12 @@ class BoCStatementScraper(CBScraper):
         soup = BeautifulSoup(html, "html.parser")
         main = soup.find("article") or soup.find("div", class_="entry-content") or soup.find("body")
         text = main.get_text(separator="\n", strip=True) if main else html[:2000]
-        return Document(cb="boc", doc_type=meta["doc_type"], title=meta["title"],
-                        date=meta["date"], url=meta["url"], raw_html=html, raw_text=text)
+        return Document(
+            cb="boc",
+            doc_type=meta["doc_type"],
+            title=meta["title"],
+            date=meta["date"],
+            url=meta["url"],
+            raw_html=html,
+            raw_text=text,
+        )

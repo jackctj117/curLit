@@ -31,34 +31,42 @@ def provider_engine(tmp_path):  # type: ignore[no-untyped-def]
     db_path = tmp_path / "test.db"
     engine = create_engine(f"sqlite:///{db_path}")
     with engine.begin() as conn:
-        conn.execute(text("""
+        conn.execute(
+            text("""
             CREATE TABLE prices (
                 ts TIMESTAMP, symbol VARCHAR(64),
                 close FLOAT,
                 PRIMARY KEY (ts, symbol)
             )
-        """))
-        conn.execute(text("""
+        """)
+        )
+        conn.execute(
+            text("""
             CREATE TABLE macro_data (
                 observation_date DATE, series_id VARCHAR(64),
                 value FLOAT, release_date DATE,
                 PRIMARY KEY (observation_date, series_id)
             )
-        """))
+        """)
+        )
         # Macro: FRED-style — series_id 'DGS2' across 3 days
-        conn.execute(text(
-            "INSERT INTO macro_data VALUES "
-            "('2026-04-01', 'DGS2', 4.5, '2026-04-02'), "
-            "('2026-04-02', 'DGS2', 4.6, '2026-04-03'), "
-            "('2026-04-03', 'DGS2', 4.7, '2026-04-04')",
-        ))
+        conn.execute(
+            text(
+                "INSERT INTO macro_data VALUES "
+                "('2026-04-01', 'DGS2', 4.5, '2026-04-02'), "
+                "('2026-04-02', 'DGS2', 4.6, '2026-04-03'), "
+                "('2026-04-03', 'DGS2', 4.7, '2026-04-04')",
+            )
+        )
         # Prices: symbol 'EURUSD' across 3 days
-        conn.execute(text(
-            "INSERT INTO prices VALUES "
-            "('2026-04-01 00:00:00', 'EURUSD', 1.10), "
-            "('2026-04-02 00:00:00', 'EURUSD', 1.11), "
-            "('2026-04-03 00:00:00', 'EURUSD', 1.12)",
-        ))
+        conn.execute(
+            text(
+                "INSERT INTO prices VALUES "
+                "('2026-04-01 00:00:00', 'EURUSD', 1.10), "
+                "('2026-04-02 00:00:00', 'EURUSD', 1.11), "
+                "('2026-04-03 00:00:00', 'EURUSD', 1.12)",
+            )
+        )
     return engine
 
 
@@ -66,7 +74,8 @@ class TestGetLatestValue:
     def test_macro_data_hit(self, provider_engine) -> None:
         provider = DataProvider(provider_engine)
         v = provider.get_latest_value(
-            "DGS2", datetime(2026, 4, 3, tzinfo=UTC),
+            "DGS2",
+            datetime(2026, 4, 3, tzinfo=UTC),
         )
         assert v == 4.7
 
@@ -74,7 +83,8 @@ class TestGetLatestValue:
         provider = DataProvider(provider_engine)
         # Cutoff between rows; should return the last <= cutoff
         v = provider.get_latest_value(
-            "DGS2", datetime(2026, 4, 2, 12, tzinfo=UTC),
+            "DGS2",
+            datetime(2026, 4, 2, 12, tzinfo=UTC),
         )
         assert v == 4.6
 
@@ -82,14 +92,16 @@ class TestGetLatestValue:
         provider = DataProvider(provider_engine)
         # 'EURUSD' isn't in macro_data; should fall to prices
         v = provider.get_latest_value(
-            "EURUSD", datetime(2026, 4, 3, tzinfo=UTC),
+            "EURUSD",
+            datetime(2026, 4, 3, tzinfo=UTC),
         )
         assert v == 1.12
 
     def test_unknown_returns_none(self, provider_engine) -> None:
         provider = DataProvider(provider_engine)
         v = provider.get_latest_value(
-            "NEVER_EXISTS", datetime(2026, 4, 3, tzinfo=UTC),
+            "NEVER_EXISTS",
+            datetime(2026, 4, 3, tzinfo=UTC),
         )
         assert v is None
 
@@ -144,12 +156,15 @@ class TestGetRealizedVol:
         # Seed 22 sequential closes to ensure 21 returns for window=20.
         with provider_engine.begin() as conn:
             from sqlalchemy import text as _t
+
             for i in range(22):
-                conn.execute(_t(
-                    "INSERT INTO prices VALUES "
-                    f"('2026-01-{i+1:02d} 00:00:00', 'AUDUSD', "
-                    f"{1.10 + 0.001 * i})",
-                ))
+                conn.execute(
+                    _t(
+                        "INSERT INTO prices VALUES "
+                        f"('2026-01-{i + 1:02d} 00:00:00', 'AUDUSD', "
+                        f"{1.10 + 0.001 * i})",
+                    )
+                )
         provider = DataProvider(provider_engine)
         v = provider.get_realized_vol("AUDUSD", window=20)
         assert v is not None
@@ -168,20 +183,20 @@ class TestGetRealizedVol:
 
 class TestErrorPath:
     def test_db_error_returns_none_with_warning(
-        self, caplog: pytest.LogCaptureFixture,
+        self,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         # Engine that fails on every query (schema mismatch — no tables)
         bad_engine = create_engine("sqlite:///:memory:")
         provider = DataProvider(bad_engine)
         with caplog.at_level("WARNING"):
             v = provider.get_latest_value(
-                "X", datetime(2026, 4, 1, tzinfo=UTC),
+                "X",
+                datetime(2026, 4, 1, tzinfo=UTC),
             )
         assert v is None
         # Error logged at WARNING (not exception — see CL-2yta defense)
-        assert any(
-            "get_latest_value" in r.message for r in caplog.records
-        )
+        assert any("get_latest_value" in r.message for r in caplog.records)
 
 
 # ---------------------------------------------------------------------------
@@ -198,7 +213,7 @@ class TestNormalizeSymbol:
     @pytest.mark.parametrize(
         ("oanda", "db"),
         [
-            ("BCO_USD", "OIL_WTI"),   # Brent → WTI proxy (documented)
+            ("BCO_USD", "OIL_WTI"),  # Brent → WTI proxy (documented)
             ("WTICO_USD", "OIL_WTI"),
             ("XAU_USD", "GOLD"),
             ("XCU_USD", "COPPER"),
@@ -217,8 +232,21 @@ class TestNormalizeSymbol:
 
     @pytest.mark.parametrize(
         "native",
-        ["EURUSD", "US_10Y", "US_2Y", "DE_2Y", "DGS2", "DGS10",
-         "GOLD", "OIL_WTI", "USDJPY", "COPPER", "SPX", "VIX", "DXY"],
+        [
+            "EURUSD",
+            "US_10Y",
+            "US_2Y",
+            "DE_2Y",
+            "DGS2",
+            "DGS10",
+            "GOLD",
+            "OIL_WTI",
+            "USDJPY",
+            "COPPER",
+            "SPX",
+            "VIX",
+            "DXY",
+        ],
     )
     def test_db_native_passes_through(self, native: str) -> None:
         # DB-native names (and FRED series) must be returned unchanged so
@@ -227,8 +255,18 @@ class TestNormalizeSymbol:
 
     @pytest.mark.parametrize(
         "unmapped",
-        ["XAG_USD", "XPT_USD", "XPD_USD", "USD_NOK", "USD_ZAR",
-         "USD_CNH", "NATGAS_USD", "WHEAT_USD", "CORN_USD", "NAS100_USD"],
+        [
+            "XAG_USD",
+            "XPT_USD",
+            "XPD_USD",
+            "USD_NOK",
+            "USD_ZAR",
+            "USD_CNH",
+            "NATGAS_USD",
+            "WHEAT_USD",
+            "CORN_USD",
+            "NAS100_USD",
+        ],
     )
     def test_unmapped_event_ids_pass_through(self, unmapped: str) -> None:
         # No DB equivalent yet — pass through unchanged so the lookup
@@ -258,7 +296,8 @@ class TestNormalizeSymbol:
         assert "Brent" in src and "proxy" in src.lower()
 
     def test_unmapped_miss_logs_once_at_debug(
-        self, caplog: pytest.LogCaptureFixture,
+        self,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         # A known-unmapped event id logs a discoverable DEBUG line, but
         # only once per distinct symbol (no per-call spam in tight loops).
@@ -362,20 +401,24 @@ class TestBatchReads:
         with engine.begin() as conn:
             for i in range(25):
                 d = f"2026-02-{i + 1:02d} 00:00:00"
-                conn.execute(text(
-                    "INSERT INTO prices VALUES "
-                    f"('{d}', 'GOLD', {2400.0 + i * 1.5})",
-                ))
-                conn.execute(text(
-                    "INSERT INTO prices VALUES "
-                    f"('{d}', 'USDJPY', {150.0 + i * 0.05})",
-                ))
+                conn.execute(
+                    text(
+                        f"INSERT INTO prices VALUES ('{d}', 'GOLD', {2400.0 + i * 1.5})",
+                    )
+                )
+                conn.execute(
+                    text(
+                        f"INSERT INTO prices VALUES ('{d}', 'USDJPY', {150.0 + i * 0.05})",
+                    )
+                )
 
     def test_latest_values_batch_matches_per_symbol(self, provider_engine) -> None:  # type: ignore[no-untyped-def]
         with provider_engine.begin() as conn:
-            conn.execute(text(
-                "INSERT INTO prices VALUES ('2026-04-03 00:00:00', 'GOLD', 2400.0)",
-            ))
+            conn.execute(
+                text(
+                    "INSERT INTO prices VALUES ('2026-04-03 00:00:00', 'GOLD', 2400.0)",
+                )
+            )
         provider = DataProvider(provider_engine)
         as_of = datetime(2026, 4, 3, tzinfo=UTC)
         # XAU_USD→GOLD (prices), DGS2 (macro), EURUSD (prices).
@@ -389,7 +432,8 @@ class TestBatchReads:
     def test_latest_values_batch_omits_missing(self, provider_engine) -> None:  # type: ignore[no-untyped-def]
         provider = DataProvider(provider_engine)
         batch = provider.get_latest_values_batch(
-            ["EURUSD", "NEVER_EXISTS"], datetime(2026, 4, 3, tzinfo=UTC),
+            ["EURUSD", "NEVER_EXISTS"],
+            datetime(2026, 4, 3, tzinfo=UTC),
         )
         assert "EURUSD" in batch
         assert "NEVER_EXISTS" not in batch  # None per-symbol → absent in batch
@@ -407,24 +451,30 @@ class TestBatchReads:
         # Default fixture EURUSD has 3 rows; window=20 needs 21 → omitted,
         # exactly as the per-symbol call returns None.
         batch = provider.get_realized_vols_batch(
-            ["EURUSD"], 20, datetime(2026, 4, 3, tzinfo=UTC),
+            ["EURUSD"],
+            20,
+            datetime(2026, 4, 3, tzinfo=UTC),
         )
         assert "EURUSD" not in batch
         assert provider.get_realized_vol("EURUSD", 20) is None
 
     def test_intraday_values_batch_matches_per_symbol(self, provider_engine) -> None:  # type: ignore[no-untyped-def]
         with provider_engine.begin() as conn:
-            conn.execute(text("""
+            conn.execute(
+                text("""
                 CREATE TABLE intraday_quotes (
                     ts TIMESTAMP, symbol TEXT, mid FLOAT
                 )
-            """))
-            conn.execute(text(
-                "INSERT INTO intraday_quotes VALUES "
-                "('2026-04-03 11:00:00', 'XAU_USD', 2401.0), "
-                "('2026-04-03 11:30:00', 'XAU_USD', 2402.0), "
-                "('2026-04-03 11:00:00', 'USD_CAD', 1.36)",
-            ))
+            """)
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO intraday_quotes VALUES "
+                    "('2026-04-03 11:00:00', 'XAU_USD', 2401.0), "
+                    "('2026-04-03 11:30:00', 'XAU_USD', 2402.0), "
+                    "('2026-04-03 11:00:00', 'USD_CAD', 1.36)",
+                )
+            )
         provider = DataProvider(provider_engine)
         as_of = datetime(2026, 4, 3, 12, tzinfo=UTC)
         batch = provider.get_intraday_values_batch(["XAU_USD", "USD_CAD"], as_of, 120)
@@ -436,15 +486,18 @@ class TestBatchReads:
 
     def test_intraday_batch_honors_staleness(self, provider_engine) -> None:  # type: ignore[no-untyped-def]
         with provider_engine.begin() as conn:
-            conn.execute(text("""
+            conn.execute(
+                text("""
                 CREATE TABLE intraday_quotes (
                     ts TIMESTAMP, symbol TEXT, mid FLOAT
                 )
-            """))
-            conn.execute(text(
-                "INSERT INTO intraday_quotes VALUES "
-                "('2026-04-03 10:00:00', 'XAU_USD', 2400.0)",
-            ))
+            """)
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO intraday_quotes VALUES ('2026-04-03 10:00:00', 'XAU_USD', 2400.0)",
+                )
+            )
         provider = DataProvider(provider_engine)
         as_of = datetime(2026, 4, 3, 12, tzinfo=UTC)  # quote is 120min old
         # 60min bound → too stale, omitted (matches per-symbol None).
@@ -480,20 +533,34 @@ class TestFxStrategyPathUnaffected:
     def test_native_fx_and_macro_still_resolve(self, provider_engine) -> None:  # type: ignore[no-untyped-def]
         provider = DataProvider(provider_engine)
         # EURUSD is in prices, DGS2 in macro_data — both DB-native.
-        assert provider.get_latest_value(
-            "EURUSD", datetime(2026, 4, 3, tzinfo=UTC),
-        ) == 1.12
-        assert provider.get_latest_value(
-            "DGS2", datetime(2026, 4, 3, tzinfo=UTC),
-        ) == 4.7
+        assert (
+            provider.get_latest_value(
+                "EURUSD",
+                datetime(2026, 4, 3, tzinfo=UTC),
+            )
+            == 1.12
+        )
+        assert (
+            provider.get_latest_value(
+                "DGS2",
+                datetime(2026, 4, 3, tzinfo=UTC),
+            )
+            == 4.7
+        )
 
     def test_oanda_id_now_resolves_via_alias(self, provider_engine) -> None:  # type: ignore[no-untyped-def]
         # Seed GOLD directly, then look it up by the OANDA id XAU_USD.
         with provider_engine.begin() as conn:
-            conn.execute(text(
-                "INSERT INTO prices VALUES ('2026-04-03 00:00:00', 'GOLD', 2400.0)",
-            ))
+            conn.execute(
+                text(
+                    "INSERT INTO prices VALUES ('2026-04-03 00:00:00', 'GOLD', 2400.0)",
+                )
+            )
         provider = DataProvider(provider_engine)
-        assert provider.get_latest_value(
-            "XAU_USD", datetime(2026, 4, 3, tzinfo=UTC),
-        ) == 2400.0
+        assert (
+            provider.get_latest_value(
+                "XAU_USD",
+                datetime(2026, 4, 3, tzinfo=UTC),
+            )
+            == 2400.0
+        )

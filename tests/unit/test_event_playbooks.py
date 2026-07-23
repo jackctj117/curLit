@@ -55,13 +55,47 @@ AFRICA_THEMES = {
 
 #: Loose country/site token list for the territorial-exposure check.
 TERRITORY_TOKENS = (
-    "mali", "ghana", "drc", "congo", "zambia", "niger", "guinea",
-    "south africa", "sa ", "zimbabwe", "burkina", "senegal", "tanzania",
-    "sahel", "katanga", "kolwezi", "kamoa", "kipushi", "kisanfu",
-    "tenke", "mutanda", "fekola", "loulo", "obuasi", "ahafo", "akyem",
-    "kibali", "kansanshi", "sentinel", "dasa", "rustenburg", "marikana",
-    "mogalakwena", "south deep", "mponeng", "siguiri", "simandou",
-    "cbg", "pilbara", "geita", "iduapriem",
+    "mali",
+    "ghana",
+    "drc",
+    "congo",
+    "zambia",
+    "niger",
+    "guinea",
+    "south africa",
+    "sa ",
+    "zimbabwe",
+    "burkina",
+    "senegal",
+    "tanzania",
+    "sahel",
+    "katanga",
+    "kolwezi",
+    "kamoa",
+    "kipushi",
+    "kisanfu",
+    "tenke",
+    "mutanda",
+    "fekola",
+    "loulo",
+    "obuasi",
+    "ahafo",
+    "akyem",
+    "kibali",
+    "kansanshi",
+    "sentinel",
+    "dasa",
+    "rustenburg",
+    "marikana",
+    "mogalakwena",
+    "south deep",
+    "mponeng",
+    "siguiri",
+    "simandou",
+    "cbg",
+    "pilbara",
+    "geita",
+    "iduapriem",
 )
 
 
@@ -140,7 +174,11 @@ class TestTerritorialExposure:
         for key in AFRICA_THEMES:
             names = {i.instrument for i in pbs[key].tradable_instruments}
             assert names & {
-                "XAU_USD", "XCU_USD", "XPT_USD", "XPD_USD", "USD_ZAR",
+                "XAU_USD",
+                "XCU_USD",
+                "XPT_USD",
+                "XPD_USD",
+                "USD_ZAR",
             }, key
 
     def test_exchange_suffixed_equities_load(self) -> None:
@@ -175,7 +213,7 @@ class TestPharmaApiSupply:
         # Exposure names present.
         names = {i.instrument for i in equities}
         assert {"TEVA", "VTRS", "RDY"} <= names  # exposed generics
-        assert {"TMO", "PFE", "JNJ"} <= names    # diversified
+        assert {"TMO", "PFE", "JNJ"} <= names  # diversified
 
     def test_no_pharma_oanda_symbol_invented(self, pharma) -> None:
         # The only tradable allowed is the broad SPX500_USD risk-off leg
@@ -186,14 +224,10 @@ class TestPharmaApiSupply:
     def test_reasons_distinguish_exposed_vs_diversified(self, pharma) -> None:
         reasons = [i.rationale.lower() for i in pharma.instruments]
         # At least one reason names the China/India/generics input exposure.
-        assert any(
-            any(tok in r for tok in ("china", "india", "generics"))
-            for r in reasons
-        )
+        assert any(any(tok in r for tok in ("china", "india", "generics")) for r in reasons)
         # At least one reason marks a diversified/resilient beneficiary.
         assert any(
-            any(tok in r for tok in ("diversified", "resilient", "beneficiary"))
-            for r in reasons
+            any(tok in r for tok in ("diversified", "resilient", "beneficiary")) for r in reasons
         )
 
     def test_gdelt_query_under_length_ceiling(self, pharma) -> None:
@@ -214,10 +248,14 @@ class TestValidation:
             "name": "T",
             "description": "d",
             "watch_terms": ["a phrase"],
-            "instruments": [{
-                "instrument": "EUR_USD", "kind": "fx",
-                "direction": "long", "rationale": "r",
-            }],
+            "instruments": [
+                {
+                    "instrument": "EUR_USD",
+                    "kind": "fx",
+                    "direction": "long",
+                    "rationale": "r",
+                }
+            ],
         }
         base.update(overrides)
         return base
@@ -237,39 +275,62 @@ class TestValidation:
             load_playbooks(p)
 
     def test_bad_kind_raises(self, tmp_path: Path) -> None:
-        theme = self._theme(instruments=[{
-            "instrument": "EUR_USD", "kind": "cfd",
-            "direction": "long", "rationale": "r",
-        }])
+        theme = self._theme(
+            instruments=[
+                {
+                    "instrument": "EUR_USD",
+                    "kind": "cfd",
+                    "direction": "long",
+                    "rationale": "r",
+                }
+            ]
+        )
         p = self._write(tmp_path, {"themes": {"t": theme}})
         with pytest.raises(ValueError, match="kind"):
             load_playbooks(p)
 
     def test_lowercase_tradable_raises(self, tmp_path: Path) -> None:
-        theme = self._theme(instruments=[{
-            "instrument": "eur_usd", "kind": "fx",
-            "direction": "long", "rationale": "r",
-        }])
+        theme = self._theme(
+            instruments=[
+                {
+                    "instrument": "eur_usd",
+                    "kind": "fx",
+                    "direction": "long",
+                    "rationale": "r",
+                }
+            ]
+        )
         p = self._write(tmp_path, {"themes": {"t": theme}})
         with pytest.raises(ValueError, match="must match"):
             load_playbooks(p)
 
     def test_directional_equity_raises(self, tmp_path: Path) -> None:
-        theme = self._theme(instruments=[{
-            "instrument": "NVDA", "kind": "equity_watch",
-            "direction": "short", "rationale": "r",
-        }])
+        theme = self._theme(
+            instruments=[
+                {
+                    "instrument": "NVDA",
+                    "kind": "equity_watch",
+                    "direction": "short",
+                    "rationale": "r",
+                }
+            ]
+        )
         p = self._write(tmp_path, {"themes": {"t": theme}})
         with pytest.raises(ValueError, match="alert-only"):
             load_playbooks(p)
 
     def test_polymarket_slug_allowed_lowercase(self, tmp_path: Path) -> None:
-        theme = self._theme(instruments=[
-            {"instrument": "EUR_USD", "kind": "fx",
-             "direction": "long", "rationale": "r"},
-            {"instrument": "some-event-slug-2026", "kind": "polymarket",
-             "direction": "watch", "rationale": "r"},
-        ])
+        theme = self._theme(
+            instruments=[
+                {"instrument": "EUR_USD", "kind": "fx", "direction": "long", "rationale": "r"},
+                {
+                    "instrument": "some-event-slug-2026",
+                    "kind": "polymarket",
+                    "direction": "watch",
+                    "rationale": "r",
+                },
+            ]
+        )
         p = self._write(tmp_path, {"themes": {"t": theme}})
         pbs = load_playbooks(p)
         kinds = {i.kind for i in pbs["t"].instruments}

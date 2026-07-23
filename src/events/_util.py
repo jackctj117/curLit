@@ -89,7 +89,9 @@ def atomic_write_json(path: Path | str, obj: Any, *, indent: int = 2) -> None:
     p.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps(obj, indent=indent, default=str)
     fd, tmp_name = tempfile.mkstemp(
-        dir=p.parent, prefix=f".{p.name}.", suffix=".tmp",
+        dir=p.parent,
+        prefix=f".{p.name}.",
+        suffix=".tmp",
     )
     try:
         with os.fdopen(fd, "w") as fh:
