@@ -311,7 +311,8 @@ class _RecordingKSM:
         self.contexts.append(context)
         return []
 
-    def reset_daily(self) -> None:
+    def reset_daily(self, *, clear_causes: bool = True) -> None:
+        # CL-ssoh: the automatic rollover path now passes clear_causes=False.
         self.resets += 1
 
     def log_arming(self, provided: Any) -> None:

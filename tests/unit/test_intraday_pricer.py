@@ -270,9 +270,13 @@ def test_intraday_move_confirms_where_daily_expires():
     assert res.outcome == "confirmed"
     assert res.checks[0].confirmed is True
 
-    # WITHOUT intraday: flat daily close both legs → no move → not confirmed.
+    # WITHOUT intraday: CL-hn0t makes the Gate-B reference intraday-ONLY (a
+    # stale daily close as the seen_at baseline miscounted a pre-event gap as
+    # confirmation). With no intraday reference there is no baseline → the leg
+    # reports no_price_data and does NOT confirm, rather than confirming on a
+    # daily close of unknown freshness.
     conf2 = EventConfluence(cfg, data_provider=_FakeProvider(with_intraday=False))
     res2 = conf2.evaluate_and_transition(_long_oanda_event(seen_at), now=now)
     assert res2.outcome == "pending"
     assert res2.checks[0].confirmed is False
-    assert res2.checks[0].reason == "move_below_threshold"
+    assert res2.checks[0].reason == "no_price_data"
