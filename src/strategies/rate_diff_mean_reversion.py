@@ -503,9 +503,56 @@ class RateDiffMRStrategy:
 
         return allowed, diag
 
+    def _sync_position_from_broker(self, broker: Any) -> None:
+        """CL-0h30 (P0): reconcile the strategy's belief with the broker at the
+        START of each tick. _position_size was updated optimistically at
+        intent-emit time, so a REJECTED entry/exit desynced it from the broker:
+        a rejected ENTRY left the strategy "long" against a flat broker (it
+        managed a phantom and never re-entered); a rejected EXIT left it "flat"
+        against a live broker position (unstopped risk). Re-deriving from the
+        broker each tick self-heals both and adopts a position restored across
+        a restart. Best-effort — a broker read failure keeps the last belief.
+        """
+        if broker is None:
+            return
+        try:
+            positions = broker.get_positions()
+        except Exception:
+            logger.warning("%s: broker position sync skipped — read failed", self.id)
+            return
+        from src.execution.broker import canonical_symbol  # noqa: PLC0415
+        pair_key = canonical_symbol(self.config.pair)
+        broker_qty = 0.0
+        for p in positions:
+            if canonical_symbol(str(getattr(p, "symbol", ""))) == pair_key:
+                broker_qty = float(getattr(p, "quantity", 0.0))
+                break
+        if abs(broker_qty - self._position_size) <= 1e-6:
+            return
+        logger.info(
+            "%s: syncing position %.2f -> %.2f from broker (reject/restart)",
+            self.id, self._position_size, broker_qty,
+        )
+        self._position_size = broker_qty
+        if broker_qty == 0.0:
+            # Flat at the broker → clear entry state so a fresh entry can fire.
+            self._entry_z = None
+            self._entry_ts = None
+        else:
+            # Adopting a live leg we didn't think we held (rejected exit or a
+            # restored position): stamp entry state so the exit path + hard
+            # time stop still work. entry_z only feeds the snapshot; the exit
+            # DECISION uses the live z vs thresholds, so a 0.0 placeholder is
+            # safe and lets the assert in the exit branch hold.
+            if self._entry_z is None:
+                self._entry_z = 0.0
+            if self._entry_ts is None:
+                self._entry_ts = datetime.now(UTC)
+
     async def generate_intents(
         self, prices: dict[str, Any], broker: Any,
     ) -> list[OrderIntent]:
+        self._sync_position_from_broker(broker)
         self._refit_if_stale()
         if self._model is None or self._model["r_squared"] < self.config.min_r_squared:
             r2 = self._model["r_squared"] if self._model else 0

@@ -235,9 +235,42 @@ class CBSentimentShiftStrategy:
                 del self.open_positions[symbol]
         return exits
 
+    def _drop_phantom_positions(self, broker: Any) -> None:
+        """CL-0h30 (P0): open_positions is written optimistically at
+        intent-emit time, so a REJECTED entry leaves a phantom leg the broker
+        never opened — the strategy then manages a position that isn't there
+        (and its slot counts against the concurrency cap) and never re-enters.
+        Drop any tracked leg the broker is flat on, at the START of each tick.
+        Best-effort: a broker read failure keeps the current book. (Adopting a
+        broker leg the strategy has no record of — a rejected exit — needs
+        entry metadata we don't have, so that remains reconciler-managed.)
+        """
+        if broker is None:
+            return
+        try:
+            positions = broker.get_positions()
+        except Exception:
+            logger.warning("%s: phantom-drop skipped — broker read failed", self.id)
+            return
+        from src.execution.broker import canonical_symbol  # noqa: PLC0415
+        held = {
+            canonical_symbol(str(getattr(p, "symbol", ""))): float(
+                getattr(p, "quantity", 0.0),
+            )
+            for p in positions
+        }
+        for pair in list(self.open_positions.keys()):
+            if abs(held.get(canonical_symbol(pair), 0.0)) < 1e-6:
+                logger.info(
+                    "%s: dropping phantom open position %s — broker is flat "
+                    "(entry likely rejected)", self.id, pair,
+                )
+                del self.open_positions[pair]
+
     async def generate_intents(
         self, prices: dict[str, Any], broker: Any,
     ) -> list[OrderIntent]:
+        self._drop_phantom_positions(broker)
         self._refresh_thresholds()
         intents = self._update_trailing_stops(prices)
 

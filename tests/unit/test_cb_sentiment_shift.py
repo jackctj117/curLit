@@ -8,13 +8,79 @@ the cap. It must be enforced per-entry within the tick.
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
 
 from src.strategies.cb_sentiment_shift import (
     CBSentimentConfig,
     CBSentimentShiftStrategy,
+    OpenPosition,
 )
+
+
+class _FlatBroker:
+    def get_positions(self) -> list[Any]:
+        return []
+
+    def get_account(self) -> Any:
+        return SimpleNamespace(equity=100_000.0)
+
+
+class _HoldingBroker:
+    def __init__(self, positions: list[Any]) -> None:
+        self._positions = positions
+
+    def get_positions(self) -> list[Any]:
+        return self._positions
+
+    def get_account(self) -> Any:
+        return SimpleNamespace(equity=100_000.0)
+
+
+def _open_pos(pair: str, qty: float) -> OpenPosition:
+    return OpenPosition(
+        symbol=pair, entry_ts=datetime.now(UTC), entry_price=1.10,
+        quantity=qty, direction=1 if qty > 0 else -1, stop_loss=1.09,
+        source_cb="FED",
+    )
+
+
+class TestPhantomDrop:
+    """CL-0h30 (P0): a leg the broker never opened (rejected entry) is dropped
+    from open_positions at the start of the tick, not managed as a phantom."""
+
+    def test_phantom_dropped_when_broker_flat(self, monkeypatch) -> None:
+        strat = CBSentimentShiftStrategy(CBSentimentConfig(max_concurrent_positions=3))
+        strat.open_positions["EURUSD"] = _open_pos("EURUSD", 1000.0)
+        monkeypatch.setattr(strat, "_check_new_events", lambda: [])
+        monkeypatch.setattr(strat, "_refresh_thresholds", lambda: None)
+        monkeypatch.setattr(strat, "_update_trailing_stops", lambda prices: [])
+        asyncio.run(strat.generate_intents({}, _FlatBroker()))
+        assert "EURUSD" not in strat.open_positions
+
+    def test_real_position_kept(self, monkeypatch) -> None:
+        from src.execution.broker import Position
+        strat = CBSentimentShiftStrategy(CBSentimentConfig(max_concurrent_positions=3))
+        strat.open_positions["EURUSD"] = _open_pos("EURUSD", -1000.0)
+        broker = _HoldingBroker([Position("EURUSD", -1000.0, 1.10)])
+        monkeypatch.setattr(strat, "_check_new_events", lambda: [])
+        monkeypatch.setattr(strat, "_refresh_thresholds", lambda: None)
+        monkeypatch.setattr(strat, "_update_trailing_stops", lambda prices: [])
+        asyncio.run(strat.generate_intents({}, broker))
+        assert "EURUSD" in strat.open_positions  # backed by the broker → kept
+
+    def test_phantom_drop_skipped_on_broker_read_failure(self, monkeypatch) -> None:
+        class _NoPos:
+            def get_account(self) -> Any:
+                return SimpleNamespace(equity=100_000.0)
+        strat = CBSentimentShiftStrategy(CBSentimentConfig(max_concurrent_positions=3))
+        strat.open_positions["EURUSD"] = _open_pos("EURUSD", 1000.0)
+        monkeypatch.setattr(strat, "_check_new_events", lambda: [])
+        monkeypatch.setattr(strat, "_refresh_thresholds", lambda: None)
+        monkeypatch.setattr(strat, "_update_trailing_stops", lambda prices: [])
+        asyncio.run(strat.generate_intents({}, _NoPos()))
+        assert "EURUSD" in strat.open_positions  # best-effort: belief kept
 
 
 class _Broker:

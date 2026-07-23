@@ -26,11 +26,69 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from src.execution.broker import Position
 from src.risk.liquidity_window import LiquidityProfile
 from src.strategies.rate_diff_mean_reversion import (
     RateDiffMRConfig,
     RateDiffMRStrategy,
 )
+
+
+class _PosBroker:
+    """Broker double exposing get_positions for the CL-0h30 sync."""
+
+    def __init__(self, positions: list[Position]) -> None:
+        self._positions = positions
+
+    def get_positions(self) -> list[Position]:
+        return self._positions
+
+    def get_account(self) -> Any:
+        return SimpleNamespace(equity=100_000.0)
+
+
+class TestBrokerPositionSync:
+    """CL-0h30 (P0): the strategy's belief is reconciled with the broker at the
+    start of each tick, so a rejected entry/exit self-heals instead of leaving
+    a phantom (or unstopped risk)."""
+
+    def test_rejected_entry_self_heals_to_flat(self) -> None:
+        s = RateDiffMRStrategy(_config())
+        s._position_size = 1000.0   # thinks it's long (entry was rejected)
+        s._entry_z = 5.0
+        s._entry_ts = datetime.now(UTC)
+        s._sync_position_from_broker(_PosBroker([]))  # broker actually flat
+        assert s._position_size == 0.0
+        assert s._entry_z is None and s._entry_ts is None
+
+    def test_rejected_exit_adopts_live_broker_position(self) -> None:
+        s = RateDiffMRStrategy(_config())
+        s._position_size = 0.0      # thinks it's flat (exit was rejected)
+        s._sync_position_from_broker(
+            _PosBroker([Position("EURUSD", -500.0, 1.10)]),
+        )
+        assert s._position_size == -500.0     # adopts the live leg
+        assert s._entry_ts is not None        # stamped so the time stop works
+        assert s._entry_z == 0.0
+
+    def test_sync_noop_when_in_agreement(self) -> None:
+        s = RateDiffMRStrategy(_config())
+        s._position_size = -500.0
+        s._entry_z = 3.0
+        s._sync_position_from_broker(
+            _PosBroker([Position("EURUSD", -500.0, 1.10)]),
+        )
+        assert s._position_size == -500.0
+        assert s._entry_z == 3.0  # untouched — nothing to reconcile
+
+    def test_sync_skipped_when_broker_has_no_get_positions(self) -> None:
+        # Best-effort: a broker read failure must not crash the tick.
+        class _NoPos:
+            pass
+        s = RateDiffMRStrategy(_config())
+        s._position_size = 1000.0
+        s._sync_position_from_broker(_NoPos())  # AttributeError → swallowed
+        assert s._position_size == 1000.0  # belief unchanged
 
 PAIR = "EURUSD"
 SPREAD = "US10Y_MINUS_DE10Y"
