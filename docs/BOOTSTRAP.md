@@ -4,6 +4,13 @@ _A new machine (or a new agent) should get from zero to the full paper-trading
 fleet with this checklist. Companion docs: `CURRENT_OPERATIONS.md` (what runs
 and why), `BOOT.md` (engine-centric details), `.env.example` (every knob)._
 
+**Fast path:** the deterministic, key-independent parts of steps 1 + 3 are one
+command — `make bootstrap` (venv + deps + spaCy + Postgres on `127.0.0.1:5432`
++ migrations), which then prints the key-dependent next steps. After you fill
+`.env` (step 2), `make backfill` runs step 4. The steps below are the manual
+equivalents / the full detail — read them to understand what those targets do
+and for the parts they don't cover (keys, Claude login, the fleet).
+
 ## 0. Prerequisites
 - **bd (beads)** issue tracker on PATH — CLAUDE.md mandates it for ALL task
   tracking (`bd prime` for workflow). Install per its README, then `bd ready`.
