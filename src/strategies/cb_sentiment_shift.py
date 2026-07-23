@@ -37,6 +37,10 @@ class CBSentimentConfig:
     max_concurrent_positions: int = 3
     signal_interval_seconds: int = 300
     id: str = "cb_sentiment_shift"
+    # CL-885p: durable open_positions store so a restart doesn't leave the
+    # cold-start reconciler blind (→ flatten live legs as orphans). None keeps
+    # the pre-persistence in-memory-only behavior (tests / standalone).
+    state_path: str | None = None
 
 
 @dataclass
@@ -69,6 +73,75 @@ class CBSentimentShiftStrategy:
         self.open_positions: dict[str, OpenPosition] = {}
         self._historical_diffs: dict[str, list[float]] = {}
         self._last_refresh: datetime | None = None
+        # CL-885p: reload the book BEFORE the cold-start reconcile runs, so a
+        # restart's live legs are seen as MATCHED instead of flattened.
+        self._state_path = self.config.state_path
+        self._load_state()
+
+    def _load_state(self) -> None:
+        """Restore open_positions from the durable state file (CL-885p). A
+        CORRUPT file raises (fail loud, like event_book) rather than silently
+        trading a mangled book; a missing file is the normal cold start."""
+        if not self._state_path:
+            return
+        import json  # noqa: PLC0415
+        import os  # noqa: PLC0415
+        if not os.path.exists(self._state_path):
+            return
+        with open(self._state_path) as fh:
+            payload = json.load(fh)
+        for sym, d in (payload.get("open_positions") or {}).items():
+            self.open_positions[sym] = OpenPosition(
+                symbol=str(d["symbol"]),
+                entry_ts=datetime.fromisoformat(d["entry_ts"]),
+                entry_price=float(d["entry_price"]),
+                quantity=float(d["quantity"]),
+                direction=int(d["direction"]),
+                stop_loss=float(d["stop_loss"]),
+                source_cb=str(d.get("source_cb", "")),
+                trailing_stop=(
+                    float(d["trailing_stop"])
+                    if d.get("trailing_stop") is not None else None
+                ),
+                peak_price=(
+                    float(d["peak_price"])
+                    if d.get("peak_price") is not None else None
+                ),
+            )
+
+    def _save_state(self) -> None:
+        """Atomically persist open_positions (CL-885p, tmp+os.replace).
+        Best-effort — a write failure must never break a tick."""
+        if not self._state_path:
+            return
+        import json  # noqa: PLC0415
+        import os  # noqa: PLC0415
+        import tempfile  # noqa: PLC0415
+        try:
+            payload = {
+                "open_positions": {
+                    sym: {
+                        "symbol": p.symbol,
+                        "entry_ts": p.entry_ts.isoformat(),
+                        "entry_price": p.entry_price,
+                        "quantity": p.quantity,
+                        "direction": p.direction,
+                        "stop_loss": p.stop_loss,
+                        "source_cb": p.source_cb,
+                        "trailing_stop": p.trailing_stop,
+                        "peak_price": p.peak_price,
+                    }
+                    for sym, p in self.open_positions.items()
+                },
+            }
+            directory = os.path.dirname(os.path.abspath(self._state_path))
+            os.makedirs(directory, exist_ok=True)
+            fd, tmp = tempfile.mkstemp(dir=directory, suffix=".tmp")
+            with os.fdopen(fd, "w") as fh:
+                json.dump(payload, fh)
+            os.replace(tmp, self._state_path)
+        except Exception:
+            logger.warning("%s: state save failed", self.id, exc_info=True)
 
     def _emit_snapshot(self, values: dict[str, Any]) -> dict[str, Any]:
         """Build, persist, and return a snapshot-reference payload (or {})."""
@@ -275,6 +348,7 @@ class CBSentimentShiftStrategy:
         intents = self._update_trailing_stops(prices)
 
         if len(self.open_positions) >= self.config.max_concurrent_positions:
+            self._save_state()  # CL-885p: persist any exit/phantom-drop
             return intents
 
         signals = self._check_new_events()
@@ -323,4 +397,5 @@ class CBSentimentShiftStrategy:
                 target_position=size, metadata=meta,
             ))
 
+        self._save_state()  # CL-885p: persist the tick's entries/exits
         return intents

@@ -317,9 +317,15 @@ def build_strategies(
                 )
             )
         elif "sentiment" in sid or "cb" in sid:
+            cb_cfg = CBSentimentConfig(**scfg) if scfg else CBSentimentConfig()
+            # CL-885p: give the live strategy a durable state path (config
+            # default is None so unit tests stay isolated) so its book survives
+            # a restart and the cold-start reconciler sees its legs.
+            if cb_cfg.state_path is None:
+                cb_cfg.state_path = "data/cb_sentiment_state.json"
             strategies.append(
                 CBSentimentShiftStrategy(
-                    CBSentimentConfig(**scfg) if scfg else CBSentimentConfig(),
+                    cb_cfg,
                     data_provider=data_provider,
                     nlp_provider=nlp_provider,
                     state_store=state_store,

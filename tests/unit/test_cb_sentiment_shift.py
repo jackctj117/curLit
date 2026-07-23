@@ -12,11 +12,57 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 from src.strategies.cb_sentiment_shift import (
     CBSentimentConfig,
     CBSentimentShiftStrategy,
     OpenPosition,
 )
+
+
+class TestStatePersistence:
+    """CL-885p (P0 part 2): CB persists open_positions to a durable file and
+    reloads on __init__ (before the cold-start reconcile), so a restart's live
+    legs are seen as MATCHED instead of flattened as orphans."""
+
+    def test_save_and_reload_roundtrip(self, tmp_path) -> None:
+        path = str(tmp_path / "cb.json")
+        s1 = CBSentimentShiftStrategy(CBSentimentConfig(state_path=path))
+        s1.open_positions["EURUSD"] = OpenPosition(
+            symbol="EURUSD", entry_ts=datetime.now(UTC), entry_price=1.10,
+            quantity=-1000.0, direction=-1, stop_loss=1.11, source_cb="FED",
+        )
+        s1._save_state()
+        # A fresh instance reloads the book on construction.
+        s2 = CBSentimentShiftStrategy(CBSentimentConfig(state_path=path))
+        assert "EURUSD" in s2.open_positions
+        p = s2.open_positions["EURUSD"]
+        assert p.quantity == -1000.0
+        assert p.symbol == "EURUSD"
+        assert p.direction == -1
+
+    def test_missing_file_is_cold_start(self, tmp_path) -> None:
+        s = CBSentimentShiftStrategy(
+            CBSentimentConfig(state_path=str(tmp_path / "none.json")),
+        )
+        assert s.open_positions == {}
+
+    def test_corrupt_file_fails_loud(self, tmp_path) -> None:
+        import json
+        path = tmp_path / "cb.json"
+        path.write_text("{ not valid json")
+        with pytest.raises(json.JSONDecodeError):
+            CBSentimentShiftStrategy(CBSentimentConfig(state_path=str(path)))
+
+    def test_no_path_is_in_memory_only(self, tmp_path) -> None:
+        s = CBSentimentShiftStrategy(CBSentimentConfig(state_path=None))
+        s.open_positions["EURUSD"] = OpenPosition(
+            symbol="EURUSD", entry_ts=datetime.now(UTC), entry_price=1.10,
+            quantity=1000.0, direction=1, stop_loss=1.09,
+        )
+        s._save_state()  # no path → no-op, nothing written
+        assert not list(tmp_path.glob("*.json"))
 
 
 class _FlatBroker:
