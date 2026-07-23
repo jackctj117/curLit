@@ -32,7 +32,25 @@ class PaperBroker(Broker):
     # -- Broker ABC ----------------------------------------------------
 
     def place_order(self, order: Order) -> Order:
-        bid, ask = self._prices.get(order.symbol, (1.1000, 1.1002))
+        quote = self._prices.get(order.symbol)
+        if quote is None:
+            # CL-n3pt (P1): fail CLOSED, like get_price/stream. A symbol with
+            # no set_price must NOT fill at a fabricated ~1.10 book — metals
+            # and commodities trade in the 100s-1000s, so a 1.10 fill produces
+            # nonsense fills, PnL and stops in a soak. REJECT so it flows
+            # through the OMS's BrokerRejectedOrderError path exactly like a
+            # venue reject, rather than silently filling at a made-up price.
+            order.status = OrderStatus.REJECTED
+            order.reject_reason = (
+                f"NO_PRICE: PaperBroker has no price for {order.symbol!r} "
+                "(set_price never called)"
+            )
+            logger.warning(
+                "PaperBroker REJECTED %s %s x%s — no price set",
+                order.symbol, order.side, order.quantity,
+            )
+            return order
+        bid, ask = quote
         fill_price = ask if order.side == "buy" else bid
 
         # Slippage enforcement (CL-qyav) — simulated equivalent of OANDA's

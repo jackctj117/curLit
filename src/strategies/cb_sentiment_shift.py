@@ -248,6 +248,13 @@ class CBSentimentShiftStrategy:
         account = broker.get_account()
 
         for signal in signals:
+            # CL-34by (P1): re-check the cap INSIDE the loop. The pre-loop
+            # guard only saw the pre-tick count, so a single tick with several
+            # fresh signals could open past max_concurrent_positions. Each
+            # entry adds to open_positions below, so len() tracks within-tick
+            # additions and this bounds the tick correctly.
+            if len(self.open_positions) >= self.config.max_concurrent_positions:
+                break
             pair = signal["pair"]
             if pair in self.open_positions:
                 continue

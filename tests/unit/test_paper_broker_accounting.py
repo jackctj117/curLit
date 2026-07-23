@@ -29,6 +29,28 @@ def _pos(broker: PaperBroker, symbol: str = "EURUSD"):
     return next(p for p in broker.get_positions() if p.symbol == symbol)
 
 
+class TestMissingPriceFailsClosed:
+    """CL-n3pt (P1): place_order must fail CLOSED on a symbol with no
+    set_price — not fabricate a ~1.10 fill (nonsense for metals/commodities)."""
+
+    def test_rejects_order_with_no_price(self) -> None:
+        b = PaperBroker(initial_capital=100_000.0)
+        b.set_price("EURUSD", 1.0999, 1.1001)
+        order = b.place_order(_order("buy", 1000, symbol="XAU_USD"))  # never priced
+        assert order.status == OrderStatus.REJECTED
+        assert "NO_PRICE" in (order.reject_reason or "")
+        # No fabricated fill, no position opened at ~1.10.
+        assert not any(p.symbol == "XAU_USD" for p in b.get_positions())
+
+    def test_priced_symbol_still_fills(self) -> None:
+        b = PaperBroker(initial_capital=100_000.0)
+        b.set_price("XAU_USD", 1999.0, 2001.0)  # a realistic metal quote
+        order = b.place_order(_order("buy", 10, symbol="XAU_USD"))
+        assert order.status == OrderStatus.FILLED
+        pos = _pos(b, symbol="XAU_USD")
+        assert pos.avg_price == pytest.approx(2001.0)  # filled at the ask
+
+
 class TestAveragePriceAccounting:
     def test_add_same_direction_volume_weights_basis(self) -> None:
         b = PaperBroker()

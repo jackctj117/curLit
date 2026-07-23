@@ -406,6 +406,7 @@ class CarryVolFilterStrategy:
                 continue
             if ccy in new_positions:
                 pos = new_positions[ccy]
+                is_new_leg = ccy not in self.current_positions
                 notional = self._compute_position_size(
                     weight=pos.weight,
                     equity=account.equity,
@@ -413,6 +414,14 @@ class CarryVolFilterStrategy:
                 )
                 price = self._lookup_price(prices, pair)
                 if price <= 0:
+                    # CL-uorm (P1): no price → can't size this leg. A NEW leg
+                    # must NOT be recorded as held — leaving it in
+                    # new_positions was a phantom hold that drove later
+                    # vol-scale/rebalance as if the risk were open. A RETAINED
+                    # leg (real broker position) stays and just skips this
+                    # rebalance tick.
+                    if is_new_leg:
+                        blocked_new.append(ccy)
                     continue
                 target_qty = pos.side * broker_side * notional / price
                 # CL-y412: gate GENUINELY NEW legs only — a leg carried over
@@ -420,7 +429,6 @@ class CarryVolFilterStrategy:
                 # is a rebalance/exit and must run at any spread. A new leg in
                 # a dead window is blocked (skip open, drop from state so no
                 # phantom hold) or trimmed (0.5×).
-                is_new_leg = ccy not in self.current_positions
                 if is_new_leg and self._liquidity_profile is not None:
                     spread_bps = spread_bps_from_tick(prices.get(pair))
                     if spread_bps is not None:

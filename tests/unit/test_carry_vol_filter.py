@@ -413,6 +413,17 @@ class TestLiquidityGate:
         assert len([i for i in intents if i.target_position != 0]) == 6
         assert len(strat.current_positions) == 6
 
+    def test_missing_price_new_leg_not_phantom_held(self) -> None:
+        # CL-uorm (P1): a NEW basket leg with no price can't be sized — it must
+        # be dropped from current_positions, not kept as a phantom hold that
+        # later vol-scale/rebalance treats as open risk.
+        prices = dict(_DEFAULT_PRICES)
+        del prices["GBPUSD"]  # the GBP long leg is now unpriceable
+        strat = self._strategy(None)  # no liquidity profile — isolate the bug
+        asyncio.run(strat.generate_intents(prices, _FakeBroker()))
+        assert "GBP" not in strat.current_positions  # not phantom-held
+        assert len(strat.current_positions) == 5  # the other 5 legs opened
+
     def test_retained_legs_never_gated_even_in_dead_window(self) -> None:
         # Pre-seed the book with the exact basket currencies, so at the next
         # rebalance every leg is RETAINED (not new). Retained legs are a
