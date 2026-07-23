@@ -1,6 +1,9 @@
 """Unit tests — execution: PaperBroker, OMS."""
 
 import threading
+import time
+
+import pytest
 
 from src.execution.broker import (
     Account,
@@ -12,6 +15,138 @@ from src.execution.broker import (
 )
 from src.execution.oms import OrderIntent, OrderManager
 from src.execution.paper_broker import PaperBroker
+
+
+class _NetTrackingBlockingBroker(Broker):
+    """Tracks net position; the FIRST place_order BLOCKS before its fill lands
+    (holding the OMS per-symbol reservation), so a concurrent same-symbol
+    submit is forced to recompute its delta against the post-fill book after
+    the reservation releases (CL-sbrp). Without the reservation the second
+    submit would size from the pre-fill book and double the position."""
+
+    def __init__(self) -> None:
+        self.net = 0.0
+        self.first_started = threading.Event()
+        self.release = threading.Event()
+        self._first = True
+        self._m = threading.Lock()
+
+    def place_order(self, order: Order) -> Order:
+        delta = order.quantity if order.side == "buy" else -order.quantity
+        with self._m:
+            is_first = self._first
+            self._first = False
+        if is_first:
+            self.first_started.set()
+            self.release.wait(timeout=5.0)  # block BEFORE the fill lands
+        with self._m:
+            self.net += delta                # fill lands
+        order.status = OrderStatus.FILLED
+        return order
+
+    def get_positions(self) -> list[Position]:
+        with self._m:
+            n = self.net
+        return [Position("EURUSD", n, 1.1)] if abs(n) > 1e-9 else []
+
+    def cancel_order(self, order_id: str) -> bool:  # noqa: ARG002
+        return True
+
+    def get_order(self, order_id: str) -> Order:  # noqa: ARG002
+        raise NotImplementedError
+
+    def get_account(self) -> Account:
+        return Account(balance=100_000.0, equity=100_000.0)
+
+    def get_price(self, symbol: str) -> tuple[float, float]:  # noqa: ARG002
+        return (1.1000, 1.1002)
+
+    async def stream_prices(self, symbols):  # type: ignore[no-untyped-def]  # noqa: ANN001, ANN201, ARG002
+        if False:
+            yield {}
+
+
+class TestOmsInflightReservation:
+    def test_concurrent_same_symbol_no_double_size(self) -> None:
+        # CL-sbrp (P1): two concurrent submits to target 1000 on the SAME
+        # symbol must not both size from the pre-fill (flat) book → 2000. The
+        # second recomputes its delta after the first's reservation releases.
+        broker = _NetTrackingBlockingBroker()
+        oms = OrderManager(broker)
+
+        def entry() -> None:
+            oms.submit_intent(OrderIntent(
+                strategy_id="s", symbol="EURUSD", target_position=1000.0,
+            ))
+
+        t1 = threading.Thread(target=entry)
+        t1.start()
+        assert broker.first_started.wait(timeout=5.0)  # first is mid-place
+        t2 = threading.Thread(target=entry)
+        t2.start()
+        time.sleep(0.15)         # let t2 block on the per-symbol reservation
+        broker.release.set()     # first fill lands, reservation releases
+        t1.join(timeout=5.0)
+        t2.join(timeout=5.0)
+        assert not t1.is_alive() and not t2.is_alive()
+        # Second saw the post-fill book (+1000), computed delta 0 → no order.
+        assert broker.net == pytest.approx(1000.0)  # NOT 2000
+
+
+class _FillThenTimeoutBroker(Broker):
+    """First place_order fills the order AND raises a TRANSIENT timeout (the
+    fill-then-timeout case); later calls fill normally. Tracks net so the OMS
+    retry guard can see the position already reached the target (CL-a13q)."""
+
+    def __init__(self) -> None:
+        self.net = 0.0
+        self.calls = 0
+
+    def place_order(self, order: Order) -> Order:
+        self.calls += 1
+        delta = order.quantity if order.side == "buy" else -order.quantity
+        self.net += delta  # the fill DID land at the venue
+        if self.calls == 1:
+            raise TimeoutError("timeout reading from broker")  # classified TRANSIENT
+        order.status = OrderStatus.FILLED
+        return order
+
+    def get_positions(self) -> list[Position]:
+        return [Position("EURUSD", self.net, 1.1)] if abs(self.net) > 1e-9 else []
+
+    def cancel_order(self, order_id: str) -> bool:  # noqa: ARG002
+        return True
+
+    def get_order(self, order_id: str) -> Order:  # noqa: ARG002
+        raise NotImplementedError
+
+    def get_account(self) -> Account:
+        return Account(balance=100_000.0, equity=100_000.0)
+
+    def get_price(self, symbol: str) -> tuple[float, float]:  # noqa: ARG002
+        return (1.1000, 1.1002)
+
+    async def stream_prices(self, symbols):  # type: ignore[no-untyped-def]  # noqa: ANN001, ANN201, ARG002
+        if False:
+            yield {}
+
+
+class TestRetryIdempotency:
+    def test_retry_after_fill_then_timeout_does_not_double(self) -> None:
+        # CL-a13q (P1): the first attempt fills (+1000) but times out →
+        # classified TRANSIENT. On retry the OMS re-reads the book, sees the
+        # position already at the target, and ABORTS instead of placing a
+        # second order that would double the position.
+        from src.execution.rejection import RejectionHandler
+        broker = _FillThenTimeoutBroker()
+        handler = RejectionHandler()
+        handler.sleep = lambda s: None  # type: ignore[method-assign] # no real backoff
+        oms = OrderManager(broker, rejection_handler=handler)
+        oms.submit_intent(OrderIntent(
+            strategy_id="s", symbol="EURUSD", target_position=1000.0,
+        ))
+        assert broker.calls == 1               # the retry was aborted
+        assert broker.net == pytest.approx(1000.0)  # NOT 2000
 
 
 class TestPaperBroker:

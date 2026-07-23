@@ -99,6 +99,15 @@ class OrderManager:
         # may be reached from callbacks fired while submit_intent holds
         # it — re-entrancy beats a deadlock footgun.
         self._lock = threading.RLock()
+        # CL-sbrp: per-canonical-symbol reservation. Two concurrent submits for
+        # the SAME symbol on different threads (a strategy entry and a
+        # kill-switch flatten) must not both size from the same pre-fill book
+        # and double the position. The reservation is held ACROSS place_order;
+        # different symbols never block each other (so the CL-8s2a win — a
+        # cross-symbol emergency de-risk not queuing behind a slow order —
+        # stands). Bounded by the instrument universe, so no cleanup needed.
+        self._inflight_guard = threading.Lock()
+        self._inflight: dict[str, threading.Lock] = {}
         self._halted = False
         self._pending: dict[str, list[Order]] = {}
 
@@ -133,6 +142,34 @@ class OrderManager:
         whole time. _pending is re-acquired under the lock for its own writes
         inside _submit_with_retry, so shutdown-drain accounting stays correct.
         """
+        # CL-sbrp: reserve this symbol for the whole submit (delta + place).
+        # If another submit for the same symbol is in flight, block until it
+        # reaches a terminal state, THEN recompute our delta against the now
+        # post-fill book — the passed snapshot predates that order and is stale.
+        csym = canonical_symbol(intent.symbol)
+        with self._inflight_guard:
+            sym_lock = self._inflight.setdefault(csym, threading.Lock())
+        contended = not sym_lock.acquire(blocking=False)
+        if contended:
+            sym_lock.acquire()
+        try:
+            return self._submit_reserved(
+                intent, bypass_halt=bypass_halt,
+                positions=None if contended else positions,
+            )
+        finally:
+            sym_lock.release()
+
+    def _submit_reserved(
+        self,
+        intent: OrderIntent,
+        *,
+        bypass_halt: bool = False,
+        positions: list[Any] | None = None,
+    ) -> str:
+        """submit_intent body, run while holding the per-symbol reservation
+        (CL-sbrp). ``positions`` is forced to None when the reservation was
+        contended, so the delta is recomputed from a fresh, post-fill book."""
         with self._lock:
             # Position matching MUST use the canonical key (CL-qqra): broker
             # positions come back compact ("USDCAD") while event intents are
@@ -243,6 +280,38 @@ class OrderManager:
         attempt = 1
         size_fraction = 1.0
         while True:
+            if attempt > 1:
+                # CL-a13q (P1): a TRANSIENT retry may follow a fill-then-timeout
+                # — the order actually filled at OANDA but the HTTP read timed
+                # out and was classified retryable. OANDA has no client
+                # idempotency key (unlike Alpaca's client_order_id), so before
+                # re-submitting, re-read the book: if the position already
+                # reached the target, the prior attempt filled — abort rather
+                # than double the position. (Held under the per-symbol
+                # reservation from CL-sbrp, so no concurrent submit races this
+                # read.) If the fill isn't visible yet, fall through and retry
+                # as before — strictly no worse than the old behavior.
+                try:
+                    fresh = {
+                        canonical_symbol(p.symbol): p.quantity
+                        for p in self.broker.get_positions()
+                    }
+                    residual = intent.target_position - fresh.get(
+                        canonical_symbol(intent.symbol), 0.0,
+                    )
+                    if abs(residual) < self._min_trade_size(intent.symbol):
+                        logger.warning(
+                            "Retry ABORTED for %s — position already at target "
+                            "%.4f (a prior attempt filled despite the error); "
+                            "not double-submitting",
+                            intent.symbol, intent.target_position,
+                        )
+                        return
+                except Exception:
+                    logger.debug(
+                        "retry re-read failed for %s; proceeding with retry",
+                        intent.symbol, exc_info=True,
+                    )
             qty = original_qty * size_fraction
             order = Order(
                 symbol=intent.symbol,
