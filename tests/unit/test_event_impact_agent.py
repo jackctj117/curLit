@@ -679,6 +679,112 @@ class TestAgentRoundTrip:
 
 
 # ---------------------------------------------------------------------- #
+# CL-4pyb — parallel assess_new_events
+# ---------------------------------------------------------------------- #
+
+
+class TestAssessConcurrency:
+    """Escalated rows fan out across a bounded pool: each assessed exactly
+    once, results returned in original (seen_at DESC) order, DB persists
+    serial + correct, and one event's transport failure is fail-soft (stays
+    NEW) without sinking the batch. An injected client is reused as-is."""
+
+    def _insert_n(self, engine: Engine, n: int) -> None:
+        for i in range(n):
+            _insert_event(engine, f"e{i}", f"headline {i}", seen_at=f"2026-07-14T09:{i:02d}:00")
+
+    def test_all_events_assessed_once_in_order(
+        self, engine: Engine, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("EVENT_ASSESS_MAX_CONCURRENCY", "4")
+        self._insert_n(engine, 5)
+        client = MockLLMClient(json.dumps(_valid_payload()))
+        agent = EventImpactAgent(engine, client=client)  # type: ignore[arg-type]
+
+        results = agent.assess_new_events(limit=5)
+
+        assert len(results) == 5
+        assert all(r.status == "ASSESSED" for r in results)
+        # seen_at DESC order preserved (e4..e0 → autoincrement ids 5..1).
+        assert [r.event_id for r in results] == [5, 4, 3, 2, 1]
+        assert len(client.calls) == 5  # each event assessed exactly once
+        for i in range(5):
+            assert _fetch(engine, f"e{i}")["status"] == "ASSESSED"
+
+    def test_one_transport_failure_is_fail_soft(
+        self, engine: Engine, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("EVENT_ASSESS_MAX_CONCURRENCY", "4")
+        _insert_event(engine, "ok1", "fine one", seen_at="2026-07-14T09:00:00")
+        _insert_event(engine, "boom", "BOOMHEADLINE explode", seen_at="2026-07-14T09:01:00")
+        _insert_event(engine, "ok2", "fine two", seen_at="2026-07-14T09:02:00")
+
+        class _Selective:
+            """Valid assessment for every event except the BOOMHEADLINE one,
+            whose call raises (a transport failure) — shared across threads."""
+
+            def __init__(self) -> None:
+                self.calls: list[str] = []
+
+            def complete(self, messages: Any, model: str, **kwargs: Any) -> SimpleNamespace:
+                user = messages[1].content
+                self.calls.append(user)
+                if "BOOMHEADLINE" in user:
+                    raise RuntimeError("transport boom")
+                return SimpleNamespace(
+                    text=json.dumps(_valid_payload()),
+                    model=model,
+                    provider="mock",
+                    input_tokens=1,
+                    output_tokens=1,
+                    usd_cost=0.0,
+                    elapsed_sec=0.0,
+                )
+
+        agent = EventImpactAgent(engine, client=_Selective())  # type: ignore[arg-type]
+
+        agent.assess_new_events(limit=3)
+
+        # boom left NEW for the next cycle (assessment still NULL, so query
+        # status directly); the other two ASSESSED.
+        with engine.connect() as conn:
+            boom_status = conn.execute(
+                text("SELECT status FROM geo_events WHERE external_id='boom'"),
+            ).scalar_one()
+        assert boom_status == "NEW"
+        assert _fetch(engine, "ok1")["status"] == "ASSESSED"
+        assert _fetch(engine, "ok2")["status"] == "ASSESSED"
+
+    def test_serial_path_when_cap_one(
+        self, engine: Engine, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("EVENT_ASSESS_MAX_CONCURRENCY", "1")
+        self._insert_n(engine, 3)
+        client = MockLLMClient(json.dumps(_valid_payload()))
+        agent = EventImpactAgent(engine, client=client)  # type: ignore[arg-type]
+
+        results = agent.assess_new_events(limit=3)
+
+        assert all(r.status == "ASSESSED" for r in results)
+        assert len(client.calls) == 3
+
+    def test_injected_client_reused_not_duplicated(self, engine: Engine) -> None:
+        client = MockLLMClient(json.dumps(_valid_payload()))
+        agent = EventImpactAgent(engine, client=client)  # type: ignore[arg-type]
+        # Injected client → not the default → _thread_client reuses it (no CLI).
+        assert agent._client_is_default is False
+        assert agent._thread_client() is client
+
+    def test_max_concurrency_env_parse_and_clamp(
+        self, engine: Engine, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        agent = EventImpactAgent(engine, client=MockLLMClient("{}"))  # type: ignore[arg-type]
+        for raw, expected in [("4", 4), ("1", 1), ("99", 8), ("0", 1), ("junk", 4), ("", 4)]:
+            monkeypatch.setenv("EVENT_ASSESS_MAX_CONCURRENCY", raw)
+            assert agent._assess_max_concurrency() == expected
+
+
+# ---------------------------------------------------------------------- #
 # CL-01zt prompt guidance
 # ---------------------------------------------------------------------- #
 

@@ -20,6 +20,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -46,6 +49,15 @@ logger = logging.getLogger(__name__)
 #: Sonnet-class is plenty for single-headline classification and keeps
 #: per-event subscription load small; override via EVENT_IMPACT_MODEL.
 DEFAULT_MODEL = "claude-sonnet-4-6"
+
+#: Assess-across-events fan-out (CL-4pyb). After batch triage, each escalated
+#: headline is an independent, multi-minute LLM round-trip — assess dominates
+#: the cycle. Fan them out across a bounded pool ($EVENT_ASSESS_MAX_CONCURRENCY,
+#: default 4, clamped 1-8; 1 = the old serial path). Each worker uses its OWN
+#: claude-code client (own temp cwd) so concurrent `claude` subprocesses never
+#: share a workdir. Token SPEND is unchanged — latency only.
+_DEFAULT_ASSESS_CONCURRENCY = 4
+_MAX_ASSESS_CONCURRENCY = 8
 
 VALID_EVENT_DIRECTIONS = frozenset({"bullish", "bearish", "neutral"})
 VALID_HORIZONS = frozenset({"minutes", "hours", "days"})
@@ -660,6 +672,13 @@ class EventImpactAgent:
         self.client = client if client is not None else get_client("claude-code")
         self.model = model
         self.max_tokens = max_tokens
+        # Parallel-assess plumbing (CL-4pyb): per-thread LLM clients so
+        # concurrent assess_row workers don't share the default claude-code
+        # client's temp cwd. Only the DEFAULT (self-constructed) client is
+        # duplicated per thread; an INJECTED client (tests / custom) is reused
+        # as-is (no real CLI spawned under test).
+        self._client_is_default = client is None
+        self._tl = threading.local()
         self.playbooks = load_playbooks(playbooks_path)
         self._fallback_tradables = all_tradable_instruments(self.playbooks)
         # Fast triage tier (CL-cunh): a cheap Haiku batch pre-filter that lets
@@ -713,8 +732,16 @@ class EventImpactAgent:
 
     # -- assessment -----------------------------------------------------
 
-    def assess_row(self, row: dict[str, Any]) -> AssessmentResult:
+    def assess_row(
+        self,
+        row: dict[str, Any],
+        client: LLMClient | None = None,
+    ) -> AssessmentResult:
         """LLM-assess one row (no DB write). Returns the outcome.
+
+        ``client`` overrides the LLM client for this call (CL-4pyb) — the
+        parallel path passes a per-thread client so concurrent workers don't
+        share the default claude-code cwd. ``None`` uses ``self.client``.
 
         Failure semantics (learned the hard way — a subscription
         usage-window outage once terminally DISMISSED ~175 events):
@@ -726,8 +753,9 @@ class EventImpactAgent:
         """
         theme = row.get("theme")
         playbook = self.playbooks.get(theme or "")
+        client = client or self.client
         try:
-            resp = self.client.complete(
+            resp = client.complete(
                 messages=[
                     Message(role="system", content=_SYSTEM_PROMPT),
                     Message(role="user", content=self._user_prompt(row)),
@@ -780,6 +808,35 @@ class EventImpactAgent:
             assessment=assessment,
         )
 
+    def _assess_max_concurrency(self) -> int:
+        """$EVENT_ASSESS_MAX_CONCURRENCY (int) bounding the assess fan-out;
+        default 4, clamped [1, 8]. 1 = the old serial path."""
+        raw = os.environ.get("EVENT_ASSESS_MAX_CONCURRENCY", "")
+        try:
+            value = int(raw) if raw.strip() else _DEFAULT_ASSESS_CONCURRENCY
+        except ValueError:
+            logger.warning(
+                "EVENT_ASSESS_MAX_CONCURRENCY=%r is not an int; using %d",
+                raw,
+                _DEFAULT_ASSESS_CONCURRENCY,
+            )
+            value = _DEFAULT_ASSESS_CONCURRENCY
+        return max(1, min(_MAX_ASSESS_CONCURRENCY, value))
+
+    def _thread_client(self) -> LLMClient:
+        """Per-thread LLM client for parallel assessment (CL-4pyb). When this
+        agent owns the DEFAULT claude-code client, each worker thread lazily
+        gets its OWN client (own temp cwd) so concurrent `claude` subprocesses
+        never share a workdir. An INJECTED client is reused as-is (tests /
+        custom setups never spawn the real CLI)."""
+        if not self._client_is_default:
+            return self.client
+        client = getattr(self._tl, "client", None)
+        if client is None:
+            client = get_client("claude-code")
+            self._tl.client = client
+        return client
+
     def assess_new_events(self, limit: int = 20) -> list[AssessmentResult]:
         """Process up to ``limit`` NEW rows (newest first — freshest
         events are the only ones with any edge left) and persist each
@@ -818,7 +875,10 @@ class EventImpactAgent:
                 self.triage.model,
             )
 
-        results: list[AssessmentResult] = []
+        # Partition: triaged-out rows are a cheap serial DISMISS (no LLM); the
+        # escalated rows are the expensive per-event LLM calls we fan out.
+        results_by_id: dict[int, AssessmentResult] = {}
+        to_assess: list[dict[str, Any]] = []
         for row in rows:
             verdict = verdicts.get(int(row["id"]))
             if verdict is not None and not verdict.escalate:
@@ -843,13 +903,35 @@ class EventImpactAgent:
                     },
                 )
                 self._persist(result)
-                results.append(result)
-                continue
-            result = self.assess_row(row)
-            if result.status != "NEW":  # transport failure = no write,
-                self._persist(result)  # row stays queued for retry
-            results.append(result)
-        return results
+                results_by_id[int(row["id"])] = result
+            else:
+                to_assess.append(row)
+
+        # Fan the escalated rows out across a bounded pool (CL-4pyb): each is an
+        # independent, multi-minute LLM round-trip, so the serial loop was the
+        # cycle bottleneck. Workers use per-thread clients (own claude-code
+        # cwd); the DB persist stays on THIS thread (short per-row txns, never
+        # raced). assess_row never raises (transport failure → status NEW, kept
+        # for retry), so one bad event can't sink the batch. pool.map preserves
+        # input order. Token SPEND is unchanged — latency only.
+        if to_assess:
+            workers = max(1, min(self._assess_max_concurrency(), len(to_assess)))
+
+            def _assess(row: dict[str, Any]) -> AssessmentResult:
+                return self.assess_row(row, client=self._thread_client())
+
+            if workers == 1:
+                assessed = [_assess(r) for r in to_assess]
+            else:
+                with ThreadPoolExecutor(max_workers=workers) as pool:
+                    assessed = list(pool.map(_assess, to_assess))
+            for row, result in zip(to_assess, assessed, strict=True):
+                if result.status != "NEW":  # transport failure = no write,
+                    self._persist(result)  # row stays queued for retry
+                results_by_id[int(row["id"])] = result
+
+        # Return in the original row order (deterministic logs / downstream).
+        return [results_by_id[int(row["id"])] for row in rows]
 
     def _persist(self, result: AssessmentResult) -> None:
         with self.engine.begin() as conn:
