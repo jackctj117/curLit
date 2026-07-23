@@ -15,9 +15,18 @@ It FAILS LOUD on: an unknown instrument kind, a duplicate output filename/id, a
 theme missing a required field, or a hand-authored seed note whose [[wikilinks]]
 do not resolve to a generated theme/instrument/concept.
 
+An OPT-IN `--discovered` layer (CL-w0ox) extends this with a `Discovered/`
+folder sourced from the LIVE Postgres the daemons use: the net-new tickers the
+niche agent has actually surfaced from real events, rendered as green nodes that
+branch off the amber theme nodes they were discovered under. This is the ONLY
+part that touches the DB, it is off by default, and a DB blip degrades to the
+pure vault (loud warning) rather than failing the whole export. Without the
+flag, the output is byte-identical to the pure playbook vault.
+
 Usage:
     .venv/bin/python scripts/export_knowledge_graph.py
     .venv/bin/python scripts/export_knowledge_graph.py --out DIR --seed DIR
+    .venv/bin/python scripts/export_knowledge_graph.py --discovered   # + live layer
 """
 
 from __future__ import annotations
@@ -33,8 +42,12 @@ from collections import Counter
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import yaml
+
+if TYPE_CHECKING:  # lazy: sqlalchemy is only imported on the --discovered path
+    from sqlalchemy.engine import Engine
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -107,6 +120,41 @@ GRAPH_COLOR_GROUPS: list[dict[str, object]] = [
     {"query": "tag:#concept", "color": {"a": 1, "rgb": 0x9B59B6}},     # violet
 ]
 
+# The 4th colour group, added ONLY on the --discovered run: green so the live
+# niche-discovered tickers read as visually distinct from the teal playbook
+# instruments — a green branch hanging off each amber theme it was found under.
+DISCOVERED_COLOR_GROUP: dict[str, object] = {
+    "query": "tag:#discovered",
+    "color": {"a": 1, "rgb": 0x27AE60},  # green
+}
+
+DISCOVERED_BANNER_TMPL = (
+    "> [!info] Discovered by the niche agent from LIVE events — snapshot as of "
+    "{date}. Regenerate with `make knowledge-vault-live`. Not live state; not a "
+    "position."
+)
+
+# Trailing security-name boilerplate stripped from the NASDAQ Trader
+# `security_name` fallback so "Foo Inc. - Class A Common Stock" reads as
+# "Foo Inc." Longest suffixes first so the greedy strip removes the most.
+# Corporate designators (", Inc.", "Corp", "Ltd.") are deliberately KEPT.
+_NAME_BOILERPLATE = (
+    "- Class A Common Stock",
+    "- Class B Common Stock",
+    "- Class C Common Stock",
+    "Class A Common Stock",
+    "Class B Common Stock",
+    "Class C Common Stock",
+    "- Common Stock",
+    "Common Stock",
+    "- Ordinary Shares",
+    "Ordinary Shares",
+    "- American Depositary Shares",
+    "American Depositary Shares",
+    "- Common Shares",
+    "Common Shares",
+)
+
 
 # ------------------------------------------------------------------------- #
 # Dataclass configs — no dict-groping in the rendering logic.
@@ -157,6 +205,27 @@ class Theme:
 
 
 @dataclass(frozen=True)
+class DiscoveredTicker:
+    """One net-new ticker the niche agent surfaced from LIVE events (CL-w0ox).
+
+    Aggregated across every niche `trade_ideas` row for this ticker; the
+    representative rationale/headline come from the single highest-confidence
+    row. Pure data — the DB query that builds these lives elsewhere so this
+    module stays testable with an injected engine.
+    """
+
+    ticker: str
+    company_name: str
+    themes: list[str]
+    idea_count: int
+    max_confidence: float
+    first_seen: str
+    last_seen: str
+    rationale: str
+    headlines: list[str]
+
+
+@dataclass(frozen=True)
 class ExportResult:
     """Summary of a run — used by the manifest and by tests."""
 
@@ -166,6 +235,10 @@ class ExportResult:
     node_count: int
     link_count: int
     files_written: int
+    # Discovered layer (CL-w0ox) — only populated on the --discovered path.
+    discovered_included: bool = False
+    discovered_count: int = 0
+    discovered_snapshot: str = ""
 
 
 # ------------------------------------------------------------------------- #
@@ -553,13 +626,15 @@ def render_coverage_note(
     return "\n".join(lines)
 
 
-def render_dashboard_note() -> str:
+def render_dashboard_note(include_discovered: bool = False) -> str:
     """The Dataview MOC — the *queryable* version of Coverage.md.
 
     Fenced ```dataview blocks run over the enriched frontmatter that the theme
     and instrument notes now carry. Without the Dataview community plugin these
     render as plain code blocks (graceful degradation); the static equivalent
-    always lives in [[Coverage]].
+    always lives in [[Coverage]]. On the --discovered run a live-layer section
+    is appended (CL-w0ox); on the pure path it is omitted so the pure output is
+    unchanged.
     """
     lines = [
         _frontmatter({"type": "dashboard", "tags": ["dashboard", "dataview"]}),
@@ -615,6 +690,21 @@ def render_dashboard_note() -> str:
         "```",
         "",
     ]
+    if include_discovered:
+        lines += [
+            "## Discovered tickers (niche agent, live)",
+            "",
+            "Net-new tickers the niche agent surfaced from LIVE events — the "
+            "green nodes. A snapshot, regenerated by `make knowledge-vault-live`; "
+            "research-only, not live state.",
+            "",
+            "```dataview",
+            "TABLE company_name, themes, idea_count, max_confidence",
+            'FROM "Discovered"',
+            "SORT idea_count DESC",
+            "```",
+            "",
+        ]
     return "\n".join(lines)
 
 
@@ -736,6 +826,199 @@ def validate_seed_notes(
 
 
 # ------------------------------------------------------------------------- #
+# Discovered layer (CL-w0ox) — the ONLY DB-touching code, opt-in via
+# --discovered. Kept here, self-contained, so the pure path never imports it.
+# ------------------------------------------------------------------------- #
+
+
+def _clean_company_name(sec_name: str | None, security_name: str | None) -> str:
+    """Resolve a display company name: prefer sec_name, else trim security_name.
+
+    sec_name (SEC EDGAR official filer name) is already clean, so it wins
+    verbatim. The NASDAQ Trader security_name carries share-class boilerplate
+    ("- Class A Common Stock", "Common Stock", ...) which we strip; corporate
+    designators (", Inc.", "Corp", "Ltd.") are deliberately kept. Returns "" if
+    neither is available.
+    """
+    if sec_name and sec_name.strip():
+        return sec_name.strip()
+    name = (security_name or "").strip()
+    if not name:
+        return ""
+    changed = True
+    while changed:
+        changed = False
+        for suffix in _NAME_BOILERPLATE:
+            if name.lower().endswith(suffix.lower()):
+                name = name[: -len(suffix)].rstrip(" ,-")
+                changed = True
+                break
+    return name.strip()
+
+
+# The niche-discovery row query. One row per niche `trade_ideas` entry joined to
+# its spawning event. Deliberately a plain JOIN (no Postgres-only window
+# functions / array_agg) so it runs identically on the live Postgres AND on the
+# sqlite engine the tests inject; the per-ticker aggregation is done in Python
+# below. Read-only; runs against the SAME Postgres the daemons use.
+_DISCOVERED_SQL = (
+    "SELECT ti.ticker, ge.theme, ti.confidence, ti.rationale, "
+    "ge.headline, ti.created_at "
+    "FROM trade_ideas ti "
+    "JOIN geo_events ge ON ge.id = ti.geo_event_id "
+    "WHERE lower(ti.notes) LIKE '%niche%' AND ti.ticker IS NOT NULL"
+)
+
+
+def query_discovered(
+    engine: Engine,
+    known_symbols: set[str],
+) -> list[DiscoveredTicker]:
+    """Query the DB for net-new niche-discovered tickers (CL-w0ox).
+
+    Skips tickers that already have an Instruments/<T> playbook note (they are
+    teal nodes already) and underscore-FX symbols. Aggregates per ticker (themes
+    set, idea_count, max confidence, first/last seen) and takes the single
+    highest-confidence row as the representative rationale + spawning headline.
+    Resolves each survivor's company name in the SAME connection. Returns them
+    ordered by idea_count desc, then ticker.
+    """
+    from sqlalchemy import text
+
+    with engine.connect() as conn:
+        rows = conn.execute(text(_DISCOVERED_SQL)).fetchall()
+
+        # Group the raw rows by ticker, skipping already-known / FX symbols.
+        by_ticker: dict[str, list[tuple[object, ...]]] = {}
+        for r in rows:
+            ticker = str(r[0])
+            if "_" in ticker:  # defensive: skip OANDA/FX pair symbols
+                continue
+            if ticker in known_symbols:  # already a playbook instrument
+                continue
+            by_ticker.setdefault(ticker, []).append(tuple(r))
+
+        # Resolve company names for the survivors in the same connection. `= ANY`
+        # is Postgres-only, so use an IN (...) with a bound-param list — portable
+        # to sqlite and still safely parameterised.
+        names: dict[str, str] = {}
+        tickers = list(by_ticker.keys())
+        if tickers:
+            binds = {f"t{i}": t for i, t in enumerate(tickers)}
+            placeholders = ", ".join(f":{k}" for k in binds)
+            sym_rows = conn.execute(
+                text(
+                    "SELECT symbol, sec_name, security_name "
+                    f"FROM symbols WHERE symbol IN ({placeholders})"
+                ),
+                binds,
+            ).fetchall()
+            for sym in sym_rows:
+                names[str(sym[0])] = _clean_company_name(sym[1], sym[2])
+
+    out: list[DiscoveredTicker] = []
+    for ticker, group in by_ticker.items():
+        themes = sorted({str(g[1]) for g in group if g[1]})
+        confidences = [float(g[2]) for g in group if g[2] is not None]
+        created = [_iso(g[5]) for g in group if g[5] is not None]
+        # Representative = highest confidence, then most recent, deterministic.
+        rep = max(
+            group,
+            key=lambda g: (
+                float(g[2]) if g[2] is not None else -1.0,
+                _iso(g[5]),
+            ),
+        )
+        out.append(
+            DiscoveredTicker(
+                ticker=ticker,
+                company_name=names.get(ticker, ""),
+                themes=themes,
+                idea_count=len(group),
+                max_confidence=max(confidences) if confidences else 0.0,
+                first_seen=min(created) if created else "",
+                last_seen=max(created) if created else "",
+                rationale=str(rep[3] or "").strip(),
+                headlines=[str(rep[4]).strip()] if rep[4] else [],
+            )
+        )
+    out.sort(key=lambda d: (-d.idea_count, d.ticker))
+    return out
+
+
+def _iso(value: object) -> str:
+    """Render a DB timestamp (datetime or already-string) as an ISO string."""
+    if value is None:
+        return ""
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return str(value)
+
+
+def render_discovered_note(dt: DiscoveredTicker, snapshot_date: str) -> str:
+    """Render Discovered/<TICKER>.md — a green node linked to its themes.
+
+    The `[[theme_key]]` wikilinks are load-bearing: they make Obsidian draw the
+    theme<->discovered edge and list the ticker in each theme's backlinks /
+    local-graph. That is the whole point — green tickers branching off amber
+    themes.
+    """
+    fm = _frontmatter(
+        {
+            "type": "discovered",
+            "ticker": dt.ticker,
+            "company_name": dt.company_name,
+            "themes": dt.themes,
+            "idea_count": dt.idea_count,
+            "max_confidence": f"{dt.max_confidence:g}",
+            "first_seen": dt.first_seen,
+            "last_seen": dt.last_seen,
+            "tags": ["discovered"],
+        }
+    )
+    lines = [
+        fm,
+        "",
+        DISCOVERED_BANNER_TMPL.format(date=snapshot_date),
+        "",
+        f"# {dt.ticker}",
+        "",
+    ]
+    if dt.company_name:
+        lines.append(f"**{dt.company_name}**")
+        lines.append("")
+
+    lines.append("## Representative rationale")
+    lines.append("")
+    lines.append(dt.rationale if dt.rationale else "_No rationale recorded._")
+    lines.append("")
+
+    lines.append("## Spawning event(s)")
+    lines.append("")
+    if dt.headlines:
+        for headline in dt.headlines:
+            lines.append(f"- {headline}")
+    else:
+        lines.append("_No headline recorded._")
+    lines.append("")
+
+    lines.append("## Discovered under")
+    lines.append("")
+    lines.append(
+        "_The theme(s) whose live events surfaced this ticker. These wikilinks "
+        "make it appear in each theme's backlinks / local graph._"
+    )
+    lines.append("")
+    if dt.themes:
+        for theme_key in dt.themes:
+            lines.append(f"- [[{theme_key}]]")
+    else:
+        lines.append("_None._")
+    lines.append("")
+    return "\n".join(lines)
+
+
+# ------------------------------------------------------------------------- #
 # Atomic write + collision detection.
 # ------------------------------------------------------------------------- #
 
@@ -794,6 +1077,14 @@ def write_manifest(
             "links": result.link_count,
             "files": result.files_written,
         },
+        # CL-w0ox: whether the opt-in live layer ran, and its shape. On the pure
+        # path this always records included=false / count=0 so the manifest is
+        # an honest record of what the vault contains.
+        "discovered": {
+            "included": result.discovered_included,
+            "count": result.discovered_count,
+            "snapshot": result.discovered_snapshot,
+        },
     }
     _atomic_write(manifest_path, json.dumps(manifest, indent=2, sort_keys=True) + "\n")
 
@@ -803,12 +1094,17 @@ def write_manifest(
 # ------------------------------------------------------------------------- #
 
 
-def build_graph_json() -> dict[str, object]:
+def build_graph_json(include_discovered: bool = False) -> dict[str, object]:
     """The `.obsidian/graph.json` payload — colour-grouped by node tag.
 
     Uses Obsidian's real graph.json schema (sane defaults + `colorGroups`) so
     the graph opens grouped the first time. Overwrites whatever Obsidian wrote.
+    The pure path writes 3 groups; the --discovered run appends the green
+    `tag:#discovered` group for a total of 4 (CL-w0ox).
     """
+    color_groups = list(GRAPH_COLOR_GROUPS)
+    if include_discovered:
+        color_groups.append(DISCOVERED_COLOR_GROUP)
     return {
         "collapse-filter": True,
         "search": "",
@@ -817,7 +1113,7 @@ def build_graph_json() -> dict[str, object]:
         "hideUnresolved": False,
         "showOrphans": True,
         "collapse-color-groups": False,
-        "colorGroups": GRAPH_COLOR_GROUPS,
+        "colorGroups": color_groups,
         "collapse-display": True,
         "showArrow": False,
         "textFadeMultiplier": 0,
@@ -855,6 +1151,35 @@ def copy_templates(templates_dir: Path, guard: _CollisionGuard, out_dir: Path) -
 # ------------------------------------------------------------------------- #
 
 
+def _resolve_discovered(
+    known_symbols: set[str],
+    engine: Engine | None,
+) -> list[DiscoveredTicker] | None:
+    """Fetch the discovered layer, or None if the DB is unreachable (CL-w0ox).
+
+    Uses the injected engine if given (tests pass a sqlite engine); otherwise
+    lazily imports sqlalchemy + build_db_url and connects to the live Postgres.
+    A connection/query failure is caught, WARNED loudly, and returned as None so
+    the caller degrades to the pure vault — a DB blip must never nuke the vault.
+    """
+    try:
+        if engine is None:
+            from sqlalchemy import create_engine  # lazy: pure path never imports
+
+            from src.data.db_env import build_db_url
+
+            engine = create_engine(build_db_url())
+        return query_discovered(engine, known_symbols)
+    except Exception:  # noqa: BLE001 — degrade on ANY DB failure, never fail export
+        logger.warning(
+            "--discovered was requested but the live DB is unreachable; "
+            "producing the PURE vault WITHOUT the Discovered/ layer "
+            "(a DB blip must not nuke the vault)",
+            exc_info=True,
+        )
+        return None
+
+
 def export_vault(
     out_dir: Path,
     seed_dir: Path,
@@ -864,8 +1189,17 @@ def export_vault(
     manifest_path: Path | None = DEFAULT_MANIFEST,
     templates_dir: Path | None = DEFAULT_TEMPLATES,
     generated_at: str | None = None,
+    discovered: bool = False,
+    discovered_engine: Engine | None = None,
 ) -> ExportResult:
-    """Generate the full Obsidian vault. Pure: reads YAML, writes Markdown."""
+    """Generate the full Obsidian vault. Pure by default: reads YAML, writes MD.
+
+    With ``discovered=True`` (opt-in) an extra ``Discovered/`` layer is queried
+    from the live Postgres and appended AFTER the pure export; a ``sqlalchemy``
+    engine may be injected via ``discovered_engine`` (tests do this) instead of
+    the default live connection. If the DB is unreachable the export degrades to
+    the pure vault with a loud warning (CL-w0ox).
+    """
     themes = load_themes(playbooks_path, cross_asset_path)
     retail = load_retail_proxies(retail_path)
     overlaps = compute_overlaps(themes)
@@ -908,13 +1242,30 @@ def export_vault(
         guard.write(out_dir / "Concepts" / f"{name}.md", body)
         link_count += len(extract_wikilinks(body))
 
+    # Discovered/  (CL-w0ox — the ONLY DB-touching step; opt-in). Resolve it
+    # BEFORE the dashboard/graph so those can reflect whether the layer landed.
+    # `discovered_included` stays False if the flag was off OR the DB was
+    # unreachable, keeping the pure output byte-identical in both cases.
+    snapshot_date = (generated_at or datetime.now(UTC).isoformat())[:10]
+    discovered_tickers: list[DiscoveredTicker] = []
+    discovered_included = False
+    if discovered:
+        found = _resolve_discovered(set(all_symbols), discovered_engine)
+        if found is not None:
+            discovered_included = True
+            discovered_tickers = found
+            for dt in discovered_tickers:
+                note = render_discovered_note(dt, snapshot_date)
+                guard.write(out_dir / "Discovered" / f"{dt.ticker}.md", note)
+                link_count += len(extract_wikilinks(note))
+
     # Coverage.md  (static snapshot)
     coverage = render_coverage_note(themes, overlaps)
     guard.write(out_dir / "Coverage.md", coverage)
     link_count += len(extract_wikilinks(coverage))
 
     # Dashboard.md  (Dataview MOC — the queryable mirror of Coverage.md)
-    dashboard = render_dashboard_note()
+    dashboard = render_dashboard_note(include_discovered=discovered_included)
     guard.write(out_dir / "Dashboard.md", dashboard)
     link_count += len(extract_wikilinks(dashboard))
 
@@ -928,10 +1279,11 @@ def export_vault(
     # .obsidian/graph.json  (colour-grouped graph, JSON not Markdown — not a node)
     guard.write(
         out_dir / ".obsidian" / "graph.json",
-        json.dumps(build_graph_json(), indent=2) + "\n",
+        json.dumps(build_graph_json(include_discovered=discovered_included), indent=2)
+        + "\n",
     )
 
-    node_count = len(themes) + len(all_symbols) + len(concepts)
+    node_count = len(themes) + len(all_symbols) + len(concepts) + len(discovered_tickers)
     result = ExportResult(
         theme_count=len(themes),
         instrument_count=len(all_symbols),
@@ -939,6 +1291,9 @@ def export_vault(
         node_count=node_count,
         link_count=link_count,
         files_written=guard.count,
+        discovered_included=discovered_included,
+        discovered_count=len(discovered_tickers),
+        discovered_snapshot=snapshot_date if discovered_included else "",
     )
 
     if manifest_path is not None:
@@ -955,10 +1310,12 @@ def export_vault(
         )
 
     logger.info(
-        "vault generated: %d themes, %d instruments, %d concepts, %d links -> %s",
+        "vault generated: %d themes, %d instruments, %d concepts, "
+        "%d discovered, %d links -> %s",
         result.theme_count,
         result.instrument_count,
         result.concept_count,
+        result.discovered_count,
         result.link_count,
         out_dir,
     )
@@ -986,6 +1343,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--manifest", type=Path, default=DEFAULT_MANIFEST, help="staleness manifest path"
     )
+    parser.add_argument(
+        "--discovered",
+        action="store_true",
+        help=(
+            "OPT-IN: also query the live Postgres and emit a Discovered/ layer "
+            "of net-new niche-agent tickers (CL-w0ox). Off by default; the "
+            "default run stays pure and offline."
+        ),
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(
@@ -1001,6 +1367,7 @@ def main(argv: list[str] | None = None) -> int:
         retail_path=args.retail,
         manifest_path=args.manifest,
         templates_dir=args.templates,
+        discovered=args.discovered,
     )
     logger.info(
         "wrote %d files (%d nodes, %d links) to %s",
@@ -1009,6 +1376,11 @@ def main(argv: list[str] | None = None) -> int:
         result.link_count,
         args.out,
     )
+    if args.discovered and not result.discovered_included:
+        logger.warning(
+            "--discovered was requested but the Discovered/ layer was NOT "
+            "included (DB unreachable) — the vault is the pure playbook vault"
+        )
     return 0
 
 

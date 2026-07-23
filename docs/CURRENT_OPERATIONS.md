@@ -212,7 +212,7 @@ loud WARN banner, never a silent dormant strategy.
 `scripts/data_health.py` prints the coverage report and exits non-zero on
 starvation (cron/CI-able).
 
-**Research tools.** Obsidian knowledge-graph vault (CL-uuy0): `make knowledge-vault` regenerates an offline Obsidian vault of theme↔instrument↔region coverage from the playbook YAML; research-only, NOT part of the live fleet; Coverage.md surfaces under-wired/watch-only themes.
+**Research tools.** Obsidian knowledge-graph vault (CL-uuy0): `make knowledge-vault` regenerates an offline Obsidian vault of theme↔instrument↔region coverage from the playbook YAML; research-only, NOT part of the live fleet; Coverage.md surfaces under-wired/watch-only themes. `make knowledge-vault-live` (CL-w0ox) additionally adds a `Discovered/` layer of the net-new tickers the niche agent has surfaced from LIVE events (green nodes branching off their themes) — DB-sourced, opt-in, a snapshot regenerated on each run (research-only, NOT live state; a DB blip degrades to the pure vault).
 
 ---
 

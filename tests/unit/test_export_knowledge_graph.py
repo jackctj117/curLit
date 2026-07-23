@@ -1,7 +1,9 @@
-"""Unit tests for the Obsidian knowledge-graph exporter (CL-uuy0).
+"""Unit tests for the Obsidian knowledge-graph exporter (CL-uuy0, CL-w0ox).
 
-Pure, offline, tmp_path only — no network, no DB. Exercises the mini-fixture
+Pure, offline, tmp_path only — no network, no live DB. Exercises the mini-fixture
 graph (two overlapping themes incl. a watch-only theme) and the fail-loud paths.
+The opt-in `--discovered` layer (CL-w0ox) is tested with an INJECTED in-memory
+sqlite engine, so those tests need no Postgres either.
 """
 
 from __future__ import annotations
@@ -602,3 +604,254 @@ def test_committed_templates_match_vault_conventions():
         text = path.read_text(encoding="utf-8")
         assert text.startswith("---\n")  # has YAML frontmatter
         assert "type:" in text  # aligns to the vault's `type` convention
+
+
+# ------------------------------------------------------------------------- #
+# Discovered layer (CL-w0ox) — the OPT-IN live-DB layer. A fake sqlite engine
+# is injected so these run with no Postgres. The pure path above must stay
+# byte-identical; these tests only touch the --discovered branch.
+#
+# Seeded so the mini playbook (`alpha` watches XOM etc.) makes XOM an
+# already-a-playbook instrument that MUST be skipped, VG a net-new discovery
+# (with a sec_name), TANK a net-new discovery whose name falls back to a trimmed
+# security_name, and USD_JPY an underscore-FX symbol that MUST be skipped.
+# ------------------------------------------------------------------------- #
+
+
+def _make_fake_engine():
+    """An in-memory sqlite engine mirroring the queried columns of the three
+    real tables, seeded with a handful of niche + non-niche trade ideas."""
+    from sqlalchemy import create_engine, text
+
+    engine = create_engine("sqlite://")  # shared in-memory for this connection
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "CREATE TABLE geo_events (id INTEGER PRIMARY KEY, theme TEXT, "
+                "headline TEXT)"
+            )
+        )
+        conn.execute(
+            text(
+                "CREATE TABLE trade_ideas (id INTEGER PRIMARY KEY, "
+                "geo_event_id INTEGER, ticker TEXT, confidence REAL, "
+                "rationale TEXT, notes TEXT, created_at TEXT)"
+            )
+        )
+        conn.execute(
+            text(
+                "CREATE TABLE symbols (symbol TEXT, sec_name TEXT, "
+                "security_name TEXT)"
+            )
+        )
+        conn.execute(
+            text(
+                "INSERT INTO geo_events (id, theme, headline) VALUES "
+                "(1, 'alpha', 'Hormuz transit risk spikes'), "
+                "(2, 'beta', 'Equity supply squeeze'), "
+                "(3, 'alpha', 'Second alpha event')"
+            )
+        )
+        # VG: two niche ideas across two events => idea_count 2, themes {alpha,
+        # beta}; the higher-confidence row (0.5, event 2 'beta') is the rep.
+        # TANK: one niche idea, name falls back to trimmed security_name.
+        # XOM: a niche idea but XOM is already a playbook instrument => skipped.
+        # USD_JPY: an underscore-FX niche idea => skipped defensively.
+        # ZZZZ: a NON-niche idea (notes lack 'niche') => not selected at all.
+        conn.execute(
+            text(
+                "INSERT INTO trade_ideas "
+                "(id, geo_event_id, ticker, confidence, rationale, notes, "
+                "created_at) VALUES "
+                "(1, 1, 'VG', 0.28, 'low-conf VG chain', "
+                "'[niche 3hop] first', '2026-01-01T00:00:00+00:00'), "
+                "(2, 2, 'VG', 0.5, 'REP VG multi-hop rationale', "
+                "'[niche 2hop] second', '2026-01-02T00:00:00+00:00'), "
+                "(3, 3, 'TANK', 0.4, 'tanker play', "
+                "'[niche] tanker', '2026-01-03T00:00:00+00:00'), "
+                "(4, 1, 'XOM', 0.6, 'oil major', "
+                "'[niche] major', '2026-01-01T00:00:00+00:00'), "
+                "(5, 1, 'USD_JPY', 0.6, 'fx pair', "
+                "'[niche] fx', '2026-01-01T00:00:00+00:00'), "
+                "(6, 2, 'ZZZZ', 0.9, 'not niche', "
+                "'ordinary event idea', '2026-01-01T00:00:00+00:00')"
+            )
+        )
+        conn.execute(
+            text(
+                "INSERT INTO symbols (symbol, sec_name, security_name) VALUES "
+                "('VG', 'Venture Global, Inc.', "
+                "'Venture Global, Inc. Class A common stock'), "
+                "('TANK', NULL, 'Tanker Co. Ltd. - Class A Common Stock'), "
+                "('XOM', 'Exxon Mobil Corporation', 'Exxon Mobil Corp')"
+            )
+        )
+    return engine
+
+
+def _export_discovered(tmp_path, playbook, engine):
+    out = tmp_path / "vault"
+    result = ekg.export_vault(
+        out_dir=out,
+        seed_dir=tmp_path / "no_seed",
+        playbooks_path=playbook,
+        cross_asset_path=None,
+        retail_path=None,
+        manifest_path=tmp_path / ".manifest.json",
+        templates_dir=None,
+        generated_at="2026-03-15T00:00:00+00:00",
+        discovered=True,
+        discovered_engine=engine,
+    )
+    return out, result
+
+
+def test_clean_company_name_prefers_sec_name_and_trims_boilerplate():
+    # sec_name wins verbatim
+    assert (
+        ekg._clean_company_name("Venture Global, Inc.", "anything")
+        == "Venture Global, Inc."
+    )
+    # falls back to security_name with the class boilerplate trimmed, keeping
+    # the corporate designator
+    assert (
+        ekg._clean_company_name(None, "Tanker Co. Ltd. - Class A Common Stock")
+        == "Tanker Co. Ltd."
+    )
+    assert ekg._clean_company_name(None, "Foo Corp Common Stock") == "Foo Corp"
+    assert ekg._clean_company_name(None, "Bar Ordinary Shares") == "Bar"
+    assert ekg._clean_company_name(None, None) == ""
+
+
+def test_discovered_note_created_for_net_new_ticker(tmp_path, mini_playbook):
+    out, result = _export_discovered(tmp_path, mini_playbook, _make_fake_engine())
+    vg = out / "Discovered" / "VG.md"
+    assert vg.exists()
+    text = vg.read_text()
+    fm = _frontmatter_block(text)
+    assert "type: discovered" in fm
+    assert "ticker: VG" in fm
+    assert "company_name: Venture Global, Inc." in fm
+    assert "tags: [discovered]" in fm
+    assert "idea_count: 2" in fm  # two niche VG ideas
+    assert "max_confidence: 0.5" in fm
+    assert result.discovered_included is True
+    assert result.discovered_count == 2  # VG + TANK (XOM/USD_JPY/ZZZZ excluded)
+
+
+def test_discovered_note_links_to_each_theme(tmp_path, mini_playbook):
+    out, _ = _export_discovered(tmp_path, mini_playbook, _make_fake_engine())
+    text = (out / "Discovered" / "VG.md").read_text()
+    # VG fired under both alpha and beta events => a wikilink to each theme so
+    # Obsidian draws the theme<->discovered edge.
+    assert "[[alpha]]" in text
+    assert "[[beta]]" in text
+    fm = _frontmatter_block(text)
+    assert "themes: [alpha, beta]" in fm
+    # the representative (highest-confidence) rationale + its headline
+    assert "REP VG multi-hop rationale" in text
+    assert "Equity supply squeeze" in text
+
+
+def test_discovered_banner_and_snapshot_date(tmp_path, mini_playbook):
+    out, _ = _export_discovered(tmp_path, mini_playbook, _make_fake_engine())
+    text = (out / "Discovered" / "VG.md").read_text()
+    assert "Discovered by the niche agent from LIVE events" in text
+    assert "snapshot as of 2026-03-15" in text  # generated_at date
+    assert "make knowledge-vault-live" in text
+    assert "not a position" in text.lower()
+
+
+def test_discovered_company_name_falls_back_to_trimmed_security_name(
+    tmp_path, mini_playbook
+):
+    out, _ = _export_discovered(tmp_path, mini_playbook, _make_fake_engine())
+    tank = out / "Discovered" / "TANK.md"
+    assert tank.exists()
+    # sec_name is NULL => trimmed security_name, corporate designator kept
+    assert "company_name: Tanker Co. Ltd." in _frontmatter_block(tank.read_text())
+
+
+def test_already_playbook_instrument_not_duplicated(tmp_path, mini_playbook):
+    out, _ = _export_discovered(tmp_path, mini_playbook, _make_fake_engine())
+    # XOM is a playbook instrument (alpha/beta watch it) => teal node already,
+    # must NOT be re-emitted as a discovered node.
+    assert (out / "Instruments" / "XOM.md").exists()
+    assert not (out / "Discovered" / "XOM.md").exists()
+
+
+def test_underscore_fx_and_non_niche_skipped(tmp_path, mini_playbook):
+    out, result = _export_discovered(tmp_path, mini_playbook, _make_fake_engine())
+    # USD_JPY is an underscore-FX symbol => skipped; ZZZZ's notes lack 'niche'.
+    assert not (out / "Discovered" / "USD_JPY.md").exists()
+    assert not (out / "Discovered" / "ZZZZ.md").exists()
+    discovered = {p.stem for p in (out / "Discovered").glob("*.md")}
+    assert discovered == {"VG", "TANK"}
+
+
+def test_discovered_graph_has_four_color_groups(tmp_path, mini_playbook):
+    out, _ = _export_discovered(tmp_path, mini_playbook, _make_fake_engine())
+    graph = json.loads((out / ".obsidian" / "graph.json").read_text())
+    groups = graph["colorGroups"]
+    assert len(groups) == 4
+    queries = {g["query"] for g in groups}
+    assert queries == {
+        "tag:#theme",
+        "tag:#instrument",
+        "tag:#concept",
+        "tag:#discovered",
+    }
+    green = next(g for g in groups if g["query"] == "tag:#discovered")
+    assert green["color"]["rgb"] == 0x27AE60  # distinct green
+
+
+def test_discovered_dashboard_section_and_manifest(tmp_path, mini_playbook):
+    out, result = _export_discovered(tmp_path, mini_playbook, _make_fake_engine())
+    dash = (out / "Dashboard.md").read_text()
+    assert "Discovered tickers" in dash
+    assert 'FROM "Discovered"' in dash
+    assert "TABLE company_name, themes, idea_count, max_confidence" in dash
+    assert "SORT idea_count DESC" in dash
+    manifest = json.loads((tmp_path / ".manifest.json").read_text())
+    assert manifest["discovered"]["included"] is True
+    assert manifest["discovered"]["count"] == 2
+    assert manifest["discovered"]["snapshot"] == "2026-03-15"
+
+
+def test_db_unreachable_degrades_to_pure_vault_with_warning(
+    tmp_path, mini_playbook, caplog
+):
+    import logging
+
+    class _BoomEngine:
+        def connect(self):  # noqa: ANN001, ANN201
+            raise RuntimeError("connection refused")
+
+    with caplog.at_level(logging.WARNING):
+        out, result = _export_discovered(tmp_path, mini_playbook, _BoomEngine())
+    # DB blip must not nuke the vault: the pure layer is still there ...
+    assert (out / "Themes" / "alpha.md").exists()
+    assert (out / "Instruments" / "XOM.md").exists()
+    # ... but the Discovered layer is absent and the run degraded to 3 groups.
+    assert not (out / "Discovered").exists()
+    graph = json.loads((out / ".obsidian" / "graph.json").read_text())
+    assert len(graph["colorGroups"]) == 3
+    assert result.discovered_included is False
+    assert result.discovered_count == 0
+    # warned loudly + recorded in the manifest
+    assert any("unreachable" in r.message.lower() for r in caplog.records)
+    manifest = json.loads((tmp_path / ".manifest.json").read_text())
+    assert manifest["discovered"]["included"] is False
+
+
+def test_pure_path_omits_discovered_layer(tmp_path, mini_playbook):
+    """Without --discovered the output has no Discovered/, 3 color groups, and no
+    dashboard section — the pure contract is preserved."""
+    out, result = _export(tmp_path, mini_playbook)
+    assert not (out / "Discovered").exists()
+    graph = json.loads((out / ".obsidian" / "graph.json").read_text())
+    assert len(graph["colorGroups"]) == 3
+    assert "Discovered tickers" not in (out / "Dashboard.md").read_text()
+    assert result.discovered_included is False
+    manifest = json.loads((tmp_path / ".manifest.json").read_text())
+    assert manifest["discovered"] == {"included": False, "count": 0, "snapshot": ""}

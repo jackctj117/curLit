@@ -1,4 +1,4 @@
-.PHONY: help install dev-install test test-unit test-integration test-slow lint typecheck format check clean knowledge-vault
+.PHONY: help install dev-install test test-unit test-integration test-slow lint typecheck format check clean knowledge-vault knowledge-vault-live
 
 help:
 	@echo "curLit development commands"
@@ -15,6 +15,7 @@ help:
 	@echo "  make check            Run lint + typecheck + test (CI pipeline)"
 	@echo "  make clean            Remove build artifacts and caches"
 	@echo "  make knowledge-vault  Regenerate the offline Obsidian research vault (CL-uuy0)"
+	@echo "  make knowledge-vault-live  ... + the live niche-discovered-ticker layer (CL-w0ox, reads Postgres)"
 
 install:
 	pip install -e .
@@ -59,3 +60,7 @@ clean:
 knowledge-vault:
 	.venv/bin/python scripts/export_knowledge_graph.py
 	@echo "Obsidian research vault regenerated at knowledge/obsidian/vault (CL-uuy0) — research-only, NOT part of the live fleet"
+
+knowledge-vault-live:
+	.venv/bin/python scripts/export_knowledge_graph.py --discovered
+	@echo "Obsidian research vault + live niche-discovered-ticker layer regenerated (CL-w0ox) — reads Postgres, research-only snapshot, NOT part of the live fleet"
