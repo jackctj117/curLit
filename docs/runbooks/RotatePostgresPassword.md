@@ -45,17 +45,53 @@ each consumer picks up the new value.
 4. **Restart every consumer:**
    ```bash
    ./scripts/daemons.sh stop && ./scripts/daemons.sh start   # all 13 native daemons
-   docker compose restart airflow-scheduler airflow-webserver # + any airflow-worker
+   # NOT `docker compose restart` — that REUSES the existing container config
+   # and will NOT pick up the changed .env, so the container silently keeps
+   # the OLD password. Force a recreate:
+   docker compose up -d --force-recreate --no-deps \
+     airflow-scheduler airflow-webserver postgres_exporter
    ```
+   `postgres_exporter` is easy to miss — it embeds the password in
+   `DATA_SOURCE_NAME` (docker-compose.yml), so it needs the same recreate.
 
 5. **Verify:**
-   - No `WELL-KNOWN default password` warning in fresh logs
-     (`grep -c WELL-KNOWN logs/*.log` on rows after the restart).
+   - No `WELL-KNOWN default password` warning in fresh logs. Filter by TIME,
+     not date — earlier restarts the same day will otherwise show up:
+     ```bash
+     grep -h WELL-KNOWN logs/*.log | awk '{print $1,$2}' | sort | tail -3
+     ```
+     The newest one must PREDATE the restart.
    - Engine reconciliation clean: `grep "Reconciliation complete" logs/engine.log | tail -1`
      shows `mismatches=False`, and `/api/system` shows `oms_halted:false`.
-   - Ingest works: a fresh `event_pipeline` cycle logs `ingest: N new`.
-   - Airflow can reach the DB (a DAG task run succeeds, or the webserver
-     shows no connection errors).
+   - No auth errors after the restart:
+     ```bash
+     grep -rh "password authentication failed" logs/*.log | wc -l
+     ```
+     A couple of hits timestamped BETWEEN the `ALTER USER` and the daemon
+     restart are EXPECTED — old processes still hold the old credential in
+     memory. Anything after the restart is a real failure.
+   - Ingest works: a fresh `intraday_pricer` line logs `wrote N/N quotes`.
+   - Airflow can reach the DB: containers report `(healthy)` and
+     `docker logs curlit-airflow-scheduler --since 5m` shows no
+     `password authentication failed` / `OperationalError`.
+
+   > **Verifying the old password is dead: do it from the HOST, not inside
+   > the container.** `pg_hba.conf` in this image has
+   > `host all all 127.0.0.1/32 trust`, so a `docker exec ... psql -h 127.0.0.1`
+   > skips password auth entirely and the OLD password will appear to still
+   > work — a false negative. Host connections arrive via the docker gateway
+   > and match `host all all all scram-sha-256`, which is the path the daemons
+   > actually use. Check it the way they connect:
+   > ```bash
+   > .venv/bin/python -c "
+   > import psycopg2
+   > try:
+   >     psycopg2.connect(host='127.0.0.1', port=5432, user='fx',
+   >                      dbname='fx', password='changeme', connect_timeout=5)
+   >     print('OLD PASSWORD STILL WORKS — rotation did not take')
+   > except Exception:
+   >     print('old password refused — good')"
+   > ```
 
 ## Rollback
 If a consumer can't authenticate after the change, set the role password
