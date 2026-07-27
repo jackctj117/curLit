@@ -164,9 +164,19 @@ def run_once(now: datetime | None = None) -> int:
         stale_hours = float(os.environ.get("X_INGEST_STALE_HOURS", DEFAULT_X_STALE_HOURS))
     except ValueError:
         stale_hours = DEFAULT_X_STALE_HOURS
+    # DISPOSE the engine every cycle (CL-bdax): run_once builds a fresh
+    # Engine per tick, and an undisposed Engine keeps its pooled connection
+    # open forever — at --loop 300 that leaked ~1 Postgres connection every
+    # 5 minutes until the server hit max_connections and REFUSED everything
+    # ("sorry, too many clients already" killed execute_options). The engine
+    # is only needed for the x-freshness read, so scope it tightly.
     engine = create_engine(build_db_url())
+    try:
+        newest_x = _newest_x_event(engine)
+    finally:
+        engine.dispose()
     msg, is_stale = decide_x_staleness_alert(
-        _newest_x_event(engine),
+        newest_x,
         bool(state.get("x_stale")),
         now,
         stale_hours=stale_hours,
