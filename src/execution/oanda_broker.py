@@ -62,7 +62,6 @@ class OandaBroker(Broker):
         self.api_key = api_key
         self.account_id = account_id
         base = self.PRACTICE_URL if practice else self.LIVE_URL
-        stream = self.STREAM_PRACTICE if practice else self.STREAM_LIVE
         self.headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
         # OANDA's edge 307-redirects some requests back to the same
         # path. Blanket follow_redirects is NOT safe here: on 301/302/303
@@ -91,12 +90,13 @@ class OandaBroker(Broker):
             timeout=10.0,
             follow_redirects=False,
         )
-        self.stream_client = httpx.AsyncClient(
-            base_url=stream,
-            headers=self.headers,
-            timeout=None,
-            follow_redirects=True,
-        )
+        # NOTE: there is deliberately no long-lived stream client here.
+        # stream_prices/stream_transactions build (and tear down) their own
+        # AsyncClient inside the reconnect supervisor (deriving the stream
+        # base URL from self.client.base_url) so each retry gets a fresh
+        # connection. A module-level one was dead code holding an
+        # unbounded-timeout connection pool open for the process lifetime —
+        # removed in CL-j2y9.
         # Last streamed quote per OANDA-symbol, for the slippage reference
         # (CL-7vn9). Populated by stream_prices as ticks flow; read by
         # _compute_price_bound to skip a redundant /pricing GET when the
@@ -383,6 +383,33 @@ class OandaBroker(Broker):
     #: Reconnect backoff bounds for the price stream (CL-vff9).
     _STREAM_BACKOFF_START = 1.0
     _STREAM_BACKOFF_MAX = 30.0
+    #: Read timeout for the long-lived streams (CL-j2y9). OANDA sends a
+    #: heartbeat every ~5s on both the pricing and transaction streams, so a
+    #: gap this long means the connection is DEAD even though the socket is
+    #: still open. Without it (timeout=None) a half-open connection parked in
+    #: aiter_lines() forever: no exception, so the reconnect supervisor never
+    #: fired, prices silently stopped, and stale_prices halted trading until a
+    #: MANUAL restart (a 56h outage over 2026-07-24..26). A read timeout turns
+    #: that invisible stall into an httpx.ReadTimeout the supervisor retries.
+    _STREAM_READ_TIMEOUT = 30.0
+    #: Consecutive 4xx rejections tolerated before a stream gives up (CL-j2y9).
+    #: A 4xx is USUALLY permanent (bad credentials) and hammering OANDA with
+    #: bad auth is pointless — but OANDA also returns spurious 401s on rapid
+    #: reconnects, and treating the first one as fatal killed the stream for
+    #: good while the very same credentials kept working elsewhere. Retry a
+    #: few times with backoff, then declare it permanent.
+    _STREAM_MAX_4XX_RETRIES = 3
+
+    @classmethod
+    def _stream_timeout(cls) -> httpx.Timeout:
+        """Timeouts for a long-lived stream: bounded connect/read/write so a
+        dead-but-open connection surfaces as an error, no pool cap."""
+        return httpx.Timeout(
+            connect=10.0,
+            read=cls._STREAM_READ_TIMEOUT,
+            write=10.0,
+            pool=10.0,
+        )
 
     async def stream_prices(
         self,
@@ -398,9 +425,23 @@ class OandaBroker(Broker):
         with exponential backoff (1 s → 30 s), rebuilding the client each
         time; a clean server-side close also reconnects. So a blip
         self-heals in seconds instead of relying on the caller. CANCELLED
-        (shutdown) always propagates. A 4xx (bad credentials / bad request)
-        is PERMANENT — logged CRITICAL and raised, since retrying can't fix
-        it and hammering OANDA with bad auth is pointless.
+        (shutdown) always propagates.
+
+        Two hardening fixes after a 56h silent outage (CL-j2y9):
+
+        * **Read timeout.** The client used ``timeout=None``, so a half-open
+          connection (socket up, no bytes) parked in ``aiter_lines()``
+          FOREVER — no exception, so the supervisor never fired. Prices
+          stopped, ``stale_prices`` halted trading, and only a manual restart
+          recovered it. ``_STREAM_READ_TIMEOUT`` (30 s, vs OANDA's ~5 s
+          heartbeat) turns that invisible stall into a retryable
+          ``ReadTimeout``.
+        * **Bounded 4xx retries.** A 4xx is usually permanent (bad creds) and
+          hammering OANDA with bad auth is pointless — but OANDA also emits
+          spurious 401s on rapid reconnects, and treating the first as fatal
+          killed the stream for good while the same credentials kept working
+          everywhere else. Retried ``_STREAM_MAX_4XX_RETRIES`` times with
+          backoff, then logged CRITICAL and raised.
         """
         oanda_syms = ",".join(self._to_oanda(s) for s in symbols)
         base_url = (
@@ -412,13 +453,14 @@ class OandaBroker(Broker):
         if not hasattr(self, "_last_stream_price"):
             self._last_stream_price = {}
         backoff = self._STREAM_BACKOFF_START
+        rejections = 0
         while True:
             try:
                 async with (
                     httpx.AsyncClient(
                         base_url=base_url,
                         headers=self.headers,
-                        timeout=None,
+                        timeout=self._stream_timeout(),
                     ) as client,
                     client.stream(
                         "GET",
@@ -428,21 +470,37 @@ class OandaBroker(Broker):
                 ):
                     if resp.status_code >= 400:
                         if resp.status_code < 500:
-                            logger.critical(
-                                "OANDA price stream rejected with %d "
-                                "(bad credentials / request) — NOT retrying",
+                            rejections += 1
+                            if rejections > self._STREAM_MAX_4XX_RETRIES:
+                                logger.critical(
+                                    "OANDA price stream rejected with %d "
+                                    "(bad credentials / request) %d times — NOT retrying",
+                                    resp.status_code,
+                                    rejections,
+                                )
+                                resp.raise_for_status()
+                            # A SPURIOUS 4xx (OANDA returns 401s on rapid
+                            # reconnects) must not kill the stream for good —
+                            # retry a bounded number of times first (CL-j2y9).
+                            logger.warning(
+                                "OANDA price stream rejected with %d (attempt %d/%d) "
+                                "— reconnecting in %.0fs",
                                 resp.status_code,
+                                rejections,
+                                self._STREAM_MAX_4XX_RETRIES,
+                                backoff,
                             )
-                            resp.raise_for_status()
-                        logger.warning(
-                            "OANDA price stream HTTP %d — reconnecting in %.0fs",
-                            resp.status_code,
-                            backoff,
-                        )
+                        else:
+                            logger.warning(
+                                "OANDA price stream HTTP %d — reconnecting in %.0fs",
+                                resp.status_code,
+                                backoff,
+                            )
                         await asyncio.sleep(backoff)
                         backoff = min(backoff * 2, self._STREAM_BACKOFF_MAX)
                         continue
                     backoff = self._STREAM_BACKOFF_START  # connected — reset
+                    rejections = 0
                     async for line in resp.aiter_lines():
                         if not line.strip():
                             continue
@@ -483,6 +541,18 @@ class OandaBroker(Broker):
                 # forever. Listed before the transport-error catch below
                 # (HTTPStatusError is itself an httpx.HTTPError).
                 raise
+            except httpx.ReadTimeout:
+                # SILENT STALL (CL-j2y9): the socket is open but OANDA stopped
+                # sending — not even a heartbeat. Called out separately because
+                # this is the failure that used to be INVISIBLE (timeout=None
+                # blocked in aiter_lines forever) and halted trading on stale
+                # prices until a manual restart.
+                logger.warning(
+                    "OANDA price stream STALLED (no data for %.0fs, heartbeat "
+                    "expected ~5s) — reconnecting",
+                    self._STREAM_READ_TIMEOUT,
+                )
+                await asyncio.sleep(self._STREAM_BACKOFF_START)
             except (httpx.HTTPError, OSError) as exc:
                 logger.warning(
                     "OANDA price stream error (%s: %s) — reconnecting in %.0fs",
@@ -511,13 +581,14 @@ class OandaBroker(Broker):
             self.STREAM_PRACTICE if "practice" in str(self.client.base_url) else self.STREAM_LIVE
         )
         backoff = self._STREAM_BACKOFF_START
+        rejections = 0
         while True:
             try:
                 async with (
                     httpx.AsyncClient(
                         base_url=base_url,
                         headers=self.headers,
-                        timeout=None,
+                        timeout=self._stream_timeout(),
                     ) as client,
                     client.stream(
                         "GET",
@@ -526,21 +597,35 @@ class OandaBroker(Broker):
                 ):
                     if resp.status_code >= 400:
                         if resp.status_code < 500:
-                            logger.critical(
-                                "OANDA transaction stream rejected with %d "
-                                "(bad credentials / request) — NOT retrying",
+                            rejections += 1
+                            if rejections > self._STREAM_MAX_4XX_RETRIES:
+                                logger.critical(
+                                    "OANDA transaction stream rejected with %d "
+                                    "(bad credentials / request) %d times — NOT retrying",
+                                    resp.status_code,
+                                    rejections,
+                                )
+                                resp.raise_for_status()
+                            # Spurious 4xx must not kill the stream (CL-j2y9).
+                            logger.warning(
+                                "OANDA transaction stream rejected with %d (attempt %d/%d) "
+                                "— reconnecting in %.0fs",
                                 resp.status_code,
+                                rejections,
+                                self._STREAM_MAX_4XX_RETRIES,
+                                backoff,
                             )
-                            resp.raise_for_status()
-                        logger.warning(
-                            "OANDA transaction stream HTTP %d — reconnecting in %.0fs",
-                            resp.status_code,
-                            backoff,
-                        )
+                        else:
+                            logger.warning(
+                                "OANDA transaction stream HTTP %d — reconnecting in %.0fs",
+                                resp.status_code,
+                                backoff,
+                            )
                         await asyncio.sleep(backoff)
                         backoff = min(backoff * 2, self._STREAM_BACKOFF_MAX)
                         continue
                     backoff = self._STREAM_BACKOFF_START  # connected — reset
+                    rejections = 0
                     async for line in resp.aiter_lines():
                         if not line.strip():
                             continue
@@ -576,6 +661,13 @@ class OandaBroker(Broker):
                 raise  # shutdown — never swallow
             except httpx.HTTPStatusError:
                 raise  # 4xx surfaced above is PERMANENT — don't retry
+            except httpx.ReadTimeout:
+                # Silent stall — see the stream_prices note (CL-j2y9).
+                logger.warning(
+                    "OANDA transaction stream STALLED (no data for %.0fs) — reconnecting",
+                    self._STREAM_READ_TIMEOUT,
+                )
+                await asyncio.sleep(self._STREAM_BACKOFF_START)
             except (httpx.HTTPError, OSError) as exc:
                 logger.warning(
                     "OANDA transaction stream error (%s: %s) — reconnecting in %.0fs",
