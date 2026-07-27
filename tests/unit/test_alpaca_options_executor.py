@@ -368,3 +368,90 @@ def test_duplicate_client_order_id_recovers_not_rebuys(engine):
     assert row[0] == "submitted" and "recovered" in row[1]
     # dedup restored: not fetchable next cycle
     assert fetch_executable_ideas(engine, OptionsExecConfig()) == []
+
+
+# --------------------------------------------------------------------------- #
+# concentration caps (CL-3nfm)
+# --------------------------------------------------------------------------- #
+
+
+class _PositionedClient(_FakeClient):
+    """FakeClient that also reports an existing Alpaca options book."""
+
+    def __init__(self, positions: list[dict[str, Any]], **kw: Any) -> None:
+        super().__init__(**kw)
+        self._positions = positions
+
+    def list_option_positions(self) -> list[dict[str, Any]]:
+        return self._positions
+
+
+def _opt_pos(symbol: str, qty: int = 1) -> dict[str, Any]:
+    return {"symbol": symbol, "qty": str(qty), "asset_class": "us_option"}
+
+
+def test_skips_when_same_contract_already_held(engine):
+    """CL-3nfm: idea_id dedup can't see this — a DIFFERENT idea naming the
+    same contract passed it, and FRO reached qty=3 on one contract."""
+    _seed(engine, "ok")
+    client = _PositionedClient([_opt_pos("RTX260821C00105000", 1)], ask=2.0)
+    counts = execute_pending_options(engine, client, _price, now=NOW, technicals_fn=_no_tech)
+    assert counts["skipped_concentration"] == 1
+    assert counts["submitted"] == 0
+    assert client.orders == []
+
+
+def test_skips_when_underlying_cap_reached(engine):
+    # Two RTX contracts already open (different strikes) → cap on the name.
+    _seed(engine, "ok")
+    client = _PositionedClient(
+        [_opt_pos("RTX260821C00200000", 1), _opt_pos("RTX260828C00210000", 1)],
+        ask=2.0,
+    )
+    counts = execute_pending_options(engine, client, _price, now=NOW, technicals_fn=_no_tech)
+    assert counts["skipped_concentration"] == 1
+    assert client.orders == []
+
+
+def test_allows_when_book_is_clear(engine):
+    _seed(engine, "ok")
+    client = _PositionedClient([_opt_pos("AAPL260821C00200000", 1)], ask=2.0)
+    counts = execute_pending_options(engine, client, _price, now=NOW, technicals_fn=_no_tech)
+    assert counts["submitted"] == 1
+
+
+def test_underlying_match_is_root_exact_not_prefix(engine):
+    """ASC/ASTL both start with 'AS' — a prefix match would wrongly collide
+    and block unrelated names."""
+    from src.execution.alpaca_options_executor import _held_contract_counts
+
+    class _C:
+        def list_option_positions(self):  # type: ignore[no-untyped-def]
+            return [_opt_pos("ASTL260821P00004000", 1)]
+
+    same_sym, same_under = _held_contract_counts(_C(), "ASC260821C00017500", "ASC")
+    assert same_sym == 0
+    assert same_under == 0  # ASTL must NOT count against ASC
+
+
+def test_position_lookup_failure_fails_open(engine):
+    # A broker blip must not block entries — the cap is a ceiling, not an
+    # interlock (premium + daily/hourly caps still bound the damage).
+    _seed(engine, "ok")
+
+    class _Boom(_FakeClient):
+        def list_option_positions(self):  # type: ignore[no-untyped-def]
+            raise RuntimeError("alpaca down")
+
+    counts = execute_pending_options(
+        engine, _Boom(ask=2.0), _price, now=NOW, technicals_fn=_no_tech
+    )
+    assert counts["submitted"] == 1
+
+
+def test_client_without_position_listing_fails_open(engine):
+    _seed(engine, "ok")
+    counts = execute_pending_options(
+        engine, _FakeClient(ask=2.0), _price, now=NOW, technicals_fn=_no_tech
+    )
+    assert counts["submitted"] == 1

@@ -414,3 +414,93 @@ def test_market_closed_noop(engine):
     assert counts["market_closed"] == 1
     assert client.orders == []
     assert _row(engine, "closed")["exit_status"] is None
+
+
+# --------------------------------------------------------------------- #
+# No-bid / unsellable contracts (CL-hptt)
+# --------------------------------------------------------------------- #
+
+
+class _BidClient(_FakeClient):
+    """FakeClient that also answers bid probes."""
+
+    def __init__(self, positions, bid, **kw):  # type: ignore[no-untyped-def]
+        super().__init__(positions, **kw)
+        self._bid = bid
+        self.bid_calls: list[str] = []
+
+    def get_option_bid(self, occ: str):  # type: ignore[no-untyped-def]
+        self.bid_calls.append(occ)
+        return self._bid
+
+
+def test_no_bid_contract_is_not_submitted(engine, monkeypatch):  # type: ignore[no-untyped-def]
+    """CL-hptt: a deep-OTM contract can carry a live ask and NO bid. A market
+    sell into an empty book is 403-rejected, and the old code just logged
+    'error managing' and retried every 5-min cycle forever."""
+    sent: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        "src.execution.alpaca_options_exit.notify_operator",
+        lambda t, m, *a, **k: sent.append((t, m)),
+    )
+    _seed(engine, "loss")
+    client = _BidClient([_pos(avg="2.0", cur="1.0")], bid=0.0)  # -50%, no bid
+
+    counts = manage_option_exits(engine, client, now=NOW)
+
+    assert counts["unsellable"] == 1
+    assert counts["exit_submitted"] == 0
+    assert client.orders == []  # nothing submitted into an empty book
+    assert _row(engine, "loss")["exit_status"] == "unsellable"
+    assert len(sent) == 1 and "no bid" in sent[0][0].lower()
+
+
+def test_unsellable_alerts_once_not_every_cycle(engine, monkeypatch):  # type: ignore[no-untyped-def]
+    sent: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        "src.execution.alpaca_options_exit.notify_operator",
+        lambda t, m, *a, **k: sent.append((t, m)),
+    )
+    _seed(engine, "loss")
+    client = _BidClient([_pos(avg="2.0", cur="1.0")], bid=0.0)
+
+    for _ in range(3):  # three consecutive cycles
+        manage_option_exits(engine, client, now=NOW)
+
+    assert len(sent) == 1, "must not re-page the operator every cycle"
+    assert client.orders == []
+
+
+def test_unsellable_position_retries_when_the_bid_returns(engine, monkeypatch):  # type: ignore[no-untyped-def]
+    """The row must STAY in the working set. Marking it unsellable and then
+    excluding it from the query would silently ABANDON an open position."""
+    monkeypatch.setattr("src.execution.alpaca_options_exit.notify_operator", lambda *a, **k: None)
+    _seed(engine, "loss")
+    pos = [_pos(avg="2.0", cur="1.0")]
+
+    manage_option_exits(engine, _BidClient(pos, bid=0.0), now=NOW)
+    assert _row(engine, "loss")["exit_status"] == "unsellable"
+
+    # Bid comes back → the position is picked up again and actually sold.
+    client = _BidClient(pos, bid=0.85)
+    counts = manage_option_exits(engine, client, now=NOW)
+    assert counts["exit_submitted"] == 1
+    assert client.orders and client.orders[0][2] == "sell"
+    assert _row(engine, "loss")["exit_status"] == "submitted"
+
+
+def test_missing_bid_probe_fails_open(engine):  # type: ignore[no-untyped-def]
+    # A client with no get_option_bid (or a probe that errors) must NOT block
+    # the exit — exits always flow.
+    _seed(engine, "loss")
+    client = _FakeClient([_pos(avg="2.0", cur="1.0")])  # no get_option_bid
+    counts = manage_option_exits(engine, client, now=NOW)
+    assert counts["exit_submitted"] == 1
+
+
+def test_unavailable_quote_fails_open(engine):  # type: ignore[no-untyped-def]
+    # bid=None means "quote unavailable", which is transient — submit anyway.
+    _seed(engine, "loss")
+    client = _BidClient([_pos(avg="2.0", cur="1.0")], bid=None)
+    counts = manage_option_exits(engine, client, now=NOW)
+    assert counts["exit_submitted"] == 1

@@ -19,6 +19,7 @@ separate path and is untouched.
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -55,6 +56,50 @@ def _is_duplicate_client_order_id(exc: BaseException) -> bool:
     return "client_order_id" in hay and ("unique" in hay or "duplicate" in hay or "already" in hay)
 
 
+def _held_contract_counts(
+    client: Any,
+    occ_symbol: str,
+    underlying: str,
+) -> tuple[int, int]:
+    """(contracts held of THIS occ_symbol, contracts held on the underlying).
+
+    Reads the live Alpaca book for the concentration cap (CL-3nfm) — the DB
+    order log is not enough, since a position can also be closed externally.
+
+    FAIL-OPEN: any lookup problem returns (0, 0) so a broker/API blip cannot
+    block entries outright. A cap is a ceiling, not a safety interlock; the
+    premium and daily/hourly caps still bound the damage.
+    """
+    try:
+        positions = client.list_option_positions() or []
+    except Exception:
+        logger.warning(
+            "alpaca options: position lookup failed — concentration cap not applied",
+            exc_info=True,
+        )
+        return (0, 0)
+    same_symbol = 0
+    same_underlying = 0
+    root = str(underlying).upper()
+    for p in positions:
+        sym = str(p.get("symbol") or "")
+        try:
+            qty = abs(int(float(p.get("qty") or 0)))
+        except (TypeError, ValueError):
+            qty = 0
+        if not sym or qty <= 0:
+            continue
+        if sym == occ_symbol:
+            same_symbol += qty
+        # OCC symbols are <ROOT><YYMMDD><C|P><strike>; the root is the leading
+        # alpha run, so compare that rather than a prefix match (which would
+        # make "AS" collide with "ASC"/"ASTL").
+        m = re.match(r"^([A-Z]+)", sym)
+        if m and m.group(1) == root:
+            same_underlying += qty
+    return (same_symbol, same_underlying)
+
+
 @dataclass(frozen=True)
 class OptionsExecConfig:
     min_confidence: float = 0.55
@@ -66,6 +111,17 @@ class OptionsExecConfig:
     #: entries spread across the session and fresh intraday events can still
     #: get bought in the afternoon instead of finding the cap already spent.
     max_per_hour: int = 2
+    #: Concentration caps (CL-3nfm). Dedup is keyed on idea_id, so two
+    #: DIFFERENT ideas naming the same name — the same theme re-confirmed on a
+    #: later event, or the impact agent and the niche agent independently
+    #: surfacing it — both pass and both buy. Observed 2026-07-27: FRO
+    #: accumulated to qty=3 on ONE contract across two cycles. The FX book has
+    #: real concentration caps (per_instrument_max_pct, haven cluster); the
+    #: options path had only premium + count caps, nothing per-name.
+    #: Contracts already held of the SAME OCC symbol before a buy is skipped.
+    max_contracts_per_symbol: int = 1
+    #: Open contracts across ALL strikes/expiries of one underlying.
+    max_contracts_per_underlying: int = 2
     require_niche: bool = True
     require_red_team: bool = True
     selection: ContractSelectionConfig = ContractSelectionConfig()
@@ -200,6 +256,7 @@ def execute_pending_options(
     counts = {
         "submitted": 0,
         "skipped_premium": 0,
+        "skipped_concentration": 0,
         "no_contract": 0,
         "no_quote": 0,
         "no_price": 0,
@@ -307,6 +364,35 @@ def execute_pending_options(
                 counts["skipped_premium"] += 1
                 logger.info(
                     "alpaca options: skipped %s (%s) premium $%.0f > cap", ticker, occ, premium
+                )
+                continue
+
+            # CONCENTRATION cap (CL-3nfm): consult what we ALREADY hold before
+            # adding. idea_id dedup can't see this — two different ideas naming
+            # the same contract both pass it — so repeated confirmations on one
+            # theme silently stacked size in a single name (FRO reached qty=3).
+            held_symbol, held_underlying = _held_contract_counts(client, occ, ticker)
+            if held_symbol >= cfg.max_contracts_per_symbol:
+                counts["skipped_concentration"] += 1
+                logger.info(
+                    "alpaca options: skipped %s (%s) — already hold %d of this "
+                    "contract (max %d/symbol)",
+                    ticker,
+                    occ,
+                    held_symbol,
+                    cfg.max_contracts_per_symbol,
+                )
+                continue
+            if held_underlying >= cfg.max_contracts_per_underlying:
+                counts["skipped_concentration"] += 1
+                logger.info(
+                    "alpaca options: skipped %s (%s) — already hold %d contracts on "
+                    "%s (max %d/underlying)",
+                    ticker,
+                    occ,
+                    held_underlying,
+                    ticker,
+                    cfg.max_contracts_per_underlying,
                 )
                 continue
             # client_order_id = idea_id (review P1): the order-then-record

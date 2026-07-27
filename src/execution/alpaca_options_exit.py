@@ -61,6 +61,7 @@ from sqlalchemy import text
 
 from src.execution.alpaca_options import AlpacaOptionsClient
 from src.execution.alpaca_options_executor import _is_duplicate_client_order_id
+from src.research.notifications import notify_operator
 
 logger = logging.getLogger(__name__)
 
@@ -268,7 +269,14 @@ def _fetch_open_rows(engine: Any) -> list[dict[str, Any]]:
         LEFT JOIN trade_ideas ti ON ti.idea_id = a.idea_id
         LEFT JOIN geo_events ge ON ge.id = ti.geo_event_id
         WHERE a.status = 'submitted'
-          AND (a.exit_status IS NULL OR a.exit_status = 'submitted')
+          AND (a.exit_status IS NULL
+               OR a.exit_status = 'submitted'
+               -- 'unsellable' (CL-hptt) MUST stay in the working set: it means
+               -- the contract had no bid at the last attempt, not that we are
+               -- done with it. Excluding it would silently ABANDON an open
+               -- position instead of retrying once a bid returns. The
+               -- per-cycle alert is deduped on the stored status, not here.
+               OR a.exit_status = 'unsellable')
     """
     with engine.connect() as conn:
         return [dict(r._mapping) for r in conn.execute(text(sql))]
@@ -397,6 +405,7 @@ def manage_option_exits(
         "closed_external": 0,
         "unmatched": 0,
         "recovered": 0,
+        "unsellable": 0,
         "error": 0,
         "market_closed": 0,
     }
@@ -445,6 +454,54 @@ def manage_option_exits(
             except (TypeError, ValueError):
                 cur = 0.0
             exit_premium = cur * 100.0 * qty if cur > 0 else None
+
+            # UNSELLABLE guard (CL-hptt): a deep-OTM contract can carry a live
+            # ask and NO bid (bp=0, bs=0). A MARKET sell into an empty book is
+            # rejected by Alpaca with a 403, and before this the generic
+            # handler below just logged "error managing" and retried EVERY
+            # cycle forever — never backing off, never escalating, and never
+            # recording an exit_status, so the book believed an exit was in
+            # flight while the position quietly stayed open. Record it once,
+            # alert once, and stop re-submitting until a bid returns.
+            # FAIL-OPEN by construction: a None bid (quote unavailable), a
+            # probe that raises, or a client without the method at all falls
+            # through to the submit attempt exactly as before. An exit must
+            # never be blocked because a QUOTE lookup failed — only a venue
+            # that explicitly quotes no bid stops it.
+            bid = None
+            try:
+                get_bid = getattr(client, "get_option_bid", None)
+                if callable(get_bid):
+                    bid = get_bid(occ)
+            except Exception:
+                logger.debug("options exit: bid probe failed for %s", occ, exc_info=True)
+            if bid is not None and bid <= 0:
+                if str(row.get("exit_status") or "") != "unsellable":
+                    _mark_exit(
+                        engine,
+                        idea_id,
+                        now,
+                        exit_status="unsellable",
+                        exit_reason=f"{reason} (no bid — market sell would be rejected)",
+                        pnl_pct=pnl,
+                        close_idea=False,
+                    )
+                    notify_operator(
+                        "⚠️ Option exit blocked — no bid",
+                        f"{occ} ({row.get('ticker')}) wants to exit ({reason}) but the "
+                        f"contract has NO BID, so a market sell is rejected. Position "
+                        f"stays OPEN and will retry when a bid returns. Close it "
+                        f"manually if you want out now.",
+                    )
+                    logger.warning(
+                        "options exit: %s is UNSELLABLE (no bid) — wanted %s; "
+                        "recorded + alerted, not retrying until a bid returns",
+                        occ,
+                        reason,
+                    )
+                counts["unsellable"] += 1
+                continue
+
             try:
                 order = client.submit_option_order(
                     occ,

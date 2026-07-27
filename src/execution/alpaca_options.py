@@ -126,6 +126,19 @@ class AlpacaOptionsClient:
         resp = httpx.request(
             method, url, headers=headers, params=params, json=json_body, timeout=20.0
         )
+        # Log the BODY on a non-2xx (CL-hptt). httpx.HTTPStatusError renders
+        # only the status line, so a rejection surfaced as a bare
+        # "403 Forbidden" and diagnosing it meant replaying the call against
+        # the API by hand. Alpaca puts the real reason ({"code":..,
+        # "message":..}) in the body — log it once, here, for every call.
+        if resp.status_code >= 400:
+            logger.warning(
+                "alpaca %s %s -> HTTP %d: %s",
+                method,
+                url.rsplit("/", 1)[-1],
+                resp.status_code,
+                resp.text[:400],
+            )
         resp.raise_for_status()
         return resp.json()
 
@@ -222,6 +235,36 @@ class AlpacaOptionsClient:
             return float(ask) if ask else None
         except Exception:
             logger.warning("alpaca: option quote failed for %s", occ_symbol, exc_info=True)
+            return None
+
+    def get_option_bid(self, occ_symbol: str) -> float | None:
+        """Latest BID (per-share premium) for a contract, or None.
+
+        The sell-side mirror of :meth:`get_option_ask`, used to check a
+        contract is actually marketable before submitting a sell-to-close
+        (CL-hptt): a deep-OTM option can sit with a live ask and NO bid
+        (``bp=0, bs=0``), and a MARKET sell into an empty book is rejected
+        by Alpaca with a 403 — which the exit manager then retried forever.
+
+        Returns None when the quote is unavailable (fail-soft, caller
+        decides); returns 0.0 when the venue explicitly quotes no bid, which
+        is the case the exit path must NOT treat as a transient error.
+        """
+        try:
+            data = self._request_fn(
+                "GET",
+                f"{DATA_BASE}/v1beta1/options/quotes/latest",
+                self._headers,
+                {"symbols": occ_symbol, "feed": "indicative"},
+                None,
+            )
+            quote = (data.get("quotes") or {}).get(occ_symbol)
+            if not quote:
+                return None
+            bid = quote.get("bp")
+            return float(bid) if bid is not None else None
+        except Exception:
+            logger.warning("alpaca: option bid failed for %s", occ_symbol, exc_info=True)
             return None
 
     def list_option_positions(self) -> list[dict[str, Any]]:
