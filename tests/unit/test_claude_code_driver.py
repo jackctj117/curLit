@@ -53,6 +53,34 @@ class TestConstruction:
         assert drv.api_key == ""
         assert ClaudeCodeDriver.requires_api_key is False
 
+    def test_workdir_removed_when_driver_is_collected(self) -> None:
+        """Each driver mkdtemp's a neutral cwd and nothing ever removed it.
+        Long-lived daemons rebuild agents every cycle (now x N under the
+        parallel per-thread clients), so these accumulated in /tmp forever."""
+        import gc
+        from pathlib import Path
+
+        drv = _driver()
+        workdir = Path(drv._workdir)
+        assert workdir.is_dir()
+
+        del drv
+        gc.collect()
+        assert not workdir.exists()
+
+    def test_workdir_cleanup_survives_already_deleted_dir(self) -> None:
+        # Cleanup must never raise if something else removed the dir first.
+        import gc
+        import shutil as _shutil
+        from pathlib import Path
+
+        drv = _driver()
+        workdir = Path(drv._workdir)
+        _shutil.rmtree(workdir)  # pre-remove
+        del drv
+        gc.collect()  # ignore_errors=True → no exception
+        assert not workdir.exists()
+
     def test_missing_cli_raises(self) -> None:
         with (
             patch("shutil.which", return_value=None),

@@ -629,11 +629,12 @@ class EventDrivenStrategy:
                     "contradict the theme" if ca_confirmed is False else "unreadable",
                     len(tradables),
                 )
-                return (
-                    intents,
-                    entered,
-                    [(str(aff.get("instrument") or ""), reason) for aff in tradables],
-                )
+                # EXTEND, don't replace: `skipped` already carries the
+                # cross-theme (CL-9nvq) and leg-unconfirmed (CL-tbl8)
+                # demotions, and the docstring promises the alert lists
+                # them. Rebuilding the list here dropped them silently.
+                skipped.extend((str(aff.get("instrument") or ""), reason) for aff in tradables)
+                return intents, entered, skipped
 
         if equity is None or equity <= 0:
             logger.warning(
@@ -641,18 +642,14 @@ class EventDrivenStrategy:
                 "skipping trades for event id=%s",
                 event_id,
             )
-            return (
-                intents,
-                entered,
-                [(str(aff.get("instrument") or ""), "no_account") for aff in tradables],
-            )
+            skipped.extend((str(aff.get("instrument") or ""), "no_account") for aff in tradables)
+            return intents, entered, skipped
 
         if self.book.breached(equity):
-            return (
-                intents,
-                entered,
-                [(str(aff.get("instrument") or ""), "event_book_loss_cap") for aff in tradables],
+            skipped.extend(
+                (str(aff.get("instrument") or ""), "event_book_loss_cap") for aff in tradables
             )
+            return intents, entered, skipped
 
         for aff in tradables:
             instrument = str(aff.get("instrument") or "")

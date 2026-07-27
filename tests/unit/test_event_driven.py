@@ -2731,6 +2731,36 @@ class TestThemePrimaryScoping:
         _intents, entered, _skipped = self._enter(strat, "energy_chokepoint")
         assert "USD_JPY" in {e[0] for e in entered}  # not scoped away when off
 
+    def test_cross_theme_survives_early_return_branches(self, tmp_path: Any) -> None:
+        """Ultra-review nit: the cross-asset-veto / no_account /
+        event_book_loss_cap early returns rebuilt `skipped` from scratch,
+        silently dropping the cross_theme (and leg_unconfirmed) demotions the
+        docstring promises the operator alert will list."""
+        # (a) cross-asset veto
+        strat = make_strategy(tmp_path, cross_asset_gate_enabled=True)
+        _i, _e, skipped = strat._enter_confirmed(
+            {"id": 1, "headline": "h", "theme": "energy_chokepoint"},
+            self._assessment(),
+            self._PRICES,
+            100_000.0,
+            datetime.now(UTC),
+            cross_asset=SimpleNamespace(confirmed=False),
+        )
+        assert ("USD_JPY", "cross_theme") in skipped  # survived the veto return
+        assert ("BCO_USD", "cross_asset_veto") in skipped
+
+        # (b) no_account (equity unavailable)
+        strat_b = make_strategy(tmp_path, event_book_state_path=str(tmp_path / "b.json"))
+        _i, _e, skipped_b = strat_b._enter_confirmed(
+            {"id": 2, "headline": "h", "theme": "energy_chokepoint"},
+            self._assessment(),
+            self._PRICES,
+            None,
+            datetime.now(UTC),
+        )
+        assert ("USD_JPY", "cross_theme") in skipped_b
+        assert ("BCO_USD", "no_account") in skipped_b
+
 
 # =============================================================================
 # Urgency vocabulary (CL-ikz2) — event intents speak the coordinator's enum

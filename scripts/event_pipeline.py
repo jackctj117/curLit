@@ -277,19 +277,29 @@ def _niche_step(engine: object, results: list, min_urgency: int) -> int:
     for r, ideas in discovered:
         if not ideas:
             continue
-        added = agent.merge_into_assessment(r.assessment, ideas)
-        surfaced += added
-        if added:
-            # Re-persist the enriched assessment so the merged niche ideas
-            # survive into the ledger/digest and the DB row.
-            with engine.begin() as conn:  # type: ignore[attr-defined]
-                conn.execute(
-                    text(
-                        "UPDATE geo_events SET assessment = :a "
-                        "WHERE id = :id AND status = 'ASSESSED'",
-                    ),
-                    {"a": _json.dumps(r.assessment), "id": r.event_id},
-                )
+        # Fail-soft PER EVENT: a transient DB blip on one event must not drop
+        # the merges/writes for the events after it — they are already
+        # ASSESSED, so the next cycle will NOT retry them and their niche
+        # ideas would be lost for good.
+        try:
+            added = agent.merge_into_assessment(r.assessment, ideas)
+            surfaced += added
+            if added:
+                # Re-persist the enriched assessment so the merged niche ideas
+                # survive into the ledger/digest and the DB row.
+                with engine.begin() as conn:  # type: ignore[attr-defined]
+                    conn.execute(
+                        text(
+                            "UPDATE geo_events SET assessment = :a "
+                            "WHERE id = :id AND status = 'ASSESSED'",
+                        ),
+                        {"a": _json.dumps(r.assessment), "id": r.event_id},
+                    )
+        except Exception:
+            logger.exception(
+                "niche merge/persist failed for event id=%s; continuing",
+                r.event_id,
+            )
     logger.info(
         "niche: %d qualifying event(s), %d niche idea(s) surfaced+merged (concurrency=%d)",
         len(qualifying),

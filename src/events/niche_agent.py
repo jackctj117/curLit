@@ -65,7 +65,7 @@ import os
 from collections.abc import Callable, Mapping
 from typing import Any
 
-from src.events._util import env_flag
+from src.events._util import ThreadLocalClient, env_flag
 from src.events.niche_scoring import (
     MAX_NICHE_IDEAS,
     VALID_NICHE_ACTIONS,
@@ -290,13 +290,15 @@ class NicheAgent:
         # exists/get/resolve_name/robinhood_tradeable).
         self.universe = universe
         # Deferred get_client — a data-free unit test that always injects
-        # a client never touches the CLI subscription.
-        if client is not None:
-            self.client: LLMClient = client
-        else:
-            from src.research.llm import get_client  # noqa: PLC0415
-
-            self.client = get_client("claude-code")
+        # a client never touches the CLI subscription. The holder resolves a
+        # PER-THREAD client when we own the default (CL-818b): run() is fanned
+        # out across NICHE_MAX_CONCURRENCY threads, and the claude-code driver
+        # shells out from a per-instance temp cwd — one shared client would put
+        # concurrent `claude` subprocesses in the SAME workdir. `self.client`
+        # stays the construction-time client so injected stubs and the existing
+        # attribute contract are unchanged.
+        self._client_holder = ThreadLocalClient(client)
+        self.client: LLMClient = self._client_holder.get()
         self.model = model
         self.market_data_fn: MarketDataFn = market_data_fn or yfinance_market_data
         self.config = config or AsymmetryConfig()
@@ -365,7 +367,13 @@ class NicheAgent:
         elif critic_enabled:
             from src.events.adversarial_critic import AdversarialCritic  # noqa: PLC0415
 
-            self.critic = AdversarialCritic(client=self.client)
+            # Hand the critic OUR client only when it was injected (tests);
+            # when we own the default, let the critic resolve its own
+            # per-thread client (CL-818b) instead of pinning every fan-out
+            # worker to one claude-code workdir.
+            self.critic = AdversarialCritic(
+                client=None if self._client_holder.is_default else self.client,
+            )
         else:
             self.critic = None
 
@@ -559,7 +567,9 @@ class NicheAgent:
                 )
             )
             try:
-                resp = self.client.complete(
+                # Per-thread client (CL-818b) — run() may be executing in a
+                # niche fan-out worker; see ThreadLocalClient.
+                resp = self._client_holder.get().complete(
                     messages=[
                         Message(role="system", content=_SYSTEM_PROMPT),
                         Message(role="user", content=user),

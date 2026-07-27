@@ -12,7 +12,9 @@ Small utilities every events module kept re-implementing (code review
   get the fail-soft form;
 * :func:`atomic_write_json` — atomic JSON persistence (tmp file +
   ``os.replace``, mirroring ``src.research.approvals.save_state_atomic``)
-  so no events feature ever writes state in place.
+  so no events feature ever writes state in place;
+* :class:`ThreadLocalClient` — per-thread LLM client resolution for the
+  parallel event paths (CL-4pyb assess fan-out, CL-818b niche fan-out).
 """
 
 from __future__ import annotations
@@ -21,6 +23,7 @@ import contextlib
 import json
 import os
 import tempfile
+import threading
 from pathlib import Path
 from typing import Any, overload
 
@@ -101,3 +104,40 @@ def atomic_write_json(path: Path | str, obj: Any, *, indent: int = 2) -> None:
         with contextlib.suppress(OSError):
             os.unlink(tmp_name)
         raise
+
+
+class ThreadLocalClient:
+    """Per-thread LLM client resolution for the parallel event paths.
+
+    The ``claude-code`` driver shells out to the ``claude`` CLI from a
+    per-instance temp cwd, so ONE client shared across worker threads means
+    concurrent subprocesses in the SAME workdir (and non-atomic updates to
+    that client's token/cost counters). Both parallel event paths fan work
+    out across threads — assess (CL-4pyb) and niche discovery + its red-team
+    critic (CL-818b) — so each worker thread lazily gets its OWN client.
+
+    An INJECTED client is returned as-is and never duplicated: unit tests
+    inject a stub and must never spawn the real CLI, and a caller that
+    deliberately shares a client keeps that sharing.
+    """
+
+    def __init__(self, client: Any = None, provider: str = "claude-code") -> None:
+        self._injected = client
+        self._provider = provider
+        self._tl = threading.local()
+
+    @property
+    def is_default(self) -> bool:
+        """True when this holder owns (and per-thread duplicates) the client."""
+        return self._injected is None
+
+    def get(self) -> Any:
+        if self._injected is not None:
+            return self._injected
+        client = getattr(self._tl, "client", None)
+        if client is None:
+            from src.research.llm import get_client  # noqa: PLC0415
+
+            client = get_client(self._provider)
+            self._tl.client = client
+        return client

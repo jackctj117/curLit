@@ -21,7 +21,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -31,7 +30,7 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
-from src.events._util import clamp_float, clamp_int
+from src.events._util import ThreadLocalClient, clamp_float, clamp_int
 from src.events.playbooks import (
     DEFAULT_PLAYBOOKS_PATH,
     INSTRUMENT_RE,
@@ -677,8 +676,8 @@ class EventImpactAgent:
         # client's temp cwd. Only the DEFAULT (self-constructed) client is
         # duplicated per thread; an INJECTED client (tests / custom) is reused
         # as-is (no real CLI spawned under test).
-        self._client_is_default = client is None
-        self._tl = threading.local()
+        self._client_holder = ThreadLocalClient(client)
+        self._client_is_default = self._client_holder.is_default
         self.playbooks = load_playbooks(playbooks_path)
         self._fallback_tradables = all_tradable_instruments(self.playbooks)
         # Fast triage tier (CL-cunh): a cheap Haiku batch pre-filter that lets
@@ -824,17 +823,11 @@ class EventImpactAgent:
         return max(1, min(_MAX_ASSESS_CONCURRENCY, value))
 
     def _thread_client(self) -> LLMClient:
-        """Per-thread LLM client for parallel assessment (CL-4pyb). When this
-        agent owns the DEFAULT claude-code client, each worker thread lazily
-        gets its OWN client (own temp cwd) so concurrent `claude` subprocesses
-        never share a workdir. An INJECTED client is reused as-is (tests /
-        custom setups never spawn the real CLI)."""
-        if not self._client_is_default:
-            return self.client
-        client = getattr(self._tl, "client", None)
-        if client is None:
-            client = get_client("claude-code")
-            self._tl.client = client
+        """Per-thread LLM client for parallel assessment (CL-4pyb) — see
+        :class:`src.events._util.ThreadLocalClient`. When this agent owns the
+        DEFAULT claude-code client each worker thread lazily gets its OWN
+        (own temp cwd); an INJECTED client is reused as-is."""
+        client: LLMClient = self._client_holder.get()
         return client
 
     def assess_new_events(self, limit: int = 20) -> list[AssessmentResult]:

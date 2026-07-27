@@ -11,6 +11,7 @@ on failure).
 from __future__ import annotations
 
 import json
+import threading
 from pathlib import Path
 
 import pytest
@@ -130,3 +131,72 @@ class TestAtomicWriteJson:
         # Old state survives untouched; the tmp file was cleaned up.
         assert json.loads(target.read_text()) == {"v": 1}
         assert [f.name for f in tmp_path.iterdir()] == ["state.json"]
+
+
+# --------------------------------------------------------------------- #
+# ThreadLocalClient (CL-4pyb / CL-818b) — per-thread LLM clients
+# --------------------------------------------------------------------- #
+
+
+class TestThreadLocalClient:
+    """The claude-code driver shells out from a per-instance temp cwd, so a
+    client shared across fan-out workers means concurrent `claude` subprocesses
+    in ONE workdir. Each thread must get its own; an injected client must be
+    reused verbatim so unit tests never spawn the real CLI."""
+
+    def test_injected_client_reused_and_never_duplicated(self) -> None:
+        from src.events._util import ThreadLocalClient
+
+        stub = object()
+        holder = ThreadLocalClient(stub)
+        assert holder.is_default is False
+        assert holder.get() is stub
+
+        seen = []
+        threads = [threading.Thread(target=lambda: seen.append(holder.get())) for _ in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert seen == [stub] * 4  # same object in every thread
+
+    def test_default_client_is_distinct_per_thread(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from src.events import _util
+
+        made: list[object] = []
+
+        def _fake_get_client(provider: str) -> object:
+            c = object()
+            made.append(c)
+            return c
+
+        # get_client is imported inside .get(); patch at its source module.
+        import src.research.llm as llm_mod
+
+        monkeypatch.setattr(llm_mod, "get_client", _fake_get_client)
+
+        holder = _util.ThreadLocalClient(None)
+        assert holder.is_default is True
+
+        per_thread: dict[int, object] = {}
+
+        def _grab() -> None:
+            per_thread[threading.get_ident()] = holder.get()
+
+        threads = [threading.Thread(target=_grab) for _ in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        clients = list(per_thread.values())
+        assert len(clients) == 4
+        assert len({id(c) for c in clients}) == 4  # one distinct client per thread
+
+    def test_same_thread_reuses_its_client(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import src.research.llm as llm_mod
+        from src.events import _util
+
+        monkeypatch.setattr(llm_mod, "get_client", lambda provider: object())
+        holder = _util.ThreadLocalClient(None)
+        assert holder.get() is holder.get()  # cached per thread, not per call

@@ -39,6 +39,7 @@ import shutil
 import subprocess
 import tempfile
 import time
+import weakref
 from typing import Any
 
 from src.research.llm.client import (
@@ -78,6 +79,17 @@ class ClaudeCodeDriver(Driver):
         # Neutral cwd so the CLI doesn't ingest this repo's CLAUDE.md /
         # settings into every role call.
         self._workdir = tempfile.mkdtemp(prefix="curlit-claude-code-")
+        # Reap the workdir when this driver is collected. Long-lived daemons
+        # rebuild their agents every cycle (event_pipeline: one per 900s tick,
+        # now ×N under the parallel per-thread clients), and nothing else ever
+        # removed these dirs — they accumulated in /tmp indefinitely.
+        # weakref.finalize (not __del__) so it also runs at interpreter exit.
+        self._cleanup = weakref.finalize(
+            self,
+            shutil.rmtree,
+            self._workdir,
+            ignore_errors=True,
+        )
 
     def complete(
         self,

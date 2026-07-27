@@ -28,7 +28,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from src.events._util import env_flag
+from src.events._util import ThreadLocalClient, env_flag
 from src.events.impact_agent import extract_json_object
 from src.research.llm import Message
 from src.research.llm.client import LLMClient
@@ -98,12 +98,12 @@ class AdversarialCritic:
         enabled: bool | None = None,
         max_tokens: int = 1200,
     ) -> None:
-        if client is not None:
-            self.client = client
-        else:
-            from src.research.llm import get_client  # noqa: PLC0415
-
-            self.client = get_client("claude-code")
+        # Per-thread client when we own the default (CL-818b): apply() runs
+        # INSIDE the niche fan-out worker thread, so a single shared
+        # claude-code client would put concurrent `claude` subprocesses in the
+        # same temp cwd. An injected client is reused as-is (tests).
+        self._client_holder = ThreadLocalClient(client)
+        self.client = self._client_holder.get()
         self.model = model or os.environ.get(
             "NICHE_CRITIC_MODEL",
             DEFAULT_CRITIC_MODEL,
@@ -146,7 +146,9 @@ class AdversarialCritic:
         if not ideas:
             return {}
         try:
-            resp = self.client.complete(
+            # Per-thread client (CL-818b) — apply() runs inside a niche
+            # fan-out worker; see ThreadLocalClient.
+            resp = self._client_holder.get().complete(
                 messages=[
                     Message(role="system", content=_SYSTEM_PROMPT),
                     Message(role="user", content=self._user_prompt(ideas, event_row)),

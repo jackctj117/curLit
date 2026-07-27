@@ -1408,6 +1408,50 @@ class TestNicheStepConcurrency:
         assert surfaced == 3
         assert ran == [1, 2, 3]  # serial → deterministic call order
 
+    def test_merge_persist_failure_is_fail_soft_per_event(
+        self, pipeline_mod: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ultra-review nit: CL-818b moved merge+persist out of the per-event
+        try/except, so a transient DB error on event N dropped the merges for
+        N+1..M — and those events are already ASSESSED, so the next cycle
+        never retries them. Each event's merge/persist must fail soft."""
+        monkeypatch.setenv("NICHE_MAX_CONCURRENCY", "4")
+        ran: list[int] = []
+        self._patch(monkeypatch, self._agent_cls(ran, threading.Lock()))
+
+        class _FailingEngine(_RecordingEngine):
+            """Raises on the persist for event 2 only."""
+
+            def begin(self) -> Any:
+                outer = super().begin()
+                engine = self
+
+                class _Ctx:
+                    def __enter__(self) -> Any:
+                        return self
+
+                    def __exit__(self, *_a: Any) -> bool:
+                        return False
+
+                    def execute(self, stmt: Any, params: dict[str, Any]) -> None:
+                        if int(params["id"]) == 2:
+                            raise RuntimeError("transient DB blip")
+                        with engine._lock:
+                            engine.persisted.append(int(params["id"]))
+
+                del outer
+                return _Ctx()
+
+        engine = _FailingEngine()
+        results = [_res(event_id=i, urgency=8) for i in (1, 2, 3)]
+
+        surfaced = pipeline_mod._real_niche_step(engine, results, 7)
+
+        # Event 2's persist blew up, but 1 and 3 still persisted — the loop
+        # did not abort on the first failure.
+        assert sorted(engine.persisted) == [1, 3]
+        assert surfaced == 3  # merges counted for all three
+
     def test_max_concurrency_env_parse_and_clamp(self, pipeline_mod: Any) -> None:
         import os
 
