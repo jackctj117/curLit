@@ -11,6 +11,15 @@ from src.execution.oms import OrderIntent
 from src.monitoring.logging_setup import LogContext
 from src.monitoring.metrics import HeartbeatTracker, start_metrics_server
 from src.risk.risk_context import RiskContextBuilder
+from src.runtime.protocols import (
+    BrokerLike,
+    CoordinatorLike,
+    FillHandlingOrderManager,
+    FillStreamingBroker,
+    KillSwitchManagerLike,
+    OrderManagerLike,
+    ReconcilerLike,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -35,11 +44,15 @@ class LiveEngine:
     def __init__(
         self,
         strategies: list[Any],
-        oms: Any,
-        broker: Any,
-        coordinator: Any | None = None,
-        cold_start_reconciler: Any | None = None,
-        kill_switch_manager: Any | None = None,
+        # CL-sb5w: the money-path collaborators are STRUCTURALLY typed (see
+        # src/runtime/protocols.py) so mypy checks the calls the trading loop
+        # makes, while duck-typed test fakes and the several broker/OMS
+        # implementations keep working without inheriting anything.
+        oms: OrderManagerLike,
+        broker: BrokerLike,
+        coordinator: CoordinatorLike | None = None,
+        cold_start_reconciler: ReconcilerLike | None = None,
+        kill_switch_manager: KillSwitchManagerLike | None = None,
         risk_context_builder: RiskContextBuilder | None = None,
     ) -> None:
         self.strategies = strategies
@@ -146,9 +159,9 @@ class LiveEngine:
         # CL-vj74: consume the OANDA transaction stream for real, low-latency,
         # per-order fill confirmation — only when the broker exposes it (OANDA;
         # the paper broker fills synchronously and has no stream).
-        if hasattr(self.broker, "stream_transactions") and hasattr(
+        if isinstance(self.broker, FillStreamingBroker) and isinstance(
             self.oms,
-            "on_fill",
+            FillHandlingOrderManager,
         ):
             coros.append(("transaction_stream", self._transaction_stream_task()))
         self._tasks = [asyncio.create_task(coro, name=name) for name, coro in coros]
@@ -200,11 +213,19 @@ class LiveEngine:
         poll. The stream self-heals internally (reconnect + backoff); a
         permanent 4xx propagates out and ends the task (bad creds can't self-
         fix). The poll-based confirmation stays as the backstop."""
+        # Re-narrow locally (CL-sb5w): run() only schedules this task when both
+        # sides support fills, but that check doesn't carry into this frame.
+        broker, oms = self.broker, self.oms
+        if not isinstance(broker, FillStreamingBroker) or not isinstance(
+            oms,
+            FillHandlingOrderManager,
+        ):
+            return
         while self.running:
             try:
-                async for fill in self.broker.stream_transactions():
+                async for fill in broker.stream_transactions():
                     try:
-                        self.oms.on_fill(fill)
+                        oms.on_fill(fill)
                     except Exception:
                         logger.exception("on_fill failed for %r", fill)
             except Exception:
