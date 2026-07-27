@@ -67,6 +67,7 @@ def build_position_digest(
     closed_24h: list[Mapping[str, Any]] | None = None,
     balances: Mapping[str, str] | None = None,
     now: datetime | None = None,
+    unsellable: list[Mapping[str, Any]] | None = None,
 ) -> str:
     """Telegram-HTML body for the FULL position digest (longs AND shorts).
 
@@ -74,6 +75,12 @@ def build_position_digest(
     unavailable line — an unreadable venue must never look flat.
     ``closed_24h`` entries: {"venue", "desc", "pl"} strings pre-computed
     by the daemon, so this builder stays pure and testable.
+
+    ``unsellable`` (CL-p0pe): option rows whose exit is BLOCKED because the
+    contract has no bid (CL-hptt). Those page the operator once and then go
+    quiet, so a position stuck for days would otherwise lose visibility
+    entirely — this resurfaces it every morning until it clears. Omitted
+    from the message when empty, so a normal morning gains no noise.
     """
     now = now or datetime.now(UTC)
     lines: list[str] = []
@@ -119,6 +126,17 @@ def build_position_digest(
             val_txt = f" — entry ${entry:,.0f}, now ${cur:,.0f}" if entry > 0 else ""
             lines.append(
                 f"  {html_escape(desc)} ×{qty}{html_escape(val_txt)}{html_escape(pnl_txt)}"
+            )
+
+    if unsellable:
+        lines.append("")
+        lines.append("<b>⚠️ Exit BLOCKED — no bid</b>")
+        for u in unsellable:
+            occ = str(u.get("occ_symbol") or "")
+            reason = str(u.get("exit_reason") or "").split(" (no bid")[0] or "exit"
+            lines.append(
+                f"  {html_escape(_describe_occ(occ))} — wants "
+                f"{html_escape(reason)}; no bid, sells when one returns"
             )
 
     if closed_24h:

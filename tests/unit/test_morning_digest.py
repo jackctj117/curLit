@@ -172,3 +172,53 @@ def test_should_send_gates():
     assert not should_send(after_time, "2026-07-22")  # already sent today
     assert should_send(after_time, "2026-07-21")  # yesterday's send
     assert should_send(after_time, None, send_time_et="garbage")  # falls back
+
+
+# --------------------------------------------------------------------------- #
+# exit-blocked (no bid) section — CL-p0pe / CL-hptt
+# --------------------------------------------------------------------------- #
+
+
+def _unsellable(
+    occ="ASC260821C00017500",
+    ticker="ASC",
+    reason="stop_loss (no bid — market sell would be rejected)",
+):
+    return {"ticker": ticker, "occ_symbol": occ, "exit_reason": reason}
+
+
+def test_unsellable_section_rendered():
+    """An unsellable contract pages ONCE (CL-hptt) then goes quiet, so the
+    digest is what keeps a days-stuck position visible."""
+    body = build_position_digest([], [_alpaca()], now=NOW, unsellable=[_unsellable()])
+    assert "Exit BLOCKED" in body
+    assert "ASC $17.5 call exp 08-21" in body
+    assert "wants stop_loss" in body  # the raw "(no bid — ...)" suffix is trimmed
+    assert "sells when one returns" in body
+
+
+def test_unsellable_section_absent_when_none():
+    # A normal morning must gain no extra noise.
+    for arg in (None, []):
+        body = build_position_digest([], [_alpaca()], now=NOW, unsellable=arg)
+        assert "Exit BLOCKED" not in body
+
+
+def test_unsellable_lists_every_stuck_contract():
+    body = build_position_digest(
+        [],
+        [_alpaca()],
+        now=NOW,
+        unsellable=[
+            _unsellable(),
+            _unsellable(occ="ASTL260821P00004000", ticker="ASTL"),
+        ],
+    )
+    assert "ASC $17.5 call exp 08-21" in body
+    assert "ASTL $4 put exp 08-21" in body
+
+
+def test_unsellable_unparseable_occ_still_shown():
+    # Never hide a position behind a formatting failure.
+    body = build_position_digest([], [], now=NOW, unsellable=[_unsellable(occ="garbage")])
+    assert "garbage" in body

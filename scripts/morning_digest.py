@@ -208,6 +208,32 @@ def _fetch_alpaca_closed_24h(engine, now: datetime) -> list[dict]:  # noqa: ANN0
         return []
 
 
+def _fetch_unsellable(engine) -> list[dict]:  # noqa: ANN001
+    """Option rows whose exit is currently BLOCKED for want of a bid
+    (CL-p0pe / CL-hptt). These page the operator once and then stay silent,
+    so the digest is what keeps a days-stuck position visible.
+
+    Fail-soft: any read problem returns [] — a digest must still send."""
+    from sqlalchemy import text  # noqa: PLC0415
+
+    try:
+        with engine.connect() as conn:
+            return [
+                dict(r._mapping)
+                for r in conn.execute(
+                    text(
+                        "SELECT ticker, occ_symbol, exit_reason "
+                        "FROM alpaca_option_orders "
+                        "WHERE exit_status = 'unsellable' "
+                        "ORDER BY ticker",
+                    )
+                )
+            ]
+    except Exception:
+        logger.warning("morning digest: unsellable lookup failed", exc_info=True)
+        return []
+
+
 def _fetch_bullish_ideas(engine) -> list[dict]:  # noqa: ANN001
     from sqlalchemy import text  # noqa: PLC0415
 
@@ -283,6 +309,7 @@ def run_once(now: datetime | None = None, *, force: bool = False) -> bool:
         closed_24h=(_fetch_oanda_closed_24h(now) + _fetch_alpaca_closed_24h(engine, now)),
         balances=balances or None,
         now=now,
+        unsellable=_fetch_unsellable(engine),
     )
     bullish_ideas = _fetch_bullish_ideas(engine)
     ideas_body = build_long_ideas_digest(
