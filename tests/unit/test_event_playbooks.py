@@ -385,3 +385,23 @@ class TestValidation:
         pbs = load_playbooks("configs/event_playbooks.yaml")
         generic = {k for k, v in pbs.items() if v.tier == "generic"}
         assert generic == {"war_escalation", "natural_disaster", "africa_power_shift"}
+
+
+class TestInstrumentMapCoverage:
+    """The default instrument map's docstring promises it "covers every
+    tradable id in configs/event_playbooks.yaml" — but it had silently fallen
+    6 instruments behind (WHEAT/CORN/USD_ZAR/XCU/XPT/XPD), so those legs were
+    skipped at trade time as unknown_instrument and were unmeasurable by the
+    CL-z95p event study. Enforce the contract so a new playbook instrument
+    without a mapping fails CI instead of failing silently in the book."""
+
+    def test_every_playbook_tradable_is_mapped(self) -> None:
+        from src.strategies.event_driven_config import _default_instrument_map
+
+        pbs = load_playbooks("configs/event_playbooks.yaml")
+        tradable = {i.instrument for pb in pbs.values() for i in pb.tradable_instruments}
+        missing = sorted(tradable - set(_default_instrument_map()))
+        assert missing == [], (
+            f"playbook tradables missing from _default_instrument_map(): {missing} "
+            "— these legs are skipped at trade time as unknown_instrument"
+        )

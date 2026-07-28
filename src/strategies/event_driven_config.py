@@ -39,6 +39,17 @@ def _default_instrument_map() -> dict[str, str]:
         "NATGAS_USD": "NATGAS_USD",
         "SPX500_USD": "SPX500_USD",
         "NAS100_USD": "NAS100_USD",
+        # CL-z95p event-study census: these six are tradable in
+        # event_playbooks.yaml (and quoted live by the intraday pricer) but
+        # were missing here, so their legs were skipped at trade time with
+        # "unknown_instrument" — the map's own docstring promises full
+        # playbook coverage, now enforced by a test.
+        "WHEAT_USD": "WHEAT_USD",
+        "CORN_USD": "CORN_USD",
+        "USD_ZAR": "USD_ZAR",
+        "XCU_USD": "XCU_USD",
+        "XPT_USD": "XPT_USD",
+        "XPD_USD": "XPD_USD",
         # Compact aliases → OANDA ids.
         "EURUSD": "EUR_USD",
         "GBPUSD": "GBP_USD",
