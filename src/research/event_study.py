@@ -66,6 +66,7 @@ import bisect
 import json
 import logging
 import math
+import random
 import statistics
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
@@ -135,6 +136,21 @@ class EventStudyConfig:
     #: strategy's map so the study measures exactly what the strategy could
     #: have traded; anything unmapped is excluded and counted, never guessed.
     instrument_map: Mapping[str, str] = field(default_factory=_default_instrument_map)
+    #: Placebo permutation draws (CL-2hav). Every raw mean in this study is
+    #: benchmarked against ZERO, which cannot distinguish event edge from a
+    #: directional week x long-skewed playbook hints. The placebo re-measures
+    #: the SAME legs (same symbol, same direction, same clock time) shifted to
+    #: random OTHER days, building a null distribution of what "no event
+    #: information" looks like on this exact instrument/direction mix in this
+    #: exact window. Edge = the actual mean escaping that band, not beating
+    #: zero. 0 disables.
+    placebo_draws: int = 200
+    #: Seed for the placebo RNG — reported, so a study is reproducible.
+    placebo_seed: int = 7
+    #: Anchors are shifted by a uniformly-drawn NON-ZERO whole number of days
+    #: in [-max_shift, +max_shift] (clamped to each symbol's quote coverage).
+    #: Whole days preserve time-of-day, so session microstructure is matched.
+    placebo_max_day_shift: int = 10
 
 
 # ----------------------------------------------------------------------
@@ -462,6 +478,9 @@ class EventStudyResult:
     latency_minutes: tuple[float, ...]
     events_with_legs: int
     events_with_confirmation_legs: int
+    #: Day-shifted permutation nulls (CL-2hav); None when disabled/no legs.
+    placebo_headline: PlaceboResult | None = None
+    placebo_confirmation: PlaceboResult | None = None
 
 
 # ----------------------------------------------------------------------
@@ -593,6 +612,133 @@ def measure_leg(
     )
 
 
+# ----------------------------------------------------------------------
+# Placebo baseline (CL-2hav) — day-shifted permutation null
+# ----------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class PlaceboResult:
+    """Null distribution of per-draw MEAN signed returns for one leg set.
+
+    Each draw re-measures every leg at its anchor shifted by a random
+    non-zero whole number of days — ONE shared shift per EVENT, so
+    within-event correlation is preserved in the null (independent per-leg
+    shifts would understate its variance). Same symbol, same direction, same
+    clock time: instrument mix, direction skew and session microstructure
+    are all preserved; only the EVENT TIMING is destroyed. ``null_means[h]`` is
+    the sorted per-draw means at horizon ``h``; the actual mean's position in
+    that distribution is the evidence of timing information."""
+
+    label: str
+    draws: int
+    seed: int
+    legs: int
+    #: horizon → mean signed return of the ACTUAL legs (None = no data).
+    actual_mean: Mapping[int, float | None]
+    #: horizon → sorted tuple of per-draw null means.
+    null_means: Mapping[int, tuple[float, ...]]
+    #: leg-draws skipped (no valid day shift inside coverage / no entry quote).
+    dropped_leg_draws: int
+
+
+def _placebo_leg_returns(
+    series: QuoteSeries,
+    anchor: datetime,
+    sign: int,
+    horizons: Sequence[int],
+    tolerance: float,
+) -> dict[int, float] | None:
+    """Signed horizon returns at ``anchor`` — measure_leg's price math without
+    the observation object or MFE/MAE scan (the placebo runs ~10^6 of these).
+    Same entry rule, same no-lookahead guarantee. None = no entry quote."""
+    entry = series.first_at_or_after(anchor, tolerance)
+    if entry is None:
+        return None
+    out: dict[int, float] = {}
+    for horizon in horizons:
+        quote = series.nearest(anchor + timedelta(minutes=horizon), tolerance)
+        if quote is not None:
+            out[horizon] = (quote.mid / entry.mid - 1.0) * sign
+    return out
+
+
+def run_placebo(
+    legs: Sequence[LegObservation],
+    quotes: Mapping[str, QuoteSeries],
+    config: EventStudyConfig,
+    *,
+    label: str,
+    seed: int,
+) -> PlaceboResult:
+    """Build the day-shifted permutation null for ``legs`` (CL-2hav)."""
+    rng = random.Random(seed)
+    day = timedelta(days=1)
+    offsets = [
+        k for k in range(-config.placebo_max_day_shift, config.placebo_max_day_shift + 1) if k != 0
+    ]
+    tolerance = float(config.quote_match_tolerance_min)
+
+    actual: dict[int, list[float]] = {h: [] for h in config.horizons_minutes}
+    for leg in legs:
+        for horizon, ret in leg.returns.items():
+            actual[horizon].append(ret)
+
+    # CLUSTER-PRESERVING shifts: all legs of one EVENT move by the SAME
+    # offset. Legs of an event are correlated (same theme, same minutes) —
+    # shifting them independently would understate the null's variance and
+    # make the band spuriously tight. The shared offset must be valid for
+    # every leg of the event (intersection of per-leg coverage windows);
+    # an event with no common valid offset is dropped that draw, counted.
+    by_event: dict[int, list[LegObservation]] = {}
+    for leg in legs:
+        by_event.setdefault(leg.event_id, []).append(leg)
+
+    null: dict[int, list[float]] = {h: [] for h in config.horizons_minutes}
+    dropped = 0
+    for _ in range(config.placebo_draws):
+        draw: dict[int, list[float]] = {h: [] for h in config.horizons_minutes}
+        for event_legs in by_event.values():
+            common: set[int] | None = None
+            for leg in event_legs:
+                series = quotes.get(leg.symbol)
+                if series is None or not len(series):
+                    continue
+                lo, hi = series.quotes[0].ts, series.quotes[-1].ts
+                valid = {k for k in offsets if lo <= leg.anchor + k * day <= hi}
+                common = valid if common is None else (common & valid)
+            if not common:
+                dropped += len(event_legs)
+                continue
+            shift = rng.choice(sorted(common)) * day
+            for leg in event_legs:
+                series = quotes.get(leg.symbol)
+                if series is None or not len(series):
+                    dropped += 1
+                    continue
+                rets = _placebo_leg_returns(
+                    series, leg.anchor + shift, leg.sign, config.horizons_minutes, tolerance
+                )
+                if rets is None:
+                    dropped += 1
+                    continue
+                for horizon, ret in rets.items():
+                    draw[horizon].append(ret)
+        for horizon in config.horizons_minutes:
+            if draw[horizon]:
+                null[horizon].append(statistics.fmean(draw[horizon]))
+
+    return PlaceboResult(
+        label=label,
+        draws=config.placebo_draws,
+        seed=seed,
+        legs=len(legs),
+        actual_mean={h: (statistics.fmean(v) if v else None) for h, v in actual.items()},
+        null_means={h: tuple(sorted(v)) for h, v in null.items()},
+        dropped_leg_draws=dropped,
+    )
+
+
 def run_event_study(
     engine: Engine,
     config: EventStudyConfig | None = None,
@@ -708,11 +854,15 @@ def run_event_study(
     quotes: dict[str, QuoteSeries] = {}
     if pending:
         anchors = [p.anchor for p in pending]
+        # The placebo shifts anchors by whole days, so its quotes must be
+        # loaded too — pad the window by the shift span (coverage bounds
+        # whatever actually exists; the pad costs nothing where it doesn't).
+        pad = timedelta(days=cfg.placebo_max_day_shift) if cfg.placebo_draws > 0 else timedelta(0)
         quotes = load_quotes(
             engine,
             quote_symbols,
-            min(anchors) - timedelta(minutes=cfg.quote_match_tolerance_min),
-            max(anchors) + timedelta(minutes=scan_horizon + cfg.quote_match_tolerance_min),
+            min(anchors) - timedelta(minutes=cfg.quote_match_tolerance_min) - pad,
+            max(anchors) + timedelta(minutes=scan_horizon + cfg.quote_match_tolerance_min) + pad,
         )
 
     headline: list[LegObservation] = []
@@ -764,6 +914,18 @@ def run_event_study(
         sum(exclusions.values()),
     )
 
+    placebo_headline: PlaceboResult | None = None
+    placebo_confirmation: PlaceboResult | None = None
+    if cfg.placebo_draws > 0:
+        if headline:
+            placebo_headline = run_placebo(
+                headline, quotes, cfg, label="headline", seed=cfg.placebo_seed
+            )
+        if confirmation:
+            placebo_confirmation = run_placebo(
+                confirmation, quotes, cfg, label="confirmation", seed=cfg.placebo_seed + 1
+            )
+
     return EventStudyResult(
         config=cfg,
         days=days,
@@ -779,6 +941,8 @@ def run_event_study(
         latency_minutes=tuple(latency),
         events_with_legs=len({o.event_id for o in headline}),
         events_with_confirmation_legs=len({o.event_id for o in confirmation}),
+        placebo_headline=placebo_headline,
+        placebo_confirmation=placebo_confirmation,
     )
 
 
@@ -1349,6 +1513,77 @@ def _render_entry_comparison(result: EventStudyResult) -> str:
     )
 
 
+def _render_placebo(result: EventStudyResult) -> str:
+    """The drift-vs-edge verdict (CL-2hav). "inside band" means the actual
+    mean is indistinguishable from the same legs measured on random other
+    days — i.e. consistent with market drift, not event information."""
+    blocks: list[str] = [
+        "## 5b. PLACEBO BASELINE — day-shifted permutation null",
+        "",
+        "Each draw shifts every EVENT (all its legs together, preserving "
+        "within-event correlation in the null) by a random non-zero whole "
+        "number of days — same symbol/direction/clock time, so instrument mix, "
+        "long-skew and session effects are preserved; only the event TIMING is "
+        "destroyed. Beating ZERO proves nothing in a "
+        "directional week — beating this band is what event edge looks like. "
+        f"Seed {result.config.placebo_seed}, {result.config.placebo_draws} draws.",
+        "",
+    ]
+    any_table = False
+    for pr in (result.placebo_headline, result.placebo_confirmation):
+        if pr is None:
+            continue
+        any_table = True
+        rows: list[list[str]] = []
+        for horizon in result.config.horizons_minutes:
+            actual = pr.actual_mean.get(horizon)
+            nulls = pr.null_means.get(horizon) or ()
+            if actual is None or len(nulls) < 20:
+                rows.append([f"{horizon}m", "n/a", "n/a", "n/a", "n/a", "insufficient null draws"])
+                continue
+            lo = nulls[max(0, int(0.025 * (len(nulls) - 1)))]
+            hi = nulls[min(len(nulls) - 1, int(round(0.975 * (len(nulls) - 1))))]
+            med = nulls[len(nulls) // 2]
+            pct = sum(1 for v in nulls if v < actual) / len(nulls)
+            if actual > hi:
+                verdict = "EXCEEDS drift band"
+            elif actual < lo:
+                verdict = "BELOW drift band"
+            else:
+                verdict = "inside band — drift-consistent"
+            rows.append(
+                [
+                    f"{horizon}m",
+                    _fmt(actual, 2, 10_000.0),
+                    _fmt(med, 2, 10_000.0),
+                    f"[{_fmt(lo, 2, 10_000.0)}, {_fmt(hi, 2, 10_000.0)}]",
+                    f"{pct:.0%}",
+                    verdict,
+                ]
+            )
+        blocks.append(
+            f"### {pr.label} legs (n={pr.legs}, dropped leg-draws {pr.dropped_leg_draws:,})"
+        )
+        blocks.append("")
+        blocks.append(
+            _table(
+                (
+                    "horizon",
+                    "actual bps",
+                    "null median",
+                    "null [2.5%, 97.5%]",
+                    "pctile",
+                    "verdict",
+                ),
+                rows,
+            )
+        )
+        blocks.append("")
+    if not any_table:
+        blocks.append("_Placebo disabled or no measurable legs._")
+    return "\n".join(blocks)
+
+
 def _render_excursions(result: EventStudyResult) -> str:
     cfg = result.config
     mfe = [leg.mfe for leg in result.headline_legs if leg.mfe is not None]
@@ -1501,6 +1736,8 @@ def build_report(
         _render_latency(result),
         "",
         _render_entry_comparison(result),
+        "",
+        _render_placebo(result),
         "",
         _render_excursions(result),
         "",

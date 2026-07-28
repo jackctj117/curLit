@@ -931,3 +931,187 @@ def test_report_renders_on_empty_database(engine):
     assert "**EMPTY** — nothing is measurable" in report
     assert "_No realized option P&L in this window._" in report
     assert "No CONFIRMED/TRADED rows in the window" in report
+
+
+# --------------------------------------------------------------------------- #
+# placebo baseline (CL-2hav) — day-shifted permutation null
+# --------------------------------------------------------------------------- #
+
+
+def _obs(symbol: str, anchor: datetime, direction: str, returns: dict[int, float]):
+    from src.research.event_study import LegObservation
+
+    return LegObservation(
+        event_id=1,
+        status="ASSESSED",
+        theme="energy_chokepoint",
+        tier="specific",
+        urgency=8,
+        confidence=0.8,
+        instrument=symbol,
+        symbol=symbol,
+        direction=direction,
+        entry_basis="headline",
+        anchor=anchor,
+        entry_ts=anchor,
+        entry_price=100.0,
+        half_spread_frac=None,
+        returns=returns,
+        missing_horizons=(),
+        mfe=None,
+        mae=None,
+    )
+
+
+def _series(quotes: list[tuple[datetime, float]]) -> QuoteSeries:
+    return QuoteSeries(Quote(ts=ts, mid=mid, bid=None, ask=None) for ts, mid in quotes)
+
+
+def _flat_days(base: datetime, days: int, mid: float = 100.0) -> list[tuple[datetime, float]]:
+    out = []
+    for d in range(days):
+        for m in range(0, 24 * 60, 5):
+            out.append((base + timedelta(days=d, minutes=m), mid))
+    return out
+
+
+def test_placebo_pure_drift_is_inside_the_band():
+    """A constant-rate drift produces the SAME horizon return everywhere, so
+    the actual mean must sit exactly at the null median — the placebo must
+    NOT call market drift 'edge'."""
+    from src.research.event_study import run_placebo
+
+    base = datetime(2026, 7, 10, 0, 0, tzinfo=UTC)
+    rate_per_min = 0.0001 / 60
+    quotes = [
+        (ts, 100.0 * (1 + rate_per_min * ((ts - base).total_seconds() / 60)))
+        for ts, _ in _flat_days(base, 11)
+    ]
+    series = {"BCO_USD": _series(quotes)}
+    anchor = base + timedelta(days=5, hours=12)
+    cfg = EventStudyConfig(
+        horizons_minutes=(30,), placebo_draws=50, placebo_seed=3, placebo_max_day_shift=4
+    )
+    # the actual leg measured under the same drift:
+    r30 = 100.0 * (
+        1 + rate_per_min * ((anchor + timedelta(minutes=30) - base).total_seconds() / 60)
+    )
+    r0 = 100.0 * (1 + rate_per_min * ((anchor - base).total_seconds() / 60))
+    leg = _obs("BCO_USD", anchor, "long", {30: r30 / r0 - 1})
+
+    pr = run_placebo([leg], series, cfg, label="headline", seed=3)
+
+    nulls = pr.null_means[30]
+    assert len(nulls) == 50
+    med = nulls[len(nulls) // 2]
+    assert pr.actual_mean[30] == pytest.approx(med, rel=0.05)
+    lo, hi = nulls[0], nulls[-1]
+    assert lo <= pr.actual_mean[30] <= hi  # inside the band — drift-consistent
+
+
+def test_placebo_detects_event_timed_move():
+    """Price jumps only in the 30 minutes AFTER the actual anchor; every other
+    day at that clock time is flat. The actual mean must escape the null."""
+    from src.research.event_study import run_placebo
+
+    base = datetime(2026, 7, 10, 0, 0, tzinfo=UTC)
+    anchor = base + timedelta(days=5, hours=12)
+    quotes = []
+    for ts, mid in _flat_days(base, 11):
+        in_jump = anchor < ts <= anchor + timedelta(minutes=35)
+        quotes.append((ts, 101.0 if in_jump else mid))
+    series = {"BCO_USD": _series(quotes)}
+    cfg = EventStudyConfig(
+        horizons_minutes=(30,), placebo_draws=100, placebo_seed=11, placebo_max_day_shift=4
+    )
+    leg = _obs("BCO_USD", anchor, "long", {30: 0.01})  # +1% actual
+
+    pr = run_placebo([leg], series, cfg, label="headline", seed=11)
+
+    nulls = pr.null_means[30]
+    assert len(nulls) == 100
+    assert all(abs(v) < 0.001 for v in nulls)  # shifted days are flat
+    assert pr.actual_mean[30] == pytest.approx(0.01)
+    assert pr.actual_mean[30] > nulls[-1]  # EXCEEDS the whole null
+
+
+def test_placebo_same_seed_reproduces():
+    from src.research.event_study import run_placebo
+
+    base = datetime(2026, 7, 10, 0, 0, tzinfo=UTC)
+    series = {"BCO_USD": _series(_flat_days(base, 8))}
+    leg = _obs("BCO_USD", base + timedelta(days=4, hours=9), "short", {30: 0.0})
+    cfg = EventStudyConfig(horizons_minutes=(30,), placebo_draws=25, placebo_seed=5)
+
+    a = run_placebo([leg], series, cfg, label="headline", seed=5)
+    b = run_placebo([leg], series, cfg, label="headline", seed=5)
+    assert a.null_means == b.null_means
+
+
+def test_placebo_thin_coverage_drops_all_draws():
+    """Coverage shorter than a day leaves NO valid whole-day shift — every
+    leg-draw must be dropped and counted, never silently measured at the
+    true anchor (offset 0 is excluded by construction)."""
+    from src.research.event_study import run_placebo
+
+    base = datetime(2026, 7, 20, 10, 0, tzinfo=UTC)
+    quotes = [(base + timedelta(minutes=5 * i), 100.0) for i in range(60)]  # 5h
+    series = {"BCO_USD": _series(quotes)}
+    leg = _obs("BCO_USD", base + timedelta(hours=1), "long", {30: 0.0})
+    cfg = EventStudyConfig(horizons_minutes=(30,), placebo_draws=10)
+
+    pr = run_placebo([leg], series, cfg, label="headline", seed=1)
+
+    assert pr.null_means[30] == ()
+    assert pr.dropped_leg_draws == 10
+
+
+def test_placebo_section_renders_in_report(engine):
+    # Thin sqlite fixture coverage (a 4h path → no valid whole-day shift) →
+    # the section renders with the honest "insufficient null draws" row
+    # rather than a fabricated band.
+    _seed_event(
+        engine,
+        seen_at=SEEN,
+        affected=[{"instrument": "BCO_USD", "kind": "oanda", "direction": "long"}],
+    )
+    _seed_quotes(engine, "BCO_USD", PATH)
+    result = run_event_study(engine, EventStudyConfig(placebo_draws=10), days=30, now=NOW)
+    report = build_report(result)
+    assert "PLACEBO BASELINE" in report
+    assert "insufficient null draws" in report
+
+
+def test_placebo_shifts_whole_events_together():
+    """Legs of ONE event must share each draw's day shift (cluster-preserving
+    null). Encode the day in the price path — a per-day step 30m after noon of
+    size day_index bps — so two same-event legs measured on the same shifted
+    day produce IDENTICAL returns every draw; independent shifts would
+    diverge with overwhelming probability over 40 draws."""
+    from src.research.event_study import run_placebo
+
+    base = datetime(2026, 7, 10, 0, 0, tzinfo=UTC)
+    quotes = []
+    for d in range(11):
+        for m in range(0, 24 * 60, 5):
+            ts = base + timedelta(days=d, minutes=m)
+            noon = base + timedelta(days=d, hours=12)
+            stepped = ts > noon + timedelta(minutes=15)
+            quotes.append((ts, 100.0 * (1 + (0.0001 * d if stepped else 0.0))))
+    series = {"BCO_USD": _series(quotes), "XAU_USD": _series(quotes)}
+    anchor = base + timedelta(days=5, hours=12)
+    leg_a = _obs("BCO_USD", anchor, "long", {30: 0.0})
+    leg_b = _obs("XAU_USD", anchor, "long", {30: 0.0})  # same event_id=1
+    cfg = EventStudyConfig(
+        horizons_minutes=(30,), placebo_draws=40, placebo_seed=9, placebo_max_day_shift=5
+    )
+
+    pr = run_placebo([leg_a, leg_b], series, cfg, label="headline", seed=9)
+
+    # Same shift per draw → both legs land on the same day → identical
+    # returns → every per-draw mean is EXACTLY one day's step value. An
+    # independent-shift null would average TWO different days' steps, which
+    # (for distinct days) is never itself a step value.
+    day_steps = [0.0001 * d for d in range(11)]
+    for mean in pr.null_means[30]:
+        assert any(mean == pytest.approx(step, abs=1e-9) for step in day_steps), mean
