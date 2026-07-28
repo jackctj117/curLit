@@ -59,7 +59,7 @@ from zoneinfo import ZoneInfo
 
 from sqlalchemy import text
 
-from src.execution.alpaca_options import AlpacaOptionsClient
+from src.execution.alpaca_options import AlpacaOptionsClient, mid_and_spread
 from src.execution.alpaca_options_executor import _is_duplicate_client_order_id
 from src.research.notifications import notify_operator
 
@@ -100,6 +100,13 @@ class OptionsExitConfig:
     #: Entry-day safety valve: an extreme adverse move still closes even
     #: during the grace period (0.60 = −60%).
     entry_day_extreme_stop_pct: float = 0.60
+    #: Widest quoted spread (as a fraction of the ask) at which a
+    #: premium-based STOP may still fire (CL-d44a). Above this the market is
+    #: too wide to tell "moved against me" from "wide market": the mid is
+    #: barely informative and a market sell would realize the spread. Date
+    #: and thesis rules are UNAFFECTED — a dismissed event or a time stop
+    #: still closes, wide market or not. 1.01 disables the guard.
+    max_stop_spread_pct: float = 0.50
     #: Close when premium is up this fraction from entry (0.80 = +80%).
     profit_target_pct: float = 0.80
     #: Close when ≤ this many days to expiration UNLESS meaningfully
@@ -142,12 +149,28 @@ def _as_dt(value: Any) -> datetime | None:
     return None
 
 
+def _mid_pnl_pct(entry_mid: float | None, mid: float | None) -> float | None:
+    """Premium return measured MID-to-MID (CL-d44a) — the only honest
+    "did the thesis move" number, because it cancels the bid/ask spread on
+    BOTH sides. ``entry_mid`` is the mid recorded at buy time (migration
+    018); None for rows written before it, which fall back to the legacy
+    mark plus the spread guard."""
+    if entry_mid is None or mid is None or entry_mid <= 0:
+        return None
+    return (mid - entry_mid) / entry_mid
+
+
 def _pnl_pct(pos: dict[str, Any]) -> float | None:
     """Premium return of a live position, or None when unpriceable.
 
-    Prefers Alpaca's own ``unrealized_plpc``; falls back to
+    LEGACY MARK (bid-based) — kept only for rows with no ``entry_mid``
+    baseline. Prefers Alpaca's own ``unrealized_plpc``; falls back to
     current/avg-entry. Never fabricates — no data → None (P&L rules skip
-    this cycle, date rules still apply)."""
+    this cycle, date rules still apply).
+
+    Both inputs are BID-marked while entries fill at the ASK, so on a wide
+    contract this reads as a large loss with no real move (CL-d44a). The
+    ``max_stop_spread_pct`` guard exists to stop that firing a sell."""
     plpc = pos.get("unrealized_plpc")
     if plpc is not None and plpc != "":
         try:
@@ -169,12 +192,36 @@ def evaluate_exit(
     pos: dict[str, Any],
     cfg: OptionsExitConfig,
     now: datetime,
+    quote: tuple[float | None, float | None] | None = None,
 ) -> tuple[ExitReason, str] | None:
     """First matching exit rule for one open position, or None (hold).
 
     Pure decision function — all I/O stays in :func:`manage_option_exits`.
+
+    ``quote`` is the live (bid, ask) (CL-d44a). Given it, P&L is measured
+    MID-to-MID against the entry mid, which cancels the spread on both
+    sides; and a market too WIDE to judge (spread > max_stop_spread_pct)
+    suppresses the premium STOPS entirely. Omitted → legacy bid-marked
+    behavior, which is what pre-018 rows without an entry_mid still use.
     """
-    pnl = _pnl_pct(pos)
+    mid, spread = mid_and_spread(*(quote or (None, None)))
+    # MID-to-MID is the honest measure; fall back to the legacy bid mark
+    # only when there is no entry baseline (rows predating migration 018).
+    entry_mid = row.get("entry_mid")
+    try:
+        entry_mid = float(entry_mid) if entry_mid is not None else None
+    except (TypeError, ValueError):
+        entry_mid = None
+    pnl = _mid_pnl_pct(entry_mid, mid)
+    pnl_is_mid = pnl is not None
+    if pnl is None:
+        pnl = _pnl_pct(pos)
+    # A market wider than the stop threshold cannot distinguish "moved
+    # against me" from "wide market" — and selling into it REALIZES the
+    # spread. Suppress premium stops only; date/thesis rules still fire.
+    # A mid-measured P&L is already spread-neutral, so the guard applies
+    # only to the legacy bid-marked path.
+    stops_suppressed = not pnl_is_mid and spread is not None and spread > cfg.max_stop_spread_pct
     entered = _as_dt(row.get("submitted_at"))
     days_held = (now - entered).days if entered else None
     time_stop = int(row.get("time_stop_days") or cfg.default_time_stop_days)
@@ -213,7 +260,7 @@ def evaluate_exit(
     # 3. Stop loss on premium — DISABLED on entry day (grace period:
     #    opening spreads masquerade as losses), except the extreme-move
     #    safety valve.
-    if pnl is not None:
+    if pnl is not None and not stops_suppressed:
         if is_entry_day:
             # Extreme valve fires only AFTER the settle window (CL-h02l) —
             # inside it, a cheap contract's spread masquerades as a −60%+
@@ -436,7 +483,19 @@ def manage_option_exits(
                 # (client_order_id dedup would reject it anyway).
                 counts["exit_pending"] += 1
                 continue
-            decision = evaluate_exit(row, pos, cfg, now)
+            # ONE quote per position per cycle (CL-d44a), reused for both the
+            # mid-based P&L / spread guard below and the no-bid check further
+            # down. FAIL-SOFT: (None, None) degrades to the legacy bid mark
+            # rather than skipping the position.
+            quote: tuple[float | None, float | None] = (None, None)
+            try:
+                get_quote = getattr(client, "get_option_quote", None)
+                if callable(get_quote):
+                    quote = get_quote(occ)
+            except Exception:
+                logger.debug("options exit: quote probe failed for %s", occ, exc_info=True)
+
+            decision = evaluate_exit(row, pos, cfg, now, quote=quote)
             if decision is None:
                 counts["held"] += 1
                 continue
@@ -468,13 +527,16 @@ def manage_option_exits(
             # through to the submit attempt exactly as before. An exit must
             # never be blocked because a QUOTE lookup failed — only a venue
             # that explicitly quotes no bid stops it.
-            bid = None
-            try:
-                get_bid = getattr(client, "get_option_bid", None)
-                if callable(get_bid):
-                    bid = get_bid(occ)
-            except Exception:
-                logger.debug("options exit: bid probe failed for %s", occ, exc_info=True)
+            bid = quote[0]
+            if bid is None:
+                # No quote from the batch probe above — fall back to the
+                # dedicated bid lookup (older/stub clients expose only that).
+                try:
+                    get_bid = getattr(client, "get_option_bid", None)
+                    if callable(get_bid):
+                        bid = get_bid(occ)
+                except Exception:
+                    logger.debug("options exit: bid probe failed for %s", occ, exc_info=True)
             if bid is not None and bid <= 0:
                 if str(row.get("exit_status") or "") != "unsellable":
                     _mark_exit(

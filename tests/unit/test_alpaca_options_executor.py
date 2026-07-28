@@ -72,10 +72,15 @@ def engine(tmp_path):  # type: ignore[no-untyped-def]
                 status TEXT DEFAULT 'pending', created_at TEXT)
         """)
         )
-        sql = _strip_sql_comments(Path("migrations/014_alpaca_option_orders.sql").read_text())
-        sql = sql.replace("TIMESTAMPTZ", "TEXT").replace("NUMERIC", "FLOAT")
-        for stmt in [s.strip() for s in sql.split(";") if s.strip()]:
-            conn.execute(text(stmt))
+        for mig in ("014_alpaca_option_orders.sql", "018_option_entry_mid.sql"):
+            sql = _strip_sql_comments(Path("migrations", mig).read_text())
+            sql = (
+                sql.replace("TIMESTAMPTZ", "TEXT")
+                .replace("NUMERIC", "FLOAT")
+                .replace("ADD COLUMN IF NOT EXISTS", "ADD COLUMN")
+            )
+            for stmt in [s.strip() for s in sql.split(";") if s.strip()]:
+                conn.execute(text(stmt))
     return eng
 
 
@@ -455,3 +460,73 @@ def test_client_without_position_listing_fails_open(engine):
         engine, _FakeClient(ask=2.0), _price, now=NOW, technicals_fn=_no_tech
     )
     assert counts["submitted"] == 1
+
+
+# --------------------------------------------------------------------------- #
+# entry spread filter + entry-mid baseline (CL-d44a)
+# --------------------------------------------------------------------------- #
+
+
+class _QuoteClient(_FakeClient):
+    def __init__(self, bid: float | None, ask: float | None, **kw: Any) -> None:
+        super().__init__(ask=ask, **kw)
+        self._q = (bid, ask)
+
+    def get_option_quote(self, occ: str) -> tuple[float | None, float | None]:
+        return self._q
+
+
+def test_skips_contract_with_a_wide_spread(engine):
+    """CL-d44a: 0.13/0.42 is a 69% spread — buying the ask and marking the
+    bid is an instant -69%, and it needs a ~69% move just to break even."""
+    _seed(engine, "ok")
+    client = _QuoteClient(bid=0.13, ask=0.42)
+    counts = execute_pending_options(engine, client, _price, now=NOW, technicals_fn=_no_tech)
+    assert counts["skipped_spread"] == 1
+    assert counts["submitted"] == 0
+    assert client.orders == []
+
+
+def test_tight_spread_is_bought_and_records_entry_mid(engine):
+    _seed(engine, "ok")
+    client = _QuoteClient(bid=1.90, ask=2.00)  # 5% spread
+    counts = execute_pending_options(engine, client, _price, now=NOW, technicals_fn=_no_tech)
+    assert counts["submitted"] == 1
+    with engine.connect() as c:
+        mid, spread = c.execute(
+            text("SELECT entry_mid, entry_spread_pct FROM alpaca_option_orders WHERE idea_id='ok'")
+        ).one()
+    assert mid == pytest.approx(1.95)
+    assert spread == pytest.approx(0.05)
+
+
+def test_wide_spread_skip_is_transient_not_recorded(engine):
+    # Must NOT write a terminal row — the idea retries when the market tightens.
+    _seed(engine, "ok")
+    execute_pending_options(
+        engine, _QuoteClient(bid=0.13, ask=0.42), _price, now=NOW, technicals_fn=_no_tech
+    )
+    with engine.connect() as c:
+        assert c.execute(text("SELECT count(*) FROM alpaca_option_orders")).scalar_one() == 0
+    # Market tightens on a later cycle → it buys.
+    counts = execute_pending_options(
+        engine, _QuoteClient(bid=1.90, ask=2.00), _price, now=NOW, technicals_fn=_no_tech
+    )
+    assert counts["submitted"] == 1
+
+
+def test_client_without_quote_support_still_buys(engine):
+    # Fail-open: a client exposing only get_option_ask keeps working, with a
+    # NULL entry_mid (the exit path falls back to the legacy mark + guard).
+    _seed(engine, "ok")
+    counts = execute_pending_options(
+        engine, _FakeClient(ask=2.0), _price, now=NOW, technicals_fn=_no_tech
+    )
+    assert counts["submitted"] == 1
+    with engine.connect() as c:
+        assert (
+            c.execute(
+                text("SELECT entry_mid FROM alpaca_option_orders WHERE idea_id='ok'")
+            ).scalar_one()
+            is None
+        )

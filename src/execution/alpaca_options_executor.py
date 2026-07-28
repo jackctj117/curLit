@@ -31,6 +31,7 @@ from sqlalchemy import text
 from src.execution.alpaca_options import (
     AlpacaOptionsClient,
     ContractSelectionConfig,
+    mid_and_spread,
     resolve_contract,
 )
 
@@ -122,6 +123,12 @@ class OptionsExecConfig:
     max_contracts_per_symbol: int = 1
     #: Open contracts across ALL strikes/expiries of one underlying.
     max_contracts_per_underlying: int = 2
+    #: Widest quoted spread (fraction of the ask) we will market-BUY into
+    #: (CL-d44a). A contract quoted 0.13/0.42 is a 69% spread: buying the ask
+    #: and marking the bid is an instant −69% before the underlying moves,
+    #: and it needs a ~69% move just to break even. Measured 2026-07-28,
+    #: this is what made 17 of 18 exits losses. 1.01 disables the filter.
+    max_entry_spread_pct: float = 0.35
     require_niche: bool = True
     require_red_team: bool = True
     selection: ContractSelectionConfig = ContractSelectionConfig()
@@ -226,9 +233,11 @@ def _record(engine: Any, row: dict[str, Any]) -> None:
             text("""
             INSERT INTO alpaca_option_orders
                 (idea_id, ticker, occ_symbol, opt_type, qty, premium_est,
-                 alpaca_order_id, status, detail, submitted_at)
+                 alpaca_order_id, status, detail, submitted_at,
+                 entry_mid, entry_spread_pct)
             VALUES (:idea_id,:ticker,:occ_symbol,:opt_type,:qty,:premium_est,
-                    :alpaca_order_id,:status,:detail,:submitted_at)
+                    :alpaca_order_id,:status,:detail,:submitted_at,
+                    :entry_mid,:entry_spread_pct)
             ON CONFLICT (idea_id) DO NOTHING
         """),
             row,
@@ -257,6 +266,7 @@ def execute_pending_options(
         "submitted": 0,
         "skipped_premium": 0,
         "skipped_concentration": 0,
+        "skipped_spread": 0,
         "no_contract": 0,
         "no_quote": 0,
         "no_price": 0,
@@ -337,9 +347,40 @@ def execute_pending_options(
                 counts["no_contract"] += 1
                 continue
             occ = str(contract.get("symbol") or "")
-            ask = client.get_option_ask(occ)
+            # One quote for the ask, the spread filter, and the entry-mid
+            # baseline (CL-d44a). Falls back to the ask-only lookup for
+            # clients that predate get_option_quote.
+            bid: float | None = None
+            ask: float | None = None
+            get_quote = getattr(client, "get_option_quote", None)
+            if callable(get_quote):
+                try:
+                    bid, ask = get_quote(occ)
+                except Exception:
+                    logger.debug("alpaca options: quote probe failed for %s", occ, exc_info=True)
+            if ask is None:
+                ask = client.get_option_ask(occ)
             if ask is None:
                 counts["no_quote"] += 1
+                continue
+            entry_mid, spread = mid_and_spread(bid, ask)
+            # SPREAD filter: a market buy into a very wide book pays the whole
+            # spread up front and then needs a move that size just to break
+            # even — and the bid-marked stop machinery liquidates it long
+            # before that. Skipped as a TRANSIENT miss (not recorded), so the
+            # idea retries when the market tightens.
+            if spread is not None and spread > cfg.max_entry_spread_pct:
+                counts["skipped_spread"] += 1
+                logger.info(
+                    "alpaca options: skipped %s (%s) — spread %.0f%% of ask "
+                    "(bid %.2f / ask %.2f) > %.0f%% cap",
+                    ticker,
+                    occ,
+                    spread * 100,
+                    bid or 0.0,
+                    ask,
+                    cfg.max_entry_spread_pct * 100,
+                )
                 continue
             premium = ask * 100.0 * cfg.qty
             base = {
@@ -350,6 +391,9 @@ def execute_pending_options(
                 "qty": cfg.qty,
                 "premium_est": premium,
                 "submitted_at": now,
+                # Baseline for honest MID-to-MID exit P&L (CL-d44a, mig 018).
+                "entry_mid": entry_mid,
+                "entry_spread_pct": spread,
             }
             if premium > cfg.max_premium_usd:
                 _record(

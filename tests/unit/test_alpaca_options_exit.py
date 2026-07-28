@@ -67,7 +67,11 @@ def engine(tmp_path):  # type: ignore[no-untyped-def]
         """)
         )
         conn.execute(text("CREATE TABLE geo_events (id INTEGER PRIMARY KEY, status TEXT)"))
-        for mig in ("014_alpaca_option_orders.sql", "016_alpaca_option_exits.sql"):
+        for mig in (
+            "014_alpaca_option_orders.sql",
+            "016_alpaca_option_exits.sql",
+            "018_option_entry_mid.sql",
+        ):
             sql = _strip_sql_comments(Path("migrations", mig).read_text())
             sql = (
                 sql.replace("TIMESTAMPTZ", "TEXT")
@@ -502,5 +506,84 @@ def test_unavailable_quote_fails_open(engine):  # type: ignore[no-untyped-def]
     # bid=None means "quote unavailable", which is transient — submit anyway.
     _seed(engine, "loss")
     client = _BidClient([_pos(avg="2.0", cur="1.0")], bid=None)
+    counts = manage_option_exits(engine, client, now=NOW)
+    assert counts["exit_submitted"] == 1
+
+
+# --------------------------------------------------------------------- #
+# mid-based P&L + wide-spread stop guard (CL-d44a)
+# --------------------------------------------------------------------- #
+
+
+class _QuoteClient(_FakeClient):
+    """FakeClient that answers get_option_quote with a fixed (bid, ask)."""
+
+    def __init__(self, positions, bid, ask, **kw):  # type: ignore[no-untyped-def]
+        super().__init__(positions, **kw)
+        self._q = (bid, ask)
+
+    def get_option_quote(self, occ: str):  # type: ignore[no-untyped-def]
+        return self._q
+
+
+def test_mid_and_spread_math():
+    from src.execution.alpaca_options import mid_and_spread
+
+    assert mid_and_spread(0.13, 0.42) == (0.275, pytest.approx(0.690476, rel=1e-4))
+    # One-sided / crossed / absent quotes must NOT invent a mark.
+    assert mid_and_spread(None, 0.42) == (None, None)
+    assert mid_and_spread(0.13, None) == (None, None)
+    assert mid_and_spread(0.50, 0.42) == (None, None)  # crossed
+    assert mid_and_spread(0.0, 0.0) == (None, None)
+
+
+def test_wide_spread_suppresses_the_stop_not_the_thesis(engine):
+    """CL-d44a: the DHT case. Bought at ask 0.42, marked at bid 0.13 = -62%
+    with the underlying essentially flat, and the entry-day valve sold into
+    the bid — turning the spread into a realized loss."""
+    _seed(engine, "loss")
+    # Legacy row (no entry_mid) + a 69%-of-ask spread.
+    client = _QuoteClient([_pos(avg="0.42", cur="0.13")], bid=0.13, ask=0.42)
+    counts = manage_option_exits(engine, client, now=NOW)
+    assert counts["exit_submitted"] == 0, "must not stop out on a spread artifact"
+    assert client.orders == []
+
+
+def test_wide_spread_still_allows_thesis_exit(engine):
+    # A dismissed event must close REGARDLESS of how wide the market is —
+    # the guard suppresses premium stops only.
+    _seed(engine, "dead", event_status="DISMISSED")
+    client = _QuoteClient([_pos(avg="0.42", cur="0.13")], bid=0.13, ask=0.42)
+    counts = manage_option_exits(engine, client, now=NOW)
+    assert counts["exit_submitted"] == 1
+
+
+def test_tight_spread_stop_still_fires(engine):
+    # A genuine adverse move in a TIGHT market must still stop out.
+    _seed(engine, "loss")
+    client = _QuoteClient([_pos(avg="2.00", cur="1.00")], bid=0.98, ask=1.02)
+    counts = manage_option_exits(engine, client, now=NOW)
+    assert counts["exit_submitted"] == 1
+
+
+def test_mid_pnl_beats_the_bid_mark(engine):
+    """With an entry_mid baseline, P&L is MID-to-MID and the spread cancels:
+    a contract quoted 0.13/0.42 that entered at mid 0.275 is FLAT, not -62%."""
+    _seed(engine, "loss")
+    with engine.begin() as c:
+        c.execute(text("UPDATE alpaca_option_orders SET entry_mid=0.275 WHERE idea_id='loss'"))
+    client = _QuoteClient([_pos(avg="0.42", cur="0.13")], bid=0.13, ask=0.42)
+    counts = manage_option_exits(engine, client, now=NOW)
+    assert counts["exit_submitted"] == 0  # mid 0.275 vs entry mid 0.275 = flat
+    assert client.orders == []
+
+
+def test_mid_pnl_fires_on_a_real_move(engine):
+    # Same baseline, but the market genuinely halved → mid-to-mid is -50%,
+    # past the -40% stop, and the spread is tight so nothing suppresses it.
+    _seed(engine, "loss", submitted_at="2026-07-01")  # not entry day
+    with engine.begin() as c:
+        c.execute(text("UPDATE alpaca_option_orders SET entry_mid=1.00 WHERE idea_id='loss'"))
+    client = _QuoteClient([_pos(avg="1.00", cur="0.50")], bid=0.49, ask=0.51)
     counts = manage_option_exits(engine, client, now=NOW)
     assert counts["exit_submitted"] == 1

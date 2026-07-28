@@ -1,0 +1,21 @@
+-- CL-d44a: record the ENTRY MID so option P&L can be measured honestly.
+--
+-- The bug this fixes: entries are MARKET BUYS (filled at the ASK) while
+-- _pnl_pct marked positions at the BID (Alpaca's unrealized_plpc /
+-- current_price). On a wide-spread OTM contract that is an instant large
+-- paper loss with ZERO underlying movement — measured 2026-07-28,
+-- DHT260821C00021000 quoted 0.13/0.42, a 69%-of-ask spread. The stop
+-- machinery then fired on that artifact and market-SOLD into the bid,
+-- turning the phantom loss into a real one. Result: 17 of 18 realized
+-- exits were losses (-$1,311 on $2,303 deployed, avg -55%), including
+-- three exits held <=30 min averaging -65% — not attainable from the
+-- underlying in that time.
+--
+-- The only honest "did the thesis move" measure is MID-at-entry vs
+-- MID-now: it cancels the spread on both sides. Storing entry_mid makes
+-- that possible; entry_spread_pct is kept for diagnostics (and to explain
+-- historical fills). Both are NULLABLE — rows written before this
+-- migration have no baseline and the exit manager falls back to its prior
+-- behavior for them, guarded by the spread check.
+ALTER TABLE alpaca_option_orders ADD COLUMN IF NOT EXISTS entry_mid        DOUBLE PRECISION;
+ALTER TABLE alpaca_option_orders ADD COLUMN IF NOT EXISTS entry_spread_pct DOUBLE PRECISION;

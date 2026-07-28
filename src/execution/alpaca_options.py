@@ -29,6 +29,18 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+
+def mid_and_spread(bid: float | None, ask: float | None) -> tuple[float | None, float | None]:
+    """(mid, spread as a fraction of ask) from a quote, or (None, None).
+
+    A one-sided or crossed quote yields no usable mid — callers must NOT
+    invent one (CL-d44a: inventing a mark is how the spread became a
+    "loss" in the first place)."""
+    if bid is None or ask is None or ask <= 0 or bid < 0 or bid > ask:
+        return (None, None)
+    return ((bid + ask) / 2.0, (ask - bid) / ask)
+
+
 PAPER_BASE = "https://paper-api.alpaca.markets"
 LIVE_BASE = "https://api.alpaca.markets"
 DATA_BASE = "https://data.alpaca.markets"
@@ -236,6 +248,34 @@ class AlpacaOptionsClient:
         except Exception:
             logger.warning("alpaca: option quote failed for %s", occ_symbol, exc_info=True)
             return None
+
+    def get_option_quote(self, occ_symbol: str) -> tuple[float | None, float | None]:
+        """(bid, ask) for a contract — one call, one source of truth (CL-d44a).
+
+        Entries fill at the ASK and Alpaca marks positions at the BID, so any
+        P&L that compares those two booked the whole spread as an instant
+        loss. Callers use this to work in MID, which cancels the spread on
+        both sides. Fail-soft: (None, None) on any problem.
+        """
+        try:
+            data = self._request_fn(
+                "GET",
+                f"{DATA_BASE}/v1beta1/options/quotes/latest",
+                self._headers,
+                {"symbols": occ_symbol, "feed": "indicative"},
+                None,
+            )
+            quote = (data.get("quotes") or {}).get(occ_symbol)
+            if not quote:
+                return (None, None)
+            bid, ask = quote.get("bp"), quote.get("ap")
+            return (
+                float(bid) if bid is not None else None,
+                float(ask) if ask is not None else None,
+            )
+        except Exception:
+            logger.warning("alpaca: option quote failed for %s", occ_symbol, exc_info=True)
+            return (None, None)
 
     def get_option_bid(self, occ_symbol: str) -> float | None:
         """Latest BID (per-share premium) for a contract, or None.
