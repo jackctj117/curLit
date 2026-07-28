@@ -567,23 +567,35 @@ def test_tight_spread_stop_still_fires(engine):
 
 
 def test_mid_pnl_beats_the_bid_mark(engine):
-    """With an entry_mid baseline, P&L is MID-to-MID and the spread cancels:
-    a contract quoted 0.13/0.42 that entered at mid 0.275 is FLAT, not -62%."""
+    """THE regression for the CL-0hr9 e2e agent's finding: _fetch_open_rows
+    did not SELECT entry_mid, so the mid-to-mid path silently never engaged
+    in production and every exit used the legacy bid mark.
+
+    Built so the two marks DISAGREE across the stop threshold in a TIGHT
+    market (8% spread — the wide-spread guard is inactive, so nothing else
+    can mask the outcome): legacy bid mark (1.20-2.00)/2.00 = -40% fires the
+    stop; mid-to-mid (1.20-1.95)/1.95 = -38.5% holds. Buggy code sells;
+    fixed code holds. (The seed default is day-2, inside the time stop.)"""
     _seed(engine, "loss")
     with engine.begin() as c:
-        c.execute(text("UPDATE alpaca_option_orders SET entry_mid=0.275 WHERE idea_id='loss'"))
-    client = _QuoteClient([_pos(avg="0.42", cur="0.13")], bid=0.13, ask=0.42)
+        c.execute(text("UPDATE alpaca_option_orders SET entry_mid=1.95 WHERE idea_id='loss'"))
+    client = _QuoteClient([_pos(avg="2.00", cur="1.20")], bid=1.15, ask=1.25)
     counts = manage_option_exits(engine, client, now=NOW)
-    assert counts["exit_submitted"] == 0  # mid 0.275 vs entry mid 0.275 = flat
+    assert counts["exit_submitted"] == 0
+    assert counts["held"] == 1
     assert client.orders == []
 
 
 def test_mid_pnl_fires_on_a_real_move(engine):
-    # Same baseline, but the market genuinely halved → mid-to-mid is -50%,
-    # past the -40% stop, and the spread is tight so nothing suppresses it.
-    _seed(engine, "loss", submitted_at="2026-07-01")  # not entry day
+    # Same tight market, but the mid genuinely halved: mid-to-mid -49.5% is
+    # past the -40% stop. Seed default = day 2, INSIDE the 10-day time stop,
+    # so the recorded reason proves the STOP fired via the mid path (the
+    # previous version of this test seeded 21 days back and passed via the
+    # time stop instead — vacuous for the mid path).
+    _seed(engine, "loss")
     with engine.begin() as c:
         c.execute(text("UPDATE alpaca_option_orders SET entry_mid=1.00 WHERE idea_id='loss'"))
     client = _QuoteClient([_pos(avg="1.00", cur="0.50")], bid=0.49, ask=0.51)
     counts = manage_option_exits(engine, client, now=NOW)
     assert counts["exit_submitted"] == 1
+    assert _row(engine, "loss")["exit_reason"] == "stop_loss"

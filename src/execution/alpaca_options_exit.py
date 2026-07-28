@@ -310,6 +310,11 @@ def _fetch_open_rows(engine: Any) -> list[dict[str, Any]]:
     sql = """
         SELECT a.idea_id, a.ticker, a.occ_symbol, a.opt_type, a.qty,
                a.premium_est, a.submitted_at, a.exit_status, a.exit_reason,
+               -- entry_mid (CL-d44a, mig 018): WITHOUT this column the
+               -- mid-to-mid P&L in evaluate_exit silently never engages
+               -- (row.get returns None) and every exit falls back to the
+               -- bid mark — found by the CL-0hr9 e2e agent.
+               a.entry_mid,
                ti.time_stop_days, ti.status AS idea_status,
                ge.status AS event_status
         FROM alpaca_option_orders a
