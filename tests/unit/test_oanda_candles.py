@@ -9,6 +9,7 @@ get_realized_vol then returns a value for a previously-vol-less instrument.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -186,3 +187,156 @@ def test_unmapped_tradables_filters_mapped():
     # Mapped (have a daily alias) excluded; unmapped kept.
     assert "XAU_USD" not in got and "BCO_USD" not in got and "EUR_USD" not in got
     assert set(got) == {"NATGAS_USD", "NAS100_USD", "XPT_USD"}
+
+
+# ---------------------------------------------------------------------------
+# Intraday M5 backfill (CL-b425)
+# ---------------------------------------------------------------------------
+
+
+def _mba_candle(
+    time_iso: str,
+    mid: float,
+    bid: float | None = None,
+    ask: float | None = None,
+    complete: bool = True,
+) -> dict:
+    c: dict = {"time": time_iso, "complete": complete, "mid": {"c": str(mid)}}
+    if bid is not None:
+        c["bid"] = {"c": str(bid)}
+    if ask is not None:
+        c["ask"] = {"c": str(ask)}
+    return c
+
+
+class TestParseMbaCandles:
+    def test_end_stamping_no_lookahead(self):
+        from src.data.oanda_candles import parse_mba_candles
+
+        payload = {"candles": [_mba_candle("2026-07-21T12:00:00.000000000Z", 80.0, 79.9, 80.1)]}
+        rows = parse_mba_candles(payload, 5)
+        assert len(rows) == 1
+        # A candle STARTING 12:00 closes at 12:05 — its close is only known
+        # then, so the row must be stamped 12:05 (the no-lookahead guarantee).
+        assert rows[0]["ts"] == datetime(2026, 7, 21, 12, 5, tzinfo=UTC)
+        assert rows[0]["mid"] == pytest.approx(80.0)
+        assert rows[0]["bid"] == pytest.approx(79.9)
+        assert rows[0]["ask"] == pytest.approx(80.1)
+
+    def test_incomplete_and_malformed_skipped(self):
+        from src.data.oanda_candles import parse_mba_candles
+
+        payload = {
+            "candles": [
+                _mba_candle("2026-07-21T12:00:00Z", 80.0, complete=False),
+                {"time": "2026-07-21T12:05:00Z", "complete": True, "mid": {"c": "junk"}},
+                {"complete": True, "mid": {"c": "1.0"}},  # no time
+                _mba_candle("2026-07-21T12:10:00Z", 81.0),  # good, mid-only
+            ]
+        }
+        rows = parse_mba_candles(payload, 5)
+        assert len(rows) == 1
+        assert rows[0]["mid"] == pytest.approx(81.0)
+        assert rows[0]["bid"] is None and rows[0]["ask"] is None
+
+
+class TestFetchIntradayHistory:
+    def test_paginates_and_clips_to_window(self):
+        from src.data.oanda_candles import fetch_intraday_history
+
+        start = datetime(2026, 7, 21, 12, 0, tzinfo=UTC)
+        end = datetime(2026, 7, 21, 12, 20, tzinfo=UTC)
+        calls: list[dict] = []
+
+        def _fake(url, headers, params):  # noqa: ANN001, ANN202
+            calls.append(dict(params))
+            if len(calls) == 1:
+                return {
+                    "candles": [
+                        _mba_candle("2026-07-21T12:00:00Z", 80.0),
+                        _mba_candle("2026-07-21T12:05:00Z", 80.1),
+                    ]
+                }
+            return {
+                "candles": [
+                    _mba_candle("2026-07-21T12:10:00Z", 80.2),  # ends 12:15 (in)
+                    _mba_candle("2026-07-21T12:20:00Z", 80.3),  # ends 12:25 (OUT)
+                ]
+            }
+
+        rows = fetch_intraday_history("BCO_USD", "k", "a", start=start, end=end, http_get=_fake)
+        # 12:05, 12:10 from page 1; 12:15 from page 2; 12:25 clipped (> end).
+        assert [r["ts"].minute for r in rows] == [5, 10, 15]
+        assert calls[0]["price"] == "MBA"
+        assert calls[0]["granularity"] == "M5"
+
+    def test_unsupported_granularity_raises(self):
+        from src.data.oanda_candles import fetch_intraday_history
+
+        with pytest.raises(ValueError, match="granularity"):
+            fetch_intraday_history(
+                "BCO_USD",
+                "k",
+                "a",
+                start=datetime(2026, 7, 21, tzinfo=UTC),
+                end=datetime(2026, 7, 22, tzinfo=UTC),
+                granularity="S5",
+            )
+
+
+class TestBackfillIntradayQuotes:
+    @pytest.fixture
+    def quotes_engine(self, tmp_path):  # noqa: ANN001, ANN202
+        from migrations.run import _strip_sql_comments
+
+        eng = create_engine(f"sqlite:///{tmp_path / 'q.db'}")
+        sql = _strip_sql_comments(Path("migrations/012_intraday_quotes.sql").read_text())
+        sql = sql.replace("TIMESTAMPTZ", "TEXT").replace("NUMERIC", "FLOAT")
+        with eng.begin() as conn:
+            for stmt in [s.strip() for s in sql.split(";") if s.strip()]:
+                low = stmt.lower()
+                if "create_hypertable" in low or "create index" in low:
+                    continue  # timescale/index DDL — not needed on sqlite
+                conn.execute(text(stmt))
+        return eng
+
+    def test_upserts_idempotently_under_backfill_source(self, quotes_engine):
+        from src.data.oanda_candles import backfill_intraday_quotes
+
+        def _fake(url, headers, params):  # noqa: ANN001, ANN202
+            return {"candles": [_mba_candle("2026-07-21T12:00:00Z", 80.0, 79.9, 80.1)]}
+
+        for _ in range(2):  # run twice — idempotent
+            counts = backfill_intraday_quotes(
+                quotes_engine,
+                ["BCO_USD"],
+                "k",
+                "a",
+                start=datetime(2026, 7, 21, 11, 0, tzinfo=UTC),
+                end=datetime(2026, 7, 21, 13, 0, tzinfo=UTC),
+                http_get=_fake,
+            )
+            assert counts == {"instruments": 1, "rows": 1}
+        with quotes_engine.connect() as conn:
+            rows = conn.execute(text("SELECT symbol, source, mid FROM intraday_quotes")).fetchall()
+        assert len(rows) == 1  # upsert, not duplicate
+        assert rows[0][1] == "oanda_m5_backfill"
+
+    def test_one_bad_instrument_fails_soft(self, quotes_engine):
+        from src.data.oanda_candles import backfill_intraday_quotes
+
+        def _fake(url, headers, params):  # noqa: ANN001, ANN202
+            if "BAD_USD" in url:
+                raise RuntimeError("rejected by OANDA")
+            return {"candles": [_mba_candle("2026-07-21T12:00:00Z", 80.0)]}
+
+        counts = backfill_intraday_quotes(
+            quotes_engine,
+            ["BAD_USD", "BCO_USD"],
+            "k",
+            "a",
+            start=datetime(2026, 7, 21, 11, 0, tzinfo=UTC),
+            end=datetime(2026, 7, 21, 13, 0, tzinfo=UTC),
+            http_get=_fake,
+        )
+        assert counts == {"instruments": 1, "rows": 1}
