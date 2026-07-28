@@ -17,6 +17,7 @@ from typing import Any
 import pytest
 
 from src.events.digest import (
+    DAEMON_DEFAULT_MIN_URGENCY,
     DEFAULT_MIN_URGENCY,
     MAX_EVENTS,
     MAX_IDEAS,
@@ -26,6 +27,18 @@ from src.events.digest import (
 )
 from src.events.impact_agent import AssessmentResult
 from src.research.notifications import DispatchResult
+
+
+@pytest.fixture(autouse=True)
+def _fresh_digest_cooldown():
+    """The scan-digest cooldown is module state (one process = one daemon);
+    tests must never inherit a previous test's last-sent timestamp."""
+    from src.events.digest import reset_digest_cooldown
+
+    reset_digest_cooldown()
+    yield
+    reset_digest_cooldown()
+
 
 # --------------------------------------------------------------------- #
 # Helpers
@@ -987,8 +1000,12 @@ class TestPipelineWiring:
         pipeline_mod: Any,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        # The DAEMON default is 7 (noise pass 2026-07-28) — deliberately
+        # HIGHER than the library default of 5, so the live feed only pings
+        # on clearly market-moving events.
         monkeypatch.delenv("EVENT_DIGEST_MIN_URGENCY", raising=False)
-        assert pipeline_mod._resolve_digest_min_urgency(None) == DEFAULT_MIN_URGENCY
+        assert pipeline_mod._resolve_digest_min_urgency(None) == DAEMON_DEFAULT_MIN_URGENCY
+        assert DAEMON_DEFAULT_MIN_URGENCY > DEFAULT_MIN_URGENCY
 
     def test_resolve_min_urgency_garbage_env_falls_back(
         self,
@@ -996,7 +1013,7 @@ class TestPipelineWiring:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setenv("EVENT_DIGEST_MIN_URGENCY", "loud")
-        assert pipeline_mod._resolve_digest_min_urgency(None) == DEFAULT_MIN_URGENCY
+        assert pipeline_mod._resolve_digest_min_urgency(None) == DAEMON_DEFAULT_MIN_URGENCY
 
     def _run_cycle(
         self,
@@ -1550,3 +1567,76 @@ class TestPolyCorroboration:
         assert built is not None  # digest still builds
         _, msg = built
         assert "Prediction mkt" not in msg
+
+
+# --------------------------------------------------------------------- #
+# scan-digest cooldown (noise pass 2026-07-28)
+# --------------------------------------------------------------------- #
+
+
+class TestDigestCooldown:
+    """At urgency>=5 the scan digest fired ~every 900s cycle (~32 Telegram
+    messages/day). Even above the urgency bar there must be at most one
+    intraday digest per cooldown window; the morning digest is the
+    guaranteed daily summary."""
+
+    def test_second_send_inside_window_is_held(self, notify_recorder: list[dict[str, Any]]) -> None:
+        t0 = datetime(2026, 7, 28, 12, 0, tzinfo=UTC)
+        assert send_digest([_res(urgency=9)], cooldown_min=120, now=t0) is not None
+        # 30 min later, another urgent cycle — held by the cooldown.
+        assert (
+            send_digest(
+                [_res(event_id=2, urgency=9)], cooldown_min=120, now=t0 + timedelta(minutes=30)
+            )
+            is None
+        )
+        assert len(notify_recorder) == 1
+
+    def test_send_allowed_after_window(self, notify_recorder: list[dict[str, Any]]) -> None:
+        t0 = datetime(2026, 7, 28, 12, 0, tzinfo=UTC)
+        assert send_digest([_res(urgency=9)], cooldown_min=120, now=t0) is not None
+        assert (
+            send_digest(
+                [_res(event_id=2, urgency=9)], cooldown_min=120, now=t0 + timedelta(minutes=121)
+            )
+            is not None
+        )
+        assert len(notify_recorder) == 2
+
+    def test_zero_cooldown_disables(self, notify_recorder: list[dict[str, Any]]) -> None:
+        t0 = datetime(2026, 7, 28, 12, 0, tzinfo=UTC)
+        for i in range(3):
+            assert (
+                send_digest(
+                    [_res(event_id=i + 1, urgency=9)],
+                    cooldown_min=0,
+                    now=t0 + timedelta(minutes=i),
+                )
+                is not None
+            )
+        assert len(notify_recorder) == 3
+
+    def test_quiet_cycle_does_not_consume_the_window(
+        self, notify_recorder: list[dict[str, Any]]
+    ) -> None:
+        # A below-threshold cycle sends nothing AND must not advance the
+        # cooldown clock — the next urgent cycle still goes out.
+        t0 = datetime(2026, 7, 28, 12, 0, tzinfo=UTC)
+        assert send_digest([_res(urgency=2)], cooldown_min=120, now=t0) is None
+        assert (
+            send_digest([_res(urgency=9)], cooldown_min=120, now=t0 + timedelta(minutes=1))
+            is not None
+        )
+        assert len(notify_recorder) == 1
+
+    def test_env_default_used_when_param_absent(
+        self, notify_recorder: list[dict[str, Any]], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("EVENT_DIGEST_COOLDOWN_MIN", "60")
+        t0 = datetime(2026, 7, 28, 12, 0, tzinfo=UTC)
+        assert send_digest([_res(urgency=9)], now=t0) is not None
+        assert send_digest([_res(event_id=2, urgency=9)], now=t0 + timedelta(minutes=30)) is None
+        assert (
+            send_digest([_res(event_id=3, urgency=9)], now=t0 + timedelta(minutes=61)) is not None
+        )
+        assert len(notify_recorder) == 2

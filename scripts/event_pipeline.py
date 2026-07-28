@@ -141,20 +141,20 @@ def _build_parser() -> argparse.ArgumentParser:
 def _resolve_digest_min_urgency(cli_value: int | None) -> int:
     """CLI flag wins; else $EVENT_DIGEST_MIN_URGENCY; else the module
     default. Resolved AFTER load_project_env() so .env values count."""
-    from src.events.digest import DEFAULT_MIN_URGENCY  # noqa: PLC0415
+    from src.events.digest import DAEMON_DEFAULT_MIN_URGENCY  # noqa: PLC0415
 
     if cli_value is not None:
         return cli_value
     raw = os.environ.get("EVENT_DIGEST_MIN_URGENCY", "")
     try:
-        return int(raw) if raw.strip() else DEFAULT_MIN_URGENCY
+        return int(raw) if raw.strip() else DAEMON_DEFAULT_MIN_URGENCY
     except ValueError:
         logger.warning(
             "EVENT_DIGEST_MIN_URGENCY=%r is not an int; using %d",
             raw,
-            DEFAULT_MIN_URGENCY,
+            DAEMON_DEFAULT_MIN_URGENCY,
         )
-        return DEFAULT_MIN_URGENCY
+        return DAEMON_DEFAULT_MIN_URGENCY
 
 
 def _resolve_niche_min_urgency() -> int:

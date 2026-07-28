@@ -40,6 +40,7 @@ headlines and LLM output are hostile input.
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -55,10 +56,34 @@ from src.research.notifications import (
 
 logger = logging.getLogger(__name__)
 
-#: Default minimum urgency (1-10) for an event to make the digest.
-#: Overridable per-call and via EVENT_DIGEST_MIN_URGENCY (CLI wiring
-#: in scripts/event_pipeline.py).
+#: Default minimum urgency (1-10) for an event to make the digest —
+#: the LIBRARY default (what build_digest gives an unopinionated caller).
+#: The live daemon uses DAEMON_DEFAULT_MIN_URGENCY below.
 DEFAULT_MIN_URGENCY = 5
+
+#: What the live event_pipeline daemon uses when neither the CLI flag nor
+#: $EVENT_DIGEST_MIN_URGENCY is set (operator noise pass, 2026-07-28): at
+#: 5 the digest fired on ~every 900s cycle (~32 Telegram messages/day of
+#: advisory colour). 7 matches the machine's own "clearly market-moving"
+#: bar; the morning digest still carries the daily summary either way.
+DAEMON_DEFAULT_MIN_URGENCY = 7
+
+#: Minimum minutes between intraday scan digests (same noise pass) —
+#: even above the urgency bar, at most one message per window.
+#: Overridable via EVENT_DIGEST_COOLDOWN_MIN; 0 disables the cooldown.
+DEFAULT_COOLDOWN_MIN = 120.0
+
+#: Last dispatch attempt (module state — the pipeline is one process;
+#: a restart just permits one early digest). Tests reset via
+#: :func:`reset_digest_cooldown`.
+_last_digest_at: datetime | None = None
+
+
+def reset_digest_cooldown() -> None:
+    """Test hook: forget the last-sent timestamp."""
+    global _last_digest_at
+    _last_digest_at = None
+
 
 #: Cap on per-event lines in one digest; the rest collapse into a
 #: "+N more" note. Telegram messages max out at 4096 chars and a
@@ -692,6 +717,8 @@ def send_digest(
     prices: Mapping[str, Mapping[str, Any]] | None = None,
     seen_ats: Mapping[int, Any] | None = None,
     poly_signal: Any = None,
+    cooldown_min: float | None = None,
+    now: datetime | None = None,
 ) -> DispatchResult | None:
     """Build and dispatch the cycle digest via Telegram.
 
@@ -724,5 +751,29 @@ def send_digest(
             min_urgency,
         )
         return None
+    # COOLDOWN (operator noise pass): even above the urgency bar, at most
+    # one intraday scan digest per window. The timestamp advances on the
+    # ATTEMPT — a failed Telegram dispatch must not turn into per-cycle
+    # retry spam; the morning digest is the guaranteed daily summary.
+    global _last_digest_at
+    if cooldown_min is None:
+        try:
+            cooldown_min = float(os.environ.get("EVENT_DIGEST_COOLDOWN_MIN", ""))
+        except ValueError:
+            cooldown_min = DEFAULT_COOLDOWN_MIN
+    now = now or datetime.now(UTC)
+    if (
+        cooldown_min > 0
+        and _last_digest_at is not None
+        and (now - _last_digest_at) < timedelta(minutes=cooldown_min)
+    ):
+        logger.info(
+            "digest: %d urgent event(s) held by cooldown (%.0f min since last, %.0f min window)",
+            len(results),
+            (now - _last_digest_at).total_seconds() / 60.0,
+            cooldown_min,
+        )
+        return None
+    _last_digest_at = now
     title, message = built
     return notify_operator(title, message, html=True)
