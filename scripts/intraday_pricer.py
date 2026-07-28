@@ -66,7 +66,18 @@ def main(argv: list[str] | None = None) -> int:
         "--instruments", default=None, help="Comma-separated OANDA ids (default: playbook set)."
     )
     parser.add_argument(
-        "--retention-hours", type=int, default=24, help="Prune quotes older than this each cycle."
+        "--retention-hours",
+        type=int,
+        # 24h -> 720h (30d), env-overridable (CL-z95p): the 24h rolling buffer
+        # made the event study blind to anything older than a day — 4,631 of
+        # 5,971 candidate legs were unmeasurable on the first run, and every
+        # edge estimate rested on ONE market session. Gate B only ever reads
+        # the freshest minutes, so it is unaffected; the table is a Timescale
+        # hypertable indexed (symbol, ts DESC), and 30d is ~390k rows (~16MB)
+        # — trivial. The prune itself is unchanged, just later.
+        default=int(os.environ.get("INTRADAY_RETENTION_HOURS", "720")),
+        help="Prune quotes older than this each cycle (default 720 = 30d, "
+        "$INTRADAY_RETENTION_HOURS; the event study CL-z95p needs the history).",
     )
     parser.add_argument(
         "--no-candles", action="store_true", help="Skip the daily-candle vol backfill (CL-lb03)."

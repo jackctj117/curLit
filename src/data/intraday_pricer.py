@@ -13,8 +13,12 @@ WHEAT_USD, NAS100_USD, ...).
 
 The store is keyed by the raw OANDA instrument id, read back by
 ``DataProvider.get_intraday_value`` (which does NOT normalize), and pruned to a
-short retention horizon each cycle — it is a rolling confirmation buffer, not a
-historical archive.
+retention horizon each cycle. Originally a 24h rolling confirmation buffer;
+the daemon default is now 30 DAYS (CL-z95p) because the event study measures
+forward returns against this table and a 24h buffer left it blind to
+everything older than one session. Gate B reads only the freshest minutes
+either way. (The class default stays 24h; the daemon flag/env sets the long
+horizon explicitly.)
 """
 
 from __future__ import annotations
@@ -39,10 +43,11 @@ HttpGetJson = Callable[[str, dict[str, str], dict[str, str]], dict[str, Any]]
 
 
 def _default_http_get_json(
-    url: str, headers: dict[str, str], params: dict[str, str],
+    url: str,
+    headers: dict[str, str],
+    params: dict[str, str],
 ) -> dict[str, Any]:
-    resp = httpx.get(url, headers=headers, params=params, timeout=10.0,
-                     follow_redirects=True)
+    resp = httpx.get(url, headers=headers, params=params, timeout=10.0, follow_redirects=True)
     resp.raise_for_status()
     data: dict[str, Any] = resp.json()
     return data
@@ -72,12 +77,14 @@ def parse_oanda_pricing(payload: dict[str, Any]) -> list[dict[str, Any]]:
             continue
         if bid <= 0 or ask <= 0:
             continue
-        out.append({
-            "symbol": str(inst),
-            "bid": bid,
-            "ask": ask,
-            "mid": (bid + ask) / 2.0,
-        })
+        out.append(
+            {
+                "symbol": str(inst),
+                "bid": bid,
+                "ask": ask,
+                "mid": (bid + ask) / 2.0,
+            }
+        )
     return out
 
 
@@ -138,13 +145,17 @@ class IntradayPricer:
         ts = self._clock()
         try:
             quotes = fetch_oanda_pricing(
-                self.instruments, self.api_key, self.account_id,
-                practice=self.practice, http_get=self._http_get,
+                self.instruments,
+                self.api_key,
+                self.account_id,
+                practice=self.practice,
+                http_get=self._http_get,
             )
         except Exception as exc:
             logger.warning(
-                "intraday pricer: OANDA fetch failed (%d instruments) — "
-                "buffer unchanged: %s", len(self.instruments), str(exc)[:200],
+                "intraday pricer: OANDA fetch failed (%d instruments) — buffer unchanged: %s",
+                len(self.instruments),
+                str(exc)[:200],
             )
             return {"written": 0, "pruned": 0, "instruments": 0}
 
@@ -152,7 +163,10 @@ class IntradayPricer:
         pruned = self._prune(ts)
         logger.info(
             "intraday pricer: wrote %d/%d quotes, pruned %d (ts=%s)",
-            written, len(self.instruments), pruned, ts.isoformat(),
+            written,
+            len(self.instruments),
+            pruned,
+            ts.isoformat(),
         )
         return {"written": written, "pruned": pruned, "instruments": len(quotes)}
 
@@ -172,8 +186,12 @@ class IntradayPricer:
                             mid = excluded.mid
                     """),
                     {
-                        "ts": ts, "symbol": q["symbol"], "source": self.source,
-                        "bid": q["bid"], "ask": q["ask"], "mid": q["mid"],
+                        "ts": ts,
+                        "symbol": q["symbol"],
+                        "source": self.source,
+                        "bid": q["bid"],
+                        "ask": q["ask"],
+                        "mid": q["mid"],
                     },
                 )
         return len(quotes)
