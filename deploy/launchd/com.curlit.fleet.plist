@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- curLit fleet boot persistence (CL-rmvt): runs boot_recovery.sh at
+       login so a reboot (macOS update, power loss) no longer leaves the
+       fleet dark until a human notices. Install:
+         cp deploy/launchd/com.curlit.fleet.plist ~/Library/LaunchAgents/
+         launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.curlit.fleet.plist
+       Manual trigger: launchctl kickstart gui/$(id -u)/com.curlit.fleet -->
+  <key>Label</key><string>com.curlit.fleet</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/Users/jacktjaden/projects/curLit/curLit/scripts/boot_recovery.sh</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>StandardOutPath</key><string>/Users/jacktjaden/projects/curLit/curLit/logs/boot_recovery.log</string>
+  <key>StandardErrorPath</key><string>/Users/jacktjaden/projects/curLit/curLit/logs/boot_recovery.log</string>
+</dict>
+</plist>

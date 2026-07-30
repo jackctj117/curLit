@@ -99,6 +99,18 @@ curl -s localhost:8200/health # {"status":"ok"}
 Engine boot log must show the DATA-HEALTH banner and
 `risk profile active: aggressive`.
 
+**Boot persistence (CL-rmvt):** a reboot (macOS update, power loss) erases
+the nohup fleet — install the launchd agent so it self-heals at login:
+```bash
+cp deploy/launchd/com.curlit.fleet.plist ~/Library/LaunchAgents/
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.curlit.fleet.plist
+```
+It runs `scripts/boot_recovery.sh` (wait for Docker → ensure the DB
+container → idempotent `daemons.sh start`; log: `logs/boot_recovery.log`).
+Manual trigger: `launchctl kickstart gui/$(id -u)/com.curlit.fleet`. Also
+give the DB container a restart policy once:
+`docker update --restart unless-stopped curlit-postgres-soak`.
+
 **No OANDA yet?** The engine's `--broker oanda-practice` fail-fasts without
 credentials (by design — no silent fake broker). For a keys-less smoke, run the
 engine directly on the paper broker instead of the fleet:
