@@ -40,6 +40,25 @@ logger = logging.getLogger(__name__)
 # slack. 1e-4 covers typical tick rounding for FX.
 _QUANTITY_MATCH_TOLERANCE: float = 1e-4
 
+# RELATIVE match tolerance (live incident 2026-07-29): the machine's first FX
+# event trade booked -30,715 units while OANDA's margin/fill rounding left the
+# broker at -30,686 — a 29-unit (0.09%) difference that is economically the
+# SAME position, but 290,000x the absolute tolerance above. The alignment
+# streak tripped the reconciliation_failure kill switch and held the engine
+# for ~20h. Fill rounding scales with position size, so the match test must
+# too: sizes match when the gap is within max(absolute tol, 0.5% of the
+# larger side). Real desyncs (double-fill = 100% off, half-fill = 50% off)
+# remain far outside 0.5%.
+_QUANTITY_MATCH_REL_TOLERANCE: float = 0.005
+
+
+def _sizes_match(broker_qty: float, internal_qty: float) -> bool:
+    tol = max(
+        _QUANTITY_MATCH_TOLERANCE,
+        _QUANTITY_MATCH_REL_TOLERANCE * max(abs(broker_qty), abs(internal_qty)),
+    )
+    return abs(broker_qty - internal_qty) <= tol
+
 
 class ReconciliationStatus(Enum):
     MATCHED = "matched"
@@ -358,8 +377,9 @@ class PositionReconciler:
                 ),
             )
 
-        # Both sides present — check sizes.
-        if abs(broker_qty - internal_qty) <= _QUANTITY_MATCH_TOLERANCE:
+        # Both sides present — check sizes (relative + absolute tolerance;
+        # see _sizes_match for the 2026-07-29 fill-rounding incident).
+        if _sizes_match(broker_qty, internal_qty):
             return ReconciliationEntry(
                 symbol=symbol,
                 broker_quantity=broker_qty,

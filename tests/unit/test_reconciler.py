@@ -665,3 +665,37 @@ class TestCheckAlignment:
         report = recon.check_alignment()
         assert report is not None
         assert not report.has_mismatches
+
+
+class TestRelativeSizeTolerance:
+    """Live incident 2026-07-29: OANDA fill/margin rounding left the broker at
+    -30,686 vs a booked -30,715 (0.09%) — economically the same position, but
+    the absolute 1e-4 tolerance called it a size_mismatch, the alignment
+    streak tripped reconciliation_failure, and the engine sat halted ~20h,
+    rejecting real event entries overnight. Sizes must match within
+    max(1e-4, 0.5% of the larger side); genuine desyncs (half/double fills)
+    are far outside that."""
+
+    def test_the_live_incident_now_matches(self) -> None:
+        from src.portfolio.reconciler import _sizes_match
+
+        assert _sizes_match(-30686.0, -30715.0)  # the exact 2026-07-29 pair
+
+    def test_rounding_scales_with_position_size(self) -> None:
+        from src.portfolio.reconciler import _sizes_match
+
+        assert _sizes_match(100_000.0, 100_400.0)  # 0.4% — rounding territory
+        assert not _sizes_match(100_000.0, 100_600.0)  # 0.6% — over the line
+
+    def test_real_desyncs_still_flagged(self) -> None:
+        from src.portfolio.reconciler import _sizes_match
+
+        assert not _sizes_match(-30715.0, -15000.0)  # half-fill desync
+        assert not _sizes_match(-30715.0, -61430.0)  # double-fill desync
+        assert not _sizes_match(30715.0, -30715.0)  # sign flip
+
+    def test_tiny_books_keep_the_absolute_floor(self) -> None:
+        from src.portfolio.reconciler import _sizes_match
+
+        assert _sizes_match(0.5, 0.50005)  # float noise on fractional books
+        assert not _sizes_match(0.5, 0.6)  # 20% off on a tiny book is real
