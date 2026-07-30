@@ -195,6 +195,9 @@ class EventDrivenStrategy:
         self._theme_primary: dict[str, frozenset[str]] = (
             _build_theme_primary(self._playbooks) if self.config.theme_primary_only else {}
         )
+        # Per-theme timestamp of the last ZERO-ENTRY confirmed alert (noise
+        # pass 2026-07-30) — see _confirmed_alert_allowed.
+        self._last_confirmed_alert: dict[str, datetime] = {}
         # geo_events missing (producer migration not applied) is logged
         # ONCE, not every poll — engine boot must never break or spam.
         self._table_missing_logged = False
@@ -560,6 +563,31 @@ class EventDrivenStrategy:
         if not theme_key or not self._theme_primary:
             return None
         return self._theme_primary.get(theme_key)
+
+    def _confirmed_alert_allowed(
+        self,
+        theme: str,
+        entered: list[tuple[str, str, str, float, str]],
+        now: datetime,
+    ) -> bool:
+        """Confirmed-alert rate limit (noise pass 2026-07-30).
+
+        Machine ACTION (>=1 entered leg) always alerts. Zero-entry confirms
+        alert once per theme per ``confirmed_alert_theme_cooldown_min`` —
+        near-duplicate headlines mass-confirm during a news storm and each
+        was paging the operator at priority 1. In-memory state: one engine
+        process; a restart permits at most one extra alert per theme.
+        0 disables the limit (every confirm alerts, the old behavior)."""
+        if entered:
+            return True
+        cooldown = self.config.confirmed_alert_theme_cooldown_min
+        if cooldown <= 0:
+            return True
+        last = self._last_confirmed_alert.get(theme)
+        if last is not None and (now - last) < timedelta(minutes=cooldown):
+            return False
+        self._last_confirmed_alert[theme] = now
+        return True
 
     # ------------------------------------------------------------------
     # Entries for a newly-CONFIRMED event
@@ -1020,18 +1048,33 @@ class EventDrivenStrategy:
             # notes so `idea <id>` surfaces it later (CL-6mzn). Additive,
             # best-effort — never blocks the alert or the trades.
             self.notifier.stamp_cross_asset_on_ideas(row.get("id"), result.cross_asset)
-            # Alert on every CONFIRMED event — even when caps/mapping
-            # meant nothing was tradable (operator can act manually).
-            self.notifier.alert_confirmed(
-                row,
-                assessment,
-                entered,
-                skipped,
-                prices=prices,
-                now=now,
-                cross_asset=result.cross_asset,
-                names=self._resolve_names(assessment),
-            )
+            # Alert policy (noise pass 2026-07-30): a confirm with an ENTERED
+            # leg always alerts immediately — the machine acted. A confirm
+            # where NOTHING entered (caps / already open / cross-theme /
+            # pending) is advisory, and during a news storm near-duplicate
+            # headlines confirm en masse (118 alerts by 9am on the Iran
+            # cluster) — so zero-entry confirms alert at most once per THEME
+            # per cooldown window; the rest are logged and still surface via
+            # the scan digest (urgency>=7) and the morning digest.
+            if self._confirmed_alert_allowed(str(row.get("theme") or "(none)"), entered, now):
+                self.notifier.alert_confirmed(
+                    row,
+                    assessment,
+                    entered,
+                    skipped,
+                    prices=prices,
+                    now=now,
+                    cross_asset=result.cross_asset,
+                    names=self._resolve_names(assessment),
+                )
+            else:
+                logger.info(
+                    "confirmed alert suppressed (zero entries, theme %s inside "
+                    "%.0fmin window) — event id=%s still in digests",
+                    row.get("theme"),
+                    self.config.confirmed_alert_theme_cooldown_min,
+                    row.get("id"),
+                )
             if entry_intents:
                 intents.extend(entry_intents)
                 self.confluence.transition(row.get("id"), "CONFIRMED", "TRADED")

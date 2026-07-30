@@ -2890,3 +2890,49 @@ class TestTickKeying:
         )
         live = {"BCOUSD": {"bid": 80.00, "ask": 80.02}}
         assert strat._current_price("BCO_USD", live, datetime.now(UTC)) == pytest.approx(80.01)
+
+
+# =============================================================================
+# Confirmed-alert rate limit (noise pass 2026-07-30)
+# =============================================================================
+
+
+class TestConfirmedAlertRateLimit:
+    """During a news storm, near-duplicate headlines mass-confirm (118
+    priority-1 alerts by 9am on one Iran cluster) while the book is
+    full/pending. Machine ACTION always alerts; zero-entry confirms alert at
+    most once per theme per window."""
+
+    _ENTERED = [("BCO_USD", "short", "-30715", 1.13695, "r")]
+
+    def test_entered_leg_always_alerts(self, tmp_path: Any) -> None:
+        strat = make_strategy(tmp_path)
+        now = datetime.now(UTC)
+        assert strat._confirmed_alert_allowed("war_escalation", self._ENTERED, now)
+        # Even immediately again — action alerts are never suppressed.
+        assert strat._confirmed_alert_allowed("war_escalation", self._ENTERED, now)
+
+    def test_zero_entry_capped_per_theme(self, tmp_path: Any) -> None:
+        strat = make_strategy(tmp_path)
+        t0 = datetime.now(UTC)
+        assert strat._confirmed_alert_allowed("war_escalation", [], t0)  # first: alert
+        assert not strat._confirmed_alert_allowed("war_escalation", [], t0 + timedelta(minutes=5))
+        assert not strat._confirmed_alert_allowed("war_escalation", [], t0 + timedelta(minutes=59))
+        # A DIFFERENT theme is independent.
+        assert strat._confirmed_alert_allowed("energy_chokepoint", [], t0)
+        # After the window, the theme may alert again.
+        assert strat._confirmed_alert_allowed("war_escalation", [], t0 + timedelta(minutes=61))
+
+    def test_action_alert_does_not_consume_the_theme_window(self, tmp_path: Any) -> None:
+        # An entered-leg alert must not start the cooldown clock — the next
+        # zero-entry confirm is still the theme's FIRST advisory alert.
+        strat = make_strategy(tmp_path)
+        t0 = datetime.now(UTC)
+        assert strat._confirmed_alert_allowed("war_escalation", self._ENTERED, t0)
+        assert strat._confirmed_alert_allowed("war_escalation", [], t0 + timedelta(minutes=1))
+
+    def test_zero_cooldown_disables(self, tmp_path: Any) -> None:
+        strat = make_strategy(tmp_path, confirmed_alert_theme_cooldown_min=0)
+        t0 = datetime.now(UTC)
+        for _ in range(3):
+            assert strat._confirmed_alert_allowed("war_escalation", [], t0)

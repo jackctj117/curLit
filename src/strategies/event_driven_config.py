@@ -156,6 +156,15 @@ class EventDrivenConfig:
     # recreate that failure mode. Enable once cross-asset data coverage is
     # proven complete.
     cross_asset_block_on_missing: bool = False
+    # ---- Confirmed-alert rate limit (noise pass 2026-07-30) ------------
+    # A confirm that ENTERED a leg always alerts (machine action). A confirm
+    # where nothing entered alerts at most once per theme per this many
+    # minutes — during a news storm, near-duplicate headlines mass-confirm
+    # (observed: 118 priority-1 alerts by 9am on one Iran cluster) while the
+    # book is full/pending, and every one paged the operator. Suppressed
+    # confirms still surface via the scan digest and morning digest.
+    # 0 disables (every confirm alerts).
+    confirmed_alert_theme_cooldown_min: float = 60.0
     # ---- ASSESSED poll bounds (CL-9ts9) --------------------------------
     # The ASSESSED scan was an UNBOUNDED `SELECT ... WHERE status='ASSESSED'`
     # (see event_driven._POLL_SQL): it grew with the backlog, and rows with a
