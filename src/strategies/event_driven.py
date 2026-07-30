@@ -439,12 +439,42 @@ class EventDrivenStrategy:
     # pending re-emissions; finalization happens in confirm_exits.
     # ------------------------------------------------------------------
 
+    def _tick(self, symbol: str, prices: dict[str, Any]) -> Any:
+        """Live tick for ``symbol``, tolerant of key form (CL-tnei).
+
+        The engine keys its tick dict by the stream's CANONICAL symbols
+        ("EURUSD") while the instrument map yields OANDA ids ("EUR_USD") —
+        so a raw lookup silently missed EVERY live tick and all event-leg
+        pricing fell through to the daily-close fallback: entries booked at
+        the close, hard stops compared the close to the stop (could never
+        fire intraday), and exit P&L was entry-vs-same-close ≡ 0 (all 7
+        closed trades realized 0.0). Try raw first (tests/direct callers key
+        raw), then canonical."""
+        tick = prices.get(symbol)
+        if tick is None:
+            tick = prices.get(self._norm_symbol(symbol))
+        return tick
+
     def _current_price(self, symbol: str, prices: dict[str, Any], now: datetime) -> float | None:
-        price = mid_price(prices.get(symbol))
+        price = mid_price(self._tick(symbol, prices))
         if price is not None:
             return price
         if self.data is None:
             return None
+        # Fallback order (CL-tnei): a fresh INTRADAY quote before the daily
+        # close — the close is constant all session, which is what froze
+        # event P&L at zero and neutered the hard stop. Fail-soft: providers
+        # without an intraday read (test fakes) skip straight to the close.
+        intraday = getattr(self.data, "get_intraday_value", None)
+        if callable(intraday):
+            try:
+                value = intraday(symbol, now, max_staleness_minutes=15)
+                if value is not None:
+                    return float(value)
+            except Exception:
+                logger.debug(
+                    "%s: intraday price fallback failed for %s", self.id, symbol, exc_info=True
+                )
         try:
             value = self.data.get_latest_value(symbol, now)
         except Exception as exc:
@@ -705,7 +735,7 @@ class EventDrivenStrategy:
                 continue
 
             direction = 1 if dir_str == "long" else -1
-            tick = prices.get(symbol)
+            tick = self._tick(symbol, prices)  # canonical-tolerant (CL-tnei)
             if isinstance(tick, dict) and tick.get("bid") is not None:
                 entry_price = float(tick["ask"] if direction > 0 else tick["bid"])
             else:

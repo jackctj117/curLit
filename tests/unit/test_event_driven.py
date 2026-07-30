@@ -2814,3 +2814,79 @@ class TestUrgencyVocabulary:
         strat = make_strategy(tmp_path, db=db, provider=confirming_provider())
         intents = run(strat, CONFIRM_PRICES)
         assert [i.urgency for i in intents] == [Urgency.URGENT.value]
+
+
+# =============================================================================
+# Canonical tick keying + intraday-first fallback (CL-tnei)
+# =============================================================================
+
+
+class TestTickKeying:
+    """The engine keys live ticks by CANONICAL symbol ("EURUSD"); the
+    instrument map yields OANDA ids ("EUR_USD"). The raw-only lookup missed
+    every live tick, so event entries/stops/exits all priced off the DAILY
+    CLOSE — constant all session — freezing realized P&L at 0.0 across all 7
+    closed trades and making the 1% hard stop unable to fire intraday."""
+
+    def _assessment(self) -> dict[str, Any]:
+        return {
+            "urgency": 8,
+            "confidence": 0.85,
+            "affected": [
+                {"instrument": "BCO_USD", "kind": "oanda", "direction": "long", "reason": "r"},
+            ],
+        }
+
+    def test_entry_prices_from_canonical_keyed_tick(self, tmp_path: Any) -> None:
+        # Tick dict keyed the way the ENGINE keys it ("BCOUSD"), not the
+        # OANDA id the instrument map produces ("BCO_USD").
+        strat = make_strategy(tmp_path)
+        _intents, entered, _skipped = strat._enter_confirmed(
+            {"id": 1, "headline": "h", "theme": "energy_chokepoint"},
+            self._assessment(),
+            {"BCOUSD": {"bid": 79.99, "ask": 80.01}},
+            100_000.0,
+            datetime.now(UTC),
+        )
+        assert len(entered) == 1
+        assert entered[0][3] == pytest.approx(80.01)  # the tick's ASK, live
+
+    def test_current_price_prefers_fresh_intraday_over_daily_close(self, tmp_path: Any) -> None:
+        class _Provider:
+            def get_intraday_value(self, symbol, as_of, max_staleness_minutes=15):  # noqa: ANN001
+                return 81.25  # fresh quote
+
+            def get_latest_value(self, symbol, as_of):  # noqa: ANN001
+                return 79.00  # yesterday's close — constant all session
+
+        strat = EventDrivenStrategy(
+            EventDrivenConfig(event_book_state_path=str(tmp_path / "b.json")),
+            data_provider=_Provider(),
+        )
+        assert strat._current_price("BCO_USD", {}, datetime.now(UTC)) == pytest.approx(81.25)
+
+    def test_current_price_daily_fallback_when_no_intraday(self, tmp_path: Any) -> None:
+        class _DailyOnly:
+            def get_latest_value(self, symbol, as_of):  # noqa: ANN001
+                return 79.00
+
+        strat = EventDrivenStrategy(
+            EventDrivenConfig(event_book_state_path=str(tmp_path / "b.json")),
+            data_provider=_DailyOnly(),
+        )
+        assert strat._current_price("BCO_USD", {}, datetime.now(UTC)) == pytest.approx(79.00)
+
+    def test_canonical_tick_beats_any_fallback(self, tmp_path: Any) -> None:
+        class _Provider:
+            def get_intraday_value(self, symbol, as_of, max_staleness_minutes=15):  # noqa: ANN001
+                return 81.25
+
+            def get_latest_value(self, symbol, as_of):  # noqa: ANN001
+                return 79.00
+
+        strat = EventDrivenStrategy(
+            EventDrivenConfig(event_book_state_path=str(tmp_path / "b.json")),
+            data_provider=_Provider(),
+        )
+        live = {"BCOUSD": {"bid": 80.00, "ask": 80.02}}
+        assert strat._current_price("BCO_USD", live, datetime.now(UTC)) == pytest.approx(80.01)
