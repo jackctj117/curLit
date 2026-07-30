@@ -1640,3 +1640,51 @@ class TestDigestCooldown:
             send_digest([_res(event_id=3, urgency=9)], now=t0 + timedelta(minutes=61)) is not None
         )
         assert len(notify_recorder) == 2
+
+
+# --------------------------------------------------------------------- #
+# weekly event-study runner (CL-s1gb) — pure pieces
+# --------------------------------------------------------------------- #
+
+
+class TestWeeklyStudySchedule:
+    def test_is_due_logic(self) -> None:
+        import scripts.weekly_event_study as w
+
+        now = datetime(2026, 7, 30, 12, 0, tzinfo=UTC)
+        assert w.is_due(None, now)  # never ran
+        assert w.is_due(now - timedelta(days=8), now)
+        assert not w.is_due(now - timedelta(days=6), now)
+        assert w.is_due(now - timedelta(days=1), now, force=True)
+
+    def test_extract_summary_pulls_deciding_rows(self) -> None:
+        import scripts.weekly_event_study as w
+
+        report = "\n".join(
+            [
+                "# curLit event study",
+                "## 5. THE PRIMARY QUESTION — headline entry vs confirmation entry",
+                "",
+                "| horizon | n | mean bps | hit | n | mean bps | hit | n | mean bps | hit | t | flag |",
+                "|---|---|---|---|---|---|---|---|---|---|---|---|",
+                "| 30m | 5113 | 2.23 | 50.8% | 709 | -0.33 | 48.0% | 651 | 2.46 | 53.1% | 2.64 |  |",
+                "## 5b. PLACEBO BASELINE — day-shifted permutation null",
+                "",
+                "### headline legs (n=5219, dropped leg-draws 290,650)",
+                "| horizon | actual bps | null median | null [2.5%, 97.5%] | pctile | verdict |",
+                "|---|---|---|---|---|---|",
+                "| 30m | 2.23 | -0.59 | [-1.77, 0.54] | 100% | EXCEEDS drift band |",
+                "## 6. Excursions",
+                "| 30m | should not appear |",
+            ]
+        )
+        out = w.extract_summary(report)
+        assert "30m: HL 2.23bps/50.8% vs CONF 2.46bps/53.1%" in out
+        assert "headline legs (n=5219" in out
+        assert "EXCEEDS drift band" in out
+        assert "should not appear" not in out
+
+    def test_extract_summary_fails_soft_on_unknown_shape(self) -> None:
+        import scripts.weekly_event_study as w
+
+        assert "no tables" in w.extract_summary("totally different report")

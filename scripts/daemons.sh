@@ -33,6 +33,7 @@ DAEMONS=(
   "morning_digest|morning_digest.py --loop|$PY scripts/morning_digest.py --loop 300"
   "truth_monitor|truth_monitor.py --loop|$PY scripts/truth_monitor.py --loop 300"
   "health_watch|health_watch.py --loop|$PY scripts/health_watch.py --loop 300"
+  "weekly_event_study|weekly_event_study.py --loop|$PY scripts/weekly_event_study.py --loop 21600"
   # reddit_monitor: uncomment once Reddit API approval lands (CL-okww)
   # "reddit_monitor|reddit_monitor.py --loop|$PY scripts/reddit_monitor.py --loop 300"
 )
