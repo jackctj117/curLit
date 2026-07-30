@@ -39,6 +39,7 @@ from sqlalchemy import bindparam, text
 from src.events.instrument_selector import decision_for_idea
 from src.events.prices import parse_ts
 from src.events.trade_card import build_trade_card
+from src.events.trade_idea import TradeIdea
 
 logger = logging.getLogger(__name__)
 
@@ -85,13 +86,6 @@ def _float_or_none(value: Any) -> float | None:
         return None
 
 
-def _int_or_none(value: Any) -> int | None:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return None
-
-
 def _row_params(
     geo_event_id: int,
     idea: dict[str, Any],
@@ -100,32 +94,41 @@ def _row_params(
 ) -> dict[str, Any] | None:
     """One idea dict → insert params, selector-gap-filled. ``None``
     for unusable entries (no ticker/action) — dropped individually,
-    same posture as the impact agent's normaliser."""
-    ticker = str(idea.get("ticker") or "").strip()
-    action = str(idea.get("action") or "").strip().lower()
+    same posture as the impact agent's normaliser.
+
+    The idea is parsed ONCE into a :class:`~src.events.trade_idea.TradeIdea`
+    (CL-59mk) and read by attribute from there. The raw dict is still
+    handed to :func:`decision_for_idea` / :func:`build_trade_card`, which
+    also serve ``trade_ideas`` table rows and legacy shapes."""
+    parsed = TradeIdea.from_dict(idea)
+    # from_dict is a lossless read (it does not strip), so the four fields
+    # this ledger has always stripped keep stripping explicitly; the seven
+    # other string columns below are stored verbatim, exactly as before.
+    ticker = parsed.ticker.strip()
+    action = parsed.action.strip().lower()
     if not ticker or not action:
         logger.debug("idea ledger: dropping idea without ticker/action: %r", idea)
         return None
 
-    preferred = str(idea.get("preferred_instrument") or "").strip()
-    stop_loss_pct = _float_or_none(idea.get("stop_loss_pct"))
+    preferred = parsed.preferred_instrument.strip()
+    stop_loss_pct = parsed.stop_loss_pct
     instrument_reason = ""
-    notes = str(idea.get("notes") or "").strip()
+    notes = parsed.notes.strip()
 
     # Niche/asymmetry metadata (CL-u2ph) — the trade_ideas table has no
     # niche columns (additive-only rule), so fold the tags into `notes`
     # as a compact prefix so a persisted niche idea stays self-describing
     # in the audit trail. hop_count / asymmetry_score / liquidity_flag
     # travel; torque_reason is already the idea's `notes` body.
-    if idea.get("niche"):
-        hops = _int_or_none(idea.get("hop_count"))
-        asym = _float_or_none(idea.get("asymmetry_score"))
+    if parsed.niche:
+        hops = parsed.hop_count
+        asym = parsed.asymmetry_score
         marker = "niche"
         if hops is not None:
             marker += f" {hops}hop"
         if asym is not None:
             marker += f" asym{asym:.2f}"
-        if idea.get("liquidity_flag"):
+        if parsed.liquidity_flag:
             marker += " illiquid"
         notes = f"[{marker}] {notes}".strip() if notes else f"[{marker}]"
 
@@ -165,16 +168,16 @@ def _row_params(
         "geo_event_id": int(geo_event_id),
         "ticker": ticker,
         "action": action,
-        "direction": str(idea.get("direction") or "") or None,
-        "confidence": _float_or_none(idea.get("confidence")),
-        "time_horizon": str(idea.get("time_horizon") or "") or None,
-        "holding_period_days": str(idea.get("holding_period_days") or "") or None,
-        "time_stop_days": _int_or_none(idea.get("time_stop_days")),
+        "direction": parsed.direction or None,
+        "confidence": parsed.confidence,
+        "time_horizon": parsed.time_horizon or None,
+        "holding_period_days": parsed.holding_period_days or None,
+        "time_stop_days": parsed.time_stop_days,
         "stop_loss_pct": stop_loss_pct,
         "preferred_instrument": preferred or None,
         "instrument_reason": instrument_reason or None,
-        "rationale": str(idea.get("rationale") or "") or None,
-        "suggested_entry": str(idea.get("suggested_entry") or "") or None,
+        "rationale": parsed.rationale or None,
+        "suggested_entry": parsed.suggested_entry or None,
         "notes": notes or None,
         "price_at_signal": _float_or_none(price_info.get("price")),
         # Grounded trade-card levels (CL-jiqq). Dollar fields are NULL
@@ -182,8 +185,8 @@ def _row_params(
         "stop_price": card.get("stop_price"),
         "target_prices": json.dumps(target_prices) if target_prices else None,
         "risk_reward": card.get("risk_reward"),
-        "entry_trigger": str(idea.get("entry_trigger") or "") or None,
-        "invalidation": str(idea.get("invalidation") or "") or None,
+        "entry_trigger": parsed.entry_trigger or None,
+        "invalidation": parsed.invalidation or None,
         "dte_window": card.get("dte_window") or None,
         "suggested_strike": card.get("suggested_strike"),
         "created_at": now,

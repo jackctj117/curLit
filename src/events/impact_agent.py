@@ -38,6 +38,7 @@ from src.events.playbooks import (
     all_tradable_instruments,
     load_playbooks,
 )
+from src.events.trade_idea import BULLISH_ACTIONS, TradeIdea
 from src.events.triage import EventTriage
 from src.events.x_ingest import source_credibility_note
 from src.research.llm import Message, get_client
@@ -66,7 +67,8 @@ VALID_AFFECTED_DIRECTIONS = frozenset({"long", "short", "watch"})
 # -- advisory trade ideas (CL-01zt) — operator-facing, never machine-traded
 VALID_IDEA_ACTIONS = frozenset({"long", "short", "buy_calls", "buy_puts"})
 VALID_IDEA_HORIZONS = frozenset({"immediate", "short", "medium", "structural"})
-_BULLISH_IDEA_ACTIONS = frozenset({"long", "buy_calls"})
+#: Same set the typed idea model and the niche merge use (CL-59mk).
+_BULLISH_IDEA_ACTIONS = BULLISH_ACTIONS
 #: Hard time-stop defaults (days) when the LLM omits one — event edge decays.
 _DEFAULT_TIME_STOP_DAYS = {
     "immediate": 3,
@@ -384,7 +386,11 @@ def _clean_targets(raw: Any) -> list[float]:
 def _normalise_trade_ideas(raw: Any) -> list[dict[str, Any]]:
     """Advisory-only ``trade_ideas`` — validate enums, clamp numbers,
     drop malformed entries INDIVIDUALLY (a bad idea never dismisses the
-    assessment; ideas are operator advisory, not machine-traded)."""
+    assessment; ideas are operator advisory, not machine-traded).
+
+    The validated result is built as a :class:`~src.events.trade_idea.TradeIdea`
+    and emitted via ``.to_dict()`` (CL-59mk) — the enum/clamp rules stay
+    HERE, the shape lives there; the persisted dict is unchanged."""
     if not isinstance(raw, list):
         return []
     ideas: list[dict[str, Any]] = []
@@ -422,23 +428,23 @@ def _normalise_trade_ideas(raw: Any) -> list[dict[str, Any]]:
         )
         target_pct = _clean_targets(entry.get("target_pct"))
         ideas.append(
-            {
-                "ticker": ticker,
-                "action": action,
-                "direction": direction,
-                "confidence": confidence,
-                "rationale": str(entry.get("rationale", "")).strip(),
-                "time_horizon": horizon,
-                "holding_period_days": str(entry.get("holding_period_days", "")).strip(),
-                "time_stop_days": time_stop,
-                "stop_loss_pct": stop_loss_pct,
-                "target_pct": target_pct,
-                "entry_trigger": str(entry.get("entry_trigger", "")).strip(),
-                "invalidation": str(entry.get("invalidation", "")).strip(),
-                "suggested_entry": str(entry.get("suggested_entry", "")).strip(),
-                "preferred_instrument": str(entry.get("preferred_instrument", "")).strip(),
-                "notes": str(entry.get("notes", "")).strip(),
-            }
+            TradeIdea(
+                ticker=ticker,
+                action=action,
+                direction=direction,
+                confidence=confidence,
+                rationale=str(entry.get("rationale", "")).strip(),
+                time_horizon=horizon,
+                holding_period_days=str(entry.get("holding_period_days", "")).strip(),
+                time_stop_days=time_stop,
+                stop_loss_pct=stop_loss_pct,
+                target_pct=target_pct,
+                entry_trigger=str(entry.get("entry_trigger", "")).strip(),
+                invalidation=str(entry.get("invalidation", "")).strip(),
+                suggested_entry=str(entry.get("suggested_entry", "")).strip(),
+                preferred_instrument=str(entry.get("preferred_instrument", "")).strip(),
+                notes=str(entry.get("notes", "")).strip(),
+            ).to_dict()
         )
         if len(ideas) >= MAX_TRADE_IDEAS:
             break
@@ -480,8 +486,13 @@ class Assessment:
     insertion order → byte-identical ``json.dumps``) and
     :meth:`from_dict` round-trips it. The nested ``affected`` /
     ``trade_ideas`` / ``fade_candidates`` entries deliberately stay
-    plain dicts: trade-idea persistence is owned by the execution/DB
-    layer and typing it is tracked separately.
+    plain dicts. ``trade_ideas`` entries now HAVE a typed form —
+    :class:`src.events.trade_idea.TradeIdea` (CL-59mk), which is what
+    :func:`_normalise_trade_ideas` builds them with — but this field
+    stays ``list[dict]`` on purpose: typing it would make
+    :meth:`from_dict`/:meth:`to_dict` re-normalise the ideas they merely
+    carry, so a partial stored idea would gain keys on round-trip and
+    the persisted payload would change.
     """
 
     core_event: str

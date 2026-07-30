@@ -48,6 +48,7 @@ from typing import Any
 from src.events.impact_agent import AssessmentResult
 from src.events.prices import format_age, format_price
 from src.events.retail_proxy import compact_label
+from src.events.trade_idea import TradeIdea
 from src.research.notifications import (
     DispatchResult,
     html_escape,
@@ -246,10 +247,18 @@ def _idea_line(
     | stop $181 | tgt $150 | R:R 2.1 | 5d stop``. Dollar levels come
     from :func:`src.events.trade_card.build_trade_card` off the real
     price; absent a price they simply don't render. Every LLM-sourced
-    field is escaped; machine numbers are HTML-safe by construction."""
+    field is escaped; machine numbers are HTML-safe by construction.
+
+    The idea is parsed once into a
+    :class:`~src.events.trade_idea.TradeIdea` (CL-59mk) and read by
+    attribute. ``corroboration`` stays a raw mapping read: it is a
+    digest-local annotation added by :func:`_advisory_entries`, never
+    part of the persisted idea. ``build_trade_card`` keeps taking the
+    dict — it also grounds ledger rows and legacy shapes."""
     from src.events.trade_card import build_trade_card  # noqa: PLC0415
 
-    ticker = str(idea.get("ticker") or "")
+    parsed = TradeIdea.from_dict(idea)
+    ticker = parsed.ticker
     info = (prices or {}).get(ticker) or {}
     card = build_trade_card(
         dict(idea),
@@ -263,7 +272,7 @@ def _idea_line(
     # grounded number segments. Blank lines between blocks are added by
     # the assembler.
     head = f"<b>{html_escape(ticker)}</b>{_price_part(ticker, prices)} — "
-    call = _action_label(str(idea.get("action") or "?"))
+    call = _action_label(parsed.action or "?")
     dte = (
         str(card.get("dte_window") or "")
         .replace(" weeks", "wk")
@@ -276,7 +285,7 @@ def _idea_line(
         call += f" {dte}"
     block: list[str] = [head + html_escape(call)]
 
-    trigger = str(idea.get("entry_trigger") or "").strip()
+    trigger = parsed.entry_trigger.strip()
     if trigger:
         # Full trigger (generous cap only to bound pathological output).
         block.append(f"  entry: {html_escape(_truncate(trigger, 240))}")
@@ -292,6 +301,12 @@ def _idea_line(
     rr = card.get("risk_reward")
     if rr is not None:
         segs.append(f"R:R {rr}")
+    # Rendered from the RAW value, not parsed.time_stop_days: the ledger
+    # coerces this key with int() (the DB column is INT) while the digest
+    # and the notifier have always echoed it verbatim. Both producers only
+    # ever emit an int, so the two agree in practice — but reading the raw
+    # value here keeps CL-59mk a pure typing change even for a legacy
+    # hand-written assessment that stored, say, 12.5.
     time_stop = idea.get("time_stop_days")
     if time_stop is not None:
         segs.append(f"{time_stop}d stop")
@@ -322,29 +337,28 @@ def _idea_line(
     # torque mechanism, and — when it cleared verification but tripped the
     # liquidity floor — a size-small/check-spread caveat. torque_reason is
     # LLM-sourced → escaped; the numbers are HTML-safe by construction.
-    if idea.get("niche"):
-        try:
-            hops = int(idea.get("hop_count") or 0)
-        except (TypeError, ValueError):
-            hops = 0
+    if parsed.niche:
+        hops = parsed.hop_count or 0
+        # Same story as time_stop_days above: the ledger COERCES this key
+        # (float("0.71") == 0.71) while the digest has only ever rendered a
+        # real number and shows "?" for anything else. The niche scorer only
+        # emits float|None, so they agree in practice — the raw isinstance
+        # test keeps CL-59mk behaviour-free on a hand-written legacy row.
         asym = idea.get("asymmetry_score")
         asym_str = f"{float(asym):.2f}" if isinstance(asym, (int, float)) else "?"
-        torque = _truncate(str(idea.get("torque_reason") or ""), 80)
+        torque = _truncate(parsed.torque_reason, 80)
         tag = f"  🎯 niche ({hops} hop{'s' if hops != 1 else ''}, asym {asym_str})"
         if torque:
             tag += f" — {html_escape(torque)}"
         block.append(tag)
-        if idea.get("liquidity_flag"):
+        if parsed.liquidity_flag:
             block.append("  ⚠ small/illiquid — size small, check spread")
 
     # Robinhood execution proxy (CL-vowz): the operator trades Robinhood,
     # which has no FX/CFDs/futures — so a raw 'XAU_USD LONG' idea is not
     # placeable. Show the tradable version on its own indented line.
     # ``direction`` (falling back to ``action``) picks the short side.
-    proxy = compact_label(
-        ticker,
-        str(idea.get("direction") or idea.get("action") or ""),
-    )
+    proxy = compact_label(ticker, parsed.direction or parsed.action)
     block.append(f"  RH: {html_escape(proxy)}")
     return "\n".join(block)
 

@@ -29,6 +29,7 @@ from typing import Any
 
 from src.events._util import clamp_float, clamp_int
 from src.events.impact_agent import extract_json_object
+from src.events.trade_idea import BULLISH_ACTIONS, TradeIdea
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +37,8 @@ logger = logging.getLogger(__name__)
 MAX_NICHE_IDEAS = 6
 
 VALID_NICHE_ACTIONS = frozenset({"long", "short", "buy_calls", "buy_puts"})
-_BULLISH_NICHE_ACTIONS = frozenset({"long", "buy_calls"})
+#: Same set the typed idea model and the impact agent use (CL-59mk).
+_BULLISH_NICHE_ACTIONS = BULLISH_ACTIONS
 
 #: Qualitative torque phrasing → a 0-1 numeric prior. The LLM supplies
 #: prose ("torque_reason"); we look for leverage keywords rather than
@@ -156,40 +158,44 @@ class NicheIdea:
         """Merge shape for the assessment ``trade_ideas`` list. Carries
         the standard idea fields the ledger/digest expect PLUS the niche
         tags. ``time_horizon`` defaults to "short" (a niche event trade
-        is tactical) so the ledger's selector/expiry logic has a value."""
+        is tactical) so the ledger's selector/expiry logic has a value.
+
+        Built as a :class:`src.events.trade_idea.TradeIdea` (CL-59mk) so
+        the merged entry is the SAME type the impact agent emits — the
+        dict it serialises to is unchanged, niche block included."""
         bullish = self.action in _BULLISH_NICHE_ACTIONS or self.direction == "bullish"
         # Fold the surviving red-team attack (CL-3v56) into the operator-visible
         # notes so the bear case rides along with the idea, not just the bull.
         notes = self.torque_reason
         if self.red_team_note:
             notes = f"{notes} | ⚠ survived red-team; top risk: {self.red_team_note}"
-        return {
-            "ticker": self.ticker,
-            "action": self.action,
-            "direction": "bullish" if bullish else "bearish",
-            "confidence": self.confidence,
-            "rationale": self.rationale,
-            "time_horizon": "short",
-            "holding_period_days": "",
-            "time_stop_days": 10,
-            "stop_loss_pct": None,
-            "target_pct": [],
-            "entry_trigger": "",
-            "invalidation": "",
-            "suggested_entry": "",
-            "preferred_instrument": "",
-            "notes": notes,
+        return TradeIdea(
+            ticker=self.ticker,
+            action=self.action,
+            direction="bullish" if bullish else "bearish",
+            confidence=self.confidence,
+            rationale=self.rationale,
+            time_horizon="short",
+            holding_period_days="",
+            time_stop_days=10,
+            stop_loss_pct=None,
+            target_pct=[],
+            entry_trigger="",
+            invalidation="",
+            suggested_entry="",
+            preferred_instrument="",
+            notes=notes,
             # -- niche tags (additive; existing consumers ignore unknown keys)
-            "niche": True,
-            "company_name": self.company_name,
-            "hop_count": self.hop_count,
-            "torque_reason": self.torque_reason,
-            "asymmetry_score": self.asymmetry_score,
-            "liquidity_flag": self.liquidity_flag,
-            "exchange": self.exchange,
-            "robinhood_tradeable": self.robinhood_tradeable,
-            "red_team_verdict": self.red_team_verdict or None,
-        }
+            niche=True,
+            company_name=self.company_name,
+            hop_count=self.hop_count,
+            torque_reason=self.torque_reason,
+            asymmetry_score=self.asymmetry_score,
+            liquidity_flag=self.liquidity_flag,
+            exchange=self.exchange,
+            robinhood_tradeable=self.robinhood_tradeable,
+            red_team_verdict=self.red_team_verdict or None,
+        ).to_dict()
 
 
 # ---------------------------------------------------------------------- #
