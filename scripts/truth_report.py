@@ -28,8 +28,20 @@ logger = logging.getLogger(__name__)
 
 
 def load_frame(engine, instrument: str) -> pd.DataFrame:  # noqa: ANN001
+    # ANALYSIS-TIME text dedup (CL-6k4y first-readout, criterion 4): retruths
+    # / reposted identical texts were 18% of the RELEVANT sample (7 of 38) and
+    # double-count the same market event. Keep only the EARLIEST post per
+    # exact text (the one the market could first react to); the raw archive
+    # and ingestion are untouched — this is a report-side view. Posts with
+    # empty text are never collapsed.
     return pd.read_sql(
         """
+        WITH firsts AS (
+            SELECT DISTINCT ON (coalesce(nullif(text,''), post_id::text))
+                   post_id
+            FROM truth_posts
+            ORDER BY coalesce(nullif(text,''), post_id::text), posted_at ASC
+        )
         SELECT r.post_id, r.window_minutes, r.return_pct, r.volume_ratio,
                r.max_favorable_pct, r.max_adverse_pct,
                c.primary_topic, c.tone, c.explicit_market_language,
@@ -37,6 +49,7 @@ def load_frame(engine, instrument: str) -> pd.DataFrame:  # noqa: ANN001
         FROM truth_market_reactions r
         JOIN truth_classifications c ON c.post_id = r.post_id
         JOIN truth_posts p ON p.post_id = r.post_id
+        JOIN firsts f ON f.post_id = r.post_id
         WHERE r.instrument = %(inst)s AND r.return_pct IS NOT NULL
         """,
         engine,
