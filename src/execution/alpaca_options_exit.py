@@ -213,15 +213,25 @@ def evaluate_exit(
     except (TypeError, ValueError):
         entry_mid = None
     pnl = _mid_pnl_pct(entry_mid, mid)
-    pnl_is_mid = pnl is not None
     if pnl is None:
         pnl = _pnl_pct(pos)
     # A market wider than the stop threshold cannot distinguish "moved
     # against me" from "wide market" — and selling into it REALIZES the
     # spread. Suppress premium stops only; date/thesis rules still fire.
-    # A mid-measured P&L is already spread-neutral, so the guard applies
-    # only to the legacy bid-marked path.
-    stops_suppressed = not pnl_is_mid and spread is not None and spread > cfg.max_stop_spread_pct
+    # Applies to ALL rows, mid-measured or legacy (CL-y5sa): mid-based
+    # P&L is spread-neutral as a MEASUREMENT, but the exit order still
+    # fills at the bid of the wide book, so the execution harm is
+    # identical either way.
+    stops_suppressed = spread is not None and spread > cfg.max_stop_spread_pct
+    if spread is not None and stops_suppressed and pnl is not None and pnl <= -cfg.stop_loss_pct:
+        logger.info(
+            "options exit: %s premium stop suppressed — pnl %+.0f%% but spread %.0f%% > %.0f%% "
+            "cap (selling would realize the spread; date/thesis rules still apply)",
+            row.get("occ_symbol") or pos.get("symbol"),
+            pnl * 100,
+            spread * 100,
+            cfg.max_stop_spread_pct * 100,
+        )
     entered = _as_dt(row.get("submitted_at"))
     days_held = (now - entered).days if entered else None
     time_stop = int(row.get("time_stop_days") or cfg.default_time_stop_days)
@@ -275,9 +285,24 @@ def evaluate_exit(
         elif pnl <= -cfg.stop_loss_pct:
             return (ExitReason.STOP_LOSS, f"premium {pnl:+.0%} <= -{cfg.stop_loss_pct:.0%}")
 
-    # 4. Profit target on premium.
-    if pnl is not None and pnl >= cfg.profit_target_pct:
-        return (ExitReason.PROFIT_TARGET, f"premium {pnl:+.0%} >= +{cfg.profit_target_pct:.0%}")
+    # 4. Profit target — only when REALIZABLE at the BID (CL-y5sa): a
+    #    market sell fills at the bid, and a wide book's mid fabricates
+    #    winners (LPG 2026-07-31: bid 0.03/ask 3.22 → mid "+93%", filled
+    #    $0.05 for a −95% realized loss). Baseline is the entry mid when
+    #    recorded (post-018), else the entry fill.
+    bid = (quote or (None, None))[0]
+    try:
+        entry_fill = float(pos.get("avg_entry_price") or 0) or None
+    except (TypeError, ValueError):
+        entry_fill = None
+    target_baseline = entry_mid if entry_mid is not None else entry_fill
+    if bid is not None and bid > 0 and target_baseline:
+        bid_pnl = (bid - target_baseline) / target_baseline
+        if bid_pnl >= cfg.profit_target_pct:
+            return (
+                ExitReason.PROFIT_TARGET,
+                f"bid {bid_pnl:+.0%} >= +{cfg.profit_target_pct:.0%}",
+            )
 
     # 5. Expiration protection. Final-day backstop closes REGARDLESS of
     #    P&L (never ride into expiration without a decision); inside the

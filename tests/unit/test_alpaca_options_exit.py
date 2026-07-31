@@ -186,8 +186,10 @@ def test_occ_expiry_parses():
 
 
 def test_profit_target_closes(engine):
+    # CL-y5sa: the target must be REALIZABLE — a bid that itself clears
+    # +80% vs the entry baseline (legacy row → the fill), in a tight book.
     _seed(engine, "win")
-    client = _FakeClient([_pos(avg="2.0", cur="4.0")])  # +100%
+    client = _QuoteClient([_pos(avg="2.0", cur="4.0")], bid=4.0, ask=4.1)  # bid +100%
     counts = manage_option_exits(engine, client, now=NOW)
     assert counts["exit_submitted"] == 1
     assert client.orders == [(OCC, 1, "sell")]
@@ -599,3 +601,58 @@ def test_mid_pnl_fires_on_a_real_move(engine):
     counts = manage_option_exits(engine, client, now=NOW)
     assert counts["exit_submitted"] == 1
     assert _row(engine, "loss")["exit_reason"] == "stop_loss"
+
+
+# --------------------------------------------------------------------- #
+# realizable profit targets + universal wide-spread stop guard (CL-y5sa)
+# --------------------------------------------------------------------- #
+
+
+def test_fictitious_mid_cannot_fake_a_profit_target(engine):
+    """THE LPG case (2026-07-31): book bid 0.03/ask 3.22 → mid 1.625 read
+    as "+96%" vs entry_mid 0.83, and the market sell filled at $0.05 for a
+    −95% realized loss logged as a profit target. The bid is −96%; a
+    bid-measured target must HOLD."""
+    _seed(engine, "junk")
+    with engine.begin() as c:
+        c.execute(text("UPDATE alpaca_option_orders SET entry_mid=0.83 WHERE idea_id='junk'"))
+    client = _QuoteClient([_pos(avg="0.98", cur="1.62")], bid=0.03, ask=3.22)
+    counts = manage_option_exits(engine, client, now=NOW)
+    assert counts["exit_submitted"] == 0, "a fictitious mid must not trigger a profit target"
+    assert client.orders == []
+
+
+def test_profit_target_requires_the_bid_to_clear(engine):
+    # Mid says +85% but the bid is only +40% — a sell realizes the bid, so
+    # nothing has actually been won yet. Hold.
+    _seed(engine, "midwin")
+    with engine.begin() as c:
+        c.execute(text("UPDATE alpaca_option_orders SET entry_mid=1.00 WHERE idea_id='midwin'"))
+    client = _QuoteClient([_pos(avg="1.05", cur="1.85")], bid=1.40, ask=2.30)
+    counts = manage_option_exits(engine, client, now=NOW)
+    assert counts["exit_submitted"] == 0
+
+
+def test_profit_target_fires_when_bid_clears(engine):
+    _seed(engine, "realwin")
+    with engine.begin() as c:
+        c.execute(text("UPDATE alpaca_option_orders SET entry_mid=1.00 WHERE idea_id='realwin'"))
+    client = _QuoteClient([_pos(avg="1.05", cur="1.90")], bid=1.85, ask=1.95)
+    counts = manage_option_exits(engine, client, now=NOW)
+    assert counts["exit_submitted"] == 1
+    assert _row(engine, "realwin")["exit_reason"] == "profit_target"
+
+
+def test_wide_spread_suppresses_mid_based_stop_too(engine):
+    """The UAL case (2026-07-31): entry_mid 2.995, book bid 0.83/ask 2.39
+    (65% spread) → mid P&L −46%. The old guard only covered legacy rows, so
+    the stop sold into the wide book and realized −76% of the fill. The
+    guard must cover mid-measured rows as well; only date/thesis rules may
+    exit a book this wide."""
+    _seed(engine, "wideloss")
+    with engine.begin() as c:
+        c.execute(text("UPDATE alpaca_option_orders SET entry_mid=2.995 WHERE idea_id='wideloss'"))
+    client = _QuoteClient([_pos(avg="3.50", cur="1.61")], bid=0.83, ask=2.39)
+    counts = manage_option_exits(engine, client, now=NOW)
+    assert counts["exit_submitted"] == 0, "must not stop into a 65%-wide book"
+    assert client.orders == []
