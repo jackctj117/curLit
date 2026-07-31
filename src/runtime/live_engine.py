@@ -6,6 +6,7 @@ import os
 import time
 from datetime import UTC, datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from src.execution.oms import OrderIntent
 from src.monitoring.logging_setup import LogContext
@@ -22,6 +23,9 @@ from src.runtime.protocols import (
 )
 
 logger = logging.getLogger(__name__)
+
+# FX week boundaries are defined in New York local time (CL-azgh).
+_NY_TZ = ZoneInfo("America/New_York")
 
 
 # Daily rebalance check interval (seconds). The coordinator's own
@@ -428,13 +432,24 @@ class LiveEngine:
 
     @staticmethod
     def _in_trading_window(ts: datetime) -> bool:
-        wd = ts.weekday()
-        h = ts.hour
-        if wd == 5:
+        """FX trading week: Sunday 17:00 → Friday 17:00 America/New_York.
+
+        DST-aware (CL-azgh): the previous UTC-hour constants (22:00) were
+        only right under EST. Under EDT the market closes 21:00 UTC, so
+        every summer Friday 17:00–18:00 ET the engine believed the market
+        was open while no ticks could arrive — stale_prices fired, halted,
+        and paged (2026-07-31 15:09 MDT); the first hour of the Sunday
+        reopen was likewise treated as closed.
+        """
+        local = ts.astimezone(_NY_TZ)
+        wd = local.weekday()
+        if wd == 5:  # Saturday
             return False
-        if wd == 6 and h < 22:
-            return False
-        return not (wd == 4 and h >= 22)
+        if wd == 6:  # Sunday — reopens 17:00 ET
+            return local.hour >= 17
+        if wd == 4:  # Friday — closes 17:00 ET
+            return local.hour < 17
+        return True
 
     async def graceful_shutdown(self, timeout: int = 30) -> None:
         """Halt new trades, drain pending OMS work, then cancel all tasks.

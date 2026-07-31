@@ -445,3 +445,58 @@ class TestAlignmentStreak:
         engine._record_alignment_report(None)
         # Broker unreachable -> alignment UNKNOWN, not a mismatch.
         assert engine._current_position_mismatch() is None
+
+
+class TestTradingWindowDST:
+    """CL-azgh: the FX week is Sun 17:00 → Fri 17:00 NEW YORK time.
+
+    The old implementation compared UTC hours against 22:00 — right only
+    under EST. Under EDT (summer) the close is 21:00 UTC, so the engine
+    kept the window "open" for the hour after the real Friday close (no
+    ticks can arrive → stale_prices fired and paged, 2026-07-31) and kept
+    it "closed" for the first hour of the real Sunday reopen."""
+
+    @staticmethod
+    def _at(iso: str) -> bool:
+        from datetime import datetime
+
+        return LiveEngine._in_trading_window(datetime.fromisoformat(iso))
+
+    # --- summer (EDT, UTC-4): the cases the old code got WRONG ---
+    def test_summer_friday_after_close_is_shut(self) -> None:
+        # 21:10 UTC = 17:10 ET — the exact 2026-07-31 false halt.
+        assert self._at("2026-07-31T21:10:00+00:00") is False
+
+    def test_summer_sunday_first_hour_is_open(self) -> None:
+        # 21:10 UTC = 17:10 ET Sunday — real trading the old code skipped.
+        assert self._at("2026-08-02T21:10:00+00:00") is True
+
+    # --- summer boundary sanity ---
+    def test_summer_friday_before_close_is_open(self) -> None:
+        assert self._at("2026-07-31T20:59:00+00:00") is True
+
+    def test_summer_sunday_before_open_is_shut(self) -> None:
+        assert self._at("2026-08-02T20:59:00+00:00") is False
+
+    # --- winter (EST, UTC-5): the old boundary was correct — keep it ---
+    def test_winter_friday_before_close_is_open(self) -> None:
+        assert self._at("2026-01-16T21:30:00+00:00") is True  # 16:30 ET Fri
+
+    def test_winter_friday_after_close_is_shut(self) -> None:
+        assert self._at("2026-01-16T22:01:00+00:00") is False  # 17:01 ET Fri
+
+    def test_winter_sunday_reopen(self) -> None:
+        assert self._at("2026-01-18T22:01:00+00:00") is True  # 17:01 ET Sun
+        assert self._at("2026-01-18T21:30:00+00:00") is False  # 16:30 ET Sun
+
+    # --- UTC/local weekday crossover + midweek ---
+    def test_saturday_always_shut(self) -> None:
+        assert self._at("2026-08-01T12:00:00+00:00") is False
+
+    def test_friday_late_evening_utc_saturday(self) -> None:
+        # 04:30 UTC Sat = 23:30 ET Fri — closed (post-close), and the local
+        # weekday (Friday) must be the one consulted, not the UTC Saturday.
+        assert self._at("2026-01-17T04:30:00+00:00") is False
+
+    def test_midweek_open(self) -> None:
+        assert self._at("2026-07-29T12:00:00+00:00") is True
