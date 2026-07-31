@@ -28,6 +28,7 @@ from zoneinfo import ZoneInfo
 
 from sqlalchemy import text
 
+from src.events.prices import parse_ts
 from src.execution.alpaca_options import (
     AlpacaOptionsClient,
     ContractSelectionConfig,
@@ -143,6 +144,13 @@ class OptionsExecConfig:
     #: confidence may enter immediately (extremely strong signal on a
     #: breaking event beats spread costs). 1.01 disables the override.
     entry_delay_override_conf: float = 0.80
+    #: Minimum remaining idea life (created_at + time_stop_days − now) to
+    #: open a position (CL-v2m9). 2026-07-31: RTX/FLNG/ASC contracts were
+    #: bought 1–2 days before their ideas auto-expired, and the
+    #: "idea auto-expired by pipeline" exit rule force-closed them the next
+    #: morning — the spread paid twice for theses that could not play out.
+    #: 0 disables.
+    min_idea_life_days: float = 3.0
     # Technical-alignment gate (CL-3xoj): skip an idea whose computed price
     # structure is strongly AGAINST the thesis (alignment_score in [-1,1];
     # e.g. buying calls into a confirmed downtrend at the lows = -1.0).
@@ -193,7 +201,8 @@ def fetch_executable_ideas(
     if cfg.require_red_team:
         where.append("lower(notes) LIKE '%red-team%'")
     sql = (
-        "SELECT idea_id, ticker, action, confidence, preferred_instrument, notes "
+        "SELECT idea_id, ticker, action, confidence, preferred_instrument, notes, "
+        "created_at, time_stop_days "
         "FROM trade_ideas ti WHERE "
         + " AND ".join(where)
         + " ORDER BY confidence DESC, created_at DESC"
@@ -267,6 +276,7 @@ def execute_pending_options(
         "skipped_premium": 0,
         "skipped_concentration": 0,
         "skipped_spread": 0,
+        "skipped_expiring": 0,
         "no_contract": 0,
         "no_quote": 0,
         "no_price": 0,
@@ -303,6 +313,49 @@ def execute_pending_options(
         if counts["submitted"] >= budget:
             break
         ticker = str(idea.get("ticker") or "")
+        # Idea about to auto-expire (CL-v2m9): with less life left than the
+        # floor, the "idea auto-expired by pipeline" exit rule would
+        # force-close the position almost immediately — churn that pays the
+        # spread twice. TERMINAL (recorded): remaining life only shrinks,
+        # so the skip can never un-trigger.
+        if cfg.min_idea_life_days > 0 and idea.get("time_stop_days") is not None:
+            created = parse_ts(idea.get("created_at"))
+            if created is not None:
+                remaining = created + timedelta(days=int(idea["time_stop_days"])) - now
+                if remaining < timedelta(days=cfg.min_idea_life_days):
+                    left_days = remaining.total_seconds() / 86400.0
+                    _record(
+                        engine,
+                        {
+                            "idea_id": idea["idea_id"],
+                            "ticker": ticker,
+                            "occ_symbol": None,
+                            "opt_type": (
+                                "call" if str(idea.get("action")) == "buy_calls" else "put"
+                            ),
+                            "qty": cfg.qty,
+                            "premium_est": None,
+                            "alpaca_order_id": None,
+                            "status": "skipped_expiring",
+                            "detail": (
+                                f"idea life left {left_days:.1f}d "
+                                f"< {cfg.min_idea_life_days:.1f}d floor"
+                            ),
+                            "submitted_at": now,
+                            "entry_mid": None,
+                            "entry_spread_pct": None,
+                        },
+                    )
+                    counts["skipped_expiring"] += 1
+                    logger.info(
+                        "alpaca options: skipped %s (%s) — idea expires in %.1fd "
+                        "(< %.1fd floor)",
+                        ticker,
+                        idea["idea_id"],
+                        left_days,
+                        cfg.min_idea_life_days,
+                    )
+                    continue
         # Open-spread protection: no entries in the first N minutes of the
         # session unless the signal is extremely strong. Transient (not
         # recorded) — the idea re-evaluates on the next 5-min cycle, so a

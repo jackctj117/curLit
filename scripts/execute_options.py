@@ -79,6 +79,9 @@ def _config_from_env():  # noqa: ANN202
         # session (0 disables); conf >= override enters immediately.
         entry_delay_min=_i("ALPACA_OPT_ENTRY_DELAY_MIN", 15),
         entry_delay_override_conf=_f("ALPACA_OPT_ENTRY_DELAY_OVERRIDE_CONF", 0.80),
+        # Don't open positions on ideas about to auto-expire (CL-v2m9);
+        # the exit rule would force-close them within a day. 0 disables.
+        min_idea_life_days=_f("ALPACA_OPT_MIN_IDEA_LIFE_DAYS", 3.0),
     )
 
 

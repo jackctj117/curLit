@@ -69,7 +69,8 @@ def engine(tmp_path):  # type: ignore[no-untyped-def]
             CREATE TABLE trade_ideas (
                 idea_id TEXT PRIMARY KEY, ticker TEXT, action TEXT,
                 confidence FLOAT, preferred_instrument TEXT, notes TEXT,
-                status TEXT DEFAULT 'pending', created_at TEXT)
+                status TEXT DEFAULT 'pending', created_at TEXT,
+                time_stop_days INTEGER)
         """)
         )
         for mig in ("014_alpaca_option_orders.sql", "018_option_entry_mid.sql"):
@@ -93,15 +94,24 @@ def _seed(
     conf=0.6,
     notes="[niche 3hop asym0.6] torque | survived red-team; top risk: x",
     pref="~5% OTM, 4 weeks",
+    time_stop=None,
 ):
     with engine.begin() as conn:
         conn.execute(
             text("""
             INSERT INTO trade_ideas (idea_id, ticker, action, confidence,
-                preferred_instrument, notes, status, created_at)
-            VALUES (:i,:t,:a,:c,:p,:n,'pending','2026-07-21')
+                preferred_instrument, notes, status, created_at, time_stop_days)
+            VALUES (:i,:t,:a,:c,:p,:n,'pending','2026-07-21',:ts)
         """),
-            {"i": idea_id, "t": ticker, "a": action, "c": conf, "p": pref, "n": notes},
+            {
+                "i": idea_id,
+                "t": ticker,
+                "a": action,
+                "c": conf,
+                "p": pref,
+                "n": notes,
+                "ts": time_stop,
+            },
         )
 
 
@@ -142,6 +152,42 @@ def test_submits_eligible_idea(engine):
             )
         ).one()
     assert row[0] == "submitted" and row[1] == "call" and row[2] == pytest.approx(200.0)
+
+
+def test_skips_idea_about_to_expire(engine):
+    """CL-v2m9: RTX/FLNG/ASC 2026-07-31 — contracts bought 1-2 days before
+    their ideas auto-expired were force-closed the next morning by the
+    'idea auto-expired' exit rule. Under the life floor -> terminal skip."""
+    _seed(engine, "dying", time_stop=2)  # created 07-21, NOW 07-21 16:00 -> ~1.3d left
+    client = _FakeClient(ask=2.0)
+    counts = execute_pending_options(engine, client, _price, now=NOW, technicals_fn=_no_tech)
+    assert counts["skipped_expiring"] == 1 and counts["submitted"] == 0
+    assert client.orders == []
+    with engine.connect() as c:
+        assert (
+            c.execute(
+                text("SELECT status FROM alpaca_option_orders WHERE idea_id='dying'")
+            ).scalar()
+            == "skipped_expiring"
+        )
+    # Terminal: the recorded row removes the idea from the next fetch.
+    counts2 = execute_pending_options(engine, client, _price, now=NOW, technicals_fn=_no_tech)
+    assert counts2["skipped_expiring"] == 0 and client.orders == []
+
+
+def test_enters_when_idea_has_life(engine):
+    _seed(engine, "alive", time_stop=10)  # ~9.3d left >> 3d floor
+    client = _FakeClient(ask=2.0)
+    counts = execute_pending_options(engine, client, _price, now=NOW, technicals_fn=_no_tech)
+    assert counts["submitted"] == 1 and counts["skipped_expiring"] == 0
+
+
+def test_idea_life_floor_disabled(engine):
+    _seed(engine, "dying", time_stop=2)
+    client = _FakeClient(ask=2.0)
+    cfg = OptionsExecConfig(min_idea_life_days=0)
+    counts = execute_pending_options(engine, client, _price, cfg=cfg, now=NOW, technicals_fn=_no_tech)
+    assert counts["submitted"] == 1 and counts["skipped_expiring"] == 0
 
 
 def test_skips_when_premium_over_cap(engine):
