@@ -184,8 +184,15 @@ is skipped (a server does not sleep), so the fleet is 12 there.
 | Fleet watchdog | `scripts/health_watch.py --loop 300` | 5 min — Telegram page on: (1) daemon up→down transitions (once per onset + recovery notice; born from the 34-min silent x_monitor gap); (2) X-ingest staleness (newest x-sourced event > `X_INGEST_STALE_HOURS`, default 3h); (3) **engine halt** — OMS new-trades halt going active (via `/api/system` `oms_halted`, enriched with the triggering kill-switch), once per onset + a recovery notice, so a halt (bug OR legit VIX/drawdown/desync trip) reaches Telegram in ≤5 min instead of waiting for someone to ask. Nothing watches the watchdog by design — simplest process in the fleet (CL-fmqp) | `logs/health_watch.log` |
 | Morning digest | `scripts/morning_digest.py --loop 300` | once per trading morning at 09:15 ET (`MORNING_DIGEST_TIME_ET`) — TWO Telegram messages: (1) FULL positions, long and short with economic reading + closed-last-24h realized P&L + balances; (2) LONG ideas — the pipeline's pending bullish shopping list by confidence, independent of execution (CL-ydp8) | `logs/morning_digest.log` |
 
-**Fleet control: `./scripts/daemons.sh start|stop|status`** (idempotent —
-start skips running daemons; logs to `logs/<name>.log`). Fresh-device
+**Fleet control: `./scripts/daemons.sh start|stop|status|restart [name]`**
+(idempotent — start skips running daemons; logs to `logs/<name>.log`). All
+four verbs take an optional daemon name; an unknown name is a hard error
+(exit 2), never a silent whole-fleet operation. To deploy a code change to
+one daemon use `restart <name>` — it waits for the old process to die,
+starts a new one, and fails loudly (exit 1) unless the surviving pid
+differs from the old one (CL-obgy: a wrong pid-file guess once left
+`execute_options` running pre-fix code while everything looked green).
+Fresh-device
 bring-up from zero: [`BOOTSTRAP.md`](BOOTSTRAP.md). Every entrypoint runs
 the interpreter-health canary (pyexpat, CL-169t) and the engine additionally
 runs the DATA-HEALTH preflight (CL-q4n1) at boot — a starved series is a

@@ -121,8 +121,9 @@ exist — GDELT still feeds events without X/Reddit, etc.
 
 ## 7. Ongoing
 - `bd ready` for open work; `docs/CURRENT_OPERATIONS.md` for policies/knobs.
-- Restarts: `./scripts/daemons.sh stop && ./scripts/daemons.sh start`
-  (engine restarts are position-safe since CL-8s1e).
+- Restarts: `./scripts/daemons.sh restart` — or `restart <name>` for one
+  daemon (verifies the pid actually changed, CL-obgy). Engine restarts are
+  position-safe since CL-8s1e.
 - State that stays on the device: `.env` (secrets), `data/*.json`
   (event book, kill-switch, research state), the Postgres volume, `logs/`.
   Migrating devices = copy `.env` + pg_dump the DB (or just re-backfill —
