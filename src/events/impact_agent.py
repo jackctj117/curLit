@@ -772,6 +772,11 @@ class EventImpactAgent:
                 ],
                 model=self.model,
                 max_tokens=self.max_tokens,
+                # Single-shot JSON from the pre-researched playbook — the
+                # model must never research the story itself (CL-u5cq: tool
+                # use ballooned hot events past the context window and
+                # stuck them NEW; the biggest stories failed hardest).
+                no_tools=True,
             )
         except Exception as exc:
             logger.warning(

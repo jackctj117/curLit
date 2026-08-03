@@ -97,6 +97,7 @@ class ClaudeCodeDriver(Driver):
         model: str,
         max_tokens: int = 4096,
         temperature: float = 0.0,
+        no_tools: bool = False,
         **kwargs: Any,
     ) -> LLMResponse:
         system_text = "\n\n".join(m.content for m in messages if m.role == "system")
@@ -125,6 +126,14 @@ class ClaudeCodeDriver(Driver):
             "json",
             "--exclude-dynamic-system-prompt-sections",
         ]
+        # no_tools (CL-u5cq): single-shot text→JSON callers must strip the
+        # built-in toolset. With tools available, the headless session may
+        # RESEARCH the prompt (web fetches on hot news events) until the
+        # context window bursts and the CLI exits 1 — the 2026-08-02 mode
+        # where the weekend's biggest events (Iran/Hormuz, OPEC) each blew
+        # past 200k tokens and stuck NEW forever, while routine ones passed.
+        if no_tools:
+            cmd += ["--tools", ""]
         if system_text:
             cmd += ["--system-prompt", system_text]
 

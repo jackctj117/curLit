@@ -198,6 +198,8 @@ class EventTriage:
                 ],
                 model=self.model,
                 max_tokens=self.max_tokens,
+                # Same single-shot contract as the impact agent (CL-u5cq).
+                no_tools=True,
             )
             items = extract_json_array(resp.text)
         except Exception as exc:

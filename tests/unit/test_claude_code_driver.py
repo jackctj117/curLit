@@ -117,6 +117,27 @@ class TestComplete:
         assert "--system-prompt" in cmd and "persona" in cmd
         assert "--model" in cmd and "claude-fable-5" in cmd
 
+    def test_no_tools_strips_the_builtin_toolset(self) -> None:
+        # CL-u5cq: single-shot JSON callers pass no_tools=True; the CLI gets
+        # --tools "" so the headless session cannot research the prompt into
+        # a context-window overflow (the 2026-08-02 stuck-NEW mode).
+        drv = _driver()
+        with patch("subprocess.run", return_value=_proc(json.dumps(_OK_PAYLOAD))) as run:
+            drv.complete(
+                [Message("user", "hi")],
+                model="claude-fable-5",
+                no_tools=True,
+            )
+        cmd = run.call_args.args[0]
+        i = cmd.index("--tools")
+        assert cmd[i + 1] == ""
+
+    def test_tools_available_by_default(self) -> None:
+        drv = _driver()
+        with patch("subprocess.run", return_value=_proc(json.dumps(_OK_PAYLOAD))) as run:
+            drv.complete([Message("user", "hi")], model="claude-fable-5")
+        assert "--tools" not in run.call_args.args[0]
+
     def test_api_credentials_stripped_from_subprocess_env(self) -> None:
         drv = _driver()
         with (

@@ -533,7 +533,7 @@ class MockLLMClient:
         self.calls: list[dict] = []
 
     def complete(self, messages: Any, model: str, **kwargs: Any) -> SimpleNamespace:
-        self.calls.append({"messages": messages, "model": model})
+        self.calls.append({"messages": messages, "model": model, "kwargs": kwargs})
         return SimpleNamespace(
             text=self.text_out,
             model=model,
@@ -617,6 +617,10 @@ class TestAgentRoundTrip:
         user_msg = client.calls[0]["messages"][1].content
         assert "energy_chokepoint" in user_msg
         assert "BCO_USD" in user_msg
+        # CL-u5cq: assessment is single-shot — the claude-code toolset must
+        # be stripped so hot events can't research themselves past the
+        # context window (2026-08-02: Iran/Hormuz + OPEC stuck NEW).
+        assert client.calls[0]["kwargs"].get("no_tools") is True
 
     def test_malformed_llm_output_marks_dismissed(self, engine: Engine) -> None:
         _insert_event(engine, "e1", "Some headline")

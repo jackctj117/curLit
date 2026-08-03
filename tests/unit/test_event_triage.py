@@ -31,7 +31,7 @@ class MockClient:
         self.calls: list[dict] = []
 
     def complete(self, messages: Any, model: str, **kwargs: Any) -> SimpleNamespace:
-        self.calls.append({"messages": messages, "model": model})
+        self.calls.append({"messages": messages, "model": model, "kwargs": kwargs})
         if self.raises:
             raise RuntimeError("simulated transport failure")
         return SimpleNamespace(
@@ -98,12 +98,15 @@ def test_score_batch_escalates_high_skips_low():
             {"id": 2, "relevance": 1, "tradable": False, "reason": "opinion"},
         ]
     )
-    triage = EventTriage(client=MockClient(resp), enabled=True, min_relevance=4)
+    client = MockClient(resp)
+    triage = EventTriage(client=client, enabled=True, min_relevance=4)
     verdicts = triage.score_batch(_rows())
     assert verdicts[1].escalate is True
     assert verdicts[1].relevance == 9
     assert verdicts[2].escalate is False
     assert verdicts[2].reason == "opinion"
+    # CL-u5cq: same single-shot contract as the impact agent — no toolset.
+    assert client.calls[0]["kwargs"].get("no_tools") is True
 
 
 def test_score_batch_threshold_is_inclusive():
