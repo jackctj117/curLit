@@ -23,11 +23,11 @@ import logging
 import os
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
 from sqlalchemy.engine import Engine
 
 from src.events._util import ThreadLocalClient, clamp_float, clamp_int
@@ -58,6 +58,12 @@ DEFAULT_MODEL = "claude-sonnet-4-6"
 #: share a workdir. Token SPEND is unchanged — latency only.
 _DEFAULT_ASSESS_CONCURRENCY = 4
 _MAX_ASSESS_CONCURRENCY = 8
+#: Anti-starvation window (CL-e5uz): each assess batch reserves a minority of
+#: slots for the OLDEST still-NEW rows no older than this, so sustained ingest
+#: (>= limit fresh rows per cycle) cannot indefinitely crowd out slightly
+#: older events. Rows beyond the window are historical backlog and stay
+#: untouched — they never earn retry slots.
+_ASSESS_RETRY_WINDOW_HOURS = 72.0
 
 VALID_EVENT_DIRECTIONS = frozenset({"bullish", "bearish", "neutral"})
 VALID_HORIZONS = frozenset({"minutes", "hours", "days"})
@@ -847,9 +853,17 @@ class EventImpactAgent:
         return client
 
     def assess_new_events(self, limit: int = 20) -> list[AssessmentResult]:
-        """Process up to ``limit`` NEW rows (newest first — freshest
-        events are the only ones with any edge left) and persist each
-        outcome. Returns per-event results for summary logging.
+        """Process up to ``limit`` NEW rows and persist each outcome.
+        Returns per-event results for summary logging.
+
+        Batch composition (CL-e5uz): mostly newest-first — freshest events
+        are the ones with any edge left — but a minority of slots
+        (``limit // 4``) go to the OLDEST NEW rows still inside
+        ``_ASSESS_RETRY_WINDOW_HOURS``. Pure newest-first starved anything
+        older whenever ingest produced >= ``limit`` fresh rows per cycle
+        (2026-08-02: the weekend's Iran/Hormuz + OPEC events sat NEW for
+        hours behind a busy feed). Quiet cycles degrade to pure
+        newest-first; rows beyond the window never earn retry slots.
 
         When the triage tier is enabled (CL-cunh), the whole batch is first
         scored in one cheap Haiku call; events that fall below the relevance
@@ -857,18 +871,35 @@ class EventImpactAgent:
         OPEN — a missing verdict escalates — so this can only save cost, never
         silently drop a real event.
         """
+        cols = "SELECT id, seen_at, headline, url, theme, source FROM geo_events "
+        retry_slots = max(1, limit // 4)
         with self.engine.connect() as conn:
-            rows = [
+            fresh = [
                 dict(r._mapping)
                 for r in conn.execute(
-                    text(
-                        "SELECT id, seen_at, headline, url, theme, source "
-                        "FROM geo_events WHERE status = 'NEW' "
-                        "ORDER BY seen_at DESC LIMIT :lim",
-                    ),
+                    text(cols + "WHERE status = 'NEW' ORDER BY seen_at DESC LIMIT :lim"),
                     {"lim": limit},
                 )
             ]
+            starved: list[dict[str, Any]] = []
+            if len(fresh) == limit:  # only a full batch can be starving anyone
+                cutoff = datetime.now(UTC) - timedelta(hours=_ASSESS_RETRY_WINDOW_HOURS)
+                stmt = text(
+                    cols + "WHERE status = 'NEW' AND seen_at > :cutoff "
+                    "AND id NOT IN :ids ORDER BY seen_at ASC LIMIT :lim",
+                ).bindparams(bindparam("ids", expanding=True))
+                starved = [
+                    dict(r._mapping)
+                    for r in conn.execute(
+                        stmt,
+                        {
+                            "cutoff": cutoff,
+                            "ids": [int(r["id"]) for r in fresh],
+                            "lim": retry_slots,
+                        },
+                    )
+                ]
+        rows = fresh[: limit - len(starved)] + starved
 
         verdicts: dict[int, Any] = {}
         if self.triage is not None and self.triage.enabled and rows:

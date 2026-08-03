@@ -598,6 +598,57 @@ def _fetch(engine: Engine, external_id: str) -> dict:
     return {"status": row[0], "assessment": json.loads(row[1])}
 
 
+def _seen(hours_ago: float) -> str:
+    """seen_at N hours before real now, SPACE-formatted to match how the
+    sqlite test engine renders the datetime cutoff param (lexicographic
+    TEXT comparison; Postgres compares real timestamps)."""
+    from datetime import UTC, datetime, timedelta
+
+    return (datetime.now(UTC) - timedelta(hours=hours_ago)).strftime("%Y-%m-%d %H:%M:%S")
+
+
+class TestBatchAntiStarvation:
+    """CL-e5uz: newest-first LIMIT starved older NEW rows whenever ingest
+    kept producing >= limit fresher ones (2026-08-02: Iran/Hormuz + OPEC
+    sat NEW for hours on a busy weekend feed)."""
+
+    def _agent(self, engine: Engine) -> tuple[EventImpactAgent, MockLLMClient]:
+        client = MockLLMClient(json.dumps(_valid_payload()))
+        return EventImpactAgent(engine, client=client), client  # type: ignore[arg-type]
+
+    def test_starved_old_rows_get_batch_slots(self, engine: Engine) -> None:
+        for i in range(12):
+            _insert_event(engine, f"fresh{i}", f"fresh {i}", seen_at=_seen(1 + i * 0.1))
+        _insert_event(engine, "old1", "starved one", seen_at=_seen(30))
+        _insert_event(engine, "old2", "starved two", seen_at=_seen(31))
+        agent, _ = self._agent(engine)
+        results = agent.assess_new_events(limit=8)
+        # Full batch: 6 newest + 2 reserved slots for the oldest in-window.
+        assert len(results) == 8
+        assert _fetch(engine, "old1")["status"] == "ASSESSED"
+        assert _fetch(engine, "old2")["status"] == "ASSESSED"
+
+    def test_retry_slots_ignore_ancient_backlog(self, engine: Engine) -> None:
+        for i in range(12):
+            _insert_event(engine, f"fresh{i}", f"fresh {i}", seen_at=_seen(1 + i * 0.1))
+        _insert_event(engine, "ancient", "historical junk", seen_at=_seen(100))
+        agent, _ = self._agent(engine)
+        results = agent.assess_new_events(limit=8)
+        assert len(results) == 8  # batch stays full of fresh rows
+        with engine.connect() as c:
+            status = c.execute(
+                text("SELECT status FROM geo_events WHERE external_id='ancient'")
+            ).scalar()
+        assert status == "NEW"  # beyond the 72h window — never earns a slot
+
+    def test_quiet_cycle_stays_pure_newest(self, engine: Engine) -> None:
+        for i in range(5):
+            _insert_event(engine, f"only{i}", f"row {i}", seen_at=_seen(1 + i))
+        agent, _ = self._agent(engine)
+        results = agent.assess_new_events(limit=8)
+        assert len(results) == 5  # under-full batch: no starvation query
+
+
 class TestAgentRoundTrip:
     def test_happy_path_marks_assessed(self, engine: Engine) -> None:
         _insert_event(engine, "e1", "Iran moves to close Hormuz")
