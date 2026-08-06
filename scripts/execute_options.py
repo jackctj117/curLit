@@ -82,6 +82,9 @@ def _config_from_env():  # noqa: ANN202
         # Don't open positions on ideas about to auto-expire (CL-v2m9);
         # the exit rule would force-close them within a day. 0 disables.
         min_idea_life_days=_f("ALPACA_OPT_MIN_IDEA_LIFE_DAYS", 3.0),
+        # Restricted channel (CL-khf7): only ideas whose source event
+        # assessed at/above this urgency may buy options. 0 disables.
+        min_urgency=_i("ALPACA_OPT_MIN_URGENCY", 0),
     )
 
 

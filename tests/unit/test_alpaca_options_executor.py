@@ -7,6 +7,7 @@ daily cap, dedup, and transient-miss retry behavior.
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -70,8 +71,11 @@ def engine(tmp_path):  # type: ignore[no-untyped-def]
                 idea_id TEXT PRIMARY KEY, ticker TEXT, action TEXT,
                 confidence FLOAT, preferred_instrument TEXT, notes TEXT,
                 status TEXT DEFAULT 'pending', created_at TEXT,
-                time_stop_days INTEGER)
+                time_stop_days INTEGER, geo_event_id INTEGER)
         """)
+        )
+        conn.execute(
+            text("CREATE TABLE geo_events (id INTEGER PRIMARY KEY, status TEXT, assessment TEXT)")
         )
         for mig in ("014_alpaca_option_orders.sql", "018_option_entry_mid.sql"):
             sql = _strip_sql_comments(Path("migrations", mig).read_text())
@@ -95,13 +99,22 @@ def _seed(
     notes="[niche 3hop asym0.6] torque | survived red-team; top risk: x",
     pref="~5% OTM, 4 weeks",
     time_stop=None,
+    urgency=None,
 ):
     with engine.begin() as conn:
+        gid = None
+        if urgency is not None:
+            conn.execute(
+                text("INSERT INTO geo_events (status, assessment) VALUES ('ASSESSED', :a)"),
+                {"a": json.dumps({"urgency": urgency})},
+            )
+            gid = conn.execute(text("SELECT max(id) FROM geo_events")).scalar()
         conn.execute(
             text("""
             INSERT INTO trade_ideas (idea_id, ticker, action, confidence,
-                preferred_instrument, notes, status, created_at, time_stop_days)
-            VALUES (:i,:t,:a,:c,:p,:n,'pending','2026-07-21',:ts)
+                preferred_instrument, notes, status, created_at, time_stop_days,
+                geo_event_id)
+            VALUES (:i,:t,:a,:c,:p,:n,'pending','2026-07-21',:ts,:g)
         """),
             {
                 "i": idea_id,
@@ -111,6 +124,7 @@ def _seed(
                 "p": pref,
                 "n": notes,
                 "ts": time_stop,
+                "g": gid,
             },
         )
 
@@ -152,6 +166,43 @@ def test_submits_eligible_idea(engine):
             )
         ).one()
     assert row[0] == "submitted" and row[1] == "call" and row[2] == pytest.approx(200.0)
+
+
+class TestUrgencyFloor:
+    """CL-khf7: with min_urgency set, options become the restricted channel —
+    only ideas whose source event assessed at/above the floor may buy
+    (shares are the primary expression, CL-ncbq)."""
+
+    def test_floor_admits_urgent_and_drops_the_rest(self, engine):
+        _seed(engine, "hot", urgency=9)
+        _seed(engine, "warm", urgency=6)
+        _seed(engine, "orphan")  # no linked event — excluded under a floor
+        cfg = OptionsExecConfig(min_urgency=8)
+        got = {i["idea_id"] for i in fetch_executable_ideas(engine, cfg)}
+        assert got == {"hot"}
+
+    def test_default_floor_is_off(self, engine):
+        _seed(engine, "warm", urgency=6)
+        _seed(engine, "orphan")
+        got = {i["idea_id"] for i in fetch_executable_ideas(engine, OptionsExecConfig())}
+        assert got == {"warm", "orphan"}
+
+    def test_garbage_assessment_counts_as_zero(self, engine):
+        _seed(engine, "hot", urgency=9)
+        with engine.begin() as c:
+            c.execute(
+                text("INSERT INTO geo_events (status, assessment) VALUES ('ASSESSED','not json')")
+            )
+            gid = c.execute(text("SELECT max(id) FROM geo_events")).scalar()
+            c.execute(
+                text("""INSERT INTO trade_ideas (idea_id, ticker, action, confidence,
+                        preferred_instrument, notes, status, created_at, geo_event_id)
+                        VALUES ('garbled','RTX','buy_calls',0.9,'~5% OTM',
+                        '[niche] x | survived red-team','pending','2026-07-21',:g)"""),
+                {"g": gid},
+            )
+        got = {i["idea_id"] for i in fetch_executable_ideas(engine, OptionsExecConfig(min_urgency=8))}
+        assert got == {"hot"}
 
 
 def test_skips_idea_about_to_expire(engine):

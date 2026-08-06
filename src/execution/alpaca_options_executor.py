@@ -18,6 +18,7 @@ separate path and is untouched.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from collections.abc import Callable
@@ -151,6 +152,15 @@ class OptionsExecConfig:
     #: morning — the spread paid twice for theses that could not play out.
     #: 0 disables.
     min_idea_life_days: float = 3.0
+    #: Minimum assessed urgency of the SOURCE EVENT (CL-khf7). The CL-4c7o
+    #: review measured 7% option win rate against an 80% directional hit
+    #: on the underlyings — options stay on only as a restricted execution-
+    #: learning channel for the strongest signals (operator policy sets 8
+    #: via ALPACA_OPT_MIN_URGENCY; shares are the primary expression,
+    #: CL-ncbq). When > 0, ideas without a linked event or without an
+    #: assessed urgency are EXCLUDED — restriction means provably urgent.
+    #: 0 disables (default: no behavior change).
+    min_urgency: int = 0
     # Technical-alignment gate (CL-3xoj): skip an idea whose computed price
     # structure is strongly AGAINST the thesis (alignment_score in [-1,1];
     # e.g. buying calls into a confirmed downtrend at the lows = -1.0).
@@ -191,24 +201,55 @@ def fetch_executable_ideas(
     """Pending buy_calls/buy_puts ideas matching the policy that haven't been
     acted on yet (highest confidence first)."""
     where = [
-        "action IN ('buy_calls','buy_puts')",
-        "confidence >= :min_conf",
-        "status = 'pending'",
+        "ti.action IN ('buy_calls','buy_puts')",
+        "ti.confidence >= :min_conf",
+        "ti.status = 'pending'",
         "NOT EXISTS (SELECT 1 FROM alpaca_option_orders a WHERE a.idea_id = ti.idea_id)",
     ]
     if cfg.require_niche:
-        where.append("lower(notes) LIKE '%niche%'")
+        where.append("lower(ti.notes) LIKE '%niche%'")
     if cfg.require_red_team:
-        where.append("lower(notes) LIKE '%red-team%'")
+        where.append("lower(ti.notes) LIKE '%red-team%'")
     sql = (
-        "SELECT idea_id, ticker, action, confidence, preferred_instrument, notes, "
-        "created_at, time_stop_days "
-        "FROM trade_ideas ti WHERE "
+        "SELECT ti.idea_id, ti.ticker, ti.action, ti.confidence, ti.preferred_instrument, "
+        "ti.notes, ti.created_at, ti.time_stop_days, g.assessment AS event_assessment "
+        "FROM trade_ideas ti LEFT JOIN geo_events g ON g.id = ti.geo_event_id WHERE "
         + " AND ".join(where)
-        + " ORDER BY confidence DESC, created_at DESC"
+        + " ORDER BY ti.confidence DESC, ti.created_at DESC"
     )
     with engine.connect() as conn:
-        return [dict(r._mapping) for r in conn.execute(text(sql), {"min_conf": cfg.min_confidence})]
+        rows = [dict(r._mapping) for r in conn.execute(text(sql), {"min_conf": cfg.min_confidence})]
+    out: list[dict[str, Any]] = []
+    below = 0
+    for row in rows:
+        assessment = row.pop("event_assessment", None)
+        if cfg.min_urgency > 0 and _event_urgency(assessment) < cfg.min_urgency:
+            below += 1
+            continue
+        out.append(row)
+    if below:
+        logger.info(
+            "alpaca options: %d idea(s) below the urgency floor %d — options are the "
+            "restricted channel (CL-khf7); shares express the rest",
+            below,
+            cfg.min_urgency,
+        )
+    return out
+
+
+def _event_urgency(assessment: Any) -> int:
+    """Assessed urgency of an idea's source event; 0 when unknowable."""
+    if isinstance(assessment, str) and assessment.strip():
+        try:
+            assessment = json.loads(assessment)
+        except json.JSONDecodeError:
+            return 0
+    if not isinstance(assessment, dict):
+        return 0
+    try:
+        return int(assessment.get("urgency") or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _submitted_since(engine: Any, since: datetime) -> int:
