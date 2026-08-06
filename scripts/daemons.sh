@@ -35,6 +35,9 @@ DAEMONS=(
   "refresh_rates|refresh_rates.py --loop|$PY scripts/refresh_rates.py --loop 86400"
   "x_monitor|x_monitor.py --loop|$PY scripts/x_monitor.py --loop 300"
   "execute_options|execute_options.py --loop|$PY scripts/execute_options.py --loop 300"
+  # Shares A/B of the SAME ideas (CL-ncbq); self-disables (idles) unless
+  # ALPACA_EQUITY_ENABLED is set, so it is safe in the roster from day one.
+  "execute_equities|execute_equities.py --loop|$PY scripts/execute_equities.py --loop 300"
   "options_activity|options_activity.py --loop|$PY scripts/options_activity.py --loop 86400"
   "score_outcomes|score_outcomes.py --loop|$PY scripts/score_outcomes.py --loop 86400"
   "telegram_bot|telegram_approval_bot.py|$PY scripts/telegram_approval_bot.py"

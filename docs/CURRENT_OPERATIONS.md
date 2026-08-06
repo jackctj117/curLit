@@ -163,10 +163,10 @@ activity** (P/C volume skew, volume vs self-built baseline, ATM IV).
 
 ---
 
-## 3. The daemons (12 core + a macOS-only keep_awake = 13 on macOS)
+## 3. The daemons (14 core + a macOS-only keep_awake = 15 on macOS)
 
 `daemons.sh` prepends `keep_awake` (caffeinate) **only on macOS** — on Linux it
-is skipped (a server does not sleep), so the fleet is 12 there.
+is skipped (a server does not sleep), so the fleet is 14 there.
 
 | Daemon | Command | Cadence | Log |
 |---|---|---|---|
@@ -177,12 +177,14 @@ is skipped (a server does not sleep), so the fleet is 12 there.
 | Foreign rates | `scripts/refresh_rates.py --loop 86400` | daily | `logs/refresh_rates.log` |
 | X monitor | `scripts/x_monitor.py --loop 300` | 5 min (tiered priorities) | `logs/x_monitor.log` |
 | Options executor | `scripts/execute_options.py --loop 300` | 5 min (market-hours aware) | `logs/execute_options.log` |
+| Equity executor | `scripts/execute_equities.py --loop 300` | 5 min (market-hours aware) — the SHARES A/B of the SAME advisory ideas the options executor trades (CL-ncbq): exits then entries, $1k notional sleeve per idea, `buy_calls`→long / `buy_puts`→short, 5% stop / 10% target (or the idea's own advisory levels), dedup in `alpaca_equity_orders` (mig 019). Rationale (CL-4c7o): the ideas were right on DIRECTION 80% of the time (41/51) while the short-dated OTM options expressing them won 7% — spread + theta ate the moves. **Master switch `ALPACA_EQUITY_ENABLED`, default OFF** — unset, the daemon logs "disabled" and idles (so it is safe in the roster before the operator turns it on) | `logs/execute_equities.log` |
 | Options activity | `scripts/options_activity.py --loop 86400` | daily chain snapshots | `logs/options_activity.log` |
 | Outcome scorer | `scripts/score_outcomes.py --loop 86400` | daily | `logs/score_outcomes.log` |
 | Telegram bot | `scripts/telegram_approval_bot.py` | long-poll | `logs/` |
 | Truth-post event study | `scripts/truth_monitor.py --loop 300` | 5 min — RESEARCH ONLY (CL-s9as): ingest public trumpstruth.org archive → Haiku classification (topic/tone/entities/buy-language) → measure SPY/QQQ/sector-ETF reaction at 1–120min windows (mig 017). NO orders, NO alerts, NO family-holdings logic — the deliverable is `scripts/truth_report.py` (topic×window returns, reversal rate, decay). "No durable edge" is a valid result | `logs/truth_monitor.log` |
 | Fleet watchdog | `scripts/health_watch.py --loop 300` | 5 min — Telegram page on: (1) daemon up→down transitions (once per onset + recovery notice; born from the 34-min silent x_monitor gap); (2) X-ingest staleness (newest x-sourced event > `X_INGEST_STALE_HOURS`, default 3h); (3) **engine halt** — OMS new-trades halt going active (via `/api/system` `oms_halted`, enriched with the triggering kill-switch), once per onset + a recovery notice, so a halt (bug OR legit VIX/drawdown/desync trip) reaches Telegram in ≤5 min instead of waiting for someone to ask. Nothing watches the watchdog by design — simplest process in the fleet (CL-fmqp) | `logs/health_watch.log` |
 | Morning digest | `scripts/morning_digest.py --loop 300` | once per trading morning at 09:15 ET (`MORNING_DIGEST_TIME_ET`) — TWO Telegram messages: (1) FULL positions, long and short with economic reading + closed-last-24h realized P&L + balances; (2) LONG ideas — the pipeline's pending bullish shopping list by confidence, independent of execution (CL-ydp8) | `logs/morning_digest.log` |
+| Weekly event study | `scripts/weekly_event_study.py --loop 21600` | every 7 days runs the CL-z95p event study (`--days 30 --options`), writes the full report to `data/research/event_study_YYYYMMDD.md`, Telegrams the placebo verdicts + headline-vs-confirmation topline (CL-s1gb) | `logs/weekly_event_study.log` |
 
 **Fleet control: `./scripts/daemons.sh start|stop|status|restart [name]`**
 (idempotent — start skips running daemons; logs to `logs/<name>.log`). All
