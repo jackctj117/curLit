@@ -155,6 +155,9 @@ class Agent:
             model=self.model,
             max_tokens=self.config.max_tokens,
             temperature=self.config.temperature,
+            # Debate agents reason over context COMPOSED INTO the prompt —
+            # self-directed fetching is the CL-u5cq failure mode (CL-scup).
+            no_tools=True,
         )
         return AgentResponse(
             agent_name=self.name,

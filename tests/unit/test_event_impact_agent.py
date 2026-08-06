@@ -906,6 +906,61 @@ class _RaisingLLMClient:
         raise RuntimeError("claude -p exited 1: usage limit reached")
 
 
+class _CountingRaisingClient:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def complete(self, messages: Any, model: str, **kwargs: Any) -> Any:
+        self.calls += 1
+        raise RuntimeError("claude -p exited 1: usage limit reached")
+
+
+class TestTransportCircuitBreaker:
+    """CL-3mtg: a batch failing (almost) wholesale on transport trips a
+    cooldown — Aug 4-6 the pipeline burned a full 20-event attempt every
+    cycle for hours of a quota outage (1080 log lines). Rows stay NEW."""
+
+    def _dying_agent(self, engine: Engine, n: int) -> tuple[EventImpactAgent, Any]:
+        for i in range(n):
+            _insert_event(engine, f"cb{i}", f"headline {i}")
+        client = _CountingRaisingClient()
+        return EventImpactAgent(engine, client=client), client  # type: ignore[arg-type]
+
+    def test_whole_batch_failure_trips_cooldown(self, engine: Engine) -> None:
+        agent, client = self._dying_agent(engine, 6)
+        first = agent.assess_new_events(limit=10)
+        assert len(first) == 6 and all(r.status == "NEW" for r in first)
+        attempted = client.calls
+        second = agent.assess_new_events(limit=10)
+        assert second == []
+        assert client.calls == attempted, "cooldown must not touch the transport"
+
+    def test_cooldown_expires_and_reprobes(self, engine: Engine) -> None:
+        from datetime import UTC, datetime, timedelta
+
+        agent, client = self._dying_agent(engine, 6)
+        agent.assess_new_events(limit=10)
+        agent._assess_cooldown_until = datetime.now(UTC) - timedelta(seconds=1)
+        attempted = client.calls
+        agent.assess_new_events(limit=10)
+        assert client.calls > attempted, "expired cooldown must re-probe"
+
+    def test_small_batch_never_trips(self, engine: Engine) -> None:
+        agent, client = self._dying_agent(engine, 3)  # < 5 attempts
+        agent.assess_new_events(limit=10)
+        attempted = client.calls
+        agent.assess_new_events(limit=10)
+        assert client.calls > attempted
+
+    def test_disabled_by_env(self, engine: Engine, monkeypatch: Any) -> None:
+        monkeypatch.setenv("EVENT_ASSESS_FAILURE_COOLDOWN_MIN", "0")
+        agent, client = self._dying_agent(engine, 6)
+        agent.assess_new_events(limit=10)
+        attempted = client.calls
+        agent.assess_new_events(limit=10)
+        assert client.calls > attempted
+
+
 class TestTransportFailureRetrySemantics:
     """Transport failures must leave rows NEW (retried next cycle) —
     a quota outage once terminally DISMISSED ~175 healthy events."""

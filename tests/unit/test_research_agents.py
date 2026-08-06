@@ -54,6 +54,7 @@ class _RecordingDriver(Driver):
                 "model": model,
                 "max_tokens": max_tokens,
                 "temperature": temperature,
+                "kwargs": kwargs,
             }
         )
         return LLMResponse(
@@ -183,6 +184,8 @@ class TestPromptComposition:
         assert msgs[0].role == "system"
         assert msgs[1].role == "user"
         assert "hello world" in msgs[1].content
+        # CL-scup: debate agents reason over injected context only.
+        assert driver.calls[0]["kwargs"].get("no_tools") is True
 
     def test_context_files_injected_with_xml_delimiters(
         self,

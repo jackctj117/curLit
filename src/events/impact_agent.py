@@ -64,6 +64,16 @@ _MAX_ASSESS_CONCURRENCY = 8
 #: older events. Rows beyond the window are historical backlog and stay
 #: untouched — they never earn retry slots.
 _ASSESS_RETRY_WINDOW_HOURS = 72.0
+#: Circuit breaker (CL-3mtg): when a batch fails (almost) wholesale on
+#: TRANSPORT — subscription usage window exhausted, network down — pause
+#: assessment this long instead of re-attempting a full batch every cycle
+#: (Aug 4-6: 1080 failure lines in 80/hour blocks). Rows stay NEW either
+#: way; this caps the retry, not the safety. 0 disables.
+_DEFAULT_FAILURE_COOLDOWN_MIN = 30.0
+#: The breaker needs both a minimum sample and a failure share — a couple
+#: of oversized-event failures must not pause the whole pipeline.
+_FAILURE_COOLDOWN_MIN_ATTEMPTS = 5
+_FAILURE_COOLDOWN_SHARE = 0.8
 
 VALID_EVENT_DIRECTIONS = frozenset({"bullish", "bearish", "neutral"})
 VALID_HORIZONS = frozenset({"minutes", "hours", "days"})
@@ -703,6 +713,9 @@ class EventImpactAgent:
         # EVENT_TRIAGE_ENABLED is set (opt-in), so existing callers are
         # unchanged until the operator turns it on.
         self.triage = triage if triage is not None else EventTriage(client=self.client)
+        # Circuit breaker state (CL-3mtg) — in-memory: the pipeline daemon is
+        # long-lived, and a restart deliberately re-probes the transport.
+        self._assess_cooldown_until: datetime | None = None
 
     # -- prompt ---------------------------------------------------------
 
@@ -852,6 +865,20 @@ class EventImpactAgent:
         client: LLMClient = self._client_holder.get()
         return client
 
+    @staticmethod
+    def _failure_cooldown_min() -> float:
+        """$EVENT_ASSESS_FAILURE_COOLDOWN_MIN (float, minutes; 0 disables)."""
+        raw = os.environ.get("EVENT_ASSESS_FAILURE_COOLDOWN_MIN", "")
+        try:
+            return float(raw) if raw.strip() else _DEFAULT_FAILURE_COOLDOWN_MIN
+        except ValueError:
+            logger.warning(
+                "EVENT_ASSESS_FAILURE_COOLDOWN_MIN=%r is not a number; using %.0f",
+                raw,
+                _DEFAULT_FAILURE_COOLDOWN_MIN,
+            )
+            return _DEFAULT_FAILURE_COOLDOWN_MIN
+
     def assess_new_events(self, limit: int = 20) -> list[AssessmentResult]:
         """Process up to ``limit`` NEW rows and persist each outcome.
         Returns per-event results for summary logging.
@@ -871,6 +898,16 @@ class EventImpactAgent:
         OPEN — a missing verdict escalates — so this can only save cost, never
         silently drop a real event.
         """
+        if self._assess_cooldown_until is not None:
+            if datetime.now(UTC) < self._assess_cooldown_until:
+                logger.info(
+                    "impact agent: assessment paused until %s after whole-batch "
+                    "transport failure (CL-3mtg) — rows stay NEW",
+                    self._assess_cooldown_until.strftime("%H:%M:%SZ"),
+                )
+                return []
+            self._assess_cooldown_until = None
+
         cols = "SELECT id, seen_at, headline, url, theme, source FROM geo_events "
         retry_slots = max(1, limit // 4)
         with self.engine.connect() as conn:
@@ -969,6 +1006,28 @@ class EventImpactAgent:
                 if result.status != "NEW":  # transport failure = no write,
                     self._persist(result)  # row stays queued for retry
                 results_by_id[int(row["id"])] = result
+
+        # Circuit breaker (CL-3mtg): a batch failing (almost) wholesale on
+        # transport means the LLM path itself is down — usage window, network
+        # — and re-attempting a full batch every cycle only spams the log
+        # and hammers the transport. A "NEW" result is exclusively the
+        # transport-failure outcome of assess_row.
+        cooldown_min = self._failure_cooldown_min()
+        if cooldown_min > 0 and len(to_assess) >= _FAILURE_COOLDOWN_MIN_ATTEMPTS:
+            transports = sum(
+                1 for r in to_assess if results_by_id[int(r["id"])].status == "NEW"
+            )
+            if transports >= _FAILURE_COOLDOWN_SHARE * len(to_assess):
+                self._assess_cooldown_until = datetime.now(UTC) + timedelta(
+                    minutes=cooldown_min,
+                )
+                logger.warning(
+                    "impact agent: %d/%d transport failures — LLM transport looks "
+                    "down; pausing assessment %.0f min (rows stay NEW; CL-3mtg)",
+                    transports,
+                    len(to_assess),
+                    cooldown_min,
+                )
 
         # Return in the original row order (deterministic logs / downstream).
         return [results_by_id[int(row["id"])] for row in rows]

@@ -139,6 +139,8 @@ def classify_pending(
             ],
             model=chosen_model,
             max_tokens=1600,
+            # Single-shot classification of injected text (CL-scup).
+            no_tools=True,
         )
         items = extract_json_array(resp.text)
     except Exception as exc:

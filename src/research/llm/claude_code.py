@@ -158,7 +158,22 @@ class ClaudeCodeDriver(Driver):
         )
         elapsed = time.time() - t0
         if proc.returncode != 0:
-            msg = f"claude -p exited {proc.returncode}: {(proc.stderr or proc.stdout)[-500:]}"
+            # Prefer stderr; else mine the JSON payload for the ERROR fields
+            # (CL-hm2k) — the raw tail is the end of the usage block, which
+            # made the Aug 4-6 1080-failure outage undiagnosable from logs.
+            detail = (proc.stderr or "").strip()
+            if not detail:
+                raw = (proc.stdout or "").strip()
+                try:
+                    err = json.loads(raw)
+                    detail = (
+                        f"subtype={err.get('subtype')!r} "
+                        f"api_error_status={err.get('api_error_status')!r} "
+                        f"result={str(err.get('result'))[:300]}"
+                    )
+                except json.JSONDecodeError:
+                    detail = raw[:500]  # head — the informative end
+            msg = f"claude -p exited {proc.returncode}: {detail}"
             raise RuntimeError(msg)
         try:
             payload = json.loads(proc.stdout)

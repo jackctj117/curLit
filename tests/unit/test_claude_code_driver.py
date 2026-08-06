@@ -117,6 +117,40 @@ class TestComplete:
         assert "--system-prompt" in cmd and "persona" in cmd
         assert "--model" in cmd and "claude-fable-5" in cmd
 
+    def test_nonzero_exit_surfaces_error_fields_not_usage_tail(self) -> None:
+        # CL-hm2k: with empty stderr and a JSON payload on stdout, the raised
+        # message must carry subtype / api_error_status / the HEAD of result —
+        # the raw tail is the end of the usage block and diagnoses nothing.
+        payload = json.dumps(
+            {
+                "subtype": "error_during_execution",
+                "api_error_status": 429,
+                "result": "Rate limited: usage window exhausted." + " pad" * 200,
+                "usage": {"input_tokens": 9},
+            }
+        )
+        drv = _driver()
+        with (
+            patch("subprocess.run", return_value=_proc(payload, returncode=1)),
+            pytest.raises(RuntimeError) as exc,
+        ):
+            drv.complete([Message("user", "hi")], model="claude-fable-5")
+        msg = str(exc.value)
+        assert "subtype='error_during_execution'" in msg
+        assert "api_error_status=429" in msg
+        assert "Rate limited: usage window exhausted." in msg
+
+    def test_nonzero_exit_prefers_stderr(self) -> None:
+        drv = _driver()
+        with (
+            patch(
+                "subprocess.run",
+                return_value=_proc("{}", returncode=1, stderr="boom: real reason"),
+            ),
+            pytest.raises(RuntimeError, match="boom: real reason"),
+        ):
+            drv.complete([Message("user", "hi")], model="claude-fable-5")
+
     def test_no_tools_strips_the_builtin_toolset(self) -> None:
         # CL-u5cq: single-shot JSON callers pass no_tools=True; the CLI gets
         # --tools "" so the headless session cannot research the prompt into

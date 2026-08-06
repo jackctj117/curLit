@@ -211,6 +211,8 @@ class ReflectiveReviewer:
 
         try:
             resp = self.client.complete(
+                # Single-shot JSON over injected data — no toolset (CL-scup).
+                no_tools=True,
                 messages=[
                     Message(role="system", content=_SYSTEM_PROMPT),
                     Message(

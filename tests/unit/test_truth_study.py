@@ -118,7 +118,10 @@ class _FakeLLM:
     def __init__(self, payload: str) -> None:
         self._payload = payload
 
-    def complete(self, messages, model, max_tokens):  # noqa: ANN001, ANN201
+    def complete(self, messages, model, max_tokens, **kwargs):  # noqa: ANN001, ANN201, ANN003
+        # CL-scup: classification is single-shot — toolset must be stripped.
+        assert kwargs.get("no_tools") is True
+
         class _R:
             text = self._payload
 

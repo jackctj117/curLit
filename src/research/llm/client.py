@@ -152,6 +152,10 @@ class _ClaudeDriver(Driver):
         temperature: float = 0.0,
         **kwargs: Any,
     ) -> LLMResponse:
+        # no_tools is a claude-code TRANSPORT hint (CL-scup) — an API call
+        # has no tools unless declared, so the capability is already absent
+        # here; forwarding the kwarg would 400.
+        kwargs.pop("no_tools", None)
         # Anthropic separates system from user/assistant messages.
         system_text = "\n\n".join(m.content for m in messages if m.role == "system")
         chat: Any = [
@@ -265,6 +269,7 @@ class _OpenAICompatDriver(Driver):
         temperature: float = 0.0,
         **kwargs: Any,
     ) -> LLMResponse:
+        kwargs.pop("no_tools", None)  # claude-code transport hint (CL-scup)
         chat: Any = [{"role": m.role, "content": m.content} for m in messages]
         t0 = time.time()
         resp = self._client.chat.completions.create(

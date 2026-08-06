@@ -47,7 +47,7 @@ class MockLLMClient:
         self.calls: list[dict[str, Any]] = []
 
     def complete(self, messages: Any, model: str, **kwargs: Any) -> SimpleNamespace:
-        self.calls.append({"messages": messages, "model": model})
+        self.calls.append({"messages": messages, "model": model, "kwargs": kwargs})
         return SimpleNamespace(
             text=self.text_out,
             model=model,
@@ -587,6 +587,9 @@ class TestIterativeHopping:
         assert agent.max_cycles == 1
         agent.run(self._event())
         assert len(client.calls) == 1  # exactly one pass, original behavior
+        # CL-scup: text-protocol cycles — the claude-code toolset must be
+        # stripped (sanctioned tool use lives in kimi_tool_agent).
+        assert client.calls[0]["kwargs"].get("no_tools") is True
 
     def test_accumulates_new_names_across_cycles(self) -> None:
         c1 = _payload(_idea_dict(ticker="REAL", company_name="Real Co Inc"))

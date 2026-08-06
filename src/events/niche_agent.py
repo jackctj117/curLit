@@ -576,6 +576,9 @@ class NicheAgent:
                     ],
                     model=self.model,
                     max_tokens=self.max_tokens,
+                    # Text-protocol cycles over injected grounding; sanctioned
+                    # tool use lives in kimi_tool_agent, not here (CL-scup).
+                    no_tools=True,
                 )
             except Exception as exc:
                 logger.warning(
