@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -30,12 +29,20 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import text
 
 from src.events.prices import parse_ts
+from src.execution.alpaca_exposure import (
+    ExposureUnavailableError,
+    option_underlying,
+    position_quantity,
+    require_positive_int,
+    validated_positions,
+)
 from src.execution.alpaca_options import (
     AlpacaOptionsClient,
     ContractSelectionConfig,
     mid_and_spread,
     resolve_contract,
 )
+from src.monitoring.logging_setup import LogContext
 
 logger = logging.getLogger(__name__)
 
@@ -69,37 +76,36 @@ def _held_contract_counts(
     Reads the live Alpaca book for the concentration cap (CL-3nfm) — the DB
     order log is not enough, since a position can also be closed externally.
 
-    FAIL-OPEN: any lookup problem returns (0, 0) so a broker/API blip cannot
-    block entries outright. A cap is a ceiling, not a safety interlock; the
-    premium and daily/hourly caps still bound the damage.
+    CL-0deu.1.1: unknown/malformed exposure raises ExposureUnavailableError.
+    This reads filled positions only; working orders/reservations are the
+    remaining CL-0deu.1 work, not silently represented as validated here.
     """
     try:
-        positions = client.list_option_positions() or []
-    except Exception:
-        logger.warning(
-            "alpaca options: position lookup failed — concentration cap not applied",
-            exc_info=True,
-        )
-        return (0, 0)
+        logger.info("alpaca options: reading exposure before entry")
+        positions = validated_positions(client.list_option_positions(), asset_class="us_option")
+    except ExposureUnavailableError:
+        raise
+    except Exception as exc:
+        raise ExposureUnavailableError("position_lookup_failed") from exc
     same_symbol = 0
     same_underlying = 0
     root = str(underlying).upper()
+    if option_underlying(occ_symbol) != root:
+        raise ExposureUnavailableError("contract_underlying_mismatch")
     for p in positions:
-        sym = str(p.get("symbol") or "")
-        try:
-            qty = abs(int(float(p.get("qty") or 0)))
-        except (TypeError, ValueError):
-            qty = 0
-        if not sym or qty <= 0:
-            continue
+        sym = str(p["symbol"])
+        qty = abs(int(position_quantity(p["qty"], whole_contracts=True)))
+        position_root = option_underlying(sym)
+        # Adjusted OCC roots can include a digit but still represent the
+        # original underlying. Until contract metadata resolves that mapping,
+        # treating RTX1 as unrelated to RTX could bypass the underlying cap.
+        if any(char.isdigit() for char in position_root):
+            raise ExposureUnavailableError("adjusted_option_underlying_unavailable")
         if sym == occ_symbol:
             same_symbol += qty
-        # OCC symbols are <ROOT><YYMMDD><C|P><strike>; the root is the leading
-        # alpha run, so compare that rather than a prefix match (which would
-        # make "AS" collide with "ASC"/"ASTL").
-        m = re.match(r"^([A-Z]+)", sym)
-        if m and m.group(1) == root:
+        if position_root == root:
             same_underlying += qty
+    assert 0 <= same_symbol <= same_underlying
     return (same_symbol, same_underlying)
 
 
@@ -167,6 +173,16 @@ class OptionsExecConfig:
     # Fail-open: no history/context -> no gate (consistent with the repo's
     # missing-data posture). -1.01 disables the gate entirely.
     min_alignment: float = -0.4
+
+    def __post_init__(self) -> None:
+        require_positive_int("qty", self.qty)
+        for name in (
+            "max_contracts_per_symbol",
+            "max_contracts_per_underlying",
+            "max_per_day",
+            "max_per_hour",
+        ):
+            require_positive_int(name, getattr(self, name), allow_zero=True)
 
 
 _NY = ZoneInfo("America/New_York")
@@ -316,6 +332,7 @@ def execute_pending_options(
         "submitted": 0,
         "skipped_premium": 0,
         "skipped_concentration": 0,
+        "blocked_exposure": 0,
         "skipped_spread": 0,
         "skipped_expiring": 0,
         "no_contract": 0,
@@ -389,8 +406,7 @@ def execute_pending_options(
                     )
                     counts["skipped_expiring"] += 1
                     logger.info(
-                        "alpaca options: skipped %s (%s) — idea expires in %.1fd "
-                        "(< %.1fd floor)",
+                        "alpaca options: skipped %s (%s) — idea expires in %.1fd (< %.1fd floor)",
                         ticker,
                         idea["idea_id"],
                         left_days,
@@ -509,27 +525,46 @@ def execute_pending_options(
             # adding. idea_id dedup can't see this — two different ideas naming
             # the same contract both pass it — so repeated confirmations on one
             # theme silently stacked size in a single name (FRO reached qty=3).
-            held_symbol, held_underlying = _held_contract_counts(client, occ, ticker)
-            if held_symbol >= cfg.max_contracts_per_symbol:
+            with LogContext(idea_id=str(idea["idea_id"]), symbol=occ, venue="alpaca_options"):
+                try:
+                    held_symbol, held_underlying = _held_contract_counts(client, occ, ticker)
+                except ExposureUnavailableError as exc:
+                    counts["blocked_exposure"] += 1
+                    logger.warning(
+                        "alpaca options: entry blocked — exposure unavailable (%s)",
+                        exc,
+                        extra={
+                            "extra_data": {
+                                "reason": "blocked_exposure",
+                                "detail": str(exc),
+                                "idea_id": str(idea["idea_id"]),
+                                "symbol": occ,
+                            }
+                        },
+                    )
+                    continue
+            if held_symbol + cfg.qty > cfg.max_contracts_per_symbol:
                 counts["skipped_concentration"] += 1
                 logger.info(
                     "alpaca options: skipped %s (%s) — already hold %d of this "
-                    "contract (max %d/symbol)",
+                    "contract plus proposed %d (max %d/symbol)",
                     ticker,
                     occ,
                     held_symbol,
+                    cfg.qty,
                     cfg.max_contracts_per_symbol,
                 )
                 continue
-            if held_underlying >= cfg.max_contracts_per_underlying:
+            if held_underlying + cfg.qty > cfg.max_contracts_per_underlying:
                 counts["skipped_concentration"] += 1
                 logger.info(
                     "alpaca options: skipped %s (%s) — already hold %d contracts on "
-                    "%s (max %d/underlying)",
+                    "%s plus proposed %d (max %d/underlying)",
                     ticker,
                     occ,
                     held_underlying,
                     ticker,
+                    cfg.qty,
                     cfg.max_contracts_per_underlying,
                 )
                 continue
@@ -539,6 +574,12 @@ def execute_pending_options(
             # bought again. Alpaca's client_order_id uniqueness makes the
             # resubmit fail, which we recover below as already-executed.
             try:
+                logger.info(
+                    "alpaca options: submitting entry %d %s [idea %s]",
+                    cfg.qty,
+                    occ,
+                    idea["idea_id"],
+                )
                 order = client.submit_option_order(
                     occ,
                     cfg.qty,

@@ -320,19 +320,76 @@ def test_allows_when_book_is_clear(engine):
     assert counts["submitted"] == 1
 
 
-def test_position_lookup_failure_fails_open(engine):
-    # A broker blip must not block entries — the cap is a ceiling, not an
-    # interlock (notional + daily/hourly caps still bound the damage).
+def test_position_lookup_failure_blocks_entry_and_retries(engine):
+    # CL-0deu.1.1 deliberately reverses the legacy fail-open policy.
     _seed(engine, "ok")
 
     class _Boom(_FakeClient):
         def list_equity_positions(self, **kw: Any) -> list[dict[str, Any]]:
             raise RuntimeError("alpaca down")
 
+    client = _Boom(fill=95.0)
+    counts = execute_pending_equities(engine, client, _price, now=NOW, technicals_fn=_no_tech)
+    assert counts["submitted"] == 0 and counts["blocked_exposure"] == 1
+    assert client.orders == []
+    assert {i["idea_id"] for i in fetch_executable_ideas(engine, EquityExecConfig())} == {"ok"}
+    with engine.connect() as conn:
+        assert conn.execute(text("SELECT count(*) FROM alpaca_equity_orders")).scalar_one() == 0
     counts = execute_pending_equities(
-        engine, _Boom(fill=95.0), _price, now=NOW, technicals_fn=_no_tech
+        engine, _FakeClient(fill=95.0), _price, now=NOW, technicals_fn=_no_tech
     )
     assert counts["submitted"] == 1
+
+
+def test_missing_position_capability_blocks_entry(
+    engine: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _seed(engine, "unknown")
+    monkeypatch.delattr(_FakeClient, "list_equity_positions")
+    client = _FakeClient()
+    counts = execute_pending_equities(engine, client, _price, now=NOW, technicals_fn=_no_tech)
+    assert counts["blocked_exposure"] == 1 and counts["submitted"] == 0
+    assert client.orders == []
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        None,
+        {},
+        [None],
+        *[
+            [{"symbol": "RTX", "asset_class": "us_equity", "qty": qty}]
+            for qty in (None, "", "bad", "NaN", "Infinity", "-Infinity", True)
+        ],
+    ],
+)
+def test_malformed_exposure_blocks_entry(
+    engine: Any, payload: object, caplog: pytest.LogCaptureFixture
+) -> None:
+    _seed(engine, "unknown")
+
+    class _Invalid(_FakeClient):
+        def list_equity_positions(self, **kw: Any) -> Any:
+            return payload
+
+    client = _Invalid()
+    counts = execute_pending_equities(engine, client, _price, now=NOW, technicals_fn=_no_tech)
+    assert counts["blocked_exposure"] == 1 and counts["submitted"] == 0
+    assert client.orders == []
+    assert {i["idea_id"] for i in fetch_executable_ideas(engine, EquityExecConfig())} == {"unknown"}
+    blocked = [r for r in caplog.records if hasattr(r, "extra_data")]
+    assert blocked[-1].extra_data["reason"] == "blocked_exposure"
+
+
+@pytest.mark.parametrize("quantity", ["0.001", "-0.001", "0.5", "-0.5"])
+def test_fractional_external_equity_position_counts_as_held(engine: Any, quantity: str) -> None:
+    _seed(engine, "fractional")
+    client = _FakeClient(positions=[{"symbol": "RTX", "asset_class": "us_equity", "qty": quantity}])
+    counts = execute_pending_equities(engine, client, _price, now=NOW, technicals_fn=_no_tech)
+    assert counts["skipped_concentration"] == 1 and counts["submitted"] == 0
+    assert counts["blocked_exposure"] == 0
+    assert client.orders == []
 
 
 # --------------------------------------------------------------------------- #

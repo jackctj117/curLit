@@ -44,21 +44,29 @@ import math
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import text
 
 from src.events.prices import parse_ts
 from src.execution.alpaca_equity import AlpacaEquityClient
+from src.execution.alpaca_exposure import (
+    ExposureUnavailableError,
+    position_quantity,
+    require_positive_int,
+    validated_positions,
+)
 
 # Shared with the options book on purpose — these encode lessons about the
-# IDEA (opening spreads are widest, a broker blip must not block entries),
+# IDEA (opening spreads are widest),
 # not about options, so forking them would let the two books drift.
 from src.execution.alpaca_options_executor import (
     _default_price_fn,
     _entry_delay_active,
     _is_duplicate_client_order_id,
 )
+from src.monitoring.logging_setup import LogContext
 
 logger = logging.getLogger(__name__)
 
@@ -115,31 +123,37 @@ class EquityExecConfig:
     #: are recorded TERMINALLY (the policy will not change mid-idea).
     allow_short: bool = True
 
+    def __post_init__(self) -> None:
+        for name in ("max_positions_per_ticker", "max_per_day", "max_per_hour"):
+            require_positive_int(name, getattr(self, name), allow_zero=True)
+        if (
+            isinstance(self.notional_usd, bool)
+            or not isinstance(self.notional_usd, (int, float))
+            or not math.isfinite(self.notional_usd)
+            or self.notional_usd <= 0
+        ):
+            raise ValueError("notional_usd must be finite and positive")
 
-def _held_ticker_qty(client: Any, ticker: str) -> int:
+
+def _held_ticker_qty(client: Any, ticker: str) -> Decimal:
     """Shares (long or short) already held in ``ticker`` on the live book.
 
-    FAIL-OPEN: any lookup problem returns 0, so a broker/API blip cannot block
-    entries outright. A concentration cap is a ceiling, not a safety interlock
-    — the notional and daily/hourly caps still bound the damage.
+    CL-0deu.1.1: raise on unknown exposure and preserve fractional holdings.
     """
     try:
-        positions = client.list_equity_positions() or []
-    except Exception:
-        logger.warning(
-            "alpaca equity: position lookup failed — concentration cap not applied",
-            exc_info=True,
-        )
-        return 0
+        logger.info("alpaca equity: reading exposure before entry")
+        positions = validated_positions(client.list_equity_positions(), asset_class="us_equity")
+    except ExposureUnavailableError:
+        raise
+    except Exception as exc:
+        raise ExposureUnavailableError("position_lookup_failed") from exc
     root = str(ticker).upper()
-    total = 0
+    total = Decimal(0)
     for p in positions:
         if str(p.get("symbol") or "").upper() != root:
             continue
-        try:
-            total += abs(int(float(p.get("qty") or 0)))
-        except (TypeError, ValueError):
-            continue
+        total += abs(position_quantity(p["qty"]))
+    assert total >= 0
     return total
 
 
@@ -265,6 +279,7 @@ def execute_pending_equities(
         "skipped_short_disabled": 0,
         "skipped_price_too_high": 0,
         "skipped_concentration": 0,
+        "blocked_exposure": 0,
         "no_price": 0,
         "misaligned": 0,
         "entry_delayed": 0,
@@ -418,7 +433,24 @@ def execute_pending_equities(
             # CONCENTRATION cap (CL-3nfm) against the LIVE book. Transient:
             # once the earlier position closes, this idea may legitimately
             # enter — recording it terminally would silently drop it.
-            held = _held_ticker_qty(client, ticker)
+            with LogContext(idea_id=str(idea["idea_id"]), symbol=ticker, venue="alpaca_equity"):
+                try:
+                    held = _held_ticker_qty(client, ticker)
+                except ExposureUnavailableError as exc:
+                    counts["blocked_exposure"] += 1
+                    logger.warning(
+                        "alpaca equity: entry blocked — exposure unavailable (%s)",
+                        exc,
+                        extra={
+                            "extra_data": {
+                                "reason": "blocked_exposure",
+                                "detail": str(exc),
+                                "idea_id": str(idea["idea_id"]),
+                                "symbol": ticker,
+                            }
+                        },
+                    )
+                    continue
             # Alpaca NETS equity holdings, so a ticker is either held or not —
             # one position, whatever its size. The cap therefore answers "may
             # we open in a name we are already in?"; share counts don't stack
@@ -426,7 +458,7 @@ def execute_pending_equities(
             if (1 if held > 0 else 0) >= cfg.max_positions_per_ticker:
                 counts["skipped_concentration"] += 1
                 logger.info(
-                    "alpaca equity: skipped %s — already hold %d shares (max %d position/ticker)",
+                    "alpaca equity: skipped %s — already hold %s shares (max %d position/ticker)",
                     ticker,
                     held,
                     cfg.max_positions_per_ticker,
@@ -450,6 +482,13 @@ def execute_pending_equities(
             # row makes the next cycle's resubmit fail Alpaca's uniqueness
             # check, which we recover below as already-executed.
             try:
+                logger.info(
+                    "alpaca equity: submitting %s entry %d %s [idea %s]",
+                    wire_side,
+                    qty,
+                    ticker,
+                    idea["idea_id"],
+                )
                 order = client.submit_equity_order(
                     ticker,
                     qty,

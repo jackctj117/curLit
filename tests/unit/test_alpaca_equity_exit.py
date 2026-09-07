@@ -177,6 +177,32 @@ def _pos(symbol="RTX", qty="10", avg="100.0", cur="101.0"):
     }
 
 
+@pytest.mark.parametrize(
+    "payload", [None, {}, [{"symbol": "RTX", "asset_class": "us_equity", "qty": "NaN"}]]
+)
+def test_invalid_broker_snapshot_cannot_close_position(engine: Any, payload: object) -> None:
+    from src.execution.alpaca_equity import AlpacaEquityClient
+
+    _seed(engine, "unknown")
+    requests: list[tuple[str, str]] = []
+
+    def request(
+        method: str,
+        url: str,
+        headers: dict[str, str],
+        params: dict[str, str] | None,
+        body: dict[str, Any] | None,
+    ) -> object:
+        requests.append((method, url))
+        return {"is_open": True} if url.endswith("/clock") else payload
+
+    client = AlpacaEquityClient("K", "S", request_fn=request)
+    counts = manage_equity_exits(engine, client, now=NOW)
+    assert counts["error"] == 1
+    assert _row(engine, "unknown")["exit_status"] is None
+    assert all(method == "GET" for method, _ in requests)
+
+
 def _row(engine, idea_id):
     with engine.connect() as c:
         return dict(

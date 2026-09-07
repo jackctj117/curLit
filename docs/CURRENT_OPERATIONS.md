@@ -58,6 +58,24 @@ Everything is PAPER. No real money moves anywhere.
 - **Account**: Alpaca paper (`ALPACA_API_KEY/SECRET`), $100,000, options
   level 3. Executor: `scripts/execute_options.py --loop 300` (market-hours
   aware; a clean no-op when closed).
+- **Entry exposure interlock (CL-0deu.1.1, 2026-09-07)**: both options and
+  equities require a successfully read, validated position list before a new
+  entry. Null/malformed responses, missing position-list capability, invalid
+  quantities, duplicate symbols, and unidentifiable asset classes block entry
+  with `blocked_exposure` (structured reason/detail in logs). Only an explicit
+  empty list means flat. Blocked ideas remain eligible for retry; no terminal
+  order row is written. Fractional equity holdings count as exposure. Options
+  compare **held + proposed contracts** against both contract and underlying
+  caps. Adjusted option roots that need an underlying mapping also block
+  entries until that exposure can be identified. Invalid direct contract
+  quantities/count caps reject configuration; zero count caps
+  deliberately disable entries. Exit rules have no new entry interlock, and
+  malformed broker snapshots raise instead of being mistaken for disappeared
+  positions. **Remaining CL-0deu.1 work:** working-order exposure, snapshot
+  freshness metadata and durable reservations across concurrent workers are
+  not yet included. This first interlock does not establish a complete
+  portfolio pre-trade gate. Code takes effect when the executors next load it;
+  this implementation session did not restart daemons or change paper modes.
 - **Policy (paper phase — deliberately widened to build a sample, CL-ldd2)**:
   - pool: pending `buy_calls`/`buy_puts` ideas, confidence ≥ **0.45**
     (`ALPACA_OPT_MIN_CONFIDENCE`); niche/red-team gates OFF

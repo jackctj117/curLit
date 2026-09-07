@@ -362,6 +362,33 @@ def test_vanished_after_exit_submitted_confirms(engine):
     assert row["exit_reason"] == "stop_loss"  # submit-time reason kept
 
 
+@pytest.mark.parametrize(
+    "payload", [None, {}, [{"symbol": OCC, "asset_class": "us_option", "qty": "NaN"}]]
+)
+def test_invalid_broker_snapshot_cannot_confirm_disappearance(engine: Any, payload: object) -> None:
+    from src.execution.alpaca_options import AlpacaOptionsClient
+
+    _seed(engine, "unknown", exit_status="submitted", exit_reason="stop_loss")
+    requests: list[tuple[str, str]] = []
+
+    def request(
+        method: str,
+        url: str,
+        headers: dict[str, str],
+        params: dict[str, str] | None,
+        body: dict[str, Any] | None,
+    ) -> object:
+        requests.append((method, url))
+        return {"is_open": True} if url.endswith("/clock") else payload
+
+    client = AlpacaOptionsClient("K", "S", request_fn=request)
+    counts = manage_option_exits(engine, client, now=NOW)
+    assert counts["error"] == 1
+    assert counts["closed_confirmed"] == 0
+    assert _row(engine, "unknown")["exit_status"] == "submitted"
+    assert all(method == "GET" for method, _ in requests)
+
+
 def test_vanished_past_expiry_marked_worthless(engine):
     _seed(engine, "worthless", occ="RTX260717C00105000")  # expired 07-17
     counts = manage_option_exits(engine, _FakeClient([]), now=NOW)

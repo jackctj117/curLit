@@ -27,6 +27,8 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Any
 
+from src.execution.alpaca_exposure import validated_positions
+
 logger = logging.getLogger(__name__)
 
 
@@ -308,8 +310,9 @@ class AlpacaOptionsClient:
             return None
 
     def list_option_positions(self) -> list[dict[str, Any]]:
+        logger.info("alpaca options: fetching position snapshot")
         positions = self._req("GET", "/v2/positions")
-        return [p for p in (positions or []) if str(p.get("asset_class")) == "us_option"]
+        return validated_positions(positions, asset_class="us_option")
 
 
 def resolve_contract(

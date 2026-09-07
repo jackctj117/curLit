@@ -30,6 +30,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from src.execution.alpaca_exposure import validated_positions
 from src.execution.alpaca_options import (
     DATA_BASE,
     LIVE_BASE,
@@ -180,5 +181,6 @@ class AlpacaEquityClient:
         ``asset_class`` is what keeps the two books from managing each
         other's positions.
         """
+        logger.info("alpaca equity: fetching position snapshot")
         positions = self._req("GET", "/v2/positions")
-        return [p for p in (positions or []) if str(p.get("asset_class")) == "us_equity"]
+        return validated_positions(positions, asset_class="us_equity")

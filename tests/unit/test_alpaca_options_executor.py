@@ -52,6 +52,10 @@ class _FakeClient:
     def get_option_ask(self, occ: str) -> float | None:
         return self._ask
 
+    def list_option_positions(self) -> list[dict[str, Any]]:
+        # Explicit flat snapshot; missing capability is tested separately.
+        return []
+
     def submit_option_order(
         self, occ: str, qty: int, side: str = "buy", client_order_id: str | None = None
     ) -> dict[str, Any]:
@@ -201,7 +205,9 @@ class TestUrgencyFloor:
                         '[niche] x | survived red-team','pending','2026-07-21',:g)"""),
                 {"g": gid},
             )
-        got = {i["idea_id"] for i in fetch_executable_ideas(engine, OptionsExecConfig(min_urgency=8))}
+        got = {
+            i["idea_id"] for i in fetch_executable_ideas(engine, OptionsExecConfig(min_urgency=8))
+        }
         assert got == {"hot"}
 
 
@@ -237,7 +243,9 @@ def test_idea_life_floor_disabled(engine):
     _seed(engine, "dying", time_stop=2)
     client = _FakeClient(ask=2.0)
     cfg = OptionsExecConfig(min_idea_life_days=0)
-    counts = execute_pending_options(engine, client, _price, cfg=cfg, now=NOW, technicals_fn=_no_tech)
+    counts = execute_pending_options(
+        engine, client, _price, cfg=cfg, now=NOW, technicals_fn=_no_tech
+    )
     assert counts["submitted"] == 1 and counts["skipped_expiring"] == 0
 
 
@@ -536,27 +544,100 @@ def test_underlying_match_is_root_exact_not_prefix(engine):
     assert same_under == 0  # ASTL must NOT count against ASC
 
 
-def test_position_lookup_failure_fails_open(engine):
-    # A broker blip must not block entries — the cap is a ceiling, not an
-    # interlock (premium + daily/hourly caps still bound the damage).
+def test_position_lookup_failure_blocks_entry_and_retries(engine):
+    # CL-0deu.1.1 deliberately reverses the legacy fail-open policy.
     _seed(engine, "ok")
 
     class _Boom(_FakeClient):
         def list_option_positions(self):  # type: ignore[no-untyped-def]
             raise RuntimeError("alpaca down")
 
-    counts = execute_pending_options(
-        engine, _Boom(ask=2.0), _price, now=NOW, technicals_fn=_no_tech
-    )
+    client = _Boom(ask=2.0)
+    counts = execute_pending_options(engine, client, _price, now=NOW, technicals_fn=_no_tech)
+    assert counts["submitted"] == 0
+    assert counts["blocked_exposure"] == 1
+    assert client.orders == []
+    assert {i["idea_id"] for i in fetch_executable_ideas(engine, OptionsExecConfig())} == {"ok"}
+    with engine.connect() as conn:
+        assert conn.execute(text("SELECT count(*) FROM alpaca_option_orders")).scalar_one() == 0
+    counts = execute_pending_options(engine, _FakeClient(), _price, now=NOW, technicals_fn=_no_tech)
     assert counts["submitted"] == 1
 
 
-def test_client_without_position_listing_fails_open(engine):
+def test_client_without_position_listing_blocks_entry(engine, monkeypatch):
     _seed(engine, "ok")
-    counts = execute_pending_options(
-        engine, _FakeClient(ask=2.0), _price, now=NOW, technicals_fn=_no_tech
+    monkeypatch.delattr(_FakeClient, "list_option_positions")
+    client = _FakeClient(ask=2.0)
+    counts = execute_pending_options(engine, client, _price, now=NOW, technicals_fn=_no_tech)
+    assert counts["submitted"] == 0
+    assert counts["blocked_exposure"] == 1
+    assert client.orders == []
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        None,
+        {},
+        [None],
+        *[
+            [{"symbol": "RTX260821C00105000", "asset_class": "us_option", "qty": qty}]
+            for qty in (None, "", "bad", "NaN", "Infinity", "-Infinity", "0.5", True)
+        ],
+    ],
+)
+def test_malformed_exposure_blocks_entry(
+    engine: Any, payload: object, caplog: pytest.LogCaptureFixture
+) -> None:
+    _seed(engine, "unknown")
+
+    class _Invalid(_FakeClient):
+        def list_option_positions(self) -> Any:
+            return payload
+
+    client = _Invalid()
+    counts = execute_pending_options(engine, client, _price, now=NOW, technicals_fn=_no_tech)
+    assert counts["blocked_exposure"] == 1 and counts["submitted"] == 0
+    assert client.orders == []
+    assert {i["idea_id"] for i in fetch_executable_ideas(engine, OptionsExecConfig())} == {
+        "unknown"
+    }
+    blocked = [r for r in caplog.records if hasattr(r, "extra_data")]
+    assert blocked[-1].extra_data["reason"] == "blocked_exposure"
+
+
+@pytest.mark.parametrize(
+    "held,symbol_cap,underlying_cap,proposed,expected",
+    [
+        ([], 1, 2, 2, 0),  # Empty book, but proposed qty exceeds the symbol cap.
+        ([_opt_pos("RTX260821C00200000", 1)], 2, 2, 2, 0),
+        ([_opt_pos("RTX260821C00105000", 1)], 2, 3, 2, 0),
+        ([_opt_pos("RTX260821C00200000", 1)], 2, 3, 2, 1),
+        ([], 2, 2, 2, 1),  # Exactly fits BOTH caps.
+        ([], 0, 2, 1, 0),  # Zero is an explicit disabled cap.
+    ],
+)
+def test_proposed_quantity_must_fit_both_caps(
+    engine: Any,
+    held: list[dict[str, Any]],
+    symbol_cap: int,
+    underlying_cap: int,
+    proposed: int,
+    expected: int,
+) -> None:
+    _seed(engine, "capacity")
+    client = _PositionedClient(held, ask=1.0)
+    cfg = OptionsExecConfig(
+        qty=proposed,
+        max_contracts_per_symbol=symbol_cap,
+        max_contracts_per_underlying=underlying_cap,
     )
-    assert counts["submitted"] == 1
+    counts = execute_pending_options(
+        engine, client, _price, cfg=cfg, now=NOW, technicals_fn=_no_tech
+    )
+    assert counts["submitted"] == expected
+    assert counts["skipped_concentration"] == 1 - expected
+    assert client.orders == ([("RTX260821C00105000", proposed, "buy")] if expected else [])
 
 
 # --------------------------------------------------------------------------- #

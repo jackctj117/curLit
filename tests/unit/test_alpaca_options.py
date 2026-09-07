@@ -128,8 +128,8 @@ def test_submit_order_body():
 def test_list_option_positions_filters_asset_class():
     api = _FakeAPI(
         positions=[
-            {"symbol": "AAPL", "asset_class": "us_equity"},
-            {"symbol": "AAPL260821C00105000", "asset_class": "us_option"},
+            {"symbol": "AAPL", "qty": "1", "asset_class": "us_equity"},
+            {"symbol": "AAPL260821C00105000", "qty": "1", "asset_class": "us_option"},
         ]
     )
     c = AlpacaOptionsClient("K", "S", request_fn=api)
