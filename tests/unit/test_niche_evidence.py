@@ -326,6 +326,56 @@ def test_native_unfunded_error_is_redacted_and_unavailable(caplog: Any) -> None:
     assert "PRIVATE_ID" not in caplog.text and "PRIVATE_ID" not in json.dumps(result.to_dict())
 
 
+def test_native_budget_finalization_preserves_sources_and_all_downstream_gates() -> None:
+    """Synthetic captured tool packet proves transport recovery, not model quality."""
+    calls: list[dict[str, Any]] = []
+
+    def create(**kwargs: Any) -> Any:
+        calls.append(kwargs)
+        if len(calls) == 1:
+            tool_calls = [
+                SimpleNamespace(
+                    id=f"filing-{i}",
+                    function=SimpleNamespace(
+                        name="get_sec_filing",
+                        arguments='{"ticker":"ACME"}',
+                    ),
+                )
+                for i in range(25)
+            ]
+            message = SimpleNamespace(content="", tool_calls=tool_calls)
+            finish = "tool_calls"
+        else:
+            assert kwargs["tool_choice"] == "none"
+            message = SimpleNamespace(content=final_text(), tool_calls=[])
+            finish = "stop"
+        return SimpleNamespace(choices=[SimpleNamespace(message=message, finish_reason=finish)])
+
+    tools = SimpleNamespace(filing_documents=lambda *args: [SOURCE])
+    universe = SimpleNamespace(get_cik=lambda ticker: 1)
+    result = KimiToolAgent(universe, tools, api_key="fixture", create_fn=create).discover_result(
+        snapshot().payload()["event"],
+    )
+    assert result.status == "completed"
+    assert result.sources == [SOURCE]  # Exact source identity survives finalization and caching.
+    candidates = parse_niche_ideas(result.text)
+    assert len(candidates) == 1
+    candidate = candidates[0]
+    candidate.sources, candidate.discovery_status, candidate.verified = (
+        result.sources,
+        result.status,
+        True,
+    )
+    evidence_score(candidate, MARKET, NOW)
+    assert candidate.evidence_status == "source_backed"
+    assert not candidate.research_eligible  # A final answer still needs independent review.
+    AdversarialCritic(client=CriticClient(), enabled=True).apply([candidate], {}, as_of=NOW)
+    assert candidate.research_eligible
+    evidence_score(candidate, {}, NOW)
+    assert candidate.liquidity_status == "unknown"
+    assert not candidate.research_eligible
+
+
 def test_equivalent_tool_trials_preserve_raw_before_common_critic() -> None:
     request = json.dumps(
         {"tool_requests": [{"name": "get_sec_filing", "arguments": {"ticker": "ACME"}}]}

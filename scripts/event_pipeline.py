@@ -202,8 +202,8 @@ def _niche_max_concurrency() -> int:
 
 def _niche_step(engine: object, results: list, min_urgency: int) -> int:
     """CL-u2ph: multi-hop niche/asymmetry pass on high-urgency ASSESSED
-    events only (quota discipline — one extra LLM call per qualifying
-    event). Surviving VERIFIED, liquidity-gated niche ideas are MERGED
+    events only (bounded extra research per qualifying event).
+    Surviving VERIFIED, liquidity-gated niche ideas are MERGED
     into each event's in-memory assessment ``trade_ideas`` (tagged
     niche=true) AND re-persisted to geo_events so they flow through the
     downstream enrich/persist/digest path unchanged. Returns how many
@@ -214,11 +214,13 @@ def _niche_step(engine: object, results: list, min_urgency: int) -> int:
     and returns, never kills the cycle."""
     import json as _json  # noqa: PLC0415
     from concurrent.futures import ThreadPoolExecutor  # noqa: PLC0415
+    from uuid import uuid4  # noqa: PLC0415
 
     from sqlalchemy import text  # noqa: PLC0415
 
     from src.data.symbols import SymbolUniverse  # noqa: PLC0415
     from src.events.niche_agent import NicheAgent, NicheReport  # noqa: PLC0415
+    from src.events.niche_audit import persist_niche_audit  # noqa: PLC0415
     from src.events.playbooks import load_playbooks  # noqa: PLC0415
     from src.events.research_evidence import DiscoveryOutcome  # noqa: PLC0415
 
@@ -248,22 +250,24 @@ def _niche_step(engine: object, results: list, min_urgency: int) -> int:
     except Exception:
         logger.debug("symbol-universe cache warm-up skipped", exc_info=True)
 
-    def _discover(r: Any) -> tuple[Any, NicheReport]:
+    def _discover(r: Any) -> tuple[Any, NicheReport, str, dict[str, Any]]:
         """Thread body — DISCOVERY ONLY (thread-safe: verify reads the warmed
         in-memory universe; the Kimi/yfinance/critic calls are independent
         blocking I/O). Merge + DB persist stay on the caller thread. Fail-soft
         per event so one bad event never sinks the batch."""
+        invocation_id = str(uuid4())
+        row = {
+            "id": r.event_id,
+            "headline": r.headline,
+            "theme": r.theme,
+            "assessment": copy.deepcopy(r.assessment),
+        }
         try:
-            row = {
-                "id": r.event_id,
-                "headline": r.headline,
-                "theme": r.theme,
-                "assessment": r.assessment,
-            }
-            return r, agent.run_report(row, playbooks.get(r.theme or ""))
+            report = agent.run_report(copy.deepcopy(row), playbooks.get(r.theme or ""))
         except Exception:
             logger.exception("niche discovery failed for event id=%s; continuing", r.event_id)
-            return r, NicheReport(DiscoveryOutcome("unavailable", "pipeline_discovery_failure"), [])
+            report = NicheReport(DiscoveryOutcome("unavailable", "pipeline_discovery_failure"), [])
+        return r, report, invocation_id, row
 
     # DISCOVER concurrently (bounded), then MERGE + PERSIST serially on THIS
     # thread so the DB writes never race (CL-818b). pool.map preserves input
@@ -276,26 +280,39 @@ def _niche_step(engine: object, results: list, min_urgency: int) -> int:
             discovered = list(pool.map(_discover, qualifying))
 
     surfaced = 0
-    for r, report in discovered:
+    for r, report, invocation_id, snapshot in discovered:
         # Fail-soft PER EVENT: a transient DB blip on one event must not drop
         # the merges/writes for the events after it — they are already
         # ASSESSED, so the next cycle will NOT retry them and their niche
         # ideas would be lost for good.
         try:
-            enriched = copy.deepcopy(r.assessment)
-            enriched["niche_research"] = report.to_dict()
+            report_data = report.to_dict()
+            # Independent transaction: a later event-status race or merge
+            # rollback must not discard the already committed audit evidence.
+            persist_niche_audit(engine, invocation_id, r.event_id, snapshot, report_data)
+            enriched = copy.deepcopy(snapshot["assessment"])
+            enriched["niche_research"] = {**report_data, "invocation_id": invocation_id}
             added = agent.merge_into_assessment(enriched, report.eligible)
             # Persist even empty/failed outcomes; absence is not approval.
             with engine.begin() as conn:  # type: ignore[attr-defined]
                 written = conn.execute(
                     text(
                         "UPDATE geo_events SET assessment = :a "
-                        "WHERE id = :id AND status = 'ASSESSED'",
+                        "WHERE id = :id AND status = 'ASSESSED' "
+                        "AND assessment = CAST(:original AS jsonb)",
                     ),
-                    {"a": _json.dumps(enriched), "id": r.event_id},
+                    {
+                        "a": _json.dumps(enriched), "id": r.event_id,
+                        "original": _json.dumps(snapshot["assessment"]),
+                    },
                 )
                 if written.rowcount != 1:
-                    raise RuntimeError("niche assessment not persisted: event status changed")
+                    logger.warning(
+                        "niche audit preserved but merge skipped: event or assessment changed "
+                        "event=%s invocation=%s",
+                        r.event_id, invocation_id,
+                    )
+                    continue
             r.assessment = enriched  # Only committed ideas may reach the later ledger step.
             surfaced += added
         except Exception:

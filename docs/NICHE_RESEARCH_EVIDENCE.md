@@ -9,19 +9,89 @@ completed provider benchmark or a deployment approval.
 
 `NicheAgent.run_report()` returns an invocation-local discovery outcome and all
 parsed research candidates. There is no shared last-result field across worker
-threads. `scripts/event_pipeline.py` stores this under
-`assessment.niche_research`, including failures and valid abstentions with zero
-trade ideas. Merges use a private copy and reach the in-memory ledger inputs
-only after a committed one-row assessment update. DB exceptions, commit failures
-and changed event status cannot leak new niche ideas into the later ledger step
-(CL-eh28.1.1). A persistence failure is logged; this change does not introduce a
-durable retry queue for failed assessment writes.
+threads. With migration 020, `scripts/event_pipeline.py` first commits the report
+to `niche_research_audit`, independent of event status (CL-27s0). Each invocation
+has an ID allocated before discovery, an input snapshot, report, and payload
+hash. Identical replays insert once; a conflicting payload under the same ID
+raises instead of overwriting evidence. The application only inserts these
+records; this is not a claim of database-level tamper-proof storage.
+
+The legacy `assessment.niche_research` projection and trade-idea merge still use
+a private copy and reach in-memory ledger inputs only after a committed update.
+That update requires both `status = ASSESSED` and an unchanged original JSONB
+assessment. A status or assessment race leaves the independent audit committed
+but skips the merge. An audit failure blocks the niche merge. DB exceptions and
+commit failures cannot leak uncommitted niche ideas into the later ledger step.
+This does not add a durable retry queue for database outages or crashes before
+the audit commit, nor reconstruct the three previously lost reports.
 
 Discovery distinguishes `completed`, `abstained`, `partial`, `invalid_output`,
 `unavailable`, and `budget_exhausted`. Empty valid JSON is abstention; malformed
 JSON or an API/billing outage is not. Missing credentials for an explicitly
 enabled Kimi path produce `unavailable`, not an implicit provider switch.
 Provider errors are classified without copying account/key identifiers to logs.
+
+## Native Kimi completion budgets (CL-uofe)
+
+The funded failures observed on September 8 were local tool-budget exhaustion
+and incomplete generations, not insufficient-balance responses. Account funding
+and per-invocation research limits are separate. We have not rechecked the
+account balance as part of this development patch.
+
+Native K3 requests now explicitly use `reasoning_effort=low` and retain the
+complete assistant message, including interleaved reasoning. Moonshot documents
+K3 as always thinking, with `max` effort by default, and requires complete
+assistant history for tool conversations:
+[K3 API guide](https://platform.kimi.ai/docs/guide/kimi-k3-quickstart).
+This is a versioned research-policy revision (`:kimi-budget-v2`), not a model
+replacement or evidence that lower effort yields better investment ideas.
+Other model names do not receive K3-only request parameters.
+
+The loop reserves its last model call for finalization with tools disabled.
+Reaching the 24-tool ceiling answers remaining requests with explicit budget
+errors and requests a final answer from collected evidence. Identical lookups
+reuse invocation-local results (including unavailable results); they still count
+against the requested-tool ceiling. Sources are deduplicated by their hashes.
+A length-truncated response is audited but never executed as tool instructions;
+one tools-disabled finalization attempt may use up to twice the ordinary response
+allocation. A second truncation stays `partial`; fabricated empty output is
+never substituted by code. Valid provider-authored empty output is abstention.
+
+No more than eight model calls or 32,768 **requested maximum output tokens**
+under the defaults: a larger final allocation comes from that same envelope,
+not an increased total. Per-call finish reason, usage, reasoning tokens when
+reported, effort, finalization flag, and requested limit are captured. Hidden
+SDK retries are disabled, with a 120-second request timeout. These constraints
+do not guarantee a dollar ceiling: input tokens and provider billing also
+matter. Reported costs remain unknown unless independently measured.
+
+The synthetic captured-source regression proves that a final answer can retain
+its source identities and still must pass evidence, liquidity, and critic gates.
+It is not a paid baseline-versus-revision experiment. CL-uofe remains open until
+an operator-approved, captured-input canary measures completion, useful evidence,
+abstention, latency, and usage without orders. The equivalent-tool Kimi/Claude
+experiment below is unchanged and must not be conflated with this native-loop
+revision.
+
+Migration 020 must be applied and verified before the updated pipeline is
+started; a missing audit table safely prevents niche merges. The migration is
+additive. An older pipeline can ignore the retained table on rollback. This
+development patch does not authorize migration or service restart.
+
+Disposable database regression (never use the operational database):
+
+```sh
+CURLIT_AUDIT_TEST_DB_URL='postgresql+psycopg2://USER:PASSWORD@127.0.0.1:PORT/curlit_test_audit' \
+  .venv/bin/pytest tests/integration/test_niche_audit_postgres.py -q
+```
+
+The integration tests require an explicit loopback `curlit_test_*` database,
+create isolated random schemas, apply migration 020 twice, and remove only their
+own fixture schemas. They exercise actual pipeline status/assessment races and
+concurrent replay. Existing unit fixtures were extended to recognize the new
+audit INSERT/SELECT transaction; their trade-merge assertions were preserved.
+
+## Review and trading eligibility
 
 Review distinguishes `supported`, `contradicted`, `insufficient_evidence`,
 `review_unavailable`, and `not_requested`. Missing, duplicate or malformed

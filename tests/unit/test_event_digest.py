@@ -1335,7 +1335,19 @@ class _RecordingEngine:
 
     def __init__(self) -> None:
         self.persisted: list[int] = []
+        self.audits: dict[str, dict[str, Any]] = {}
         self._lock = threading.Lock()
+
+    def _audit_statement(self, stmt: Any, params: dict[str, Any]) -> Any:
+        from types import SimpleNamespace
+
+        if "niche_research_audit" not in str(stmt):
+            return None
+        key = params["invocation_id"]
+        with self._lock:
+            if "INSERT" in str(stmt):
+                self.audits.setdefault(key, dict(params))
+            return SimpleNamespace(scalar_one=lambda: self.audits[key]["payload_hash"])
 
     def begin(self) -> Any:
         engine = self
@@ -1350,6 +1362,9 @@ class _RecordingEngine:
             def execute(self, _stmt: Any, params: dict[str, Any]) -> Any:
                 from types import SimpleNamespace
 
+                audit = engine._audit_statement(_stmt, params)
+                if audit is not None:
+                    return audit
                 with engine._lock:
                     engine.persisted.append(int(params["id"]))
                 return SimpleNamespace(rowcount=1)
@@ -1406,6 +1421,7 @@ class TestNicheStepConcurrency:
         assert surfaced == 5
         assert sorted(ran) == [1, 2, 3, 4, 5]  # each discovered exactly once
         assert sorted(engine.persisted) == [1, 2, 3, 4, 5]  # each persisted once
+        assert sorted(a["event_id"] for a in engine.audits.values()) == [1, 2, 3, 4, 5]
         for r in results:  # merges landed on the right assessment
             assert r.assessment["trade_ideas"] == [f"idea-{r.event_id}"]
 
@@ -1467,6 +1483,9 @@ class TestNicheStepConcurrency:
                     def execute(self, stmt: Any, params: dict[str, Any]) -> Any:
                         from types import SimpleNamespace
 
+                        audit = engine._audit_statement(stmt, params)
+                        if audit is not None:
+                            return audit
                         if int(params["id"]) == 2:
                             raise RuntimeError("transient DB blip")
                         with engine._lock:
@@ -1487,6 +1506,7 @@ class TestNicheStepConcurrency:
         assert surfaced == 2  # Only committed merges count; failure is not a successful surface.
         assert not results[1].assessment.get("trade_ideas")  # No leak to the later ledger step.
         assert "niche_research" not in results[1].assessment
+        assert sorted(a["event_id"] for a in engine.audits.values()) == [1, 2, 3]
 
     @pytest.mark.parametrize("commit_failure", [False, True])
     def test_uncommitted_or_zero_row_update_cannot_publish_ideas(
@@ -1499,24 +1519,58 @@ class TestNicheStepConcurrency:
 
         self._patch(monkeypatch, self._agent_cls([], threading.Lock()))
 
-        class Engine:
+        class Engine(_RecordingEngine):
+            transactions = 0
+
             def begin(self) -> Any:
+                self.transactions += 1
                 return self
 
             def __enter__(self) -> Any:
                 return self
 
             def __exit__(self, *args: Any) -> bool:
-                if commit_failure:
+                if commit_failure and self.transactions == 2:
                     raise RuntimeError("commit failed")
                 return False
 
-            def execute(self, *args: Any) -> Any:
+            def execute(self, stmt: Any, params: dict[str, Any]) -> Any:
+                audit = self._audit_statement(stmt, params)
+                if audit is not None:
+                    return audit
+                assert "status = 'ASSESSED'" in str(stmt)
+                assert "assessment = CAST(:original AS jsonb)" in str(stmt)
                 return SimpleNamespace(rowcount=1 if commit_failure else 0)
 
         result = _res(event_id=1, urgency=8)
         original = dict(result.assessment)
-        assert pipeline_mod._real_niche_step(Engine(), [result], 7) == 0
+        engine = Engine()
+        assert pipeline_mod._real_niche_step(engine, [result], 7) == 0
+        assert result.assessment == original
+        assert len(engine.audits) == 1  # Audit commit independent of failed/blocked merge.
+
+    def test_failed_audit_commit_blocks_later_merge(
+        self, pipeline_mod: Any, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        self._patch(monkeypatch, self._agent_cls([], threading.Lock()))
+
+        class Engine(_RecordingEngine):
+            def begin(self) -> Any:
+                from contextlib import contextmanager
+
+                @contextmanager
+                def transaction() -> Any:
+                    with super(Engine, self).begin() as conn:
+                        yield conn
+                        raise RuntimeError("audit commit failed")
+
+                return transaction()
+
+        engine = Engine()
+        result = _res(event_id=1, urgency=8)
+        original = dict(result.assessment)
+        assert pipeline_mod._real_niche_step(engine, [result], 7) == 0
+        assert engine.persisted == []
         assert result.assessment == original
 
     def test_max_concurrency_env_parse_and_clamp(self, pipeline_mod: Any) -> None:

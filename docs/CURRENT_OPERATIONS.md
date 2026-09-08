@@ -443,6 +443,26 @@ budgets; **CL-27s0** preserves audit outcomes across event-status races;
 restart/stop procedure above still applies. No migration, risk-limit change,
 account reset, dependency upgrade or broker operation was performed.
 
+### September 8 follow-up: development fixes, not yet deployed
+
+**CL-27s0** is implemented with migration 020 (`niche_research_audit`): independent
+audit commits survive later event-status/assessment races, while niche merges
+require unchanged ASSESSED state. The three historical log-only reports have
+not been reconstructed. **CL-uofe** has native-loop fixes for K3 reasoning
+history, explicit low reasoning effort, cached duplicate lookups, reserved
+finalization, and bounded truncation recovery within the existing total output
+token envelope. It remains open for captured-input evaluation; no claim of
+improved live research yield or current account balance is made.
+
+Validation: 3,730 unit tests passed (three existing skips), then the final
+focused suite passed 209 checks including four against a disposable PostgreSQL
+16 database. Ruff, source mypy, and medium/high Bandit passed. The disposable
+database had fixture credentials, no operational mounts, and was removed after
+testing. No operational migration or daemon restart occurred. **CL-9lrx** tracks
+operator-approved migration, single-writer pipeline rollout, and measured Kimi
+canary. Apply migration 020 before starting the new pipeline code; a missing
+audit table blocks niche merges. Details: `NICHE_RESEARCH_EVIDENCE.md`.
+
 ## 4. Data layer
 
 | Store | Source | Refresh | Notes |
