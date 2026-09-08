@@ -395,8 +395,53 @@ CL-hzrb makes the niche summary count the actual post-review eligible set,
 matching the already-enforced persistence gate. Its regression checks that an
 unavailable review retains a source-backed lead but reports zero surfaced.
 The evidence fixtures use a fixed clock so future CI dates cannot change their
-freshness oracle. Recovery deployment evidence follows separately; do not
-interpret these implementation checks as a completed production cycle.
+freshness oracle. Implementation tests alone are not a completed production cycle.
+
+#### Verified recovery, 2026-09-08 21:43 UTC
+
+Source release **`900b6f1`** passed hosted
+[CI](https://github.com/jackctj117/curLit/actions/runs/34277123233) and
+[Security Scan](https://github.com/jackctj117/curLit/actions/runs/34277123111).
+Local and Linux suites each passed **3,717 tests**, with three existing skips
+and the existing sklearn warning. Ruff, typechecking, Bandit and staged secret
+scanning passed. An installed-Claude smoke returned the exact marker through
+file-backed stdin. Its reported model ID differed from the requested model;
+serving-model attribution remains unverified under CL-h7c1. No runtime model
+selection changed.
+
+After hosted checks passed, the exhausted job was stopped and PID 45317
+verified gone before replacement **51644** started at **20:55 UTC**. The job
+retains `--ingest --assess --loop 900`, `KeepAlive=false`, and explicitly sets
+the same **256-FD soft limit**. No limit increase or duplicate pipeline was
+used. FX **28922**, options **21444**, and equities **21457** stayed running.
+
+Two normal cycles completed at **21:19:28 UTC** and **21:42:24 UTC**, with no
+top-level cycle failure. Both Yahoo scans processed **73/73 tickers**, in
+about 8.8 and 8.2 seconds. Each cycle processed 20 events (12 then 15 assessed;
+8 then 5 dismissed). Across 64 samples about 45 seconds apart, descriptors
+ranged from **5 to 44**, with **28** at final verification. This is a sampled
+maximum, not every transient peak. The second scan dropped usage from 44 to
+21 rather than accumulating another batch's resources. There were **29 Claude
+invocations started**, zero logged stdin-deadline errors, zero logged transport
+failures, and zero FD-exhaustion errors.
+
+This was **not an error-free research-yield run**. GDELT rate-limit warnings
+continued. Of 12 niche discoveries, five exhausted the tool-call budget and
+seven returned incomplete generations; none supplied parsed or eligible niche
+ideas. Nine reports persisted with explicit status and zero eligible count.
+Three events (48530, 48550, 48551) became CONFIRMED before the conditional
+assessment update, so the safe merge guard rejected those writes and logged
+the missing audit outcomes. No incomplete niche idea entered the assessment's
+trading feed. Base-impact ideas continued through their ordinary ledger path;
+this does not establish accounting accuracy or broker reconciliation.
+
+Remaining findings: **CL-uofe** evaluates Kimi completion within explicit
+budgets; **CL-27s0** preserves audit outcomes across event-status races;
+**CL-h7c1** covers CLI budget/cost/model provenance. Evidence is in ignored
+`data/deployments/2026-09-08_900b6f1_pipeline_recovery.json` and
+`data/deployments/2026-09-08_900b6f1_pipeline_verified.json`. The single-job
+restart/stop procedure above still applies. No migration, risk-limit change,
+account reset, dependency upgrade or broker operation was performed.
 
 ## 4. Data layer
 
