@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -178,20 +179,34 @@ class TestThreadLocalClient:
         holder = _util.ThreadLocalClient(None)
         assert holder.is_default is True
 
-        per_thread: dict[int, object] = {}
+        # CL-6sdh: keep four workers alive together. Fast sequential Thread
+        # lifetimes can reuse OS identifiers and overwrite the old test's dict.
+        barrier = threading.Barrier(4, timeout=5)  # Bound a broken fixture, not production work.
 
-        def _grab() -> None:
-            per_thread[threading.get_ident()] = holder.get()
+        def _grab() -> tuple[int, object, object]:
+            barrier.wait()
+            return threading.get_ident(), holder.get(), holder.get()
 
-        threads = [threading.Thread(target=_grab) for _ in range(4)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join()
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            futures = [pool.submit(_grab) for _ in range(4)]
+            results = [future.result(timeout=10) for future in futures]
 
-        clients = list(per_thread.values())
+        assert len({ident for ident, _, _ in results}) == 4
+        assert all(first is second for _, first, second in results)
+        clients = [first for _, first, _ in results]
         assert len(clients) == 4
         assert len({id(c) for c in clients}) == 4  # one distinct client per thread
+        assert len(made) == 4
+
+    def test_thread_oracle_rejects_shared_client_mutation(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from src.events._util import ThreadLocalClient
+
+        shared = object()
+        monkeypatch.setattr(ThreadLocalClient, "get", lambda _self: shared)
+        with pytest.raises(AssertionError):
+            self.test_default_client_is_distinct_per_thread(monkeypatch)
 
     def test_same_thread_reuses_its_client(self, monkeypatch: pytest.MonkeyPatch) -> None:
         import src.research.llm as llm_mod

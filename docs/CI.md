@@ -140,7 +140,12 @@ The parent bead CL-0deu.5 remains open for disposable database/migration tests
 and hosted/branch-rule proof.
 CL-dzt6 tracks fresh-environment dependency/audit repairs. CL-6sdh records
 Linux/concurrency fixture assumptions exposed by the first full hosted suite;
-those existing tests remain unchanged pending operator direction. Publishing
-the hardening code does not mean deployment has passed these gates.
+the operator authorized their correction on 2026-09-08. Four concurrent workers
+now rendezvous before checking thread-local isolation (avoiding recycled OS
+thread IDs). Unauthorized vault peers must receive **zero raw response bytes**
+on either EOF or reset, and must never reach the protocol decoder. Authorized
+requests still require complete frames. Mutation cases reject a shared client
+and partial/full leaked responses; no production auth or cache behavior changed.
+Publishing the hardening code does not mean deployment has passed these gates.
 CL-xpsp separately tracks the credential-free coding/review environment. None of
 these checks authorizes paper-account resets, daemon restarts, or live trading.

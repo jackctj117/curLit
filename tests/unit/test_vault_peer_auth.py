@@ -16,7 +16,9 @@ import socket
 import stat
 import sys
 import tempfile
+from contextlib import suppress
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -99,17 +101,38 @@ def test_peer_authorized_fails_closed_on_unknown_platform(monkeypatch, caplog):
 async def _request(path: str, payload: dict) -> bytes:
     """One framed request/response round-trip (CL-1ho7 wire protocol).
 
-    Returns b"" when the agent closes the connection without responding
-    (unauthenticated / malformed-frame peers)."""
+    Authorized requests must return a complete frame; truncation is a failure.
+    Rejection uses a separate raw-byte oracle below."""
     reader, writer = await asyncio.open_unix_connection(path)
     try:
         await vault_wire.send_framed_async(writer, json.dumps(payload).encode())
-        try:
-            return await vault_wire.recv_framed_async(reader)
-        except asyncio.IncompleteReadError:
-            return b""
+        return await vault_wire.recv_framed_async(reader)
     finally:
         writer.close()
+
+
+async def _assert_rejected(path: str, payload: dict[str, str]) -> None:
+    """CL-6sdh: EOF/reset is allowed, but even ONE response byte is a failure.
+
+    Use a raw socket: a framing decoder can consume a partial header/body then
+    raise IncompleteReadError, hiding bytes from the former rejection oracle.
+    Kernel reads preserve queued bytes; StreamReader can instead raise a stored
+    reset before exposing its buffer. No credentials or operational socket used.
+    """
+    loop = asyncio.get_running_loop()
+    body = json.dumps(payload).encode()
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+        sock.setblocking(False)
+        await loop.sock_connect(sock, path)
+        # Auth may reject before the request write. Still inspect replies.
+        with suppress(BrokenPipeError, ConnectionResetError):
+            # Independent wire vector, not the production frame encoder.
+            await loop.sock_sendall(sock, len(body).to_bytes(4, "big") + body)
+        try:
+            received = await asyncio.wait_for(loop.sock_recv(sock, 1), timeout=5)
+        except ConnectionResetError:
+            received = b""
+        assert received == b"", "unauthorized peer received a response byte"
 
 
 def test_agent_serves_same_uid_client(sock_dir):
@@ -130,13 +153,15 @@ def test_agent_serves_same_uid_client(sock_dir):
 
 def test_agent_drops_foreign_uid_without_response(sock_dir, monkeypatch):
     monkeypatch.setattr(vault_agent, "peer_uid", lambda conn: os.getuid() + 1)
+    decode = AsyncMock(wraps=vault_agent.recv_framed_async)
+    monkeypatch.setattr(vault_agent, "recv_framed_async", decode)
 
     async def run() -> None:
         path = str(sock_dir / "agent.sock")
         server = await vault_agent.serve(path, {"OANDA_API_KEY": "sekrit"})
         try:
-            raw = await _request(path, {"action": "get", "name": "OANDA_API_KEY"})
-            assert raw == b""  # connection closed, no data leaked
+            await _assert_rejected(path, {"action": "get", "name": "OANDA_API_KEY"})
+            decode.assert_not_awaited()  # Not even the protocol decoder may run.
         finally:
             server.close()
             await server.wait_closed()
@@ -146,13 +171,44 @@ def test_agent_drops_foreign_uid_without_response(sock_dir, monkeypatch):
 
 def test_agent_drops_client_when_platform_unsupported(sock_dir, monkeypatch):
     monkeypatch.setattr(vault_agent, "peer_uid", lambda conn: None)
+    decode = AsyncMock(wraps=vault_agent.recv_framed_async)
+    monkeypatch.setattr(vault_agent, "recv_framed_async", decode)
 
     async def run() -> None:
         path = str(sock_dir / "agent.sock")
         server = await vault_agent.serve(path, {"K": "v"})
         try:
-            raw = await _request(path, {"action": "list"})
-            assert raw == b""
+            await _assert_rejected(path, {"action": "list"})
+            decode.assert_not_awaited()
+        finally:
+            server.close()
+            await server.wait_closed()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("leaked", [b"\x00", b"secret", b'\x00\x00\x00\x02{}'])
+@pytest.mark.parametrize("abort", [False, True])
+def test_rejection_oracle_detects_leaking_server_mutation(
+    sock_dir: Path, leaked: bytes, abort: bool,
+) -> None:
+    async def run() -> None:
+        path = str(sock_dir / "leaking.sock")
+
+        async def leak(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+            # Send partial headers, unframed bytes, or a complete response.
+            # All must fail the oracle even when the connection then resets.
+            writer.write(leaked)
+            await writer.drain()
+            if abort:
+                writer.transport.abort()
+            else:
+                writer.close()
+
+        server = await asyncio.start_unix_server(leak, path)
+        try:
+            with pytest.raises(AssertionError, match="response byte"):
+                await _assert_rejected(path, {"action": "list"})
         finally:
             server.close()
             await server.wait_closed()
