@@ -107,6 +107,19 @@ def test_secret_exception_cannot_allow_other_values_paths_or_rules() -> None:
     assert not re.search(pattern, "configs/polymarket_markets.yaml.bak")
 
 
+def test_private_root_exclusion_preserves_all_third_party_audit_inputs(
+    security_workflow: dict[str, Any],
+) -> None:
+    steps = security_workflow["jobs"]["dependencies"]["steps"]
+    index = next(i for i, step in enumerate(steps) if "Remove only" in step.get("name", ""))
+    command = steps[index]["run"]
+    assert '"pip", "uninstall", "--yes", "curlit"' in command
+    assert "check=True" in command
+    assert 'if third_party() != before:' in command
+    assert 'raise SystemExit(' in command
+    assert "pip_audit --strict" in steps[index + 1]["run"]
+
+
 @pytest.mark.parametrize("has_parse_error", [False, True])
 def test_actual_summary_rejects_incomplete_bandit_scans(
     security_workflow: dict[str, Any], tmp_path: Path, has_parse_error: bool,

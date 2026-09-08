@@ -44,6 +44,7 @@ dependencies = [
     "holidays>=0.35",
     # Observability
     "prometheus-client>=0.17",
+    "psutil>=5.9",        # Dashboard process/host metrics (CL-dzt6).
     # Web
     "fastapi>=0.100",
     "uvicorn>=0.23",
@@ -56,6 +57,7 @@ dependencies = [
     "python-dotenv>=1.0",
     "pyyaml>=6.0",
     "pydantic>=2.0",
+    "cryptography>=46.0", # Vault AES-GCM fallback must work on clean installs.
 ]
 
 [project.optional-dependencies]

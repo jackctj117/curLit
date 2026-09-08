@@ -39,8 +39,10 @@ permissions and checkout without persisted credentials.
   scan failure is not suppressed by the summary. No blanket baseline is used.
 - **pip-audit 2.10.1:** `python -m pip_audit --strict --skip-editable --progress-spinner off`
   audits the installed third-party core/dev dependencies and scanner environment.
-  The editable curLit package is omitted because it has no public advisory
-  identity; its dependencies are still audited. Collection errors and known
+  The private editable curLit root is uninstalled **only in the dedicated CI
+  audit runner**, because it has no public advisory identity and strict mode
+  also rejects intentional editable skips. The job checks that every third-party
+  distribution/version remains installed; all are audited. Collection errors and known
   vulnerabilities fail. No automatic fixes or vulnerability ignores are used.
   Both CI workflows install pip 26.2.1 instead of retaining the previous
   CVE-2026-3219 exception. See the [pip release notes](https://pip.pypa.io/en/stable/news/).

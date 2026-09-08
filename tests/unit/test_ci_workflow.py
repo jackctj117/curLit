@@ -85,3 +85,6 @@ def test_ci_installs_declared_dev_dependencies_and_supports_python_floor(
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())
     dev = project["project"]["optional-dependencies"]["dev"]
     assert any(requirement.startswith("pytest-timeout>=") for requirement in dev)
+    core = project["project"]["dependencies"]
+    assert any(requirement.startswith("psutil>=") for requirement in core)
+    assert any(requirement.startswith("cryptography>=") for requirement in core)
