@@ -501,6 +501,48 @@ encrypted backup and verification, captured research/comparison, migration,
 and blocked rollout record). Do not interpret the successful migration as a
 completed deployment or the one-event experiment as a model-quality benchmark.
 
+### Context blocker resolved; rollout revalidation (CL-lu3d)
+
+Native `:kimi-budget-v3` now checks the 100,000-character serialized message cap
+before every request. When history exceeds it, a fresh tools-disabled request
+carries all captured sources exactly once and every tool-result fact/error,
+with no document truncation or omission. If the complete packet cannot fit,
+research stops explicitly with `budget_exhausted/prompt_char_limit`. The original
+model-call, tool-call and total requested-output-token ceilings are unchanged.
+
+The captured failure replay reproduced the first four original request bodies
+exactly, then reduced the next request from 131,225 to **47,673 characters**,
+retaining all nine source records. Four new regression cases first failed on
+the old implementation and pass with the guard, including JSON Unicode escaping
+and cases where no bounded finalization is possible. The downstream evidence,
+liquidity and review gates also pass with context finalization exercised.
+
+A repeat paid comparison on the identical frozen event completed within bounds
+for both v2 and v3: v2 used four calls, 14,896 input / 1,483 output tokens and
+41.4 seconds; v3 used four calls, 5,961 input / 1,640 output and 44.0 seconds.
+Neither produced source-backed eligible candidates. This small stochastic case
+does not prove improved research quality. A separate exact-boundary check replayed
+four historical responses offline and made **one new paid finalization call**:
+16,163 input tokens and 1,310 output tokens. The call finished normally with all nine sources retained,
+two parsed but ineligible research leads. No broker or ledger path was used.
+Costs remain unknown. Private evidence is retained in
+`data/deployments/2026-09-08_context_v3_captured_canary.json` and
+`2026-09-08_context_v3_boundary_canary.json`.
+
+**CL-lu3d is resolved; CL-9lrx resumes deployment verification.** This subsection
+records pre-cutover evidence, not a completed daemon restart. CL-uofe remains
+open for useful evidence/completion evaluation; no research approval gate has
+been relaxed to create a successful-looking canary.
+
+Local validation: the first full suite passed 3,735 tests (three existing skips).
+The final rerun passed 3,735 but exposed one pre-existing floating-point property
+failure, **CL-1vqh**: unchanged sizing code returns 6,577,397.812500001 versus the
+test's bound of 6,577,397.8125. The identical counterexample reproduces on prior
+release `791381c`; neither the risk function nor that test was changed or skipped.
+The final niche-focused suite passed 75 tests, including source/critic/liquidity
+gates through context finalization. Source mypy (225 files), Ruff, and medium/high
+Bandit passed. This is not an assertion that the final local full suite was green.
+
 ## 4. Data layer
 
 | Store | Source | Refresh | Notes |

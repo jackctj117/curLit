@@ -326,7 +326,10 @@ def test_native_unfunded_error_is_redacted_and_unavailable(caplog: Any) -> None:
     assert "PRIVATE_ID" not in caplog.text and "PRIVATE_ID" not in json.dumps(result.to_dict())
 
 
-def test_native_budget_finalization_preserves_sources_and_all_downstream_gates() -> None:
+@pytest.mark.parametrize("reasoning_chars", [0, 100000])
+def test_native_budget_finalization_preserves_sources_and_all_downstream_gates(
+    reasoning_chars: int,
+) -> None:
     """Synthetic captured tool packet proves transport recovery, not model quality."""
     calls: list[dict[str, Any]] = []
 
@@ -343,7 +346,9 @@ def test_native_budget_finalization_preserves_sources_and_all_downstream_gates()
                 )
                 for i in range(25)
             ]
-            message = SimpleNamespace(content="", tool_calls=tool_calls)
+            message = SimpleNamespace(
+                content="", tool_calls=tool_calls, reasoning_content="r" * reasoning_chars
+            )
             finish = "tool_calls"
         else:
             assert kwargs["tool_choice"] == "none"
@@ -357,6 +362,8 @@ def test_native_budget_finalization_preserves_sources_and_all_downstream_gates()
         snapshot().payload()["event"],
     )
     assert result.status == "completed"
+    if reasoning_chars:
+        assert any("context_transition" in t for t in result.trace)
     assert result.sources == [SOURCE]  # Exact source identity survives finalization and caching.
     candidates = parse_niche_ideas(result.text)
     assert len(candidates) == 1

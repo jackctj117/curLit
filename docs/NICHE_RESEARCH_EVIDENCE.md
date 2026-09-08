@@ -78,6 +78,40 @@ started; a missing audit table safely prevents niche merges. The migration is
 additive. An older pipeline can ignore the retained table on rollback. This
 development patch does not authorize migration or service restart.
 
+### Context-bounded finalization (CL-lu3d)
+
+Native policy `:kimi-budget-v3` enforces the same **100,000-character serialized
+message limit** as the captured-input canary before every provider call. This
+counts `json.dumps(messages)`, including escaping and embedded tool JSON, not
+just human-visible character length. The eight-call, 24-tool and 32,768 requested
+output-token defaults are unchanged. Each response trace records prompt size
+and its cap.
+
+If accumulated history would exceed the cap, the loop starts an independent,
+tools-disabled finalization request inside the remaining call/token allowance.
+It carries the original task, every captured source (exact bytes and hashes,
+once each), and all tool-result facts, errors and contrary observations.
+Identical tool results are deduplicated; source references point into the shared
+packet. No source is shortened or discarded to fit. Model-generated reasoning
+remains in the audit, not the new evidence packet. Ordinary continued tool
+conversations still retain complete assistant/reasoning fields; there are no
+orphaned tool messages in the fresh request.
+
+If even that complete packet cannot fit, the result is explicitly
+`budget_exhausted/prompt_char_limit`, with no over-cap provider request. The code
+does not invent an empty result or treat discarded evidence as approval. The
+existing evidence, liquidity and independent critic gates remain mandatory.
+
+The exact private event-48489 failure was replayed offline: its first four
+request bodies matched the captured run, and its next 131,225-character history
+became a 47,673-character finalization request with all nine sources preserved.
+The final answer in that offline test was synthetic; it proves transport and
+provenance behavior, not research quality. Public regression fixtures cover
+repeated multi-source batches, contrary facts, Unicode escaping, oversized
+initial events, packets that cannot fit, and downstream eligibility gates.
+Paid canary results and actual rollout state are recorded separately in
+`CURRENT_OPERATIONS.md` and Beads; passing these tests is not deployment proof.
+
 Disposable database regression (never use the operational database):
 
 ```sh
