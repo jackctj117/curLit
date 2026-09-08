@@ -31,7 +31,7 @@ jobs:
           python-version: "3.11"
       - name: Install reviewed scanner version
         run: |
-          python -m pip install --upgrade "pip==26.2.1"
+          python -m pip install --upgrade "pip==26.2.1" "setuptools>=83.0.0"
           python -m pip install "bandit==1.9.4"
       - name: Scan medium-and-higher findings at all confidence levels
         run: python -m bandit -r src/ -ll -f json -o "$RUNNER_TEMP/bandit.json"
@@ -69,12 +69,14 @@ jobs:
       - name: Install patched installer and reviewed auditor
         # Fix the installer rather than ignoring CVE-2026-3219.
         run: |
-          python -m pip install --upgrade "pip==26.2.1"
+          python -m pip install --upgrade "pip==26.2.1" "setuptools>=83.0.0"
           python -m pip install "pip-audit==2.10.1"
       - name: Install CPU-only PyTorch
         run: python -m pip install "torch>=2.0" --index-url https://download.pytorch.org/whl/cpu
       - name: Install project and development dependencies
         run: python -m pip install -e ".[dev]"
+      - name: Install optional dependencies exercised by the unit suite
+        run: python -m pip install -e ".[audio,polymarket]"
       - name: Enumerate every installed third-party package for auditing
         run: python scripts/ci_audit_manifest.py "$RUNNER_TEMP/audit-requirements.txt"
       - name: Audit resolved environment without automatic fixes

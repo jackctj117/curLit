@@ -82,6 +82,8 @@ def test_ci_installs_declared_dev_dependencies_and_supports_python_floor(
     assert setup["with"]["python-version"] == "3.11"
     commands = [step.get("run", "") for step in steps]
     assert 'python -m pip install -e ".[dev]"' in commands
+    assert 'python -m pip install -e ".[audio,polymarket]"' in commands
+    assert any('setuptools>=83.0.0' in command for command in commands)
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())
     dev = project["project"]["optional-dependencies"]["dev"]
     assert any(requirement.startswith("pytest-timeout>=") for requirement in dev)

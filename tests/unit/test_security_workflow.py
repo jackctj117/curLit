@@ -68,6 +68,8 @@ def test_scanners_keep_errors_and_findings_blocking(security_workflow: dict[str,
     assert "--ignore-vuln" not in audit
     assert "--fix" not in audit
     assert "pip==26.2.1" in audit
+    assert "setuptools>=83.0.0" in audit
+    assert 'python -m pip install -e ".[audio,polymarket]"' in audit
 
 
 def test_history_secret_scan_is_redacted_and_checksum_verified(

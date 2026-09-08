@@ -48,8 +48,13 @@ permissions and checkout without persisted credentials.
   comment); PyPI returns 404 for the suffixed identity. No other local build is
   accepted. This is advisory matching, not a wheel-integrity audit. See
   [PyTorch's release/build installation matrix](https://pytorch.org/get-started/previous-versions/).
+  Both test and audit runners also install the audio and Polymarket extras
+  exercised by existing fixture-backed unit tests; no account keys are supplied.
   Both CI workflows install pip 26.2.1 instead of retaining the previous
   CVE-2026-3219 exception. See the [pip release notes](https://pip.pypa.io/en/stable/news/).
+  They also upgrade setuptools to at least 83.0.0: the first complete hosted
+  audit flagged the runner's bundled 79.0.1 under PYSEC-2026-3447. Neither
+  advisory is ignored.
 - **Gitleaks 8.30.1:** the Linux binary is verified against a committed SHA-256
   before extraction. `gitleaks git --config .gitleaks.toml --redact=100 --no-banner
   --verbose --ignore-gitleaks-allow --log-opts=--all .` scans fetched Git history
@@ -133,5 +138,9 @@ existing test to exercise a failure path.
 
 The parent bead CL-0deu.5 remains open for disposable database/migration tests
 and hosted/branch-rule proof.
+CL-dzt6 tracks fresh-environment dependency/audit repairs. CL-6sdh records
+Linux/concurrency fixture assumptions exposed by the first full hosted suite;
+those existing tests remain unchanged pending operator direction. Publishing
+the hardening code does not mean deployment has passed these gates.
 CL-xpsp separately tracks the credential-free coding/review environment. None of
 these checks authorizes paper-account resets, daemon restarts, or live trading.

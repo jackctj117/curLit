@@ -57,11 +57,13 @@ jobs:
           cache-dependency-path: pyproject.toml
       - name: Install patched package installer
         # Match security CI; do not retain the old pip vulnerability exception.
-        run: python -m pip install --upgrade "pip==26.2.1"
+        run: python -m pip install --upgrade "pip==26.2.1" "setuptools>=83.0.0"
       - name: Install CPU-only PyTorch
         # Hosted checks need no CUDA runtime; retain the declared core dependency.
         run: python -m pip install "torch>=2.0" --index-url https://download.pytorch.org/whl/cpu
       - name: Install project and development dependencies
         run: python -m pip install -e ".[dev]"
+      - name: Install optional dependencies exercised by the unit suite
+        run: python -m pip install -e ".[audio,polymarket]"
       - name: Run check
         run: make ${{ matrix.target }}
