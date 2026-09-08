@@ -362,6 +362,42 @@ No database rollback is required by this additive assessment-JSON change.
 Existing FX source-drift warnings and execution/accounting hardening gates
 remain unchanged.
 
+### Follow-up: first-cycle failure and recovery changes (CL-i3js / CL-ep4q)
+
+The startup-only checkpoint above did **not** establish sustained health.
+PID 45317 failed its first cycle at 13:26:54 local time and repeatedly logged
+`Too many open files` from 13:30:46. It had all numeric descriptors 0–255
+occupied: 102 regular files (mostly Yahoo timezone-cache SQLite/WAL files),
+100 pipes and 50 IPv4 descriptors, plus three other sockets and stdin.
+The failure began in the threaded Yahoo volume scan, before niche research.
+No new evidence report was persisted. CL-338q remains the end-to-end canary.
+
+CL-i3js changes both event-pipeline Yahoo batch download paths (RVOL and
+price enrichment) to `threads=False`, reusing the caller's thread-local
+cache instead of creating per-symbol workers. This trades scan concurrency
+for bounded resources without changing prices, scoring, limits or order policy.
+An offline subprocess regression exercises real yfinance dispatch and SQLite
+cache with 80 symbols across eight batches, cyclic GC disabled and a 256-FD
+limit. It checks exact fixture prices and bounded descriptor usage. The local
+service manifest explicitly retains the same 256-FD soft limit; no limit
+increase substitutes for the code fix.
+
+CL-ep4q preloads each Claude prompt into a private 0600 temporary file before
+spawning the CLI. Prompts remain off argv, files are per-call and close on
+success/error/timeout. Tests inspect the descriptor at spawn and use real local
+child processes to verify concurrent UTF-8 delivery. This removes dependence
+on a live pipe writer; it does not prove every historical transport failure
+was caused by a scheduling race or eliminate external provider failures.
+Existing stdin tests intentionally retain content/argv assertions while
+switching their transport expectation from `input=` to file-backed `stdin=`.
+
+CL-hzrb makes the niche summary count the actual post-review eligible set,
+matching the already-enforced persistence gate. Its regression checks that an
+unavailable review retains a source-backed lead but reports zero surfaced.
+The evidence fixtures use a fixed clock so future CI dates cannot change their
+freshness oracle. Recovery deployment evidence follows separately; do not
+interpret these implementation checks as a completed production cycle.
+
 ## 4. Data layer
 
 | Store | Source | Refresh | Notes |

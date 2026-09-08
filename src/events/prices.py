@@ -61,6 +61,7 @@ def _yf_download(
     """Default downloader: one batched yfinance daily-bars request."""
     import yfinance as yf  # deferred — keep import cheap for non-price callers
 
+    logger.info("event prices: downloading %d tickers on the calling thread", len(tickers))
     return yf.download(
         list(tickers),
         start=start.strftime("%Y-%m-%d"),
@@ -69,7 +70,9 @@ def _yf_download(
         progress=False,
         auto_adjust=False,
         group_by="ticker",
-        threads=True,
+        # CL-i3js: reuse one thread-local cache connection, as in the RVOL
+        # scan; per-symbol worker resources can exhaust a long-lived daemon.
+        threads=False,
     )
 
 

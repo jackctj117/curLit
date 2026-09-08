@@ -6,7 +6,7 @@ import copy
 import json
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, tzinfo
 from types import SimpleNamespace
 from typing import Any
 
@@ -31,6 +31,21 @@ from src.events.research_evidence import DiscoveryOutcome, RelationshipClaim, So
 from src.events.research_tools import ResearchTools
 
 NOW = datetime(2026, 9, 8, 18, tzinfo=UTC)
+
+
+@pytest.fixture(autouse=True)
+def fixed_evidence_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Freshness tests use the capture's clock, not the date CI happens to run."""
+
+    class EvidenceClock(datetime):
+        @classmethod
+        def now(cls, tz: tzinfo | None = None) -> datetime:
+            return NOW.astimezone(tz) if tz is not None else NOW.replace(tzinfo=None)
+
+    monkeypatch.setattr("src.events.niche_agent.datetime", EvidenceClock)
+    monkeypatch.setattr("src.events.adversarial_critic.datetime", EvidenceClock)
+
+
 PASSAGE = (
     "Acme supplies pumps to Beta. Beta accounts for 40% of revenue. Delivery begins October 2026."
 )
@@ -425,6 +440,27 @@ def test_complete_pipeline_requires_evidence_review_before_merge() -> None:
     assert merged["research"]["sources"][0]["source_id"] == SOURCE.source_id
     report.candidates[0].review_status = "review_unavailable"
     assert agent.merge_into_assessment({}, report.candidates) == 0
+
+
+def test_summary_counts_only_post_review_eligible_ideas(caplog: pytest.LogCaptureFixture) -> None:
+    class Provider:
+        def discover_result(self, row: dict[str, Any], playbook: Any) -> DiscoveryOutcome:
+            return DiscoveryOutcome("completed", text=final_text(), sources=[SOURCE])
+
+    client = CriticClient("review_unavailable")
+    agent = NicheAgent(
+        FrozenTools(snapshot()),
+        client=client,
+        tool_agent=Provider(),
+        market_data_fn=lambda tickers: copy.deepcopy(MARKET),
+        critic=AdversarialCritic(client=client, enabled=True),
+    )
+    with caplog.at_level("INFO", logger="src.events.niche_agent"):
+        report = agent.run_report({"id": 1, "headline": "pump orders"})
+    assert len(report.candidates) == 1
+    assert report.candidates[0].evidence_status == "source_backed"
+    assert not report.eligible
+    assert "1 gated, 0 surfaced after red-team" in caplog.text
 
 
 @pytest.mark.parametrize("raw", ["{}", "not JSON", '{"niche_ideas": [null]}'])

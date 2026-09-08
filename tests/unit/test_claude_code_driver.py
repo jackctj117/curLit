@@ -6,6 +6,10 @@ All subprocess calls are mocked — no CLI, no network, no quota spend.
 from __future__ import annotations
 
 import json
+import os
+import stat
+from collections.abc import Callable
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -45,6 +49,16 @@ def _proc(stdout: str, returncode: int = 0, stderr: str = "") -> MagicMock:
 def _driver() -> ClaudeCodeDriver:
     with patch("shutil.which", return_value="/fake/claude"):
         return ClaudeCodeDriver()
+
+
+def _capture_stdin(captured: list[str]) -> Callable[..., MagicMock]:
+    """Read inside the call: production closes its private stream on return."""
+
+    def run(*args: Any, **kwargs: Any) -> MagicMock:
+        captured.append(kwargs["stdin"].read().decode("utf-8"))
+        return _proc(json.dumps(_OK_PAYLOAD))
+
+    return run
 
 
 class TestConstruction:
@@ -96,9 +110,60 @@ class TestConstruction:
 
 
 class TestComplete:
+    def test_real_child_reads_exact_concurrent_preloaded_prompts(self) -> None:
+        """A real child reads fd 0; no Claude process, provider or quota used."""
+        import subprocess
+        import sys
+        from concurrent.futures import ThreadPoolExecutor
+
+        actual_run = subprocess.run
+        child = (
+            "import json,os,stat,sys; "
+            "assert stat.S_ISREG(os.fstat(0).st_mode); "
+            "print(json.dumps({'subtype':'success','result':sys.stdin.buffer.read().decode('utf-8')}))"
+        )
+
+        def local_child(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
+            return actual_run([sys.executable, "-c", child], **kwargs)
+
+        driver = _driver()
+        prompts = [f"prompt {i}: café 🧪\n" * 10000 for i in range(8)]
+        with patch("subprocess.run", side_effect=local_child), ThreadPoolExecutor(4) as pool:
+            responses = list(
+                pool.map(
+                    lambda prompt: (
+                        driver.complete([Message("user", prompt)], model="local-test").text
+                    ),
+                    prompts,
+                )
+            )
+        assert responses == prompts
+
+    def test_prompt_is_preloaded_private_file_and_closed_on_timeout(self) -> None:
+        import subprocess
+
+        prompt = "Unicode evidence café 🧪\n" * 10000
+        captured: list[Any] = []
+
+        def timeout(*args: Any, **kwargs: Any) -> None:
+            assert "input" not in kwargs
+            stream = kwargs["stdin"]
+            captured.append(stream)
+            info = os.fstat(stream.fileno())
+            assert stat.S_ISREG(info.st_mode)
+            assert stat.S_IMODE(info.st_mode) == 0o600
+            assert stream.tell() == 0
+            assert stream.read() == prompt.encode("utf-8")
+            raise subprocess.TimeoutExpired(args[0], 1)
+
+        with patch("subprocess.run", side_effect=timeout), pytest.raises(subprocess.TimeoutExpired):
+            _driver().complete([Message("user", prompt)], model="test-model")
+        assert len(captured) == 1 and captured[0].closed
+
     def test_success_parses_payload(self) -> None:
         drv = _driver()
-        with patch("subprocess.run", return_value=_proc(json.dumps(_OK_PAYLOAD))) as run:
+        captured: list[str] = []
+        with patch("subprocess.run", side_effect=_capture_stdin(captured)) as run:
             resp = drv.complete(
                 [Message("system", "persona"), Message("user", "hi")],
                 model="claude-fable-5",
@@ -110,9 +175,10 @@ class TestComplete:
         assert resp.usd_cost == 0.0  # subscription — never bills the API org
         cmd = run.call_args.args[0]
         # Prompt rides STDIN now (CL-8s2a), not argv: `-p` is bare and the
-        # prompt is passed as subprocess input.
+        # prompt is passed through a preloaded stdin file (CL-ep4q).
         assert cmd[:2] == ["/fake/claude", "-p"]
-        assert run.call_args.kwargs["input"] == "hi"
+        assert captured == ["hi"]
+        assert run.call_args.kwargs["stdin"].closed
         assert "hi" not in cmd  # never on argv (ps / ARG_MAX safe)
         assert "--system-prompt" in cmd and "persona" in cmd
         assert "--model" in cmd and "claude-fable-5" in cmd
@@ -189,13 +255,14 @@ class TestComplete:
 
     def test_multi_turn_flattened_with_role_labels(self) -> None:
         drv = _driver()
-        with patch("subprocess.run", return_value=_proc(json.dumps(_OK_PAYLOAD))) as run:
+        captured: list[str] = []
+        with patch("subprocess.run", side_effect=_capture_stdin(captured)):
             drv.complete(
                 [Message("user", "a"), Message("assistant", "b"), Message("user", "c")],
                 model="claude-fable-5",
             )
         # Flattened transcript now arrives via stdin (CL-8s2a).
-        prompt = run.call_args.kwargs["input"]
+        prompt = captured[0]
         assert "[USER]\na" in prompt and "[ASSISTANT]\nb" in prompt
 
     def test_prompt_goes_to_stdin_not_argv(self) -> None:
@@ -203,9 +270,10 @@ class TestComplete:
         never on argv — argv is visible in `ps` and bounded by ARG_MAX."""
         drv = _driver()
         secret_long_prompt = "SENSITIVE-" + "x" * 5000
+        captured: list[str] = []
         with patch(
             "subprocess.run",
-            return_value=_proc(json.dumps(_OK_PAYLOAD)),
+            side_effect=_capture_stdin(captured),
         ) as run:
             drv.complete(
                 [Message("system", "persona"), Message("user", secret_long_prompt)],
@@ -216,7 +284,7 @@ class TestComplete:
         assert not any(secret_long_prompt in str(a) for a in argv)
         assert "-p" in argv and argv[argv.index("-p") + 1].startswith("--")
         # ...and is delivered as stdin instead.
-        assert run.call_args.kwargs["input"] == secret_long_prompt
+        assert captured == [secret_long_prompt]
 
     def test_nonzero_exit_raises(self) -> None:
         drv = _driver()

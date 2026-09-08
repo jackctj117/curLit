@@ -146,16 +146,25 @@ class ClaudeCodeDriver(Driver):
         }
 
         t0 = time.time()
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            input=prompt,
-            timeout=_CALL_TIMEOUT_SEC,
-            env=env,
-            cwd=self._workdir,
-            check=False,
-        )
+        # CL-ep4q: pre-load stdin before spawn. A live PIPE can miss the
+        # CLI's prompt-arrival deadline under contention. TemporaryFile is
+        # private (0600), unlinked where supported, and closed on every exit.
+        # Per-call files also prevent concurrent prompts overwriting each other.
+        with tempfile.TemporaryFile(mode="w+b", dir=self._workdir) as prompt_file:
+            prompt_file.write(prompt.encode("utf-8"))
+            prompt_file.flush()
+            prompt_file.seek(0)
+            logger.info("claude-code: starting model=%s with preloaded stdin", model)
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                stdin=prompt_file,
+                timeout=_CALL_TIMEOUT_SEC,
+                env=env,
+                cwd=self._workdir,
+                check=False,
+            )
         elapsed = time.time() - t0
         if proc.returncode != 0:
             # Prefer stderr; else mine the JSON payload for the ERROR fields

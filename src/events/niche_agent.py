@@ -475,8 +475,8 @@ class NicheAgent:
             evidence_score(idea, market_data, as_of, self.config)
         surviving = [i for i in verified if i.dropped_reason is None]
         logged = [i for i in verified if i.dropped_reason is not None]
-        # Adversarial red-team pass (CL-3v56): attack the survivors; drop the
-        # refuted, annotate the rest with the surviving bear case. Fail-open.
+        # CL-hzrb: review all verified research leads; only the final eligible
+        # set counts as surfaced. Missing review never grants approval.
         gated = len(surviving)
         if self.critic is not None and getattr(self.critic, "enabled", True) and verified:
             try:
@@ -493,7 +493,7 @@ class NicheAgent:
             len(raw_accum),
             len(verified),
             gated,
-            len(surviving),
+            len(report.eligible),
             len(logged),
         )
         return report

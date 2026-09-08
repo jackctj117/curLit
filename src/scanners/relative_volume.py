@@ -165,6 +165,7 @@ def _yf_download(
     """Default downloader: one batched yfinance daily-bars request."""
     import yfinance as yf  # deferred — keep import cheap for non-scan callers
 
+    logger.info("rvol: downloading %d tickers on the calling thread", len(tickers))
     return yf.download(
         list(tickers),
         start=start.strftime("%Y-%m-%d"),
@@ -173,7 +174,10 @@ def _yf_download(
         progress=False,
         auto_adjust=False,
         group_by="ticker",
-        threads=True,
+        # CL-i3js: Yahoo workers retain thread-local SQLite/curl descriptors.
+        # Serial dispatch reuses the caller's cache connection across symbols
+        # and cycles instead of exhausting the service's file-descriptor limit.
+        threads=False,
     )
 
 
