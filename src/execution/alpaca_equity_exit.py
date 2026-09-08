@@ -363,6 +363,7 @@ def _mark_exit(
     )
     with engine.begin() as conn:
         conn.execute(
+            # CL-u59z: fill_sql selects two literals; all values bound.
             text(f"""
             UPDATE alpaca_equity_orders SET
                 exit_status   = :es,
@@ -371,7 +372,7 @@ def _mark_exit(
                 {fill_sql},
                 exited_at     = COALESCE(exited_at, :ea)
             WHERE idea_id = :i
-        """),
+        """),  # nosec B608
             {
                 "es": exit_status,
                 "er": exit_reason,

@@ -5,6 +5,9 @@
 credentials*.json
 service-account*.json
 
+# Personal Claude permissions/model selection; share the example, not approvals.
+.claude/settings.local.json
+
 # Beads / Dolt files (added by bd init)
 .dolt/
 *.db

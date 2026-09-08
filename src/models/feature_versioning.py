@@ -155,13 +155,6 @@ class FeatureSnapshotStore:
         dialect = self.engine.dialect.name
         json_type = "JSONB" if dialect == "postgresql" else "TEXT"
         ts_type = "TIMESTAMPTZ" if dialect == "postgresql" else "TIMESTAMP"
-        on_conflict = (
-            "ON CONFLICT (snapshot_id) DO NOTHING"
-            if dialect == "postgresql"
-            else "ON CONFLICT (snapshot_id) DO NOTHING"  # SQLite supports same syntax
-        )
-        # Cache for the on-conflict suffix used in store().
-        self._on_conflict_clause = on_conflict
         with self.engine.begin() as conn:
             conn.execute(
                 text(
@@ -192,12 +185,12 @@ class FeatureSnapshotStore:
         with self.engine.begin() as conn:
             conn.execute(
                 text(
-                    f"""
+                    """
                     INSERT INTO feature_snapshots (
                         snapshot_id, feature_set_name, feature_set_version,
                         data_snapshot_id, model_version, ts, values_json
                     ) VALUES (:sid, :name, :ver, :dsid, :mver, :ts, :vals)
-                    {self._on_conflict_clause}
+                    ON CONFLICT (snapshot_id) DO NOTHING
                     """
                 ),
                 {

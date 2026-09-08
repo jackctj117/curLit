@@ -1,5 +1,60 @@
 # AGENTS.md — curLit
 
+## AI development workflow
+
+Work only on the issue explicitly assigned by the operator. This is a
+development workflow, separate from curLit's runtime research agents.
+See [the setup and handoff guide](docs/AI_DEVELOPMENT_WORKFLOW.md).
+
+### Roles
+
+- **Implementer — Claude Code / Opus 5:** inspect current code, make the smallest
+  coherent patch, add regression tests, and update relevant documentation.
+  Report exact commands, exit codes, results, and remaining limitations.
+- **Escalation — Claude Code / Fable 5.1:** only for an operator-selected difficult
+  design or debugging task; never a mandatory step on every change. Respect the
+  assigned scope, including read-only analysis when requested.
+- **Reviewer — Codex / GPT-6 Astra:** independently review a stable patch without
+  modifying files or issue state. Stop the implementer's editing session first.
+- **Tests and CI:** required evidence regardless of either model's assessment.
+  Report baseline failures separately; passing tests alone is not approval.
+- **Operator:** decides scope, resolves disagreements, and approves publishing,
+  merging, and deployment. No automatic promotion from a model verdict.
+
+### Operational boundaries
+
+- Work in a credential-free development environment. A checkout and virtualenv
+  are not security isolation; use a container, VM, or separate OS account without
+  access to trading credentials, production state, or operational service sockets.
+- Do not access broker accounts or production databases, including paper accounts.
+- Do not start, stop, or restart trading daemons. Operational runbooks below are
+  architecture context, not authorization to operate services.
+- Do not push, merge, deploy, or perform destructive Git cleanup (including stash
+  deletion and branch pruning). Leave publishing and deployment to the operator.
+- Do not change trading parameters or runtime model providers unless assigned.
+- Do not hide a failed check, skip it silently, or relax permissions to bypass it.
+- Reviewer commands must be read-only; do not claim/close Beads, run auto-fix
+  commands, or invoke write-capable connectors in a review session.
+
+### Review priorities
+
+Prioritize unknown account state permitting exposure; duplicate orders after
+timeouts/restarts; partial-fill and cancellation accounting; exits that create
+or reverse exposure; estimates reported as realized results; and missing
+regression coverage for changed behavior.
+
+Each finding must identify triggering conditions, incorrect behavior, its
+consequence, and a file location. Distinguish confirmed defects from questions
+and optional improvements. Do not invent findings to fill a quota.
+
+### Completion
+
+Provide the patch summary, exact test evidence, unresolved concerns, and Beads
+status. The implementer files follow-up issues and updates local issue state;
+the reviewer reports findings without mutations. Leave a stable patch for review
+and leave publishing, merging, and deployment to the operator. Do not run Git or
+Dolt pushes as a session-completion step.
+
 ## Project
 curLit is an algorithmic FX trading system: pull live ticker values for currencies, cryptocurrencies, and rare metals, then use AI (NLP + quantitative models) to analyze treasury bond ETFs/trusts (e.g. FXY, TLT) against news/world events and recommend short/put positions.
 
@@ -11,7 +66,7 @@ Canonical operational docs — READ THESE (not the historical design in `referen
 ## Status
 LIVE — paper trading. There IS production code: ~217 modules under `src/`,
 ~3,100 unit tests, and a 13-daemon fleet run by
-`./scripts/daemons.sh start|stop|status`. Build/run/test freely:
+`./scripts/daemons.sh start|stop|status` (operator only). Development checks:
 `.venv/bin/pytest tests/unit -q`, `.venv/bin/mypy src/`,
 `.venv/bin/ruff check src/ tests/`. Four strategies are live (see
 `configs/live_portfolio.yaml`): rate_diff_mean_reversion, cb_sentiment_shift,
@@ -48,8 +103,11 @@ do not implement from it.** The authoritative source is the live code under
 ## Development Conventions
 
 ### Test Integrity
-- NEVER modify, delete, skip, or weaken tests to make them pass
-- NEVER hardcode expected values, mock results, or contrive a passing test result
+- Never weaken, delete, or skip tests to conceal a defect.
+- When requirements intentionally change, explain changes to existing test
+  expectations and add coverage for the new requirement.
+- Never fabricate results or contrive a passing test. Mock broker responses at
+  external boundaries; assert behavior against an independent requirement oracle.
 - Fix the CODE, not the tests. If the code cannot be fixed within scope, escalate
 - Every test must have an independent oracle: known test vectors from an external source, cross-validation between two independent implementations, or bit-exact comparison against a reference path
 
@@ -59,7 +117,7 @@ do not implement from it.** The authoritative source is the live code under
 - **Property-based tests**: Write `hypothesis` tests alongside unit tests for every numerical function. Test monotonicity, boundedness, sign consistency, and round-trip properties. Use decorators: `@given(st.floats(...), st.floats(...))`.
 - **Type hints**: All functions must have explicit type hints on parameters and return values. Use `mypy --strict` mode. Use `| None` not `Optional`, `list[dict]` not `List[Dict]`. No `Any` except at system boundaries.
 - **Magic numbers**: Document every magic number and constant with a comment explaining WHY that specific value was chosen. Link to the source (paper, empirical study, architecture doc section). No unexplained numeric literals.
-- **Mypy must pass**: `make typecheck` must exit 0 before any commit. CI enforces this.
+- **Mypy must pass**: `make typecheck` must exit 0 before an operator-approved commit. CL-0deu.5.1 defines the PR checks; operator activation/required checks and remaining CI work stay tracked in CL-0deu.5. See `docs/CI.md`; do not assume remote enforcement is active.
 - **Log BEFORE the action, not after**: "Placing order..." before the API call, "Order filled" after. You need the BEFORE log when the action crashes.
 
 ### No Fabrication
@@ -71,11 +129,8 @@ do not implement from it.** The authoritative source is the live code under
 - NEVER proceed after a silent failure — a command that failed and was ignored is not a completed step
 
 ## Workflow
-1. Check for ready work: `bd ready`
-2. Claim an issue: `bd update <id> --claim`
-3. Do the work
-4. File issues for anything discovered: `bd create "..." -t bug -p 1 --deps discovered-from:CL-<parent>`
-5. Complete: `bd close <id> --reason "Done"`
+Implementers use the Beads workflow below for the assigned issue. Reviewers only
+inspect issues using `bd --sandbox --readonly ... --json`.
 
 <!-- BEGIN BEADS INTEGRATION v:1 profile:full hash:f65d5d33 -->
 ## Issue Tracking with bd (beads)
@@ -94,27 +149,27 @@ do not implement from it.** The authoritative source is the live code under
 **Check for ready work:**
 
 ```bash
-bd ready --json
+bd --sandbox ready --json
 ```
 
 **Create new issues:**
 
 ```bash
-bd create "Issue title" --description="Detailed context" -t bug|feature|task -p 0-4 --json
-bd create "Issue title" --description="What this issue is about" -p 1 --deps discovered-from:bd-123 --json
+bd --sandbox create "Issue title" --description="Detailed context" -t bug|feature|task -p 0-4 --json
+bd --sandbox create "Issue title" --description="What this issue is about" -p 1 --deps discovered-from:bd-123 --json
 ```
 
 **Claim and update:**
 
 ```bash
-bd update <id> --claim --json
-bd update bd-42 --priority 1 --json
+bd --sandbox update <id> --claim --json
+bd --sandbox update bd-42 --priority 1 --json
 ```
 
 **Complete work:**
 
 ```bash
-bd close bd-42 --reason "Completed" --json
+bd --sandbox close bd-42 --reason "Completed" --json
 ```
 
 ### Issue Types
@@ -135,67 +190,44 @@ bd close bd-42 --reason "Completed" --json
 
 ### Workflow for AI Agents
 
-1. **Check ready work**: `bd ready` shows unblocked issues
-2. **Claim your task atomically**: `bd update <id> --claim`
+1. **Check ready work**: `bd --sandbox ready` shows unblocked issues
+2. **Claim your task atomically**: `bd --sandbox update <id> --claim`
 3. **Work on it**: Implement, test, document
 4. **Discover new work?** Create linked issue:
-   - `bd create "Found bug" --description="Details about what was found" -p 1 --deps discovered-from:<parent-id>`
-5. **Complete**: `bd close <id> --reason "Done"`
+   - `bd --sandbox create "Found bug" --description="Details about what was found" -p 1 --deps discovered-from:<parent-id>`
+5. **Complete**: `bd --sandbox close <id> --reason "Done"`
 
 ### Quality
 - Use `--acceptance` and `--design` fields when creating issues
 - Use `--validate` to check description completeness
 
 ### Lifecycle
-- `bd defer <id>` / `bd supersede <id>` for issue management
-- `bd stale` / `bd orphans` / `bd lint` for hygiene
-- `bd human <id>` to flag for human decisions
-- `bd formula list` / `bd mol pour <name>` for structured workflows
+- `bd --sandbox defer <id>` / `bd --sandbox supersede <id>` for issue management
+- `bd --sandbox stale` / `bd --sandbox orphans` / `bd --sandbox lint` for hygiene
+- `bd --sandbox human <id>` to flag for human decisions
+- `bd --sandbox formula list` / `bd --sandbox mol pour <name>` for structured workflows
 
-### Auto-Sync
+### Local issue state and operator-controlled sync
 
-bd automatically syncs via Dolt:
+Use `bd --sandbox` for development commands to disable automatic synchronization.
+Hooks use
+`bd --sandbox --readonly prime`; `.beads/PRIME.md` replaces the default completion
+protocol. Do not use `bd prime --export` as session instructions: it intentionally
+ignores the project override. Preserve the override when updating Beads integration.
 
-- Each write auto-commits to Dolt history
-- Use `bd dolt push`/`bd dolt pull` for remote sync
-- No manual export/import needed!
+Dolt is the local issue store, not permission to publish. Backup Git pushing is
+disabled in `.beads/config.yaml`. Remote synchronization is operator-only.
 
 ### Important Rules
 
 - ✅ Use bd for ALL task tracking
 - ✅ Always use `--json` flag for programmatic use
 - ✅ Link discovered work with `discovered-from` dependencies
-- ✅ Check `bd ready` before asking "what should I work on?"
+- ✅ Check `bd --sandbox ready` before asking "what should I work on?"
 - ❌ Do NOT create markdown TODO lists
 - ❌ Do NOT use external issue trackers
 - ❌ Do NOT duplicate tracking systems
 
 For more details, see README.md and docs/QUICKSTART.md.
-
-## Session Completion
-
-**When ending a work session**, you MUST complete ALL steps below. Work is NOT complete until `git push` succeeds.
-
-**MANDATORY WORKFLOW:**
-
-1. **File issues for remaining work** - Create issues for anything that needs follow-up
-2. **Run quality gates** (if code changed) - Tests, linters, builds
-3. **Update issue status** - Close finished work, update in-progress items
-4. **PUSH TO REMOTE** - This is MANDATORY:
-   ```bash
-   git pull --rebase
-   bd dolt push
-   git push
-   git status  # MUST show "up to date with origin"
-   ```
-5. **Clean up** - Clear stashes, prune remote branches
-6. **Verify** - All changes committed AND pushed
-7. **Hand off** - Provide context for next session
-
-**CRITICAL RULES:**
-- Work is NOT complete until `git push` succeeds
-- NEVER stop before pushing - that leaves work stranded locally
-- NEVER say "ready to push when you are" - YOU must push
-- If push fails, resolve and retry until it succeeds
 
 <!-- END BEADS INTEGRATION -->

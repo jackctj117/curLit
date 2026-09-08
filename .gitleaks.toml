@@ -1,0 +1,15 @@
+# CL-0deu.5.2: preserve upstream detectors; no whole-path or history baseline.
+[extend]
+useDefault = true
+
+[[rules]]
+id = "generic-api-key"
+
+[[rules.allowlists]]
+# Verified in commit 6512b361b2dc5336a29d3a91d3510bd4c58088a0 and current source.
+# This literal is a public placeholder for an instrument ID, not an auth token.
+description = "CL-0deu.5.2: exact ECB market placeholder in curated sample config"
+condition = "AND"
+paths = ['''(^|/)configs/polymarket_markets\.yaml$''']
+regexTarget = "secret"
+regexes = ['''^PLACEHOLDER_ECB_Q3_YES$''']

@@ -40,14 +40,16 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
-import xml.etree.ElementTree as ET
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from xml.etree.ElementTree import ParseError
 
 import httpx
 import yaml
+from defusedxml.common import DefusedXmlException
+from defusedxml.ElementTree import fromstring
 
 from src.research.agents.base import Agent
 
@@ -186,7 +188,7 @@ class ArxivFetcher:
             return []
         try:
             return self._parse(body, source_label=feed.source_label)
-        except ET.ParseError as exc:
+        except (ParseError, DefusedXmlException) as exc:
             logger.warning(
                 "feed %r XML parse failed: %s",
                 feed.name,
@@ -197,7 +199,7 @@ class ArxivFetcher:
     @staticmethod
     def _parse(xml_body: str, source_label: str) -> list[Paper]:
         """Parse the Atom feed body into Paper records."""
-        root = ET.fromstring(xml_body)  # noqa: S314 — arXiv-source XML, no DTD
+        root = fromstring(xml_body, forbid_dtd=True)
         out: list[Paper] = []
         for entry in root.findall("atom:entry", _ATOM_NS):
             title_elem = entry.find("atom:title", _ATOM_NS)
@@ -272,7 +274,7 @@ class RSSFetcher:
             return []
         try:
             return self._parse(body, source_label=feed.source_label)
-        except ET.ParseError as exc:
+        except (ParseError, DefusedXmlException) as exc:
             logger.warning(
                 "feed %r XML parse failed: %s",
                 feed.name,
@@ -288,7 +290,7 @@ class RSSFetcher:
             "dc": "http://purl.org/dc/elements/1.1/",
             "content": "http://purl.org/rss/1.0/modules/content/",
         }
-        root = ET.fromstring(xml_body)  # noqa: S314 — RSS feed, no DTD
+        root = fromstring(xml_body, forbid_dtd=True)
         # RSS 2.0 wraps items in <channel>; some atom-flavored RSS skips
         # the channel wrapper. Try both.
         items = root.findall(".//item")

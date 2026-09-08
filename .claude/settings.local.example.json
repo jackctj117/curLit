@@ -1,0 +1,25 @@
+{
+  "model": "claude-opus-5",
+  "permissions": {
+    "defaultMode": "default",
+    "disableBypassPermissionsMode": "disable",
+    "disableAutoMode": "disable",
+    "deny": [
+      "Read(./.env)",
+      "Read(./.env.*)",
+      "Read(./secrets/**)",
+      "Bash(git push)",
+      "Bash(git push *)",
+      "Bash(./scripts/daemons.sh *)",
+      "Bash(bash scripts/daemons.sh *)",
+      "Bash(bash ./scripts/daemons.sh *)",
+      "Bash(bd dolt push*)",
+      "Bash(bd * dolt push*)",
+      "Bash(git merge *)",
+      "Bash(gh pr merge *)",
+      "Bash(git stash clear*)",
+      "Bash(git stash drop*)",
+      "Bash(git clean *)"
+    ]
+  }
+}

@@ -255,12 +255,13 @@ class PnLAttributor:
 
         with self.engine.connect() as conn:
             rows = conn.execute(
+                # CL-u59z: where joins fixed clauses; sid/since bound.
                 text(f"""
                 SELECT symbol, quantity, fill_price, cost_components
                 FROM strategy_fills
                 WHERE {where}
                 ORDER BY ts, fill_id
-            """),
+            """),  # nosec B608
                 params,
             ).fetchall()
 

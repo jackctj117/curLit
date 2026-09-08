@@ -1,0 +1,131 @@
+# Development checks (CL-0deu.5.1)
+
+`.github/workflows/ci.yml` defines credential-free hosted checks for all pull
+requests, pushes to `main`, merge queues, and manual dispatch. It does not publish,
+deploy, operate trading services, or invoke coding/research models. The jobs use
+Ubuntu 24.04 and Python 3.11, the project's declared minimum version.
+
+| Stable check name | Command in an activated development environment |
+| --- | --- |
+| `unit-tests` | `make test-unit` |
+| `lint` | `make lint` |
+| `typecheck` | `make typecheck` |
+
+The existing Make targets run the complete unit directory, Ruff across `src/`
+and `tests/`, and strict mypy across `src/`. The jobs run independently: a failure
+does not cancel the others, and none uses `continue-on-error` or an exit-zero
+override. PRs have no path filters that could leave a required check pending.
+
+Each hosted job installs `.[dev]`. Linux CI preinstalls a CPU-only PyTorch wheel
+from its official index to avoid downloading unused CUDA libraries; no dependency
+is omitted. `pytest-timeout` is now declared in the dev extra so the existing
+120-second per-test timeout is enforced. Do not upgrade the operational `.venv`
+to activate this: use a disposable development environment. The dependency lock
+is separate work (CL-0deu.10); installing the same broad requirements is not yet
+a guarantee of a bit-for-bit reproducible environment.
+
+## Blocking security checks (CL-0deu.5.2)
+
+The security workflow defines independent `security-bandit`,
+`security-dependencies`, and `security-secrets` jobs. All run on PRs, main pushes,
+merge queues and manual dispatch, with a weekly scheduled scan as well. One
+failure cannot prevent the other scans from running. Each uses read-only GitHub
+permissions and checkout without persisted credentials.
+
+- **Bandit 1.9.4:** `python -m bandit -r src/ -ll -f json -o <temporary-report>`
+  rejects medium/high findings at every confidence level. A separate always-run
+  summary rejects parsing errors or unreadable reports and prints only finding
+  locations, rule IDs and severity/confidence, not source snippets. The original
+  scan failure is not suppressed by the summary. No blanket baseline is used.
+- **pip-audit 2.10.1:** `python -m pip_audit --strict --skip-editable --progress-spinner off`
+  audits the installed third-party core/dev dependencies and scanner environment.
+  The editable curLit package is omitted because it has no public advisory
+  identity; its dependencies are still audited. Collection errors and known
+  vulnerabilities fail. No automatic fixes or vulnerability ignores are used.
+  Both CI workflows install pip 26.2.1 instead of retaining the previous
+  CVE-2026-3219 exception. See the [pip release notes](https://pip.pypa.io/en/stable/news/).
+- **Gitleaks 8.30.1:** the Linux binary is verified against a committed SHA-256
+  before extraction. `gitleaks git --config .gitleaks.toml --redact=100 --no-banner
+  --verbose --ignore-gitleaks-allow --log-opts=--all .` scans fetched Git history
+  across all file types, including deleted content; it does not load the ignored
+  working-copy `.env` or verify credentials against a broker/provider. Checkout
+  fetches complete available history. This is not a working-tree scan: local
+  uncommitted/untracked changes are outside it until the operator commits them.
+  Use only isolated fixture directories for local `gitleaks dir` experiments,
+  never the operational checkout containing ignored credentials.
+
+Scanner pins and their exceptions require review on updates. These tools report
+evidence, not proof of exploitability or an exhaustive security audit. See the
+[Bandit CLI](https://bandit.readthedocs.io/en/latest/man/bandit.html),
+[pip-audit documentation](https://github.com/pypa/pip-audit), and
+[Gitleaks documentation](https://github.com/gitleaks/gitleaks).
+
+### Exception policy and observed baseline
+
+Fix genuine defects first. An exception must name a Bead, exact rule/location or
+package/advisory, evidence, reviewer rationale, and a recheck condition. Operator
+review of the patch includes its exceptions. Do not ignore entire directories,
+commits, rule families, or all current findings to obtain a green check. Do not
+use inline `gitleaks:allow` comments; those are disabled. Do not publish raw secret
+reports or validate discovered credentials online. Real credentials require
+operator-led revocation/rotation, not merely deletion from the current file.
+
+The sole added exception matches `generic-api-key` AND the exact secret value
+`PLACEHOLDER_ECB_Q3_YES` AND `configs/polymarket_markets.yaml`. Inspection of
+commit `6512b361b2dc5336a29d3a91d3510bd4c58088a0` confirms it is a literal public
+instrument-ID placeholder. Revisit the exception when the sample value, file,
+or detector changes. Tests with another path and a token-shaped replacement both
+still fail. The 395-commit local history scan then reports no findings; this does
+not certify uncommitted changes, unfetched history, or remote credentials.
+
+**Bandit findings resolved (CL-u59z):** the initial scan reported 16 findings,
+not 16 confirmed exploits. Ten now have code fixes and six SQL constructions
+have narrow, evidence-backed dispositions. The medium-and-higher scan exits
+zero with no parser errors. See [individual dispositions and regression
+evidence](SECURITY_DISPOSITIONS.md). Existing model identities and persisted idea
+IDs are preserved. A vulnerable/patched pip
+fixture proves auditor failure/success, but the complete fresh hosted dependency
+environment has not yet been audited locally.
+
+The workflow uses read-only repository permissions, pinned action commits, and
+checkout without persisted Git credentials. It has no deployment environment,
+database service, or broker keys. External smoke tests stay opt-in and model
+downloads are disabled. These settings do not prove that arbitrary test code
+cannot use the network; credential-free hosted runners remain important.
+
+## Operator activation
+
+The patch must be reviewed and published by the operator before GitHub can run
+it. After resolving baseline findings and obtaining successful hosted runs,
+require `unit-tests`, `lint`, `typecheck`, `security-bandit`,
+`security-dependencies`, and `security-secrets` in the repository's branch
+rules/ruleset, with the GitHub Actions app
+as the expected source. Confirm the exact names in the checks UI. Require human
+PR approval and verify that a deliberately failing check prevents merging using
+a disposable branch. Model review is additional evidence, not a merge authority.
+
+Local validation does not verify a hosted Linux/Python 3.11 installation or remote
+branch protection. Do not describe merging as blocked by CI until the operator
+has verified those settings. Security findings must be resolved or explicitly
+reviewed before activation; do not bypass a failing job to merge the setup.
+
+## Verification and remaining scope
+
+Configuration regression tests run in the normal unit suite:
+
+```bash
+.venv/bin/pytest tests/unit/test_ci_workflow.py -q
+.venv/bin/pytest tests/unit/test_security_workflow.py -q
+.venv/bin/ruff check src/ tests/
+.venv/bin/mypy src/
+```
+
+When reviewing changes to CI, confirm that deliberate failing test, lint, and
+type fixtures each produce a nonzero exit. Put these fixtures in a disposable
+directory, not in the repository suite; never commit credentials or weaken an
+existing test to exercise a failure path.
+
+The parent bead CL-0deu.5 remains open for disposable database/migration tests
+and hosted/branch-rule proof.
+CL-xpsp separately tracks the credential-free coding/review environment. None of
+these checks authorizes paper-account resets, daemon restarts, or live trading.

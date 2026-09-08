@@ -12,6 +12,14 @@ daily; every surfaced idea's forward return is scored into a track record that
 a weekly reflective review will tune the system from. 140+ tracked issues
 closed. **Operational ground truth: [`docs/CURRENT_OPERATIONS.md`](docs/CURRENT_OPERATIONS.md) · fresh-device setup: [`docs/BOOTSTRAP.md`](docs/BOOTSTRAP.md) · fleet: `./scripts/daemons.sh start`.**
 
+## Development workflow
+
+Claude implements one assigned Beads issue, checks verify the patch, Codex reviews
+it read-only, and the operator approves publishing and merging. Fable is only a
+task-specific escalation. See [the supervised setup guide](docs/AI_DEVELOPMENT_WORKFLOW.md).
+Use a credential-free development environment; this setup does not change runtime
+research models or authorize access to the paper-trading installation.
+
 ## Features
 
 - **Autonomous research pipeline**: multi-source ingest (arXiv preprints + quant substacks + Polymarket prediction markets) → idea agent → operator GATE 1 → implementer → walk-forward backtest → Bull/Bear debate → verdict engine → operator GATE 2 → paper-shadow registration (allocation=0). All LLM roles run on headless Claude Code (`claude-fable-5`) via the operator's subscription — the Grok/DeepSeek drivers are kept only for the provider-comparison harness. Daily cron, full transcripts, Telegram alerts. Transient LLM failures (timeouts/rate limits) retry with an attempt cap instead of wedging. See [`docs/research/RUNBOOK.md`](docs/research/RUNBOOK.md).

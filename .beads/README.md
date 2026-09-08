@@ -12,21 +12,25 @@ Beads is issue tracking that lives in your repo, making it perfect for AI coding
 
 ### Essential Commands
 
+For supervised AI development, follow [AGENTS.md](../AGENTS.md) and the local
+[prime override](PRIME.md). Agents use `--sandbox` to disable automatic sync;
+reviewers also use `--readonly` and never update issues. Remote sync is operator-only.
+
 ```bash
 # Create new issues
-bd create "Add user authentication"
+bd --sandbox create "Add user authentication" --json
 
 # View all issues
-bd list
+bd --sandbox --readonly list --json
 
 # View issue details
-bd show <issue-id>
+bd --sandbox --readonly show <issue-id> --json
 
 # Update issue status
-bd update <issue-id> --claim
-bd update <issue-id> --status done
+bd --sandbox update <issue-id> --claim --json
+bd --sandbox close <issue-id> --reason "Implemented and verified; awaiting operator review" --json
 
-# Sync with Dolt remote
+# Operator only: sync with Dolt remote after reviewing the patch
 bd dolt push
 ```
 

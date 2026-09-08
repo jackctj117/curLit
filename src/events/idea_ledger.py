@@ -76,7 +76,8 @@ _LIST_OPEN_SQL = text(
 def make_idea_id(geo_event_id: Any, ticker: str, action: str) -> str:
     """Stable dedup key: same event + ticker + action → same row."""
     raw = f"{geo_event_id}:{ticker}:{action}"
-    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]  # noqa: S324
+    # Persisted dedup key, NOT authentication/integrity. Preserve existing IDs.
+    return hashlib.sha1(raw.encode("utf-8"), usedforsecurity=False).hexdigest()[:16]
 
 
 def _float_or_none(value: Any) -> float | None:

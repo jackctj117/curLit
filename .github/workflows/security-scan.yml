@@ -1,33 +1,103 @@
+# CL-0deu.5.2: findings fail; independent jobs preserve the other scan results.
 name: Security Scan
 
-on:
+"on":
   push:
     branches: [main]
   pull_request:
-    branches: [main]
+  merge_group:
+  workflow_dispatch:
   schedule:
     - cron: "0 0 * * 0"  # Weekly Sunday
 
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
 jobs:
-  security:
-    runs-on: ubuntu-latest
+  bandit:
+    name: security-bandit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10 # Static analysis needs no project/model installation.
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.11"
-      - name: Install dependencies
-        run: pip install pip-audit bandit
-      - name: Install project
-        run: pip install -e .
-      - name: pip-audit
-        run: pip-audit --ignore-vuln CVE-2026-3219
-      - name: bandit
-        run: bandit -r src/ -ll -f json --exit-zero
-      - name: secret scanning
+      - name: Install reviewed scanner version
         run: |
-          if grep -rE "(AKIA|sk-[a-zA-Z0-9]{32}|ghp_[a-zA-Z0-9]{36})" src/ --include="*.py"; then
-            echo "WARNING: possible secrets found in source"
-          else
-            echo "No secrets detected"
-          fi
+          python -m pip install --upgrade "pip==26.2.1"
+          python -m pip install "bandit==1.9.4"
+      - name: Scan medium-and-higher findings at all confidence levels
+        run: python -m bandit -r src/ -ll -f json -o "$RUNNER_TEMP/bandit.json"
+      - name: Summarize findings and reject incomplete parsing
+        # Runs even after a failed scan; it never converts that failure to success.
+        if: always()
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import sys
+          from pathlib import Path
+
+          report = json.loads((Path(os.environ["RUNNER_TEMP"]) / "bandit.json").read_text())
+          for finding in report["results"]:
+              print(f'{finding["filename"]}:{finding["line_number"]}: '
+                    f'{finding["test_id"]} {finding["issue_severity"]}/{finding["issue_confidence"]}')
+          print(f'Bandit parser errors: {len(report["errors"])}')
+          sys.exit(bool(report["errors"]))
+          PY
+
+  dependencies:
+    name: security-dependencies
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30 # Includes cold installation of scientific/NLP dependencies.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install patched installer and reviewed auditor
+        # Fix the installer rather than ignoring CVE-2026-3219.
+        run: |
+          python -m pip install --upgrade "pip==26.2.1"
+          python -m pip install "pip-audit==2.10.1"
+      - name: Install CPU-only PyTorch
+        run: python -m pip install "torch>=2.0" --index-url https://download.pytorch.org/whl/cpu
+      - name: Install project and development dependencies
+        run: python -m pip install -e ".[dev]"
+      - name: Audit resolved environment without automatic fixes
+        # Only the local editable project lacks a public advisory identity;
+        # its installed third-party dependencies remain in the audit.
+        run: python -m pip_audit --strict --skip-editable --progress-spinner off
+
+  secrets:
+    name: security-secrets
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10 # Bounded history scan; no credential verification/network calls.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Install checksum-pinned Gitleaks
+        run: |
+          curl --fail --silent --show-error --location \
+            https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz \
+            --output "$RUNNER_TEMP/gitleaks.tar.gz"
+          printf '%s\n' "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  $RUNNER_TEMP/gitleaks.tar.gz" | sha256sum --check --strict
+          tar -xzf "$RUNNER_TEMP/gitleaks.tar.gz" -C "$RUNNER_TEMP" gitleaks
+      - name: Scan fetched history with redacted findings
+        # --all covers fetched branches/tags, not ignored working-copy secrets.
+        # Inline gitleaks:allow comments cannot bypass the reviewed config.
+        run: |
+          "$RUNNER_TEMP/gitleaks" git --config .gitleaks.toml --redact=100 --no-banner --verbose --ignore-gitleaks-allow --log-opts=--all .

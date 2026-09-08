@@ -226,8 +226,9 @@ def fetch_executable_ideas(
         where.append("lower(ti.notes) LIKE '%niche%'")
     if cfg.require_red_team:
         where.append("lower(ti.notes) LIKE '%red-team%'")
+    # CL-u59z: where contains only literals above; min_conf is a bind parameter.
     sql = (
-        "SELECT ti.idea_id, ti.ticker, ti.action, ti.confidence, ti.preferred_instrument, "
+        "SELECT ti.idea_id, ti.ticker, ti.action, ti.confidence, ti.preferred_instrument, "  # nosec B608
         "ti.notes, ti.created_at, ti.time_stop_days, g.assessment AS event_assessment "
         "FROM trade_ideas ti LEFT JOIN geo_events g ON g.id = ti.geo_event_id WHERE "
         + " AND ".join(where)

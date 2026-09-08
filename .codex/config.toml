@@ -1,0 +1,5 @@
+# CL-doqh: independent reviewer; operator owns publishing and deployment.
+model = "gpt-6-astra"
+review_model = "gpt-6-astra"
+sandbox_mode = "read-only"
+approval_policy = "never"

@@ -406,11 +406,12 @@ class DataProvider:
                     cutoff_clause = "AND ts <= :cutoff"
                     params["cutoff"] = as_of
                 df = pd.read_sql(
+                    # CL-u59z: cutoff_clause is fixed SQL; all values bound.
                     text(f"""
                         SELECT close FROM prices
                         WHERE symbol = :pair {cutoff_clause}
                         ORDER BY ts DESC LIMIT :n
-                    """),
+                    """),  # nosec B608
                     conn,
                     params=params,
                 )
@@ -542,6 +543,7 @@ class DataProvider:
             params["floor"] = floor
         try:
             with self.engine.connect() as conn:
+                # CL-u59z: fixed floor_clause; sids/as_of/floor bound.
                 q = text(f"""
                     SELECT symbol, mid FROM (
                         SELECT symbol, mid,
@@ -551,7 +553,7 @@ class DataProvider:
                         FROM intraday_quotes
                         WHERE symbol IN :sids AND ts <= :as_of {floor_clause}
                     ) t WHERE rn = 1
-                """).bindparams(bindparam("sids", expanding=True))
+                """).bindparams(bindparam("sids", expanding=True))  # nosec B608
                 for row in conn.execute(q, params):
                     if row[1] is not None:
                         out[str(row[0])] = float(row[1])

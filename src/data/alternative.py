@@ -51,7 +51,6 @@ from __future__ import annotations
 import logging
 import os
 import time
-import xml.etree.ElementTree as ET
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from datetime import datetime, timedelta
@@ -59,6 +58,7 @@ from typing import Any, ClassVar
 
 import httpx
 import pandas as pd
+from defusedxml.ElementTree import fromstring
 
 logger = logging.getLogger(__name__)
 
@@ -376,7 +376,7 @@ class EntsoeSource(AlternativeDataSource):
 
     Uses the raw Transparency Platform REST API (documentType=A65
     "system total load", processType=A16 "realised") and parses the
-    GL_MarketDocument XML with stdlib ElementTree. No extra dependency.
+    GL_MarketDocument XML with defusedxml (DTD/entity expansion forbidden).
 
     Token: free but registration-gated. Read from ``ENTSOE_API_TOKEN``
     (or passed explicitly). Without it, ``is_configured()`` is False and
@@ -445,7 +445,7 @@ class EntsoeSource(AlternativeDataSource):
         """Parse a GL_MarketDocument into ts/area/quantity_mw dicts.
         An Acknowledgement_MarketDocument (ENTSO-E's "no data / bad
         request" response) yields an AltDataError with the reason."""
-        root = ET.fromstring(xml_text)
+        root = fromstring(xml_text, forbid_dtd=True)
         if root.tag.endswith("Acknowledgement_MarketDocument"):
             reason = root.findtext(".//{*}Reason/{*}text") or "unknown reason"
             msg = f"ENTSO-E rejected request for {area}: {reason}"

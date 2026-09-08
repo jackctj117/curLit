@@ -38,6 +38,7 @@ dependencies = [
     "transformers>=4.30",
     "torch>=2.0",
     "beautifulsoup4>=4.12",
+    "defusedxml>=0.7.1",  # CL-u59z: reject DTD/entities in external XML feeds.
     # Finance
     "yfinance>=0.2",
     "holidays>=0.35",
@@ -62,9 +63,11 @@ dev = [
     "pytest>=7.4",
     "pytest-asyncio>=0.21",
     "pytest-cov>=4.1",
+    "pytest-timeout>=2.3",  # CL-0deu.5.1: enforce pytest.ini's 120-second timeout.
     "hypothesis>=6.82",
     "ruff>=0.1",
     "mypy>=1.5",
+    "types-defusedxml>=0.7.0",  # Typed XML boundary; do not ignore import errors.
     "black>=23.7",
     "pre-commit>=3.3",
 ]

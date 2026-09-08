@@ -29,6 +29,7 @@ hawkish, 0 = neutral or balanced.
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
@@ -75,6 +76,20 @@ CB_MODEL_REGISTRY: dict[str, str] = {
 # pre-trained CB classifier we have.
 DEFAULT_MODEL_ID: str = CB_MODEL_REGISTRY["fed"]
 
+# CL-u59z: immutable revisions from each existing model's official HF API,
+# verified 2026-09-08. Fed matches this deployment's pre-fix cached revision.
+# No model identities/labels changed; review artifact updates explicitly.
+CB_MODEL_REVISIONS: dict[str, str] = {
+    CB_MODEL_REGISTRY["fed"]: "7695c0aebcd1a85ee23ff41df6a57b024e20f82b",
+    CB_MODEL_REGISTRY["ecb"]: "2e8101d4f6f95eb681135e9bdd9edce6e3852dc0",
+    CB_MODEL_REGISTRY["pboc"]: "397c3e47c90b817376a6e4a38343495d69247f28",
+    CB_MODEL_REGISTRY["snb"]: "b375f3e3b58e90a3e78057d56fe6e78375177010",
+    CB_MODEL_REGISTRY["rba"]: "a1ad3bab85c844409aec94d5d09fc6fb6a84e036",
+    CB_MODEL_REGISTRY["rbi"]: "d332e9c72a96f7fa32fbae1cf731e10fb1264b4f",
+    CB_MODEL_REGISTRY["mas"]: "2332e27199ece7b23aa2f8bb49b501c3f9132368",
+    CB_MODEL_REGISTRY["nbp"]: "24d22046cd713a30405d5377dd6b1467c4d385fc",
+}
+
 
 class CBSentimentModel:
     """Per-CB stance classifier. Auto-detects 3-vs-4-label scheme."""
@@ -84,6 +99,7 @@ class CBSentimentModel:
         model_path: Path | str = DEFAULT_MODEL_ID,
         device: str | None = None,
         cb_name: str | None = None,
+        revision: str | None = None,
     ) -> None:
         """Load model from a local path or a Hugging Face model ID.
 
@@ -94,6 +110,8 @@ class CBSentimentModel:
           cb_name: optional CB short name ("fed" / "ecb" / etc) — looked
                    up in CB_MODEL_REGISTRY.
           device: "cpu" / "cuda" / None for auto-detect.
+          revision: full HF commit hash for an unregistered remote model.
+                    Local checkpoints must be operator-controlled directories.
         """
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.cb_name = cb_name
@@ -103,6 +121,25 @@ class CBSentimentModel:
         else:
             resolved = str(model_path)
         self.model_id = resolved
+        # Existing paths and explicitly local spellings never fall back to a
+        # remote repository. In particular, a missing local checkpoint fails
+        # in transformers, rather than downloading similarly named content.
+        local = (
+            isinstance(model_path, Path) and resolved == str(model_path)
+        ) or Path(resolved).is_dir() or resolved.startswith(("/", "./", "../")) or (
+            resolved.count("/") > 1
+        )
+        if local:
+            resolved = str(Path(resolved).absolute())
+            pinned_revision = None
+        else:
+            pinned_revision = revision or CB_MODEL_REVISIONS.get(resolved)
+            # Hugging Face repository commits are full 40-digit SHA-1 IDs.
+            if not pinned_revision or not re.fullmatch(r"[0-9a-f]{40}", pinned_revision):
+                raise ValueError("Remote model requires an immutable 40-hex revision")
+        self.model_revision = pinned_revision
+        logger.info("Loading CB model id=%s revision=%s local=%s",
+                    self.model_id, pinned_revision, local)
 
         # Tokenizer kwargs match the gtfintechlab recommendation
         # (do_lower_case + do_basic_tokenize). Local 3-label models
@@ -111,6 +148,9 @@ class CBSentimentModel:
             resolved,
             do_lower_case=True,
             do_basic_tokenize=True,
+            revision=pinned_revision,
+            local_files_only=local,
+            trust_remote_code=False,
         )
 
         # num_labels lets transformers re-shape the head to match
@@ -118,6 +158,9 @@ class CBSentimentModel:
         # config, so we don't pass num_labels here.
         self.model = AutoModelForSequenceClassification.from_pretrained(
             resolved,
+            revision=pinned_revision,
+            local_files_only=local,
+            trust_remote_code=False,
         ).to(self.device)
         self.model.eval()
 
@@ -139,12 +182,12 @@ class CBSentimentModel:
         # ship a temperature.pt sidecar.
         self.temperature = 1.0
         if isinstance(model_path, Path | str):
-            mp = Path(str(model_path))
-            if mp.exists():
+            mp = Path(resolved)
+            if local and mp.is_dir():
                 temp_path = mp / "temperature.pt"
                 if temp_path.exists():
                     self.temperature = float(
-                        torch.load(temp_path, map_location="cpu"),
+                        torch.load(temp_path, map_location="cpu", weights_only=True),
                     )
 
     @torch.no_grad()

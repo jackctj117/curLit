@@ -452,16 +452,15 @@ class SymbolUniverse:
 
     def _load_cache(self) -> dict[str, dict[str, Any]]:
         has_sec = self._has_sec_columns()
-        select_cols = [
-            "symbol", "security_name", "exchange", "is_etf", "is_test_issue",
-        ]
-        if has_sec:
-            select_cols.append("sec_name")
+        query = (
+            "SELECT symbol, security_name, exchange, is_etf, is_test_issue, sec_name "
+            "FROM symbols"
+            if has_sec else
+            "SELECT symbol, security_name, exchange, is_etf, is_test_issue FROM symbols"
+        )
         cache: dict[str, dict[str, Any]] = {}
         with self.engine.connect() as conn:
-            result = conn.execute(text(
-                f"SELECT {', '.join(select_cols)} FROM symbols",
-            )).mappings()
+            result = conn.execute(text(query)).mappings()
             for row in result:
                 cache[row["symbol"].upper()] = {
                     "symbol": row["symbol"],

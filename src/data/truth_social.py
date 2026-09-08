@@ -14,13 +14,15 @@ from __future__ import annotations
 import html
 import logging
 import re
-import xml.etree.ElementTree as ET
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from typing import Any
+from xml.etree.ElementTree import ParseError
 
+from defusedxml.ElementTree import fromstring
+from defusedxml.common import DefusedXmlException
 from sqlalchemy import text
 
 logger = logging.getLogger(__name__)
@@ -53,8 +55,8 @@ def parse_feed(xml_text: str) -> list[TruthPost]:
     silently dropped mid-item."""
     out: list[TruthPost] = []
     try:
-        root = ET.fromstring(xml_text)
-    except ET.ParseError:
+        root = fromstring(xml_text, forbid_dtd=True)
+    except (ParseError, DefusedXmlException):
         logger.warning("truth feed: unparseable XML", exc_info=True)
         return out
     for item in root.iter("item"):
