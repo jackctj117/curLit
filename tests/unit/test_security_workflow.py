@@ -64,7 +64,7 @@ def test_scanners_keep_errors_and_findings_blocking(security_workflow: dict[str,
     assert 'sys.exit(bool(report["errors"]))' in commands
     assert bandit_steps[-1]["if"] == "always()"
     audit = "\n".join(step.get("run", "") for step in jobs["dependencies"]["steps"])
-    assert "pip_audit --strict --skip-editable" in audit
+    assert "pip_audit --strict --no-deps --disable-pip" in audit
     assert "--ignore-vuln" not in audit
     assert "--fix" not in audit
     assert "pip==26.2.1" in audit
@@ -111,13 +111,12 @@ def test_private_root_exclusion_preserves_all_third_party_audit_inputs(
     security_workflow: dict[str, Any],
 ) -> None:
     steps = security_workflow["jobs"]["dependencies"]["steps"]
-    index = next(i for i, step in enumerate(steps) if "Remove only" in step.get("name", ""))
-    command = steps[index]["run"]
-    assert '"pip", "uninstall", "--yes", "curlit"' in command
-    assert "check=True" in command
-    assert 'if third_party() != before:' in command
-    assert 'raise SystemExit(' in command
+    index = next(i for i, step in enumerate(steps) if "Enumerate every" in step.get("name", ""))
+    assert steps[index]["run"] == (
+        'python scripts/ci_audit_manifest.py "$RUNNER_TEMP/audit-requirements.txt"'
+    )
     assert "pip_audit --strict" in steps[index + 1]["run"]
+    assert '-r "$RUNNER_TEMP/audit-requirements.txt"' in steps[index + 1]["run"]
 
 
 @pytest.mark.parametrize("has_parse_error", [False, True])
