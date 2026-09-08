@@ -148,14 +148,16 @@ X watchlist (44 accounts)  ─┼→ geo_events(NEW)
                     stops/targets/triggers)                    [CL-6iu7…]
                               │ urgency ≥ 7
                     NICHE PASS — Kimi K3 agentic tool-loop drives
-                    check_ticker / resolve_company / profile / SEC 10-K
+                    check_ticker / resolve_company / profile / dated SEC
                     tools mid-generation (API-billed, Moonshot)  [CL-ddzt]
                     → SymbolUniverse verification (13k US-listed + SEC
                       names; unverified tickers DROPPED)       [CL-tzug/9xha]
-                    → asymmetry scoring + $-volume liquidity floor
-                    → RED-TEAM critic (claude-code) attacks every
-                      survivor; refuted ideas die, survivors carry the
-                      bear case + lowered confidence            [CL-3v56]
+                    → source-backed fact/inference claims + evidence
+                      coverage + dated $-volume liquidity floor
+                    → evidence reviewer (claude-code): supported /
+                      contradicted / insufficient / unavailable
+                    → only complete, supported, liquid candidates
+                      enter the trading feed                    [CL-eh28]
                               │
               ┌───────────────┼──────────────────┐
         CONFLUENCE      trade_ideas ledger   Telegram digest
@@ -173,8 +175,13 @@ X watchlist (44 accounts)  ─┼→ geo_events(NEW)
                     tuning — ADVISORY, operator approves       [CL-g8jl]
 ```
 
-Grounding injected into the niche pass per candidate (CL-2czc/3xoj/mtum):
-SEC 10-K risk/business excerpt (TOC-skipping) · yfinance profile ·
+Niche research outcomes, including failures and abstention, are retained in
+`assessment.niche_research`. Source matching establishes provenance, not semantic
+truth; missing review or unknown liquidity cannot approve a candidate.
+See [the evidence contract](NICHE_RESEARCH_EVIDENCE.md).
+
+Grounding injected into the niche pass per candidate (CL-eh28/3xoj/mtum):
+targeted recent SEC 10-K/10-Q/8-K excerpts · yfinance profile ·
 **computed technicals** (trend vs 20/50d SMA, swing S/R in dollars,
 breakout state incl. approaching_*, level-test counts, volume ratio — never
 pattern names; a test bans "flag/head/shoulders/wedge") · **options
@@ -301,6 +308,60 @@ establish full operational readiness or authorize real-money trading.
 
 ---
 
+### 2026-09-08 niche research rollout (CL-294s)
+
+Operator authorized publishing and deployment after replenishing Kimi credits.
+Source release **`bab4835`** passed hosted
+[CI](https://github.com/jackctj117/curLit/actions/runs/34267118787) and
+[Security Scan](https://github.com/jackctj117/curLit/actions/runs/34267118821).
+Both local macOS and hosted Linux passed **3,712 unit tests**, with three
+existing skips and one existing sklearn convergence warning. Ruff, source
+typechecking, comparison-CLI typechecking, Bandit and the staged secret scan
+also passed locally.
+
+The redacted baseline is in ignored
+`data/deployments/2026-09-08_niche_preflight.json` (Python/package inventory,
+source hashes, effective allowlisted research settings and provider check).
+Kimi remains `kimi-k3`; discovery and Claude criticism are both enabled.
+A single capped synthetic Kimi request completed with 500 total tokens.
+The old pipeline subsequently completed a real discovery with 21 tool calls.
+These verify provider access, not research accuracy or profitability.
+
+After the old batch completed at **19:15:41 UTC**, PID **23860** was terminated
+and verified gone before bootstrapping PID **45317** at **19:15:46 UTC**.
+Only `event_pipeline` restarted. FX **28922**, options **21444** and equities
+**21457** remained running. The source release was unchanged through cutover.
+No broker calls, account reset, migration, dependency upgrade, model switch,
+trading-limit change or historical-ledger repair was performed for this rollout.
+
+The event pipeline now runs as user launchd job
+`gui/501/com.curlit.paper.event-pipeline`, with its existing
+`--ingest --assess --loop 900` arguments and unbuffered output.
+Its ignored manifest is `data/deployments/com.curlit.paper.event-pipeline.plist`;
+`RunAtLoad=true`, `KeepAlive=false`, and PATH explicitly includes the existing
+Claude CLI. It loads the existing project environment. The job is not a new
+login agent and does not change full-fleet boot configuration.
+
+At **19:17 UTC**, singleton verification passed, the old PID was absent, the
+new loop had started, database reads succeeded, and there were no new ERROR,
+CRITICAL or WARNING log lines. **The new process had not completed its first
+full cycle or persisted a new evidence report at this checkpoint.** Do not
+confuse startup verification with a completed end-to-end research canary.
+Cutover and checkpoint records are saved alongside the baseline as
+`2026-09-08_bab4835_niche_cutover.json` and
+`2026-09-08_bab4835_niche_postcheck.json`.
+
+For an authorized restart, inspect the job/PID, then use
+`launchctl kickstart -k gui/501/com.curlit.paper.event-pipeline`; never start
+a second instance through `daemons.sh`. On a fault, stop this pipeline job
+with `launchctl bootout gui/501/com.curlit.paper.event-pipeline` and inspect
+before resuming. Preserve the Git release and records; use a reviewed fix or
+explicit rollback, not a worktree reset. Reverting to `e97ecdf` would restore
+the old permissive research semantics, so it is not an automatic fallback.
+No database rollback is required by this additive assessment-JSON change.
+Existing FX source-drift warnings and execution/accounting hardening gates
+remain unchanged.
+
 ## 4. Data layer
 
 | Store | Source | Refresh | Notes |
@@ -327,7 +388,7 @@ starvation (cron/CI-able).
 |---|---|---|
 | Triage | claude-haiku-4-5 (one batched call/cycle) | subscription |
 | Impact agent | claude-sonnet-4-6 | subscription |
-| Niche discovery | **kimi-k3 agentic tool-loop** (~13-15k tok/event, a few cents) | **Moonshot API (paid)** — `NICHE_TOOL_AGENT_ENABLED=0` reverts to free claude-code cycles |
+| Niche discovery | **kimi-k3 agentic tool-loop** | **Moonshot API (paid)** — `NICHE_TOOL_AGENT_ENABLED=0` selects Claude cycles; CLI invocation does not establish zero cost |
 | Red-team critic | claude-sonnet-4-6 (one batched call/event) | subscription |
 | Reflective review | claude-sonnet-4-6 (weekly) | subscription |
 | Research pipeline | claude-fable-5 | subscription |
@@ -335,6 +396,8 @@ starvation (cron/CI-able).
 Grok: no subscription-billed API path exists; deliberately not used.
 Cost controls: triage relevance gate, niche urgency ≥ 7 gate,
 `KIMI_MAX_ITERATIONS`, red-team batching, per-day Alpaca caps.
+The subscription labels describe the existing authentication path, not verified
+per-call billing. CLI budget/usage accounting limitations remain CL-h7c1.
 
 ---
 

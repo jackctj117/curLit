@@ -41,8 +41,10 @@ rows and open positions are not rewritten by this patch.
 
 **Intentional behavior change:** research failures preserve leads, not trading
 eligibility. This may substantially reduce new niche entries, including when
-the critic is disabled or the configured provider is unfunded. No daemon has
-been restarted or model configuration changed by this implementation.
+the critic is disabled or the configured provider is unfunded. The initial
+implementation did not restart services. The operator subsequently authorized
+the targeted CL-294s rollout; see `CURRENT_OPERATIONS.md` for deployment evidence
+and the distinction between startup checks and a completed research cycle.
 
 ## What source-backed means
 
