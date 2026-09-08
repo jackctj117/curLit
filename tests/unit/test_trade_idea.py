@@ -106,7 +106,7 @@ class TestKeySet:
         assert tuple(_normalised()) == CORE_KEYS
 
     def test_niche_shape_is_core_plus_the_niche_block(self) -> None:
-        assert tuple(_niche_merged()) == CORE_KEYS + NICHE_KEYS
+        assert tuple(_niche_merged()) == CORE_KEYS + NICHE_KEYS + ("research",)
 
     def test_core_key_count_is_stable(self) -> None:
         # The persisted contract: 15 core keys, 9 additive niche keys.

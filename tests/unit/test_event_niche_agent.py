@@ -468,7 +468,7 @@ class TestAgentRun:
                 }
             ),
         )
-        ideas = agent.run(
+        report = agent.run_report(
             {
                 "id": 1,
                 "headline": "China restricts rare-earth exports",
@@ -476,8 +476,10 @@ class TestAgentRun:
                 "assessment": {},
             }
         )
-        assert [i.ticker for i in ideas] == ["REAL"]  # hallucination dropped
-        assert ideas[0].asymmetry_score is not None
+        assert [i.ticker for i in report.candidates if i.verified] == ["REAL"]
+        assert report.candidates[1].dropped_reason == "unverified"
+        assert report.candidates[0].asymmetry_score == 0  # No sourced claims, not a hop bonus.
+        assert report.eligible == []
         assert client.calls  # the LLM was actually called
 
     def test_run_drops_all_when_all_hallucinated(self) -> None:
@@ -511,9 +513,11 @@ class TestAgentRun:
             client=client,  # type: ignore[arg-type]
             market_data_fn=_boom,
         )
-        # Data-free scoring still surfaces the verified idea (no crash).
-        ideas = agent.run({"id": 1, "headline": "x", "theme": None, "assessment": {}})
-        assert [i.ticker for i in ideas] == ["REAL"]
+        # Changed requirement: retain the lead, never call missing liquidity passed.
+        report = agent.run_report({"id": 1, "headline": "x", "theme": None, "assessment": {}})
+        assert [i.ticker for i in report.candidates] == ["REAL"]
+        assert report.candidates[0].liquidity_status == "unknown"
+        assert report.eligible == []
 
 
 # --------------------------------------------------------------------- #
@@ -539,6 +543,11 @@ class TestMerge:
             "FRO", "Frontline", "long", "bullish", 3, "levered tanker", "chain", 0.5
         )  # new → merged
         i2.asymmetry_score = 0.7
+        for idea in (i1, i2):
+            # Merge-unit precondition; end-to-end evidence checks are covered separately.
+            idea.verified, idea.discovery_status = True, "completed"
+            idea.evidence_status, idea.review_status = "source_backed", "supported"
+            idea.liquidity_status = "sufficient"
         added = agent.merge_into_assessment(assessment, [i1, i2])
         assert added == 1
         merged = assessment["trade_ideas"]
@@ -558,6 +567,10 @@ class TestMerge:
         ideas = [
             NicheIdea(f"T{i}", f"Co{i}", "long", "bullish", 3, "x", "y", 0.5) for i in range(10)
         ]
+        for idea in ideas:
+            idea.verified, idea.discovery_status = True, "completed"
+            idea.evidence_status, idea.review_status = "source_backed", "supported"
+            idea.liquidity_status = "sufficient"
         added = agent.merge_into_assessment(assessment, ideas, max_total=3)
         assert added == 3
         assert len(assessment["trade_ideas"]) == 3
@@ -601,7 +614,9 @@ class TestIterativeHopping:
             market_data_fn=_liquid_md,
             max_cycles=2,
         )
-        ideas = agent.run(self._event())
+        report = agent.run_report(self._event())
+        ideas = report.candidates  # Incomplete leads survive for research, not execution.
+        assert report.eligible == []
         assert {i.ticker for i in ideas} == {"REAL", "FRO"}
         assert len(client.calls) == 2  # cycle 1 + a genuine deeper cycle
 
@@ -614,7 +629,9 @@ class TestIterativeHopping:
             market_data_fn=_liquid_md,
             max_cycles=3,
         )
-        ideas = agent.run(self._event())
+        report = agent.run_report(self._event())
+        ideas = report.candidates  # Incomplete leads survive for research, not execution.
+        assert report.eligible == []
         assert {i.ticker for i in ideas} == {"REAL"}
         # cycle 2 was dry → stopped early (2 calls, not the full 3).
         assert len(client.calls) == 2
@@ -646,7 +663,9 @@ class TestIterativeHopping:
             market_data_fn=_liquid_md,
             max_cycles=2,
         )
-        ideas = agent.run(self._event())
+        report = agent.run_report(self._event())
+        ideas = report.candidates  # Incomplete leads survive for research, not execution.
+        assert report.eligible == []
         assert {i.ticker for i in ideas} == {"REAL"}  # cycle-1 result survives
 
     def test_followup_prompt_lists_discovered_and_branches(self) -> None:
@@ -780,7 +799,9 @@ class TestToolAugmentedHopping:
             max_cycles=2,
             tools=_BoomTools(),
         )
-        ideas = agent.run(self._event())
+        report = agent.run_report(self._event())
+        ideas = report.candidates  # Incomplete leads survive for research, not execution.
+        assert report.eligible == []
         # Enrichment blew up but the run still completes with both names.
         assert {i.ticker for i in ideas} == {"REAL", "FRO"}
 
@@ -810,7 +831,9 @@ class TestKimiToolAgentDelegation:
             market_data_fn=_liquid_md,
             tool_agent=tool_agent,
         )
-        ideas = agent.run(self._event())
+        report = agent.run_report(self._event())
+        ideas = report.candidates  # Incomplete leads survive for research, not execution.
+        assert report.eligible == []
         assert {i.ticker for i in ideas} == {"REAL"}
         assert tool_agent.calls == [1]  # the Kimi agent did the discovery
         assert client.calls == []  # cycles path was bypassed
@@ -854,7 +877,10 @@ class TestKimiToolAgentDelegation:
             universe=FakeUniverse(),
             client=MockLLMClient("{}"),  # type: ignore[arg-type]
         )
-        assert agent.tool_agent is None  # no key → no agent
+        assert agent.tool_agent is not None  # Missing key must not silently switch providers.
+        report = agent.run_report(self._event())
+        assert report.discovery.status == "unavailable"
+        assert report.discovery.reason == "credentials_missing"
 
 
 # --------------------------------------------------------------------- #
@@ -878,8 +904,13 @@ class TestRedTeamCritic:
             market_data_fn=_liquid_md,
             critic=critic,
         )
-        ideas = agent.run(self._event())
-        assert {i.ticker for i in ideas} == {"REAL"}  # FRO refuted
+        report = agent.run_report(self._event())
+        ideas = report.candidates  # Incomplete leads survive for research, not execution.
+        assert report.eligible == []
+        assert {i.ticker for i in ideas} == {"REAL", "FRO"}  # Retain the critic's research inputs.
+        assert all(
+            i.review_status != "supported" for i in ideas
+        )  # Legacy filtering is not approval.
         assert critic.calls == [1]
 
     def test_no_critic_keeps_all(self) -> None:
@@ -893,7 +924,10 @@ class TestRedTeamCritic:
             market_data_fn=_liquid_md,  # critic off by default
         )
         assert agent.critic is None
-        assert {i.ticker for i in agent.run(self._event())} == {"REAL", "FRO"}
+        report = agent.run_report(self._event())
+        assert {i.ticker for i in report.candidates} == {"REAL", "FRO"}
+        assert all(i.review_status == "not_requested" for i in report.candidates)
+        assert report.eligible == []
 
     def test_critic_enabled_via_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("NICHE_CRITIC_ENABLED", "1")

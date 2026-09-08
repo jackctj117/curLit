@@ -24,11 +24,21 @@ from __future__ import annotations
 import logging
 import math
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timedelta
 from typing import Any
 
 from src.events._util import clamp_float, clamp_int
 from src.events.impact_agent import extract_json_object
+from src.events.research_evidence import (
+    CLAIM_ROLES,
+    MAX_MARKET_AGE_DAYS,
+    RelationshipClaim,
+    SourceDocument,
+    finite_nonnegative,
+    parse_claims,
+    timestamp,
+)
 from src.events.trade_idea import BULLISH_ACTIONS, TradeIdea
 
 logger = logging.getLogger(__name__)
@@ -153,6 +163,51 @@ class NicheIdea:
     red_team_verdict: str = ""
     #: For the honest self-scored components (debugging / logging).
     components: dict[str, float] = field(default_factory=dict)
+    claims: list[RelationshipClaim] = field(default_factory=list)
+    claims_parse_error: bool = False
+    sources: list[SourceDocument] = field(default_factory=list)
+    discovery_status: str = "not_run"
+    evidence_status: str = "insufficient_evidence"
+    review_status: str = "not_requested"
+    review_reason: str = ""
+    review_provenance: dict[str, Any] = field(default_factory=dict)
+    liquidity_status: str = "unknown"
+    market_observed_at: str | None = None
+    score_version: str = "unscored"
+    last_close: float | None = None
+
+    @property
+    def research_eligible(self) -> bool:
+        return (
+            self.verified
+            and self.discovery_status == "completed"
+            and self.evidence_status == "source_backed"
+            and self.review_status == "supported"
+            and self.liquidity_status == "sufficient"
+            and self.dropped_reason is None
+        )
+
+    def research_record(self) -> dict[str, Any]:
+        return {
+            "discovery_status": self.discovery_status,
+            "review_status": self.review_status,
+            "review_reason": self.review_reason,
+            "review_provenance": self.review_provenance,
+            "evidence_status": self.evidence_status,
+            "liquidity_status": self.liquidity_status,
+            "market_observed_at": self.market_observed_at,
+            "claims": [asdict(c) for c in self.claims],
+            "claims_parse_error": self.claims_parse_error,
+            "sources": [d.to_dict() for d in self.sources],
+            "identity_verified": self.verified,
+            "eligible": self.research_eligible,
+            "score_version": self.score_version,
+            "components": self.components,
+            "avg_dollar_volume": self.avg_dollar_volume,
+            "last_close": self.last_close,
+            "market_cap": self.market_cap,
+            "dropped_reason": self.dropped_reason,
+        }
 
     def to_trade_idea(self) -> dict[str, Any]:
         """Merge shape for the assessment ``trade_ideas`` list. Carries
@@ -168,7 +223,7 @@ class NicheIdea:
         # notes so the bear case rides along with the idea, not just the bull.
         notes = self.torque_reason
         if self.red_team_note:
-            notes = f"{notes} | ⚠ survived red-team; top risk: {self.red_team_note}"
+            notes = f"{notes} | red-team ({self.review_status}): {self.red_team_note}"
         return TradeIdea(
             ticker=self.ticker,
             action=self.action,
@@ -195,6 +250,7 @@ class NicheIdea:
             exchange=self.exchange,
             robinhood_tradeable=self.robinhood_tradeable,
             red_team_verdict=self.red_team_verdict or None,
+            research=self.research_record(),
         ).to_dict()
 
 
@@ -237,6 +293,7 @@ def parse_niche_ideas(raw_text: str) -> list[NicheIdea]:
         direction = str(entry.get("direction", "")).strip().lower()
         if direction not in ("bullish", "bearish"):
             direction = "bullish" if action in _BULLISH_NICHE_ACTIONS else "bearish"
+        claims = parse_claims(entry.get("claims"))
         ideas.append(
             NicheIdea(
                 ticker=ticker,
@@ -247,6 +304,10 @@ def parse_niche_ideas(raw_text: str) -> list[NicheIdea]:
                 torque_reason=str(entry.get("torque_reason", "")).strip(),
                 rationale=str(entry.get("rationale", "")).strip(),
                 confidence=clamp_float(entry.get("confidence"), 0.0, 1.0, 0.4),
+                claims=claims,
+                claims_parse_error=(
+                    not isinstance(entry.get("claims"), list) or len(claims) != len(entry["claims"])
+                ),
             )
         )
         if len(ideas) >= MAX_NICHE_IDEAS:
@@ -339,6 +400,66 @@ def torque_from_reason(torque_reason: str) -> float:
     return best if best > 0 else 0.4
 
 
+def evidence_score(
+    idea: NicheIdea,
+    market_data: Mapping[str, Mapping[str, Any]],
+    as_of: datetime,
+    cfg: AsymmetryConfig | None = None,
+) -> NicheIdea:
+    """Active score: source-backed coverage, never prose/hop bonuses.
+
+    Equal role weights are a transparent completeness diagnostic, not a
+    calibrated expected-return estimate. Semantic support requires the critic.
+    Legacy asymmetry_score() remains available only for historical analysis.
+    """
+    cfg = cfg or AsymmetryConfig()
+    assert as_of.tzinfo is not None, "Evidence decisions require an aware cutoff"
+    idea.score_version = "evidence-coverage-v1"
+    roles = {
+        c.role
+        for c in idea.claims
+        if c.kind == "documented_fact" and c.backed(idea.sources, as_of, idea.ticker)
+    }
+    all_backed = (
+        not idea.claims_parse_error
+        and bool(idea.claims)
+        and all(c.backed(idea.sources, as_of, idea.ticker) for c in idea.claims)
+    )
+    required = {"relationship", "exposure", "catalyst"}
+    idea.evidence_status = (
+        "source_backed" if required <= roles and all_backed else "insufficient_evidence"
+    )
+    data = market_data.get(idea.ticker) or {}
+    idea.market_cap = finite_nonnegative(data.get("market_cap"))
+    idea.avg_dollar_volume = finite_nonnegative(data.get("avg_dollar_volume"))
+    idea.last_close = finite_nonnegative(data.get("last_close"))
+    observed, received = timestamp(data.get("observed_at")), timestamp(data.get("retrieved_at"))
+    idea.market_observed_at = observed.isoformat() if observed else None
+    fresh = bool(
+        observed
+        and received
+        and observed <= received <= as_of
+        and as_of - observed <= timedelta(days=MAX_MARKET_AGE_DAYS)
+    )
+    idea.liquidity_status = "unknown"
+    if fresh and idea.avg_dollar_volume is not None:
+        idea.liquidity_status = (
+            "sufficient" if idea.avg_dollar_volume >= cfg.min_avg_dollar_volume else "insufficient"
+        )
+    idea.liquidity_flag = idea.liquidity_status != "sufficient"
+    idea.components = {role: float(role in roles) for role in CLAIM_ROLES}
+    idea.asymmetry_score = len(roles) / len(CLAIM_ROLES)
+    idea.dropped_reason = None
+    if idea.evidence_status != "source_backed":
+        idea.dropped_reason = "insufficient_evidence"
+    elif idea.liquidity_status != "sufficient":
+        idea.dropped_reason = "liquidity_" + idea.liquidity_status
+    elif idea.asymmetry_score < cfg.asymmetry_threshold:
+        idea.dropped_reason = "below_evidence_threshold"
+    assert 0 <= idea.asymmetry_score <= 1
+    return idea
+
+
 def _smallness_bonus(market_cap: float | None, cfg: AsymmetryConfig) -> float:
     """0-1 under-followed-ness from market cap: full weight at/under the
     small-cap ceiling, none at/over the large-cap floor, linear in
@@ -381,6 +502,7 @@ def asymmetry_score(
     idea.avg_dollar_volume = float(adv) if adv is not None else None
 
     hop_norm = min(idea.hop_count, cfg.hop_cap) / cfg.hop_cap
+    idea.score_version = "legacy-hop-torque-v1"
     torque = torque_from_reason(idea.torque_reason)
 
     # Liquidity gating FIRST — it governs whether smallness is a bonus or

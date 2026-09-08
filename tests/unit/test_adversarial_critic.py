@@ -81,7 +81,7 @@ def test_critique_parses_verdicts():
     critic = AdversarialCritic(client=MockLLMClient(body), enabled=True)
     out = critic.critique([_idea("AAA"), _idea("BBB")], _event())
     assert out["AAA"].survives is True
-    assert out["BBB"].survives is False
+    assert out["BBB"].survives is True  # An unvalidated raw refutation is not an elimination.
     assert out["BBB"].strongest_attack == "already up 30%"
 
 
@@ -120,8 +120,10 @@ def test_apply_drops_refuted_keeps_others():
     )
     critic = AdversarialCritic(client=MockLLMClient(body), enabled=True)
     survivors = critic.apply([_idea("AAA"), _idea("BBB")], _event())
-    assert [i.ticker for i in survivors] == ["AAA"]
-    assert survivors[0].red_team_verdict == "confirmed"
+    assert [i.ticker for i in survivors] == ["AAA", "BBB"]
+    # Changed requirement: unsupported praise OR objections remain research-only.
+    assert all(i.review_status == "insufficient_evidence" for i in survivors)
+    assert all(not i.red_team_verdict and not i.research_eligible for i in survivors)
 
 
 def test_apply_weakened_annotates_and_lowers_confidence():
@@ -161,10 +163,14 @@ def test_apply_no_verdict_survives_untouched():
     body = _verdicts({"ticker": "AAA", "verdict": "refuted"})
     critic = AdversarialCritic(client=MockLLMClient(body), enabled=True)
     survivors = critic.apply([_idea("AAA"), _idea("BBB")], _event())
-    assert [i.ticker for i in survivors] == ["BBB"]
+    assert [i.ticker for i in survivors] == ["AAA", "BBB"]
+    assert survivors[0].review_status == "insufficient_evidence"
+    assert survivors[1].review_status == "review_unavailable"
 
 
 def test_apply_fail_open_keeps_all():
     critic = AdversarialCritic(client=MockLLMClient("", raises=True), enabled=True)
     ideas = [_idea("AAA"), _idea("BBB")]
     assert critic.apply(ideas, _event()) is ideas  # unchanged list on failure
+    assert all(i.review_status == "review_unavailable" for i in ideas)
+    assert all(not i.red_team_verdict and not i.research_eligible for i in ideas)

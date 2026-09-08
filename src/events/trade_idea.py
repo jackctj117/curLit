@@ -214,6 +214,7 @@ class TradeIdea:
     exchange: str | None = None
     robinhood_tradeable: bool = False
     red_team_verdict: str | None = None
+    research: dict[str, Any] | None = None
 
     # -- derived reads ---------------------------------------------------
 
@@ -271,6 +272,8 @@ class TradeIdea:
         out["exchange"] = self.exchange
         out["robinhood_tradeable"] = self.robinhood_tradeable
         out["red_team_verdict"] = self.red_team_verdict
+        if self.research is not None:
+            out["research"] = self.research
         return out
 
     @classmethod
@@ -304,4 +307,5 @@ class TradeIdea:
             exchange=_as_optional_str(payload.get("exchange")),
             robinhood_tradeable=bool(payload.get("robinhood_tradeable")),
             red_team_verdict=_as_optional_str(payload.get("red_team_verdict")),
+            research=payload.get("research") if isinstance(payload.get("research"), dict) else None,
         )

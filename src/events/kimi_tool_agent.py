@@ -1,23 +1,10 @@
-"""Agentic Kimi tool-loop for the niche pass (CL-ddzt).
+"""Kimi's approved-tool research loop (CL-eh28; extends CL-ddzt).
 
-The retrieval-augmented pass (CL-2czc) grounds hops in real data, but WE decide
-what to look up. This is the full agentic version: the MODEL drives the tools
-mid-generation — it proposes a name, calls a tool to verify the ticker or pull
-the company's 10-K, reads the real customers/suppliers/risks in the result,
-and decides its next hop from fact. It loops call → tool → call until it emits
-the final niche-idea JSON.
-
-Runs on the Kimi (Moonshot AI) API — OpenAI-compatible function calling, cheap,
-strong at tool use. This is an INTENTIONAL, opt-in, API-billed path (the
-operator supplied a Kimi key specifically for it); the subscription claude-code
-cycles remain the default. It reuses the SAME tools as the retrieval pass
-(:class:`SymbolUniverse` + :class:`ResearchTools`), so verification and
-liquidity gating downstream are unchanged.
-
-``discover()`` returns the model's final JSON text; the caller
-(:class:`NicheAgent`) parses it with the existing ``parse_niche_ideas`` and runs
-the same verify / score / gate — so no unverified ticker survives regardless of
-what the model claims. Fail-soft: any API/loop failure returns ``""``.
+discover_result() returns per-invocation status, provenance, captured sources,
+tool trace and usage. Failed calls, malformed output, valid abstention and
+budget exhaustion remain distinguishable. discover() is the legacy text
+adapter. Claims are validated downstream against tool-captured source records,
+not model-provided URLs. Provider failures are logged without account details.
 """
 
 from __future__ import annotations
@@ -25,8 +12,12 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from collections.abc import Mapping
 from typing import Any
+
+from src.events.impact_agent import extract_json_object
+from src.events.research_evidence import EVIDENCE_INSTRUCTIONS, DiscoveryOutcome, SourceDocument
 
 logger = logging.getLogger(__name__)
 
@@ -88,54 +79,21 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
             "the next hop from FACT, not memory.",
             "parameters": {
                 "type": "object",
-                "properties": {"ticker": {"type": "string"}},
+                "properties": {
+                    "ticker": {"type": "string"},
+                    "query": {
+                        "type": "string",
+                        "description": "Relationship or exposure to locate",
+                    },
+                },
                 "required": ["ticker"],
             },
         },
     },
 ]
 
-_SYSTEM_PROMPT = """\
-You are the NICHE OPPORTUNITY researcher for an event desk. Given an event the
-desk has already assessed (the obvious liquid trade is known), hunt the
-high-torque, UNDER-FOLLOWED second- and third-order names it misses.
 
-You have TOOLS — USE THEM, don't guess:
-- check_ticker: confirm any ticker you name is real and tradable.
-- resolve_company: turn a company name into its real ticker when unsure.
-- get_company_profile: what a company actually does.
-- get_sec_filing: a company's real 10-K/10-Q — read the named customers,
-  suppliers, competitors and dependencies, and hop from THOSE facts.
-
-Method: reason MULTI-HOP (hop 1 directly affected -> hop 2 suppliers /
-customers / competitors / financiers -> hop 3+ niche pure-plays, juniors,
-royalty/streaming, equipment, logistics with high operational/financial
-leverage). At each hop, pull a filing or profile to find the NEXT real name
-rather than recalling one. Verify every ticker with check_ticker or
-resolve_company before you rely on it.
-
-Prefer SMALLER, less-covered, non-consensus names with more upside torque than
-the obvious large-caps. This is NOT a lottery ticket: high-asymmetry,
-~3-10x-if-right with DEFINED risk. Cite the chain (name each hop) in the
-rationale. A confident wrong ticker on an illiquid name is real money on
-fiction.
-
-When you have finished researching, respond with ONE JSON object and NOTHING
-else — no tool call, no prose:
-{
-  "niche_ideas": [
-    {"ticker": "<verified US-listed ticker>",
-     "company_name": "<exact company name>",
-     "action": "long" | "short" | "buy_calls" | "buy_puts",
-     "direction": "bullish" | "bearish",
-     "hop_count": <int 1-5, links from the obvious trade>,
-     "torque_reason": "<one line: the leverage mechanism>",
-     "rationale": "<cite the multi-hop chain, note which filing confirmed it>",
-     "confidence": <float 0.0-1.0>}
-  ]
-}
-Return 2-6 ideas, mixing obvious-adjacent (hop 1-2) and niche (hop 3+).
-"""
+_SYSTEM_PROMPT = EVIDENCE_INSTRUCTIONS + "\nUse the approved ticker, profile and filing tools."
 
 
 class KimiToolAgent:
@@ -231,6 +189,9 @@ class KimiToolAgent:
             if name == "get_sec_filing":
                 t = str(args.get("ticker", "")).strip()
                 cik = self.universe.get_cik(t) if hasattr(self.universe, "get_cik") else None
+                if cik and callable(getattr(self.tools, "filing_documents", None)):
+                    documents = self.tools.filing_documents(cik, t, str(args.get("query", "")))
+                    return {"ticker": t, "cik": cik, "sources": [d.to_dict() for d in documents]}
                 excerpt = None
                 if cik and self.tools is not None:
                     excerpt = self.tools.sec_excerpt(cik)
@@ -275,11 +236,22 @@ class KimiToolAgent:
         event_row: Mapping[str, Any],
         playbook: Any = None,
     ) -> str:
-        """Run the agentic tool-loop; return the model's final JSON text (or
-        "" on any failure / no key / iteration budget exhausted)."""
+        """Legacy text adapter. New consumers must use discover_result()."""
+        return self.discover_result(event_row, playbook).text
+
+    def discover_result(
+        self,
+        event_row: Mapping[str, Any],
+        playbook: Any = None,
+    ) -> DiscoveryOutcome:
+        """Per-invocation result: failures never masquerade as abstention."""
+        outcome = DiscoveryOutcome("unavailable", provider="moonshot", model=self.model)
         if not self.configured:
             logger.warning("kimi tool agent: no MOONSHOT_API_KEY — skipping")
-            return ""
+            outcome.reason = "credentials_missing"
+            return outcome
+        started = time.monotonic()
+        outcome.input_tokens, outcome.output_tokens = 0, 0
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": _SYSTEM_PROMPT},
             {"role": "user", "content": self._user_prompt(event_row, playbook)},
@@ -287,6 +259,7 @@ class KimiToolAgent:
         tool_calls_made = 0
         try:
             for _ in range(self.max_iterations):
+                logger.info("niche discovery: requesting %s response", self.model)
                 resp = self._create(
                     model=self.model,
                     messages=messages,
@@ -296,27 +269,72 @@ class KimiToolAgent:
                     max_tokens=self.max_tokens,
                 )
                 msg = resp.choices[0].message
+                outcome.model = getattr(resp, "model", None) or self.model
                 calls = getattr(msg, "tool_calls", None) or []
                 messages.append(_assistant_dict(msg, calls))
+                usage = getattr(resp, "usage", None)
+                for key, attr in (
+                    ("input_tokens", "prompt_tokens"),
+                    ("output_tokens", "completion_tokens"),
+                ):
+                    count, total = getattr(usage, attr, None), getattr(outcome, key)
+                    setattr(
+                        outcome,
+                        key,
+                        total + count
+                        if total is not None and type(count) is int and count >= 0
+                        else None,
+                    )
+                outcome.trace.append(
+                    {
+                        "model": outcome.model,
+                        "prompt": list(messages[:-1]),
+                        "response": messages[-1],
+                    }
+                )
                 if not calls:
                     logger.info(
                         "kimi tool agent: event id=%s done after %d tool call(s)",
                         event_row.get("id"),
                         tool_calls_made,
                     )
-                    return msg.content or ""
+                    outcome.text = msg.content or ""
+                    if getattr(resp.choices[0], "finish_reason", "stop") != "stop":
+                        outcome.status, outcome.reason = "partial", "incomplete_generation"
+                        return outcome
+                    try:
+                        ideas = extract_json_object(outcome.text).get("niche_ideas")
+                        if not isinstance(ideas, list):
+                            raise ValueError("missing ideas")
+                        outcome.status = "completed" if ideas else "abstained"
+                    except ValueError:
+                        outcome.status = "invalid_output"
+                        outcome.reason = "invalid_idea_envelope"
+                    return outcome
                 for tc in calls:
+                    if tool_calls_made >= 24:  # Fixed bounded research workload per event.
+                        outcome.status, outcome.reason = "budget_exhausted", "tool_call_limit"
+                        return outcome
                     tool_calls_made += 1
                     try:
                         args = json.loads(tc.function.arguments or "{}")
                     except (ValueError, TypeError):
                         args = {}
+                    if not isinstance(args, dict):
+                        args = {}
                     result = self._dispatch(tc.function.name, args)
+                    for raw in result.get("sources", []):
+                        outcome.sources.append(SourceDocument.from_dict(raw))
+                    outcome.trace.append(
+                        {"tool": tc.function.name, "arguments": args, "result": result}
+                    )
                     messages.append(
                         {
                             "role": "tool",
                             "tool_call_id": tc.id,
-                            "content": json.dumps(result)[:_MAX_TOOL_RESULT_CHARS],
+                            # Sources are already excerpt-bounded. Do not truncate
+                            # JSON or a source ID/quote after recording its hash.
+                            "content": json.dumps(result),
                         }
                     )
             logger.info(
@@ -324,14 +342,22 @@ class KimiToolAgent:
                 event_row.get("id"),
                 self.max_iterations,
             )
-            return ""
+            outcome.status, outcome.reason = "budget_exhausted", "model_call_limit"
+            return outcome
         except Exception as exc:
             logger.warning(
                 "kimi tool agent failed for event id=%s: %s",
                 event_row.get("id"),
-                str(exc)[:200],
+                type(exc).__name__,  # Provider errors may contain account/key identifiers.
             )
-            return ""
+            outcome.reason = (
+                "insufficient_balance"
+                if "insufficient balance" in str(exc).lower()
+                else type(exc).__name__
+            )
+            return outcome
+        finally:
+            outcome.elapsed_sec = time.monotonic() - started
 
 
 def _assistant_dict(msg: Any, calls: list[Any]) -> dict[str, Any]:

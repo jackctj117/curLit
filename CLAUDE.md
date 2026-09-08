@@ -50,6 +50,17 @@ Key configs: `configs/live_portfolio.yaml` (strategy registry), `configs/risk_pr
 
 **Live daemons (14, + a macOS-only `keep_awake`/caffeinate prepended by `daemons.sh` = 15 on macOS; skipped on Linux)** — engine (`-m src.runtime.run_engine --broker oanda-practice`, ALWAYS with `CURLIT_RISK_PROFILE=aggressive`), `event_pipeline --ingest --assess --loop 900`, `intraday_pricer --loop 120`, `refresh_rates --loop 86400`, `x_monitor --loop 300`, `execute_options --loop 300` (unrestricted by operator decision 2026-08-06; the CL-khf7 urgency knob exists but is off), `execute_equities --loop 300` (CL-ncbq: shares A/B of the SAME ideas on the same paper account; master switch ALPACA_EQUITY_ENABLED), `options_activity --loop 86400`, `score_outcomes --loop 86400`, `telegram_approval_bot`, `morning_digest --loop 300` (two Telegram messages per trading morning, 09:15 ET: full positions long+short with economic reading + closed-24h P&L, and the pipeline's pending-bullish LONG-ideas list — CL-ydp8), `truth_monitor --loop 300` (RESEARCH-ONLY Truth Social event study, CL-s9as: public-archive ingest → Haiku classification → SPY/QQQ/sector-ETF reaction windows into mig 017 tables; NO orders/alerts/holdings logic; analysis via `scripts/truth_report.py`), `health_watch --loop 300` (fleet watchdog, CL-fmqp: Telegram page on daemon death + X-ingest staleness, transition-dedup via atomic state), `weekly_event_study --loop 21600` (CL-s1gb: runs the CL-z95p event study every 7 days, report to data/research/, compact Telegram summary with the placebo verdicts). Boot persistence: launchd agent deploy/launchd/com.curlit.fleet.plist runs scripts/boot_recovery.sh at login (CL-rmvt). Fleet control: `./scripts/daemons.sh start|stop|status|restart [name]` (idempotent; restart verifies the pid changed — CL-obgy). Fresh-device bring-up: `docs/BOOTSTRAP.md`. Full operational state, policies, and restart rules: `docs/CURRENT_OPERATIONS.md` — update it when changing any of this.
 
+## Niche evidence revision (CL-eh28)
+
+The older niche summary above describes the historical scoring path. Current
+code uses dated 10-K/10-Q/8-K passages, fact/inference claims, evidence coverage
+(not hop/keyword bonuses), explicit discovery/review/liquidity statuses, and
+source-aware criticism. Incomplete candidates stay in `assessment.niche_research`;
+only complete, source-backed, sufficiently liquid, supported candidates enter
+`trade_ideas`. The captured-input Kimi/Claude comparison is shadow-only. See
+`docs/NICHE_RESEARCH_EVIDENCE.md` for contracts and limitations and
+`docs/CURRENT_OPERATIONS.md` for actual deployment evidence.
+
 ## Conventions & Patterns
 
 - **Bead IDs in docstrings** — every module/feature docstring cites its bead, e.g. `"""GDELT Doc 2.0 ingester (CL-6iu7) — ..."""`. Keep this when adding code.

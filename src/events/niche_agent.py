@@ -1,71 +1,31 @@
-"""Multi-hop niche / asymmetry opportunity agent (CL-u2ph).
+"""Evidence-grounded niche research coordinator (CL-eh28).
 
-A SEPARATE, additive LLM pass over the existing Event Impact Agent
-assessment. Given a high-urgency ASSESSED event + its playbook, it does
-explicit multi-hop reasoning — directly affected → upstream suppliers /
-downstream customers / competitors / financiers → niche pure-plays,
-juniors, royalty/streaming cos, equipment, logistics, offtake partners
-with HIGH operational/financial leverage → the highest-torque
-UNDER-FOLLOWED name — and returns niche trade ideas ALONGSIDE the
-obvious ones. It complements CL-5mkf (anti-reflexive-consensus): the
-main assessment names the liquid trade; this pass hunts the
-non-consensus second/third-order name with more upside torque.
+Kimi tool discovery and legacy Claude cycles remain distinct discovery paths.
+run_report() preserves discovery failures, abstentions and all raw candidates,
+including rejected identity/evidence checks. run() returns only eligible ideas.
+The pipeline persists reports separately from the executable trade_ideas feed.
 
-ITERATIVE HOPPING (CL-2dnf): optionally runs several LLM cycles per event
-(``NICHE_MAX_CYCLES``, default 1). Cycle 1 is the base multi-hop pass; each
-further cycle feeds the discovered names back in and pushes the model DEEPER
-and WIDER along explicit tree-of-thought branches (upstream / downstream /
-substitutes / financial), deduping on ticker-or-company and stopping early once
-a cycle surfaces nothing new — deeper discovery at a bounded extra cost.
-
-Three hard guards keep this from being a hallucination-and-fiction
-generator (LLM small-cap / junior knowledge is training-vintage and a
-confident wrong ticker on an illiquid name is real money on fiction):
-
-  1. VERIFICATION (:func:`verify_ideas`) — every proposed niche ticker is
-     checked against the real US-listed :class:`SymbolUniverse` (CL-tzug,
-     ~13k symbols). exists → keep; else resolve_name(company) → CORRECT
-     the ticker (logged); else DROP the idea (logged). NO unverified
-     ticker survives. Survivors are tagged with the verified exchange +
-     robinhood_tradeable flag.
-
-  2. ASYMMETRY + LIQUIDITY FLOOR (:func:`asymmetry_score`) — combines the
-     agent's hop_count (more hops = more overlooked, capped), its
-     qualitative torque, and the REAL under-followed-ness from market
-     data (smaller market cap / lower avg $volume = more torque
-     potential). BUT below a configurable liquidity floor the idea is
-     FLAGGED illiquid and heavily penalized — under-followed and
-     illiquid-shell look identical without this, and a dying illiquid
-     name is a trap, not an edge. Only ideas clearing the asymmetry
-     threshold surface; the rest are logged (not surfaced).
-
-  3. HONEST FRAMING (in the prompt) — not 100x; high-asymmetry
-     3-10x-if-right with DEFINED risk, cite the chain, prefer
-     smaller/less-covered/non-consensus names, be conservative.
-
-Surviving high-score ideas are merged into the event's assessment
-``trade_ideas`` tagged ``niche=true`` (+ hop_count, torque_reason,
-asymmetry_score, liquidity_flag) so they flow through the EXISTING
-digest / ledger / retail-proxy / consolidation rendering unchanged.
-
-The agent proposes; it never trades. Advisory equities only.
-
-STRUCTURE (CL-ikz2, review §6.2.2): this module is the I/O + LLM half —
-prompts, discovery cycles, tool-agent delegation, grounding, market-data
-fetch, assessment merge. The PURE half (dataclasses, parse, verify,
-scoring) lives in :mod:`src.events.niche_scoring` and is RE-EXPORTED
-here so existing ``from src.events.niche_agent import ...`` callers keep
-working unchanged.
+Eligibility requires verified identity, source-backed critical claims, dated
+sufficient liquidity and a supported evidence review. Relationship depth and
+leverage prose confer no active scoring bonus. Missing data remains unknown.
+Per-invocation reports are safe to use from the existing fan-out workers.
+Historical scoring functions are re-exported for compatibility, not used by
+this active evidence gate. The agent never submits orders itself.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+import time
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 
 from src.events._util import ThreadLocalClient, env_flag
+from src.events.impact_agent import extract_json_object
 from src.events.niche_scoring import (
     MAX_NICHE_IDEAS,
     VALID_NICHE_ACTIONS,
@@ -73,12 +33,15 @@ from src.events.niche_scoring import (
     NicheIdea,
     _idea_key,
     asymmetry_score,
+    evidence_score,
     parse_niche_ideas,
     score_and_gate,
     torque_from_reason,
     verify_ideas,
 )
 from src.events.playbooks import Playbook
+from src.events.research_evidence import EVIDENCE_INSTRUCTIONS, DiscoveryOutcome
+from src.monitoring.logging_setup import LogContext
 from src.research.llm import Message
 from src.research.llm.client import LLMClient
 
@@ -134,68 +97,7 @@ MAX_CYCLES_CAP = 5
 DEFAULT_TOOLS_MAX_ENTITIES = 2
 
 
-_SYSTEM_PROMPT = """\
-You are the NICHE OPPORTUNITY agent for an FX/equities event desk. You
-receive one event that the desk has ALREADY assessed (the obvious,
-liquid trade is known) plus its themed playbook. Your job is DIFFERENT
-and additive: hunt the high-torque, UNDER-FOLLOWED second- and
-third-order name the obvious trade misses.
-
-Do NOT stop at the obvious liquid names. Reason MULTI-HOP:
-  hop 1: directly affected companies/assets;
-  hop 2: their upstream suppliers, downstream customers, competitors,
-         financiers, insurers;
-  hop 3+: niche pure-plays, juniors, royalty/streaming companies,
-          specialised equipment makers, logistics/freight, offtake
-          partners — the names with HIGH operational or financial
-          leverage to this specific chain.
-Follow the chain to the HIGHEST-TORQUE under-followed name at the end.
-
-Prefer SMALLER, LESS-COVERED, NON-CONSENSUS names with more upside
-torque than the obvious large-caps — a single-asset pure-play, a junior,
-a sole supplier, a levered operator — over the mega-cap everyone already
-owns. The obvious name is likely already priced; the overlooked one at
-the end of the chain is where the asymmetry lives.
-
-HONEST FRAMING — this is NOT a lottery ticket. You are hunting
-high-ASYMMETRY, roughly 3-10x-IF-RIGHT ideas with DEFINED risk, not
-100x fantasies. Be conservative. CITE THE CHAIN explicitly in the
-rationale (name each hop). Real, currently-trading, US-listed companies
-ONLY where possible — do NOT invent tickers; if unsure of the exact
-ticker, still give the precise company_name so it can be resolved. A
-confident wrong ticker on an illiquid name is real money on fiction.
-
-Return BOTH:
-  * a small number of OBVIOUS-ADJACENT names (hop 1-2, the liquid
-    second-order plays), AND
-  * the NICHE names (hop 3+, the under-followed high-torque plays).
-
-Rules:
-- Respond with ONE JSON object and NOTHING else. No markdown fences, no
-  commentary.
-- Every idea needs a real company_name and, where you know it, a real
-  US-listed ticker. Never fabricate a ticker to fill the field.
-- hop_count is how many links from the OBVIOUS trade this name sits
-  (1 = obvious-adjacent; 4-5 = deeply overlooked).
-- torque_reason: WHY this name has more leverage than the obvious trade
-  (single-asset, high fixed cost, sole supplier, royalty, junior,
-  levered balance sheet, etc.) — the mechanism, in one line.
-- Be conservative on confidence; a longer chain is more speculative.
-
-JSON schema (all keys required per idea):
-{
-  "niche_ideas": [
-    {"ticker": "<US-listed ticker if known, else best guess>",
-     "company_name": "<exact company name, for ticker resolution>",
-     "action": "long" | "short" | "buy_calls" | "buy_puts",
-     "direction": "bullish" | "bearish",
-     "hop_count": <int 1-5, links from the obvious trade>,
-     "torque_reason": "<one line: the leverage mechanism>",
-     "rationale": "<cite the multi-hop chain: hop1 -> hop2 -> this>",
-     "confidence": <float 0.0-1.0>}
-  ]
-}
-"""
+_SYSTEM_PROMPT = EVIDENCE_INSTRUCTIONS
 
 
 # ---------------------------------------------------------------------- #
@@ -240,9 +142,14 @@ def yfinance_market_data(tickers: list[str]) -> dict[str, dict[str, Any]]:
             mcap = info.get("marketCap")
             hist = tk.history(period="1mo", interval="1d")
             if hist is not None and not hist.empty:
+                closes = hist["Close"].dropna()
+                if not closes.empty:
+                    entry["last_close"] = float(closes.iloc[-1])
                 dollar = (hist["Close"] * hist["Volume"]).dropna()
                 if not dollar.empty:
                     entry["avg_dollar_volume"] = float(dollar.mean())
+                    entry["observed_at"] = dollar.index[-1].isoformat()
+                    entry["retrieved_at"] = datetime.now(UTC).isoformat()
                 if mcap is None:
                     shares = info.get("sharesOutstanding")
                     last = (
@@ -263,6 +170,23 @@ def yfinance_market_data(tickers: list[str]) -> dict[str, dict[str, Any]]:
 # ---------------------------------------------------------------------- #
 # The agent
 # ---------------------------------------------------------------------- #
+
+
+@dataclass
+class NicheReport:
+    discovery: DiscoveryOutcome
+    candidates: list[NicheIdea]
+
+    @property
+    def eligible(self) -> list[NicheIdea]:
+        return [i for i in self.candidates if i.research_eligible]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "discovery": self.discovery.to_dict(),
+            "candidates": [i.to_trade_idea() for i in self.candidates],
+            "eligible_count": len(self.eligible),
+        }
 
 
 class NicheAgent:
@@ -341,14 +265,14 @@ class NicheAgent:
                 self.tools_max_entities = DEFAULT_TOOLS_MAX_ENTITIES
         # Agentic Kimi tool-loop (CL-ddzt) — an ALTERNATIVE discovery source
         # where the model itself drives the tools, on the API-billed Kimi
-        # provider. Explicit agent wins; else construct one when enabled AND a
-        # key is present. When set it REPLACES the claude-code cycles for
+        # provider. Explicit agent wins; else construct one when enabled, with
+        # missing credentials reported as unavailable. It REPLACES Claude cycles for
         # discovery; verification/scoring downstream are identical.
         if tool_agent_enabled is None:
             tool_agent_enabled = env_flag("NICHE_TOOL_AGENT_ENABLED", default=False)
         if tool_agent is not None:
             self.tool_agent = tool_agent
-        elif tool_agent_enabled and os.environ.get("MOONSHOT_API_KEY"):
+        elif tool_agent_enabled:
             from src.events.kimi_tool_agent import KimiToolAgent  # noqa: PLC0415
             from src.events.research_tools import ResearchTools  # noqa: PLC0415
 
@@ -358,8 +282,8 @@ class NicheAgent:
             )
         else:
             self.tool_agent = None
-        # Adversarial red-team critic (CL-3v56) — attacks surviving ideas on
-        # the claude-code subscription (an INDEPENDENT adversary, free). Opt-in.
+        # Evidence reviewer (CL-eh28.3) — opt-in Claude review. CLI invocation
+        # does not establish billing cost; disabled review cannot approve a lead.
         if critic_enabled is None:
             critic_enabled = env_flag("NICHE_CRITIC_ENABLED", default=False)
         if critic is not None:
@@ -373,6 +297,7 @@ class NicheAgent:
             # worker to one claude-code workdir.
             self.critic = AdversarialCritic(
                 client=None if self._client_holder.is_default else self.client,
+                enabled=True,
             )
         else:
             self.critic = None
@@ -414,7 +339,7 @@ class NicheAgent:
             f"THEME: {event_row.get('theme') or 'unmatched'}\n"
             f"OBVIOUS NAMES ALREADY ASSESSED (go beyond these): {obvious}\n\n"
             f"{self._playbook_context(playbook)}\n\n"
-            "Hunt the under-followed high-torque names now. Multi-hop. "
+            "Research overlooked exposure; abstain when evidence is insufficient. "
             "Respond with the JSON object only."
         )
 
@@ -454,7 +379,7 @@ class NicheAgent:
             "WIDER, further out the chain):\n"
             f"{found}\n"
             f"{ground_block}\n"
-            "Now surface ADDITIONAL under-followed, high-torque names connected "
+            "Research ADDITIONAL supported, economically meaningful exposure connected "
             "to this event and to those entities, exploring EACH branch:\n"
             "  A. Upstream — deeper-tier suppliers, raw inputs, sole-source "
             "components.\n"
@@ -463,8 +388,8 @@ class NicheAgent:
             "  D. Financial / secondary — insurers, shippers, royalty & "
             "streaming holders, lenders/creditors, equipment lessors levered to "
             "this chain.\n"
-            "Prefer names NOT already listed and further out the chain (higher "
-            "hop_count). Same JSON schema. Respond with the JSON object only."
+            "Prefer supported exposure NOT already listed. Do not add links just "
+            "to increase hop_count. Same JSON schema; abstention is valid."
         )
 
     # -- run ------------------------------------------------------------
@@ -474,6 +399,14 @@ class NicheAgent:
         event_row: Mapping[str, Any],
         playbook: Playbook | None = None,
     ) -> list[NicheIdea]:
+        """Compatibility surface: only evidence/review-eligible ideas."""
+        return self.run_report(event_row, playbook).eligible
+
+    def run_report(
+        self,
+        event_row: Mapping[str, Any],
+        playbook: Playbook | None = None,
+    ) -> NicheReport:
         """Full niche pass for one event: DISCOVER raw ideas → verify →
         score/gate. Returns ONLY the surviving (verified, liquidity-cleared,
         above-threshold) ideas, score-desc. Never raises.
@@ -482,14 +415,45 @@ class NicheAgent:
         ``tool_agent`` is configured, else the claude-code iterative multi-hop
         cycles (CL-2dnf/CL-2czc). Verification + scoring are identical either
         way, so no unverified ticker survives regardless of source."""
-        raw_accum = (
-            self._discover_via_tool_agent(event_row, playbook)
-            if self.tool_agent is not None
-            else self._discover_via_cycles(event_row, playbook)
-        )
+        started = time.monotonic()
+        outcome = DiscoveryOutcome("unavailable", provider="claude-code", model=self.model)
+        if self.tool_agent is not None:
+            try:
+                if callable(getattr(self.tool_agent, "discover_result", None)):
+                    outcome = self.tool_agent.discover_result(event_row, playbook)
+                else:
+                    outcome.text = self.tool_agent.discover(event_row, playbook)
+                    outcome.reason = "legacy_provider_without_status"
+                raw_accum = parse_niche_ideas(outcome.text)
+            except Exception as exc:
+                outcome.reason = type(exc).__name__
+                raw_accum = []
+        else:
+            raw_accum = self._discover_via_cycles(event_row, playbook, outcome=outcome)
+        outcome.elapsed_sec = time.monotonic() - started
+        if outcome.status == "completed" and not raw_accum:
+            outcome.status, outcome.reason = "invalid_output", "no_valid_candidate_records"
+        report = NicheReport(outcome, raw_accum)
+        with LogContext(doc_id=str(event_row.get("id"))):
+            logger.info(
+                "niche discovery: event=%s status=%s reason=%s candidates=%d",
+                event_row.get("id"),
+                outcome.status,
+                outcome.reason,
+                len(raw_accum),
+                extra={
+                    "extra_data": {
+                        "discovery_status": outcome.status,
+                        "discovery_reason": outcome.reason,
+                    }
+                },
+            )
         source = "kimi" if self.tool_agent is not None else "cycles"
         if not raw_accum:
-            return []
+            return report
+        for idea in raw_accum:
+            idea.discovery_status = outcome.status
+            idea.sources = list(outcome.sources)
         verified = verify_ideas(raw_accum, self.universe)
         if not verified:
             logger.info(
@@ -497,7 +461,7 @@ class NicheAgent:
                 len(raw_accum),
                 event_row.get("id"),
             )
-            return []
+            return report
         market_data = {}
         try:
             market_data = self.market_data_fn([i.ticker for i in verified])
@@ -506,12 +470,21 @@ class NicheAgent:
                 "niche agent: market-data fetch failed; scoring data-free",
                 exc_info=True,
             )
-        surviving, logged = score_and_gate(verified, market_data, self.config)
+        as_of = datetime.now(UTC)
+        for idea in verified:
+            evidence_score(idea, market_data, as_of, self.config)
+        surviving = [i for i in verified if i.dropped_reason is None]
+        logged = [i for i in verified if i.dropped_reason is not None]
         # Adversarial red-team pass (CL-3v56): attack the survivors; drop the
         # refuted, annotate the rest with the surviving bear case. Fail-open.
         gated = len(surviving)
-        if self.critic is not None and getattr(self.critic, "enabled", True) and surviving:
-            surviving = self.critic.apply(surviving, event_row)
+        if self.critic is not None and getattr(self.critic, "enabled", True) and verified:
+            try:
+                self.critic.apply(verified, event_row)
+            except Exception:
+                for idea in verified:
+                    idea.review_status, idea.review_reason = "review_unavailable", "critic_failure"
+                    idea.red_team_verdict = ""
         logger.info(
             "niche agent: event id=%s [%s] — %d proposed, %d verified, "
             "%d gated, %d surfaced after red-team, %d logged",
@@ -523,7 +496,7 @@ class NicheAgent:
             len(surviving),
             len(logged),
         )
-        return surviving
+        return report
 
     def _discover_via_tool_agent(
         self,
@@ -546,6 +519,8 @@ class NicheAgent:
         self,
         event_row: Mapping[str, Any],
         playbook: Playbook | None,
+        *,
+        outcome: DiscoveryOutcome | None = None,
     ) -> list[NicheIdea]:
         """Iterative claude-code multi-hop cycles (CL-2dnf) with optional
         between-cycle SEC grounding (CL-2czc) → raw deduped ideas. Fail-soft:
@@ -554,6 +529,7 @@ class NicheAgent:
         seen: set[str] = set()
         grounding: list[str] = []
         cycles_run = 0
+        outcome = outcome if outcome is not None else DiscoveryOutcome("unavailable")
         for cycle in range(1, self.max_cycles + 1):
             cycles_run = cycle
             user = (
@@ -585,11 +561,23 @@ class NicheAgent:
                     "niche agent transport failure (cycle %d) for event id=%s: %s",
                     cycle,
                     event_row.get("id"),
-                    str(exc)[:200],
+                    type(exc).__name__,
                 )
+                outcome.status = "partial" if raw_accum else "unavailable"
+                outcome.reason = type(exc).__name__
                 if cycle == 1:
                     return []
                 break  # keep what earlier cycles found
+            outcome.text = resp.text
+            outcome.trace.append({"cycle": cycle, "prompt": user, "response": resp.text})
+            try:
+                envelope = extract_json_object(resp.text).get("niche_ideas")
+                if not isinstance(envelope, list):
+                    raise ValueError("invalid_idea_envelope")
+            except ValueError:
+                outcome.status, outcome.reason = "invalid_output", "invalid_idea_envelope"
+                break
+            outcome.status = "completed" if envelope or raw_accum else "abstained"
             parsed = parse_niche_ideas(resp.text)
             fresh = [i for i in parsed if _idea_key(i) not in seen]
             for idea in fresh:
@@ -613,6 +601,13 @@ class NicheAgent:
                 if candidates:
                     try:
                         grounding.extend(self.tools.enrich(candidates, self.universe))
+                        if callable(getattr(self.tools, "filing_documents", None)):
+                            for candidate in candidates:
+                                cik = self.universe.get_cik(candidate.ticker)
+                                if cik:
+                                    docs = self.tools.filing_documents(cik, candidate.ticker)
+                                    outcome.sources.extend(docs)
+                                    grounding.extend(json.dumps(d.to_dict()) for d in docs)
                     except Exception:
                         logger.warning(
                             "niche tools: enrichment failed for event id=%s; "
@@ -651,6 +646,14 @@ class NicheAgent:
         }
         added = 0
         for idea in niche_ideas:
+            if not idea.research_eligible:
+                logger.info(
+                    "niche merge: research-only %s (%s, %s)",
+                    idea.ticker,
+                    idea.evidence_status,
+                    idea.review_status,
+                )
+                continue
             key = (idea.ticker.upper(), idea.action.lower())
             if key in seen:
                 continue

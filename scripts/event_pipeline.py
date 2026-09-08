@@ -37,6 +37,7 @@ All of it is fail-soft — enrichment must never take down the pipeline.
 from __future__ import annotations
 
 import argparse
+import copy
 import logging
 import os
 import sys
@@ -217,8 +218,9 @@ def _niche_step(engine: object, results: list, min_urgency: int) -> int:
     from sqlalchemy import text  # noqa: PLC0415
 
     from src.data.symbols import SymbolUniverse  # noqa: PLC0415
-    from src.events.niche_agent import NicheAgent  # noqa: PLC0415
+    from src.events.niche_agent import NicheAgent, NicheReport  # noqa: PLC0415
     from src.events.playbooks import load_playbooks  # noqa: PLC0415
+    from src.events.research_evidence import DiscoveryOutcome  # noqa: PLC0415
 
     def _urgency(r: object) -> int:
         try:
@@ -246,7 +248,7 @@ def _niche_step(engine: object, results: list, min_urgency: int) -> int:
     except Exception:
         logger.debug("symbol-universe cache warm-up skipped", exc_info=True)
 
-    def _discover(r: Any) -> tuple[Any, list[Any]]:
+    def _discover(r: Any) -> tuple[Any, NicheReport]:
         """Thread body — DISCOVERY ONLY (thread-safe: verify reads the warmed
         in-memory universe; the Kimi/yfinance/critic calls are independent
         blocking I/O). Merge + DB persist stay on the caller thread. Fail-soft
@@ -258,10 +260,10 @@ def _niche_step(engine: object, results: list, min_urgency: int) -> int:
                 "theme": r.theme,
                 "assessment": r.assessment,
             }
-            return r, agent.run(row, playbooks.get(r.theme or ""))
+            return r, agent.run_report(row, playbooks.get(r.theme or ""))
         except Exception:
             logger.exception("niche discovery failed for event id=%s; continuing", r.event_id)
-            return r, []
+            return r, NicheReport(DiscoveryOutcome("unavailable", "pipeline_discovery_failure"), [])
 
     # DISCOVER concurrently (bounded), then MERGE + PERSIST serially on THIS
     # thread so the DB writes never race (CL-818b). pool.map preserves input
@@ -274,27 +276,28 @@ def _niche_step(engine: object, results: list, min_urgency: int) -> int:
             discovered = list(pool.map(_discover, qualifying))
 
     surfaced = 0
-    for r, ideas in discovered:
-        if not ideas:
-            continue
+    for r, report in discovered:
         # Fail-soft PER EVENT: a transient DB blip on one event must not drop
         # the merges/writes for the events after it — they are already
         # ASSESSED, so the next cycle will NOT retry them and their niche
         # ideas would be lost for good.
         try:
-            added = agent.merge_into_assessment(r.assessment, ideas)
+            enriched = copy.deepcopy(r.assessment)
+            enriched["niche_research"] = report.to_dict()
+            added = agent.merge_into_assessment(enriched, report.eligible)
+            # Persist even empty/failed outcomes; absence is not approval.
+            with engine.begin() as conn:  # type: ignore[attr-defined]
+                written = conn.execute(
+                    text(
+                        "UPDATE geo_events SET assessment = :a "
+                        "WHERE id = :id AND status = 'ASSESSED'",
+                    ),
+                    {"a": _json.dumps(enriched), "id": r.event_id},
+                )
+                if written.rowcount != 1:
+                    raise RuntimeError("niche assessment not persisted: event status changed")
+            r.assessment = enriched  # Only committed ideas may reach the later ledger step.
             surfaced += added
-            if added:
-                # Re-persist the enriched assessment so the merged niche ideas
-                # survive into the ledger/digest and the DB row.
-                with engine.begin() as conn:  # type: ignore[attr-defined]
-                    conn.execute(
-                        text(
-                            "UPDATE geo_events SET assessment = :a "
-                            "WHERE id = :id AND status = 'ASSESSED'",
-                        ),
-                        {"a": _json.dumps(r.assessment), "id": r.event_id},
-                    )
         except Exception:
             logger.exception(
                 "niche merge/persist failed for event id=%s; continuing",

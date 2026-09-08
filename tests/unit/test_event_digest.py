@@ -1228,9 +1228,12 @@ class TestPipelineNicheWiring:
             def __init__(self, **_kw: Any) -> None:
                 pass
 
-            def run(self, row: dict[str, Any], playbook: Any = None) -> list[Any]:
+            def run_report(self, row: dict[str, Any], playbook: Any = None) -> Any:
                 ran_on.append(int(row["id"]))
-                return []  # no ideas → no merge/persist
+                from src.events.niche_agent import NicheReport
+                from src.events.research_evidence import DiscoveryOutcome
+
+                return NicheReport(DiscoveryOutcome("abstained"), [])
 
             def merge_into_assessment(self, *_a: Any, **_kw: Any) -> int:
                 return 0
@@ -1243,7 +1246,9 @@ class TestPipelineNicheWiring:
         # _niche_step calls _json.dumps + engine.begin() only when ideas
         # merge; with no ideas it never touches the (None) engine. Use the
         # ORIGINAL _niche_step (the fixture no-op'd the module attribute).
-        pipeline_mod._real_niche_step(None, results, min_urgency)
+        engine = _RecordingEngine()
+        pipeline_mod._real_niche_step(engine, results, min_urgency)
+        assert sorted(engine.persisted) == sorted(ran_on)  # Empty outcomes persist too.
         return ran_on
 
     def test_niche_runs_on_high_urgency_assessed(
@@ -1342,9 +1347,12 @@ class _RecordingEngine:
             def __exit__(self, *_a: Any) -> bool:
                 return False
 
-            def execute(self, _stmt: Any, params: dict[str, Any]) -> None:
+            def execute(self, _stmt: Any, params: dict[str, Any]) -> Any:
+                from types import SimpleNamespace
+
                 with engine._lock:
                     engine.persisted.append(int(params["id"]))
+                return SimpleNamespace(rowcount=1)
 
         return _Ctx()
 
@@ -1364,12 +1372,17 @@ class TestNicheStepConcurrency:
             def __init__(self, **_kw: Any) -> None:
                 pass
 
-            def run(self, row: dict[str, Any], playbook: Any = None) -> list[Any]:
+            def run_report(self, row: dict[str, Any], playbook: Any = None) -> Any:
                 with lock:
                     ran.append(int(row["id"]))
                 if fail_on is not None and int(row["id"]) == fail_on:
                     raise RuntimeError(f"boom on event {fail_on}")
-                return [f"idea-{row['id']}"]
+                from types import SimpleNamespace
+
+                return SimpleNamespace(
+                    eligible=[f"idea-{row['id']}"],
+                    to_dict=lambda: {"discovery": {"status": "completed"}},
+                )
 
             def merge_into_assessment(
                 self, assessment: dict[str, Any], ideas: list[Any], **_kw: Any
@@ -1409,7 +1422,8 @@ class TestNicheStepConcurrency:
 
         assert surfaced == 2  # 1 and 3 survived; 2 failed soft
         assert sorted(ran) == [1, 2, 3]  # all three were attempted
-        assert sorted(engine.persisted) == [1, 3]
+        assert sorted(engine.persisted) == [1, 2, 3]  # Persist failures explicitly too.
+        assert results[1].assessment["niche_research"]["discovery"]["status"] == "unavailable"
 
     def test_serial_path_when_concurrency_one(
         self, pipeline_mod: Any, monkeypatch: pytest.MonkeyPatch
@@ -1450,11 +1464,14 @@ class TestNicheStepConcurrency:
                     def __exit__(self, *_a: Any) -> bool:
                         return False
 
-                    def execute(self, stmt: Any, params: dict[str, Any]) -> None:
+                    def execute(self, stmt: Any, params: dict[str, Any]) -> Any:
+                        from types import SimpleNamespace
+
                         if int(params["id"]) == 2:
                             raise RuntimeError("transient DB blip")
                         with engine._lock:
                             engine.persisted.append(int(params["id"]))
+                        return SimpleNamespace(rowcount=1)
 
                 del outer
                 return _Ctx()
@@ -1467,7 +1484,40 @@ class TestNicheStepConcurrency:
         # Event 2's persist blew up, but 1 and 3 still persisted — the loop
         # did not abort on the first failure.
         assert sorted(engine.persisted) == [1, 3]
-        assert surfaced == 3  # merges counted for all three
+        assert surfaced == 2  # Only committed merges count; failure is not a successful surface.
+        assert not results[1].assessment.get("trade_ideas")  # No leak to the later ledger step.
+        assert "niche_research" not in results[1].assessment
+
+    @pytest.mark.parametrize("commit_failure", [False, True])
+    def test_uncommitted_or_zero_row_update_cannot_publish_ideas(
+        self,
+        pipeline_mod: Any,
+        monkeypatch: pytest.MonkeyPatch,
+        commit_failure: bool,
+    ) -> None:
+        from types import SimpleNamespace
+
+        self._patch(monkeypatch, self._agent_cls([], threading.Lock()))
+
+        class Engine:
+            def begin(self) -> Any:
+                return self
+
+            def __enter__(self) -> Any:
+                return self
+
+            def __exit__(self, *args: Any) -> bool:
+                if commit_failure:
+                    raise RuntimeError("commit failed")
+                return False
+
+            def execute(self, *args: Any) -> Any:
+                return SimpleNamespace(rowcount=1 if commit_failure else 0)
+
+        result = _res(event_id=1, urgency=8)
+        original = dict(result.assessment)
+        assert pipeline_mod._real_niche_step(Engine(), [result], 7) == 0
+        assert result.assessment == original
 
     def test_max_concurrency_env_parse_and_clamp(self, pipeline_mod: Any) -> None:
         import os

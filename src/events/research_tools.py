@@ -28,9 +28,12 @@ import logging
 import os
 import re
 from collections.abc import Callable
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
+
+from src.events.research_evidence import SourceDocument
 
 logger = logging.getLogger(__name__)
 
@@ -163,6 +166,75 @@ class ResearchTools:
 
     def _headers(self) -> dict[str, str]:
         return {"User-Agent": self.sec_user_agent}
+
+    def filing_documents(
+        self,
+        cik: int,
+        symbol: str,
+        query: str = "",
+        limit: int = 3,
+    ) -> list[SourceDocument]:
+        """Dated recent annual/quarterly/current reports, newest first.
+
+        Current reports (8-K) include company announcements. Capture exact
+        normalized-text offsets and source identity; never fetch a model URL.
+        The bounded primary-document collection is not an exhaustive SEC search.
+        """
+        logger.info("research: retrieving recent filings for %s", symbol)
+        try:
+            raw = self._sec_http_get(_SUBMISSIONS_URL.format(cik=int(cik)), self._headers())
+            recent = json.loads(raw).get("filings", {}).get("recent", {})
+            rows = zip(
+                recent.get("form", []),
+                recent.get("accessionNumber", []),
+                recent.get("primaryDocument", []),
+                recent.get("filingDate", []),
+                strict=False,
+            )
+            selected = sorted(
+                (r for r in rows if r[0] in ("10-K", "10-Q", "8-K")),
+                key=lambda r: r[3],
+                reverse=True,
+            )[: max(0, min(limit, 3))]  # Three documents bounds per-tool network work.
+        except Exception:
+            logger.warning("research: filing index unavailable for %s", symbol)
+            return []
+        result = []
+        for form, accession, name, published in selected:
+            if not re.fullmatch(r"[0-9-]+", str(accession)) or not re.fullmatch(
+                r"[A-Za-z0-9_.-]+",
+                str(name),
+            ):
+                continue
+            url = _ARCHIVE_URL.format(cik=int(cik), accn=accession.replace("-", ""), doc=name)
+            try:
+                body = self._sec_http_get(url, self._headers())
+                text = html_to_text(body[: self.max_doc_process_chars])
+                terms = re.findall(r"[A-Za-z]{4,}", query.lower())[:12]
+                hits = [text.lower().find(t) for t in terms if t in text.lower()]
+                if hits:
+                    start = max(0, min(hits) - 200)  # Retain preceding sentence context.
+                    passage = text[start : start + self.max_excerpt_chars]
+                else:
+                    passage = anchored_excerpt(text, self.max_excerpt_chars) or ""
+                    start = text.find(passage)
+                if not passage:
+                    continue
+                # SEC filingDate has day precision. End-of-day avoids claiming
+                # availability before an unknown intraday publication time.
+                result.append(
+                    SourceDocument(
+                        symbol=symbol.upper(),
+                        url=url,
+                        published_at=f"{published}T23:59:59+00:00",
+                        retrieved_at=datetime.now(UTC).isoformat(),
+                        text=passage,
+                        locator=f"{form} {accession}; normalized-text chars {start}:{start + len(passage)}",
+                    )
+                )
+            except Exception:
+                logger.warning("research: filing document unavailable for %s", symbol)
+        return result
 
     def sec_excerpt(self, cik: int) -> str | None:
         """Latest 10-K/10-Q Business/Risk excerpt for a CIK, or None.
