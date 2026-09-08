@@ -74,8 +74,9 @@ Everything is PAPER. No real money moves anywhere.
   positions. **Remaining CL-0deu.1 work:** working-order exposure, snapshot
   freshness metadata and durable reservations across concurrent workers are
   not yet included. This first interlock does not establish a complete
-  portfolio pre-trade gate. Code takes effect when the executors next load it;
-  this implementation session did not restart daemons or change paper modes.
+  portfolio pre-trade gate. The interlock was loaded by both paper executors
+  on 2026-09-08; see the bounded rollout record below. No paper/live mode or
+  strategy parameter was changed.
 - **Policy (paper phase — deliberately widened to build a sample, CL-ldd2)**:
   - pool: pending `buy_calls`/`buy_puts` ideas, confidence ≥ **0.45**
     (`ALPACA_OPT_MIN_CONFIDENCE`); niche/red-team gates OFF
@@ -232,6 +233,71 @@ loud WARN banner, never a silent dormant strategy.
   a fill.
 - Pipeline/monitors: restart freely; state (since_ids, event book, research
   state) persists in files/DB.
+
+### 2026-09-08 bounded Alpaca paper rollout (CL-idfh)
+
+Runtime source release: `935f935` (includes exposure interlock `8e0fc24`
+and the individual Bandit fixes/dispositions). Hosted
+[CI](https://github.com/jackctj117/curLit/actions/runs/34255853451) and
+[Security Scan](https://github.com/jackctj117/curLit/actions/runs/34255853035)
+passed. Linux and local macOS each passed 3,661 unit tests with the same
+three pre-existing skips. Local focused concurrency/vault tests passed
+20 repetitions; deliberate shared-client and response-leak mutations fail
+their independent assertions. No production thread-cache or vault-auth
+behavior changed to resolve the Linux fixture failures.
+
+The preflight captured a redacted manifest in ignored
+`data/deployments/2026-09-08_935f935_alpaca_baseline.json`: source commit,
+Python 3.14.6, all 297 installed distribution versions and inventory hash,
+effective entry/exit settings, hashed account identity and broker snapshot
+counts. Before stopping either book, paper mode was verified and the broker
+reported no working orders; 10 option and 9 equity positions were readable.
+This is NOT the full broker-history export, backup/restore proof or
+accounting cutover rehearsal required by CL-0deu.14/18.
+
+Process ownership changed during this rollout. The named options restart
+had very slow `pgrep` discovery and its briefly verified replacement exited
+when the command session ended (cause not yet proven; CL-wv3v). Options was
+restored under user launchd. A temporary submitted job was replaced with an
+explicit `KeepAlive=false` job after a completed no-order cycle. Equities
+then used the same session-independent approach, with the old PID verified
+dead before bootstrap. Final PIDs: options **21444** (previous 8555),
+equities **21457** (previous 30892). FX **28922** was not restarted; its
+two flagged provider/attribution edits are comments only. Drift warnings
+remain visible.
+
+Both final processes completed exit/entry cycles by 17:33 UTC, with zero
+accepted entries or exit submissions. Options reported zero errors. Equities
+reported one HTTP 422 rejection for unsupported ticker `GLO.TO`, also present
+before restart (CL-wtl6); this is not a newly introduced failure or a clean cycle.
+Seven unmatched equity holdings remained visible and were not automatically
+assigned or closed. Exactly one writer per book was verified independently
+of the launcher; broker positions remained readable with zero working orders.
+The 17:34 UTC verification is saved in ignored
+`data/deployments/2026-09-08_935f935_alpaca_postcheck.json`.
+
+The two active user jobs are `com.curlit.paper.execute-options` and
+`com.curlit.paper.execute-equities` in `gui/501`. Their local, ignored
+manifests live in `data/deployments/`; each directly runs the existing
+executor with `-u --loop 300`, explicitly sets paper mode, and has
+`RunAtLoad=true`, `KeepAlive=false`. They are not installed as new login
+agents, and no full-fleet boot/recovery configuration was changed.
+Unbuffered output changes logging only. For an operator-authorized restart
+of these currently registered jobs, inspect the job/PID first, then use
+`launchctl kickstart -k gui/501/com.curlit.paper.execute-options` (or the
+equities label), verifying the old PID is gone and the new cycle completes.
+Do not concurrently start a second writer through `daemons.sh`. Fleet stop
+will not trigger automatic respawn because KeepAlive is disabled.
+
+The deployed environment is older than fresh CI's dependency resolution;
+its separate advisory audit/lock remains CL-e1nr. Six legacy options
+`exit_pending` records were observed despite zero working broker orders;
+they remain visibly unresolved under CL-0deu.3, not reconciled by a restart.
+No ledger repair, DB migration, account reset, runtime-library upgrade or
+research-provider switch was performed. On a deployment fault, stop the
+affected writer and investigate before resuming; blindly rolling back to
+pre-interlock code would restore fail-open entries. This rollout does not
+establish full operational readiness or authorize real-money trading.
 
 ---
 
