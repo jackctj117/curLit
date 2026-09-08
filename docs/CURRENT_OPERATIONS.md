@@ -463,6 +463,44 @@ operator-approved migration, single-writer pipeline rollout, and measured Kimi
 canary. Apply migration 020 before starting the new pipeline code; a missing
 audit table blocks niche merges. Details: `NICHE_RESEARCH_EVIDENCE.md`.
 
+### September 8 deployment attempt: migration applied, restart blocked
+
+The operator authorized deployment of **`0b84647`**. Hosted
+[CI](https://github.com/jackctj117/curLit/actions/runs/34284199742) and
+[Security Scan](https://github.com/jackctj117/curLit/actions/runs/34284199731)
+passed. A redacted runtime baseline and an encrypted full database snapshot
+were captured. The 33 MB AES-256-encrypted archive fully decrypted in memory
+and its 3,319-entry restore inventory validated. No plaintext dump was written.
+This is not a completed full restore drill. The Linux backup-key path was absent
+on this Mac; a dedicated 0600 local recovery key is retained separately under
+ignored `data/deployment_keys/2026-09-08_0b84647_backup.key`.
+
+Migration **020 applied at 22:15:37 UTC**, creating the independent audit table
+with zero initial rows. Transactional DDL rollback and repeat application were
+verified on the operational PostgreSQL 15 instance. No historical assessment,
+trade, or accounting row was rewritten. The additive table remains compatible
+with the old pipeline and is retained.
+
+**CL-9lrx is blocked by CL-lu3d; no daemon was restarted.** A one-event native
+Kimi comparison used captured event 48489, the same finite source collection,
+and predeclared bounds: eight calls, 24 tools, 32,768 requested output tokens,
+100,000 serialized prompt characters per call. Baseline exhausted tools after
+five requests (54,162 input / 4,930 output tokens, 121.3 seconds). The revision
+made four requests (49,961 input / 3,310 output, 86.0 seconds); its next prompt
+grew to **131,225 characters**, so the local canary wrapper refused request five
+before network transmission. This was **not a Moonshot balance error or an API
+rejection**. Neither arm supplied parsed candidates; billing remains unknown.
+The failure was retained, not bypassed by raising the input limit.
+
+Original pipeline **51644** remains on running release **`900b6f1`**; its local
+manifest's release marker was restored to that value. FX **28922**, options
+**21444**, and equities **21457** were untouched. Fix native context/finalization
+budget handling and rerun the bounded canary before replacing the pipeline.
+Ignored evidence prefix: `data/deployments/2026-09-08_0b84647_` (preflight,
+encrypted backup and verification, captured research/comparison, migration,
+and blocked rollout record). Do not interpret the successful migration as a
+completed deployment or the one-event experiment as a model-quality benchmark.
+
 ## 4. Data layer
 
 | Store | Source | Refresh | Notes |
