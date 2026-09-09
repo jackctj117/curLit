@@ -173,6 +173,7 @@ class NicheIdea:
     review_provenance: dict[str, Any] = field(default_factory=dict)
     liquidity_status: str = "unknown"
     market_observed_at: str | None = None
+    market_received_at: str | None = None
     score_version: str = "unscored"
     last_close: float | None = None
 
@@ -196,6 +197,7 @@ class NicheIdea:
             "evidence_status": self.evidence_status,
             "liquidity_status": self.liquidity_status,
             "market_observed_at": self.market_observed_at,
+            "market_received_at": self.market_received_at,
             "claims": [asdict(c) for c in self.claims],
             "claims_parse_error": self.claims_parse_error,
             "sources": [d.to_dict() for d in self.sources],
@@ -435,6 +437,7 @@ def evidence_score(
     idea.last_close = finite_nonnegative(data.get("last_close"))
     observed, received = timestamp(data.get("observed_at")), timestamp(data.get("retrieved_at"))
     idea.market_observed_at = observed.isoformat() if observed else None
+    idea.market_received_at = received.isoformat() if received else None
     fresh = bool(
         observed
         and received
