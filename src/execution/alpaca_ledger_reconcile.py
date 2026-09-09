@@ -16,6 +16,7 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
+from src.execution.alpaca_fee_attribution import persist_fees
 from src.execution.alpaca_fill_ledger import (
     Ledger,
     ingest_activity,
@@ -23,6 +24,7 @@ from src.execution.alpaca_fill_ledger import (
     project_allocation,
     timestamp,
 )
+from src.execution.alpaca_historical_allocation import resolve_aggregate_history
 from src.execution.alpaca_recovery import fill_evidence, fingerprint, quantity
 
 logger = logging.getLogger(__name__)
@@ -113,6 +115,16 @@ def project_snapshot(snapshot: Record) -> list[Record]:
                     multiplier = quantity(contract.get("size"))
                     if multiplier <= 0:
                         raise ValueError("invalid broker contract multiplier")
+                # Retain validated raw identities/fills even if the old owner
+                # label overcloses its lot; whole-book attribution can then be
+                # proven from the independent contemporaneous inventory stream.
+                projected.update(
+                    asset_id=opening["asset_id"],
+                    symbol=symbol,
+                    orders=owned_orders,
+                    fills=order_fills,
+                    multiplier=multiplier,
+                )
                 projection = project_allocation(
                     order_fills[opening["id"]],
                     [f for o in exits for f in order_fills[o["id"]]],
@@ -132,6 +144,7 @@ def project_snapshot(snapshot: Record) -> list[Record]:
                 )
             except (ValueError, KeyError, TypeError) as exc:
                 projected["reason"] = str(exc)
+    resolve_aggregate_history(snapshot, result)
     return result
 
 
@@ -172,6 +185,7 @@ def ingest_snapshot(engine: Engine, snapshot: Record) -> list[Record]:
         )
         for activity in snapshot["activities"]["records"]:
             ingest_activity(conn, account, activity)
+        persist_fees(conn, account, snapshot["activities"]["records"])
         for projected in projections:
             if projected["evidence_status"] != "fill_verified":
                 # Do not retain yesterday's verified allocation if today's
@@ -208,19 +222,36 @@ def ingest_snapshot(engine: Engine, snapshot: Record) -> list[Record]:
                         },
                     )
             payload = {k: str(v) if isinstance(v, Decimal) else v for k, v in allocation.items()}
+            attribution = projected.get("historical_allocation")
+            exit_fills = [
+                f for order in projected["orders"][1:] for f in projected["fills"][order["id"]]
+            ]
+            closed_at = None
+            if allocation["signed_quantity"] == 0 and allocation["entry_quantity"] > 0:
+                closed_at = (
+                    timestamp(attribution["closed_at"])
+                    if attribution
+                    else max((f.at for f in exit_fills), default=None)
+                )
+            method = attribution["method"] if attribution else "direct_order_fills"
+            payload.update(closed_at=closed_at, attribution_method=method)
+            if attribution:
+                payload["historical_allocation"] = attribution
             conn.execute(
                 text(
                     "INSERT INTO alpaca_ledger_allocations(account_scope,book,idea_id,asset_id,symbol,"
                     "signed_quantity,entry_quantity,exit_quantity,entry_average,gross_realized,net_realized,"
-                    "costs_status,evidence_status,original_entered_at,projection) "
+                    "costs_status,evidence_status,original_entered_at,projection,closed_at,attribution_method) "
                     "VALUES (:a,:b,:i,:asset,:symbol,:signed_quantity,:entry_quantity,:exit_quantity,"
                     ":entry_average,:gross_realized,:net_realized,:costs_status,'fill_verified',"
-                    ":original_entered_at,:projection) ON CONFLICT (account_scope,book,idea_id) DO UPDATE SET "
+                    ":original_entered_at,:projection,:closed_at,:attribution_method) "
+                    "ON CONFLICT (account_scope,book,idea_id) DO UPDATE SET "
                     "signed_quantity=excluded.signed_quantity,entry_quantity=excluded.entry_quantity,"
                     "exit_quantity=excluded.exit_quantity,entry_average=excluded.entry_average,"
                     "gross_realized=excluded.gross_realized,net_realized=excluded.net_realized,"
                     "costs_status=excluded.costs_status,evidence_status=excluded.evidence_status,"
-                    "projection=excluded.projection"
+                    "projection=excluded.projection,closed_at=excluded.closed_at,"
+                    "attribution_method=excluded.attribution_method"
                 ),
                 {
                     **payload,
@@ -232,6 +263,33 @@ def ingest_snapshot(engine: Engine, snapshot: Record) -> list[Record]:
                     "projection": json.dumps(payload, default=str, sort_keys=True),
                 },
             )
+            if attribution:
+                parameters = {
+                    **attribution,
+                    "a": account,
+                    "b": projected["book"],
+                    "i": projected["idea_id"],
+                    "payload": json.dumps(attribution, sort_keys=True),
+                }
+                conn.execute(
+                    text(
+                        "INSERT INTO alpaca_ledger_historical_attributions "
+                        "(account_scope,book,idea_id,exit_order_id,allocated_quantity,allocated_cash,"
+                        "closed_at,method,evidence_hash,payload) VALUES "
+                        "(:a,:b,:i,:order_id,:allocated_quantity,:allocated_cash,:closed_at,:method,"
+                        ":evidence_hash,:payload) ON CONFLICT DO NOTHING"
+                    ),
+                    parameters,
+                )
+                existing = conn.execute(
+                    text(
+                        "SELECT payload FROM alpaca_ledger_historical_attributions WHERE "
+                        "account_scope=:a AND book=:b AND idea_id=:i AND exit_order_id=:order_id"
+                    ),
+                    parameters,
+                ).scalar_one()
+                if existing != parameters["payload"]:
+                    raise ValueError("historical attribution conflicts with preserved evidence")
         conn.execute(
             text(
                 "UPDATE alpaca_ledger_accounts SET snapshot_hash=:h,version=version+1 "

@@ -56,6 +56,7 @@ def ledger_engine():
                     "018_option_entry_mid.sql",
                     "019_alpaca_equity_orders.sql",
                     "022_alpaca_fill_ledger.sql",
+                    "023_alpaca_accounting_evidence.sql",
                 ):
                     for statement in _strip_sql_comments(
                         (Path("migrations") / name).read_text()
@@ -372,6 +373,126 @@ def test_account_fence_blocks_other_book_without_broker_reads(ledger_engine):
             owner.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": lock_key(ACCOUNT)})
 
 
+def aggregate_snapshot(engine):
+    seed(engine, "a", 10)
+    seed(engine, "b", 5)
+    data = snapshot(
+        engine,
+        [
+            order("a", 10),
+            order("b", 5, at=AT + timedelta(minutes=1)),
+            order("a", 15, closing=True, at=AT + timedelta(days=1)),
+        ],
+    )
+    data["activities"]["records"][-1]["price"] = "12"
+    return data
+
+
+def test_whole_book_attribution_preserves_raw_fills_cash_and_replays(ledger_engine):
+    data = aggregate_snapshot(ledger_engine)
+    original = copy.deepcopy(data)
+    for _ in range(2):
+        projected = ingest_snapshot(ledger_engine, data)
+        assert {p["evidence_status"] for p in projected} == {"fill_verified"}
+    assert data == original
+    rows = closed_performance(ledger_engine, AT)
+    # Independent cash-flow oracle: 15 * 12 - 15 * 10 = 30.
+    assert {r["idea_id"]: r["gross_realized"] for r in rows} == {"a": 20, "b": 10}
+    assert all(r["net_realized"] is None for r in rows)
+    assert all(r["attribution_method"] == "whole_book_close_pro_rata_cash_v1" for r in rows)
+    with ledger_engine.connect() as conn:
+        assert conn.execute(text("SELECT COUNT(*) FROM alpaca_ledger_fills")).scalar() == 3
+        assert (
+            conn.execute(
+                text("SELECT COUNT(*) FROM alpaca_ledger_historical_attributions")
+            ).scalar()
+            == 2
+        )
+        assert (
+            conn.execute(
+                text("SELECT SUM(allocated_cash) FROM alpaca_ledger_historical_attributions")
+            ).scalar()
+            == 180
+        )
+        assert (
+            conn.execute(
+                text("SELECT SUM(allocated_quantity) FROM alpaca_ledger_historical_attributions")
+            ).scalar()
+            == 15
+        )
+        assert (
+            conn.execute(
+                text(
+                    "SELECT quantity FROM alpaca_ledger_fills WHERE broker_order_id='order-exit-a'"
+                )
+            ).scalar()
+            == 15
+        )
+    # Corrupt an attribution, not a broker fill: replay must refuse to overwrite it.
+    with ledger_engine.begin() as conn:
+        conn.execute(
+            text("UPDATE alpaca_ledger_historical_attributions SET payload='{}' WHERE idea_id='b'")
+        )
+    with pytest.raises(ValueError, match="conflicts with preserved evidence"):
+        ingest_snapshot(ledger_engine, data)
+
+
+@pytest.mark.parametrize(
+    "uncertainty", ["external", "partial", "tied", "unexplained_position", "assignment"]
+)
+def test_aggregate_uncertainty_never_invents_a_closed_allocation(ledger_engine, uncertainty):
+    data = aggregate_snapshot(ledger_engine)
+    if uncertainty == "external":
+        data["orders"]["records"][1]["client_order_id"] = "external-manual"
+    elif uncertainty == "partial":
+        data["orders"]["records"][-1].update(qty="14", filled_qty="14")
+        data["activities"]["records"][-1]["qty"] = "14"
+        data["positions_after"] = [{"asset_id": "asset", "symbol": "ABC", "qty": "1"}]
+    elif uncertainty == "tied":
+        data["activities"]["records"][1]["transaction_time"] = data["activities"]["records"][0][
+            "transaction_time"
+        ]
+    elif uncertainty == "unexplained_position":
+        data["positions_after"] = [{"asset_id": "asset", "symbol": "ABC", "qty": "1"}]
+    else:
+        data["activities"]["records"].append(
+            {"id": "assignment", "activity_type": "OPASN", "symbol": "ABC", "qty": "100"}
+        )
+    projections = project_snapshot(data)
+    assert not any("historical_allocation" in p for p in projections)
+    assert next(p for p in projections if p["idea_id"] == "a")["evidence_status"] == "unresolved"
+
+
+@pytest.mark.parametrize("short", [False, True])
+def test_aggregate_multiple_prices_allocates_cash_not_fictional_fills(ledger_engine, short):
+    data = aggregate_snapshot(ledger_engine)
+    closing = data["activities"]["records"].pop()
+    second = dict(
+        closing,
+        id=closing["id"] + "-second",
+        qty="5",
+        price="9",
+        transaction_time=(AT + timedelta(days=1, seconds=1)).isoformat(),
+    )
+    closing.update(qty="10", price="12")
+    data["activities"]["records"].extend([closing, second])
+    if short:
+        for o in data["orders"]["records"]:
+            o["side"] = "sell" if o["side"] == "buy" else "buy"
+        for f in data["activities"]["records"]:
+            f["side"] = "sell" if f["side"] == "buy" else "buy"
+    result = ingest_snapshot(ledger_engine, data)
+    # Order cash = 10*12+5*9=165; original cash=150. Two-thirds belongs to a.
+    assert {p["idea_id"]: p["allocation"]["gross_realized"] for p in result} == (
+        {"a": -10, "b": -5} if short else {"a": 10, "b": 5}
+    )
+    assert all(
+        p["historical_allocation"]["closed_at"] == second["transaction_time"] for p in result
+    )
+    with ledger_engine.connect() as conn:
+        assert conn.execute(text("SELECT COUNT(*) FROM alpaca_ledger_fills")).scalar() == 4
+
+
 def option_snapshot(engine):
     """One original contract; the legacy false closure has no closing execution."""
     seed(engine)
@@ -472,3 +593,46 @@ def test_unmanaged_option_remains_visible_when_market_closed(ledger_engine, monk
     )
     assert counts["unmanaged_allocations"] == 0
     assert counts["submitted"] == 0
+
+
+def test_fees_persist_once_with_aggregate_cost_visible(ledger_engine):
+    seed(ledger_engine)
+    data = snapshot(ledger_engine)
+    ref = "8efc7b9a-8b2b-4000-9955-d36e7db0df74"
+    data["activities"]["records"][0]["id"] = "20260801140000000::" + ref
+    data["activities"]["records"] += [
+        {
+            "id": "fee-1",
+            "activity_type": "FEE",
+            "currency": "USD",
+            "date": "2026-08-01",
+            "status": "executed",
+            "net_amount": "-0.03",
+            "execution_id": ref,
+        },
+        {
+            "id": "fee-2",
+            "activity_type": "FEE",
+            "currency": "USD",
+            "date": "2026-08-01",
+            "status": "executed",
+            "net_amount": "-0.02",
+        },
+    ]
+    for _ in range(2):
+        ingest_snapshot(ledger_engine, data)
+    with ledger_engine.connect() as conn:
+        assert conn.execute(text("SELECT count(*) FROM alpaca_ledger_fee_links")).scalar() == 2
+        assert conn.execute(
+            text("SELECT SUM(known_cost) FROM alpaca_ledger_fee_links")
+        ).scalar() == Decimal("0.05")
+        assert (
+            conn.execute(
+                text("SELECT status FROM alpaca_ledger_fee_links WHERE fee_activity_id='fee-2'")
+            ).scalar()
+            == "unallocated"
+        )
+        assert (
+            conn.execute(text("SELECT net_realized FROM alpaca_ledger_allocations")).scalar()
+            is None
+        )

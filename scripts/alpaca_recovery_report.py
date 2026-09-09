@@ -131,6 +131,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--max-pages", type=int, default=100)
     parser.add_argument(
+        "--accounting-report",
+        action="store_true",
+        help="Also project fill/cash attribution and known/unallocated fees",
+    )
+    parser.add_argument(
         "--include-contracts",
         action="store_true",
         help="Capture broker contract sizes for fill ledger",
@@ -169,6 +174,10 @@ def main(argv: list[str] | None = None) -> int:
         write_private(args.output_dir / "snapshot.json", snapshot)
         report = build_report(snapshot)
         write_private(args.output_dir / "report.json", report)
+        if args.accounting_report:
+            from src.execution.alpaca_ledger_reporting import accounting_evidence
+
+            write_private(args.output_dir / "accounting.json", accounting_evidence(snapshot))
         write_private(
             args.output_dir / "manifest.json",
             {

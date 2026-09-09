@@ -8,6 +8,33 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
+from src.execution.alpaca_fee_attribution import fee_summary, project_fees
+from src.execution.alpaca_ledger_reconcile import project_snapshot
+from src.execution.alpaca_recovery import fingerprint
+
+
+def accounting_evidence(snapshot: dict[str, Any]) -> dict[str, Any]:
+    """Read-only evidence summary; never equate policy attribution with raw fills."""
+    projections = project_snapshot(snapshot)
+    return {
+        "snapshot_hash": fingerprint(snapshot),
+        "mode": "read_only",
+        "history_scope": "API-visible exhausted pages; not proof of lifetime coverage",
+        "fees": fee_summary(project_fees(snapshot["activities"]["records"])),
+        "allocations": [
+            {
+                "book": p["book"],
+                "idea_id": p["idea_id"],
+                "symbol": p.get("symbol"),
+                "evidence_status": p["evidence_status"],
+                "reason": p.get("reason"),
+                "allocation": p.get("allocation"),
+                "historical_allocation": p.get("historical_allocation"),
+            }
+            for p in projections
+        ],
+    }
+
 
 def closed_performance(engine: Engine, cutoff: datetime) -> list[dict[str, Any]]:
     """Gross and net are separate; unavailable costs must not become zero."""
@@ -17,14 +44,9 @@ def closed_performance(engine: Engine, cutoff: datetime) -> list[dict[str, Any]]
             for row in conn.execute(
                 text(
                     "SELECT p.account_scope,p.book,p.idea_id,p.symbol,p.gross_realized,p.net_realized,"
-                    "p.costs_status,MAX(f.executed_at) AS closed_at FROM alpaca_ledger_allocations p "
-                    "JOIN alpaca_ledger_intents i ON i.account_scope=p.account_scope AND i.book=p.book "
-                    "AND i.idea_id=p.idea_id AND i.purpose='exit' "
-                    "JOIN alpaca_ledger_attempts a ON a.account_scope=i.account_scope AND a.intent_id=i.intent_id "
-                    "JOIN alpaca_ledger_fills f ON f.account_scope=a.account_scope AND f.broker_order_id=a.broker_order_id "
+                    "p.costs_status,p.closed_at,p.attribution_method FROM alpaca_ledger_allocations p "
                     "WHERE p.evidence_status='fill_verified' AND p.signed_quantity=0 AND p.entry_quantity>0 "
-                    "GROUP BY p.account_scope,p.book,p.idea_id,p.symbol,p.gross_realized,p.net_realized,p.costs_status "
-                    "HAVING MAX(f.executed_at)>=:cut ORDER BY closed_at"
+                    "AND p.closed_at>=:cut ORDER BY p.closed_at,p.book,p.idea_id"
                 ),
                 {"cut": cutoff},
             ).mappings()

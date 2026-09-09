@@ -318,3 +318,55 @@ are preserved. CL-z97c tracks validated fee links and visible account-level
 unallocated costs; fully verified per-trade net remains unknown until applicable
 costs can be attributed without arbitrary assumptions. Restoring account
 management and completing historical accounting remain distinct milestones.
+
+## Six additional options: approved and restored September 9
+
+The operator explicitly approved original-date management, including overdue-rule
+sales. Release `d1368ff` passed hosted CI 34403919840 and security 34403923100;
+local checks passed 3,837 unit tests (three existing skips), ten real PostgreSQL
+tests, Ruff and typechecking. Both Alpaca writers were stopped before repair.
+An encrypted full backup was restored in isolation and all 42 table counts
+matched (`data/deployments/2026-09-09_options_restore_backup/`).
+
+The fresh capture hash was
+`52467421aa9efa30593b4f4e25d767b12ef8297f9f9ecfbde1ad21a4ae8aa5a8`.
+Six exact approved IDs were repaired with original-value audit; no order was
+submitted by the repair tool. A post-restart SELECT confirms all six one-contract
+allocations are `fill_verified`, management-enabled and retain their August
+entry dates. New options PID 22523 and equities PID 22525 have completed
+close-only, market-closed reconciliation cycles with zero order submissions.
+CL-jr3z is closed. Their four option/two equity historical discrepancies are
+separate accounting work, not unapproved current holdings.
+
+## Fee and aggregate-close accounting policy (CL-z97c / CL-sweu)
+
+Migration 023 adds derived fee links and immutable historical cash-attribution
+records. Original broker activities, orders, fills and legacy estimates are not
+rewritten. A unique exact execution UUID can link a captured fee; account-level
+charges, missing links, invalid data and pending fees remain distinct. A known
+fee does not establish complete billing, so these links do not manufacture a
+net return. The September 9 capture has 220 execution-linked fees ($5.73) and
+130 unallocated account fees ($5.71); these are captured costs, not lifetime totals.
+
+Historical aggregate exits qualify only when the covered inventory stream proves
+a noninterleaved whole-book liquidation of identified curLit allocations.
+External inventory, partial aggregate closures, unexplained current quantities
+or inventory-changing activities preclude automatic attribution. Actual closing
+cash is apportioned by verified residual quantities using the named
+`whole_book_close_pro_rata_cash_v1` convention. Eight-decimal cash amounts and a
+deterministic final residual conserve the broker's total cash exactly. This is
+an explicit accounting convention, not evidence of individual per-idea prices.
+Reports include the convention and actual closing timestamp for every co-owner.
+
+Offline replay of the preserved capture resolves 14 allocations across six
+aggregate closing orders. That development result is not itself an operational
+repair. The read-only report can be regenerated without credentials:
+
+```bash
+python -m scripts.alpaca_recovery_report --snapshot /private/snapshot.json \
+  --accounting-report --output-dir /private/new-accounting-report
+```
+
+The operational migration and subsequent reconciliation must be verified
+separately under CL-koeg. Alpaca remains close-only; complete new-entry controls
+and representative research-quality validation are independent gates.
