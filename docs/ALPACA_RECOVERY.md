@@ -429,3 +429,41 @@ YAML-to-manager test now unsets its environment override rather than supplying
 an invalid empty name; its numerical assertions are unchanged. Passing this
 configuration work does not complete working-order exposure, atomic capacity
 reservations, price-bounded entries or shared cross-path halt acknowledgement.
+
+### Follow-up release verified at 21:54 UTC
+
+Release `634e1d2` passed **3,920 unit tests, three existing skips**, **20 real
+PostgreSQL tests**, Ruff, strict changed-module checks and source-wide mypy.
+Hosted CI 34408324014 and security 34408326748 passed before cutover. The
+snapshot correction, research provenance and configuration changes are separate
+commits (`d0aed35`, `911cf17`, `634e1d2`). All are pushed to main.
+
+The prior four affected processes were verified gone before individual startup.
+Options **93628** and equities **93630** have completed clean market-closed
+close-only cycles with zero submissions and zero unresolved/unmanaged counts.
+The options worker initially yielded the shared account fence; its normal next
+cycle succeeded at 21:53:57 UTC. Ledger count remains 177, with zero unresolved
+projections and every account entry-paused. Original holdings were not forcibly
+liquidated during maintenance.
+
+FX **93632** has exactly the prior effective configuration, including the
+aggressive profile and entry pause. Its practice account was flat with no open
+trades or pending orders before replacement. All **259** startup source/config
+hashes match and authenticated `/api/system` confirms the OMS is halted.
+Pipeline **93634** completed its first cycle at 21:52:41 UTC: ingestion 11,570 ms,
+assessment 225,286 ms, total 244,950 ms. Private verification is under
+`data/deployments/2026-09-09_followup_cutover/`.
+
+At 21:43 UTC, before that pipeline restart, two discoveries were durably recorded
+as `unavailable / insufficient_balance`. The earlier eight shadow arms had
+finished without balance errors. No subsequent paid evaluation calls were made;
+the actual account balance and the contribution of individual workloads were
+not independently verified. The restart's first cycle had no qualifying niche
+batch and therefore does not prove restored Moonshot availability.
+
+CL-jr3z, CL-sweu, CL-z97c, CL-evcu and CL-0deu.9 are closed on their specific
+evidence. **CL-koeg remains open:** working-order/local-reservation exposure,
+shared persistent halt acknowledgements, bounded new-entry execution and
+representative useful-research validation are not complete. Alpaca remains
+close-only, FX remains entry-paused, and fully verified per-trade net returns
+are still unavailable where costs cannot be allocated completely.

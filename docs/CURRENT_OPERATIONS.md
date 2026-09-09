@@ -1,5 +1,20 @@
 # CURRENT OPERATIONS — what curLit is practicing right now
 
+**Latest recovery verification — September 9, 2026, 21:54 UTC:** code release
+`634e1d2` is deployed. Alpaca remains **close-only** (options PID 93628, equities
+93630); FX PID 93632 remains **entry-paused**, with unchanged aggressive risk
+configuration and all 259 startup file hashes matching. Pipeline PID 93634
+completed its first assessment cycle. Six additionally approved September 18
+option allocations retain their original dates under exit management. Historical
+replay now has 177 allocations with zero unresolved projections; 14 aggregate
+cash attributions and 350 fee dispositions are preserved, with incomplete net
+costs still unknown. Kimi again reported `insufficient_balance` at 21:43 UTC;
+the four-event/eight-arm shadow comparison is inconclusive about useful quality.
+Full new-entry gates and research validation remain open under CL-koeg/CL-uofe.
+See [the recovery runbook](ALPACA_RECOVERY.md) for actual backup, repair, tests,
+process verification and remaining limitations; older dated sections below
+describe earlier operational states.
+
 _Last full revision: 2026-07-21. This is the living map of the running system:
 which venues trade, under what policies, which daemons run, how ideas flow
 from headline to fill to scorecard, and every operator knob. When behavior
