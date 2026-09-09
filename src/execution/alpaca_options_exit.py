@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from enum import StrEnum
@@ -61,6 +62,7 @@ from sqlalchemy import text
 
 from src.execution.alpaca_options import AlpacaOptionsClient, mid_and_spread
 from src.execution.alpaca_options_executor import _is_duplicate_client_order_id
+from src.monitoring.logging_setup import LogContext
 from src.research.notifications import notify_operator
 
 logger = logging.getLogger(__name__)
@@ -485,6 +487,7 @@ def manage_option_exits(
         "unsellable": 0,
         "error": 0,
         "market_closed": 0,
+        "reconciliation_required": 0,
     }
 
     # Sells are market orders too — 422 outside regular hours.
@@ -500,9 +503,23 @@ def manage_option_exits(
         counts["error"] += 1
         return counts
 
-    for row in _fetch_open_rows(engine):
+    rows = _fetch_open_rows(engine)
+    owners = Counter(str(row.get("occ_symbol") or "") for row in rows)
+    for row in rows:
         idea_id = str(row["idea_id"])
         occ = str(row.get("occ_symbol") or "")
+        if owners[occ] > 1:
+            # CL-qz3f: a broker net position cannot establish which idea owns
+            # its contracts. Consuming it for one row used to falsely close
+            # later rows, or sell their inventory. Reconcile allocations first.
+            positions.pop(occ, None)  # Classified ambiguous, not unmatched.
+            counts["reconciliation_required"] += 1
+            with LogContext(intent_id=idea_id, symbol=occ):
+                logger.warning(
+                    "options exit: shared-contract allocation unresolved; no order or status change",
+                    extra={"extra_data": {"reason": "ambiguous_allocation", "rows": owners[occ]}},
+                )
+            continue
         pos = positions.pop(occ, None)
         try:
             if pos is None:

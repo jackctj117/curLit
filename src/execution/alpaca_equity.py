@@ -29,7 +29,11 @@ from __future__ import annotations
 
 import logging
 from typing import Any
+from urllib.parse import quote
 
+import httpx
+
+from src.execution.alpaca_asset_eligibility import AssetNotFoundError
 from src.execution.alpaca_exposure import validated_positions
 from src.execution.alpaca_options import (
     DATA_BASE,
@@ -81,6 +85,34 @@ class AlpacaEquityClient:
 
     def get_account(self) -> dict[str, Any]:
         result: dict[str, Any] = self._req("GET", "/v2/account")
+        return result
+
+    def get_asset(self, symbol: str) -> dict[str, Any]:
+        """Exact broker identity lookup. A research ticker is not eligibility."""
+        logger.info("alpaca equity: checking broker asset eligibility for %s", symbol)
+        try:
+            result = self._req("GET", "/v2/assets/" + quote(symbol, safe=""))
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                raise AssetNotFoundError("broker_asset_not_found") from None
+            raise
+        if not isinstance(result, dict):
+            raise ValueError("invalid_asset_metadata")
+        return result
+
+    def get_order_by_client_id(self, client_id: str) -> dict[str, Any] | None:
+        """Resolve original identity; only a confirmed 404 means not found."""
+        logger.info("alpaca equity: resolving original client order before eligibility skip")
+        try:
+            result = self._req(
+                "GET", "/v2/orders:by_client_order_id", params={"client_order_id": client_id}
+            )
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                return None
+            raise
+        if not isinstance(result, dict) or not result.get("id"):
+            raise ValueError("invalid_order_metadata")
         return result
 
     def is_market_open(self) -> bool:

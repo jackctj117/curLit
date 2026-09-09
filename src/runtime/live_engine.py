@@ -124,18 +124,7 @@ class LiveEngine:
         # sync broker HTTP on the loop thread, which is fine ONLY here:
         # no engine tasks exist yet (they are created below), so there is
         # nothing to starve (CL-8lv6 sync-I/O audit).
-        if self.cold_start_reconciler is not None:
-            try:
-                self._last_reconciliation_report = self.cold_start_reconciler.reconcile()
-                logger.info(
-                    "Cold-start reconciliation: %d entries, mismatches=%s",
-                    len(self._last_reconciliation_report.entries),
-                    self._last_reconciliation_report.has_mismatches,
-                )
-            except Exception:
-                logger.exception(
-                    "Cold-start reconciliation failed — continuing with engine startup"
-                )
+        self._reconcile_startup()
 
         # CL-i4tx boot-time honesty: one ARMED/UNARMED line per kill switch
         # so operators know which brakes are actually connected.
@@ -147,6 +136,38 @@ class LiveEngine:
             )
             self.kill_switch_manager.log_arming(provided)
 
+        await self._run_tasks()
+
+    def _reconcile_startup(self) -> None:
+        """CL-0deu.18: a failed/dirty startup stays observable but entry-paused."""
+        if os.environ.get("CURLIT_START_ENTRY_PAUSED", "0").lower() in {"1", "true", "yes"}:
+            logger.warning(
+                "Operator-requested entry-paused startup; verified reductions remain available"
+            )
+            self.oms.halt_new_trades()
+        if self.cold_start_reconciler is not None:
+            try:
+                self._last_reconciliation_report = self.cold_start_reconciler.reconcile()
+                logger.info(
+                    "Cold-start reconciliation: %d entries, mismatches=%s",
+                    len(self._last_reconciliation_report.entries),
+                    self._last_reconciliation_report.has_mismatches,
+                )
+                if self._last_reconciliation_report.has_mismatches:
+                    logger.error(
+                        "Cold-start account mismatch: new entries blocked until operator reconciliation"
+                    )
+                    self.oms.halt_new_trades()
+            except Exception:
+                self.oms.halt_new_trades()
+                logger.exception(
+                    "Cold-start reconciliation failed — entries blocked; monitoring/recovery continue"
+                )
+        else:
+            logger.error("Cold-start reconciler unavailable: entries blocked")
+            self.oms.halt_new_trades()
+
+    async def _run_tasks(self) -> None:
         # Track tasks as asyncio.Task so graceful_shutdown() can cancel them.
         # Without this, any task that doesn't poll self.running between
         # awaits (uvicorn server, the broker price-stream async-for) keeps

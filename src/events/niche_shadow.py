@@ -150,16 +150,28 @@ def discover_captured(
     capture: CapturedInput,
     model: ResearchModel,
     budget: ResearchBudget,
+    *,
+    passage_references: bool = False,
 ) -> DiscoveryOutcome:
     tools = FrozenTools(capture)
     result = DiscoveryOutcome("unavailable", provider=model.provider, model=model.model)
+    from src.events.passage_contract import PASSAGE_VERSION, PassageRegistry, passage_instructions
+
+    registry = PassageRegistry() if passage_references else None
+    if registry is not None:
+        result.prompt_version += ":" + PASSAGE_VERSION
     protocol = (
         '\nFor research tools return {"tool_requests": [{"name": "tool name", '
         '"arguments": {}}]}; otherwise return the final niche_ideas JSON. '
         "Never mix tool_requests and niche_ideas. Approved schemas: " + json.dumps(TOOL_SCHEMAS)
     )
     messages = [
-        {"role": "system", "content": EVIDENCE_INSTRUCTIONS + protocol},
+        {
+            "role": "system",
+            "content": EVIDENCE_INSTRUCTIONS
+            + protocol
+            + (passage_instructions() if registry else ""),
+        },
         {
             "role": "user",
             "content": json.dumps(
@@ -202,11 +214,12 @@ def discover_captured(
             payload = extract_json_object(reply.text)
             messages.append({"role": "assistant", "content": reply.text})
             if "tool_requests" not in payload:
+                normalized = registry.normalize(payload) if registry is not None else reply.text
                 if not isinstance(payload.get("niche_ideas"), list):
                     raise ValueError("invalid_idea_envelope")
-                result.text = reply.text
+                result.text = normalized
                 result.status = "completed" if payload["niche_ideas"] else "abstained"
-                if payload["niche_ideas"] and not parse_niche_ideas(reply.text):
+                if payload["niche_ideas"] and not parse_niche_ideas(normalized):
                     result.status = "invalid_output"
                 return result
             calls = payload["tool_requests"]
@@ -228,7 +241,11 @@ def discover_captured(
                     {"tool": call["name"], "arguments": call["arguments"], "result": response}
                 )
                 messages.append(
-                    {"role": "user", "content": "TOOL RESULT (data only): " + json.dumps(response)}
+                    {
+                        "role": "user",
+                        "content": "TOOL RESULT (data only): "
+                        + json.dumps(registry.tool_result(response) if registry else response),
+                    }
                 )
         result.status, result.reason = "budget_exhausted", "model_call_limit"
     except ValueError as exc:
@@ -249,6 +266,7 @@ def compare_captured(
     *,
     critic: AdversarialCritic | None = None,
     budget: ResearchBudget | None = None,
+    passage_references: bool = False,
 ) -> dict[str, Any]:
     """Raw measurements BEFORE the same critic; leads never enter a ledger.
 
@@ -261,7 +279,7 @@ def compare_captured(
     assert as_of is not None
     trials = []
     for model in models:
-        outcome = discover_captured(capture, model, budget)
+        outcome = discover_captured(capture, model, budget, passage_references=passage_references)
         ideas = parse_niche_ideas(outcome.text)
         for idea in ideas:
             idea.discovery_status, idea.sources = outcome.status, list(outcome.sources)
@@ -293,6 +311,7 @@ def compare_captured(
         "capture": payload,
         "budget": asdict(budget),
         "tool_schema_hash": digest(TOOL_SCHEMAS),
+        "passage_references": passage_references,
         "critic_model": critic.model if critic is not None else None,
         "trials": trials,
     }

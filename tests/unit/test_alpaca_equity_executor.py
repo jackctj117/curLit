@@ -12,9 +12,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 from sqlalchemy import create_engine, text
 
+from src.execution.alpaca_asset_eligibility import AssetNotFoundError, assess_asset
+from src.execution.alpaca_equity import AlpacaEquityClient
 from src.execution.alpaca_equity_executor import (
     EquityExecConfig,
     execute_pending_equities,
@@ -49,6 +52,23 @@ class _FakeClient:
 
     def list_equity_positions(self, **kw: Any) -> list[dict[str, Any]]:
         return self._positions
+
+    def get_asset(self, symbol: str) -> dict[str, Any]:
+        # New broker metadata boundary (CL-wtl6); existing execution-policy
+        # tests still exercise their original assertions with eligible assets.
+        return {
+            "id": "fixture-asset",
+            "symbol": symbol,
+            "exchange": "NYSE",
+            "class": "us_equity",
+            "status": "active",
+            "tradable": True,
+            "shortable": True,
+            "easy_to_borrow": True,
+        }
+
+    def get_order_by_client_id(self, client_id: str) -> dict[str, Any] | None:
+        return None
 
     def submit_equity_order(
         self,
@@ -137,6 +157,124 @@ def _row(engine, idea_id):
             .one()
             ._mapping
         )
+
+
+def test_unsupported_asset_is_durable_without_order_post_or_symbol_remap(engine):
+    _seed(engine, "foreign", ticker="GLO.TO", action="buy_puts")
+    calls: list[tuple[str, str]] = []
+
+    def request(method, url, headers, params, body):
+        calls.append((method, url))
+        assert method == "GET"
+        if url.endswith("/clock"):
+            return {"is_open": True}
+        assert url.endswith("/assets/GLO.TO") or url.endswith("/orders:by_client_order_id")
+        if url.endswith("/orders:by_client_order_id"):
+            assert params == {"client_order_id": "curlit-eq-foreign"}
+        response = httpx.Response(404, request=httpx.Request(method, url))
+        response.raise_for_status()
+
+    client = AlpacaEquityClient("fixture", "fixture", request_fn=request)
+    counts = execute_pending_equities(engine, client, _price, now=NOW, technicals_fn=_no_tech)
+    assert counts["skipped_unsupported_asset"] == 1
+    row = _row(engine, "foreign")
+    assert row["status"] == "skipped_unsupported_asset" and row["alpaca_order_id"] is None
+    assert (
+        "unsupported_asset" in row["detail"] and "operator_review_new_expression" in row["detail"]
+    )
+    execute_pending_equities(engine, client, _price, now=NOW, technicals_fn=_no_tech)
+    assert sum(url.endswith("/assets/GLO.TO") for _, url in calls) == 1
+    with engine.connect() as conn:
+        assert (
+            conn.execute(text("SELECT status FROM trade_ideas WHERE idea_id='foreign'")).scalar()
+            == "pending"
+        )
+
+
+@pytest.mark.parametrize("prior", [{"id": "accepted-original", "status": "new"}, "timeout"])
+def test_asset_not_found_does_not_discard_uncertain_original_order(engine, prior):
+    _seed(engine, "uncertain", ticker="GLO.TO")
+
+    class Client(_FakeClient):
+        def get_asset(self, symbol):
+            raise AssetNotFoundError("broker_asset_not_found")
+
+        def get_order_by_client_id(self, client_id):
+            assert client_id == "curlit-eq-uncertain"
+            if prior == "timeout":
+                raise TimeoutError
+            return prior
+
+    client = Client()
+    result = execute_pending_equities(engine, client, _price, now=NOW, technicals_fn=_no_tech)
+    assert result["blocked_eligibility"] == 1 and not client.orders
+    assert [r["idea_id"] for r in fetch_executable_ideas(engine, EquityExecConfig())] == [
+        "uncertain"
+    ]
+
+
+@pytest.mark.parametrize("status", [401, 403, 422, 429, 500])
+def test_asset_http_uncertainty_is_not_a_permanent_rejection(engine, status):
+    _seed(engine, "unknown")
+
+    def request(method, url, headers, params, body):
+        assert method == "GET"
+        if url.endswith("/clock"):
+            return {"is_open": True}
+        httpx.Response(status, request=httpx.Request(method, url)).raise_for_status()
+
+    result = execute_pending_equities(
+        engine,
+        AlpacaEquityClient("f", "f", request_fn=request),
+        _price,
+        now=NOW,
+        technicals_fn=_no_tech,
+    )
+    assert result["blocked_eligibility"] == 1
+    assert [r["idea_id"] for r in fetch_executable_ideas(engine, EquityExecConfig())] == ["unknown"]
+
+
+@pytest.mark.parametrize(
+    "change,reason",
+    [
+        ({"tradable": False}, "not_tradable"),
+        ({"tradable": "true"}, "eligibility_unavailable"),
+        ({"status": "inactive"}, "inactive_asset"),
+        ({"shortable": False}, "short_not_supported"),
+        ({"easy_to_borrow": False}, "borrow_requirements_unmet"),
+        ({"easy_to_borrow": None}, "eligibility_unavailable"),
+        ({"id": None}, "eligibility_unavailable"),
+        ({"symbol": "DIFFERENT"}, "eligibility_unavailable"),
+        ({"class": "us_option"}, "eligibility_unavailable"),
+    ],
+)
+def test_broker_metadata_controls_eligibility_not_model_approval(change, reason):
+    asset = {**_FakeClient().get_asset("RTX"), **change}
+    result = assess_asset(asset, "RTX", short=True, now=NOW)
+    assert result.status.value == reason and not result.eligible
+
+
+def test_missing_asset_method_blocks_entries(engine):
+    _seed(engine, "missing")
+    client = _FakeClient()
+    client.get_asset = None
+    result = execute_pending_equities(engine, client, _price, now=NOW, technicals_fn=_no_tech)
+    assert result["blocked_eligibility"] == 1 and not client.orders
+
+
+def test_submission_timeouts_keep_the_original_client_identity(engine):
+    _seed(engine, "lost-response")
+
+    class Client(_FakeClient):
+        def submit_equity_order(self, symbol, qty, side="buy", client_order_id=None, **kw):
+            self.cids.append(client_order_id)
+            raise TimeoutError("response lost")
+
+    client = Client()
+    for _ in range(2):
+        result = execute_pending_equities(engine, client, _price, now=NOW, technicals_fn=_no_tech)
+        assert result["error"] == 1 and result["skipped_unsupported_asset"] == 0
+    assert client.cids == ["curlit-eq-lost-response", "curlit-eq-lost-response"]
 
 
 # --------------------------------------------------------------------------- #

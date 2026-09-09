@@ -6,6 +6,7 @@ import contextlib
 import logging
 import os
 import signal
+from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any
 
@@ -598,6 +599,27 @@ async def run_engine(broker_mode: str = "paper") -> None:
         journal=journal,
     )
     kill_switch_manager = build_kill_switch_manager(broker, oms, engine=db_engine)
+    from src.risk.risk_profile import load_active_profile  # noqa: PLC0415
+    from src.runtime.release_manifest import write_release_manifest  # noqa: PLC0415
+
+    manifest = write_release_manifest(
+        Path(__file__).resolve().parents[2],
+        role="engine",
+        broker_mode=effective_mode,
+        config={
+            "portfolio": config,
+            "risk_profile": asdict(load_active_profile()),
+            "strategy_defaults_resolved": [
+                asdict(s.config)
+                for s in strategies
+                if hasattr(s, "config")
+                and is_dataclass(s.config)
+                and not isinstance(s.config, type)
+            ],
+            "start_entry_paused": os.environ.get("CURLIT_START_ENTRY_PAUSED", "0"),
+        },
+    )
+    logger.info("Fresh-process release manifest recorded: %s", manifest)
     engine = LiveEngine(
         strategies,
         oms,

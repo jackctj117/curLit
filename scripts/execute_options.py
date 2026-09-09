@@ -196,6 +196,26 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     def _run() -> None:
+        if _b("ALPACA_LEDGER_CLOSE_ONLY", default=False):
+            if not paper:
+                raise RuntimeError("Recovery ledger mode is paper-only")
+            from src.execution.alpaca_ledger_exits import close_only_cycle  # noqa: PLC0415
+            from src.execution.alpaca_recovery import PaperEvidenceClient  # noqa: PLC0415
+
+            evidence = PaperEvidenceClient(key, secret)
+            try:
+                if exit_enabled:
+                    logger.info(
+                        "Ledger close-only: %s",
+                        close_only_cycle(engine, evidence, client, book="options", cfg=exit_cfg),
+                    )
+            except Exception as exc:
+                logger.error(
+                    "Ledger recovery blocked: %s; entries remain paused", type(exc).__name__
+                )
+            finally:
+                evidence.close()
+            return  # NEVER fall through to legacy writers or new entries.
         # Exits BEFORE entries (CL-3rho): manage what we hold, then buy.
         if exit_enabled:
             exits = manage_option_exits(engine, client, cfg=exit_cfg)

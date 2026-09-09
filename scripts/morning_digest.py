@@ -168,37 +168,22 @@ def _fetch_alpaca_equity() -> str | None:
 
 
 def _fetch_alpaca_closed_24h(engine, now: datetime) -> list[dict]:  # noqa: ANN001
-    from sqlalchemy import text  # noqa: PLC0415
-
+    from src.execution.alpaca_ledger_reporting import closed_performance  # noqa: PLC0415
     from src.monitoring.morning_digest import _describe_occ  # noqa: PLC0415
 
     try:
-        with engine.connect() as conn:
-            rows = conn.execute(
-                text("""
-                SELECT occ_symbol, exit_reason, premium_est, exit_premium,
-                       pnl_pct
-                FROM alpaca_option_orders
-                WHERE exited_at >= :cut
-                  AND exit_status IN ('submitted', 'closed')
-                ORDER BY exited_at
-            """),
-                {"cut": now - timedelta(hours=24)},
-            ).fetchall()
+        rows = closed_performance(engine, now - timedelta(hours=24))
         out: list[dict] = []
         for r in rows:
-            pnl_usd = (
-                float(r.exit_premium) - float(r.premium_est)
-                if r.exit_premium is not None and r.premium_est is not None
-                else None
-            )
-            pl_txt = f"${pnl_usd:+,.0f}" if pnl_usd is not None else "n/a"
-            if r.pnl_pct is not None:
-                pl_txt += f" ({float(r.pnl_pct):+.0%})"
+            if r["net_realized"] is not None:
+                pl_txt = f"${float(r['net_realized']):+,.0f} net"
+            else:
+                pl_txt = f"${float(r['gross_realized']):+,.0f} gross; costs/net unknown"
+            desc = _describe_occ(str(r["symbol"])) if r["book"] == "options" else str(r["symbol"])
             out.append(
                 {
                     "venue": "Alpaca",
-                    "desc": f"{_describe_occ(str(r.occ_symbol))} [{r.exit_reason or 'closed'}]",
+                    "desc": f"{desc} [fill-verified close]",
                     "pl": pl_txt,
                 }
             )

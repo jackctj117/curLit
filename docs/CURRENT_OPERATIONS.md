@@ -606,6 +606,24 @@ FX/options/equities process identities remained unchanged. Verification artifact
 This completes the scoped pipeline rollout, **not** CL-uofe's useful-evidence
 evaluation or the broader CL-0deu operational/live-trading readiness gates.
 
+### September 9 recovery development — not deployed
+
+Read-only broker/DB capture at 15:50:47–50 UTC verified that the six internally
+pending options exit orders are already filled, with matching individual fill
+quantities, while same-contract net positions remain. Seven unmatched equity
+holdings trace to original curLit entries marked `closed_external`. They now
+have proposed restoration targets, not applied corrections. See
+[the recovery evidence and handoff](ALPACA_RECOVERY.md) and **CL-cojs/CL-0deu.3**.
+
+Development fixes cover the shared-symbol exit-loop defect (**CL-qz3f**), broker
+asset preflight (**CL-wtl6**), bounded resumable GDELT ingestion (**CL-jk7i**),
+opt-in passage-reference research (**CL-uofe**) and explicit critic status logs
+(**CL-00c7**). Migration 021 was tested in a disposable PostgreSQL instance only.
+The running checkout, operational rows and daemon identities were unchanged;
+FX remains PID 28922 with its July 31 start time. **CL-koeg** tracks separately
+approved restoration and per-path rollout. Tests passing is not account repair
+or proof that the research revision produces better ideas.
+
 ## 4. Data layer
 
 | Store | Source | Refresh | Notes |

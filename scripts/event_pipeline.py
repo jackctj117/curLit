@@ -59,6 +59,12 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--ingest", action="store_true", help="Poll GDELT for new events")
     p.add_argument("--assess", action="store_true", help="Assess NEW rows via the impact agent")
+    p.add_argument(
+        "--ingest-budget-sec",
+        type=float,
+        default=60.0,
+        help="Bound GDELT network/wait time before assessment; requires migration 021",
+    )
     mode = p.add_mutually_exclusive_group()
     mode.add_argument("--once", action="store_true", help="Run one cycle (default)")
     mode.add_argument(
@@ -444,14 +450,24 @@ def _cycle(args: argparse.Namespace) -> None:
 
     if args.ingest:
         from src.data.gdelt import GdeltIngester  # noqa: PLC0415
+        from src.data.gdelt_bounded import run_slice  # noqa: PLC0415
 
         _t = time.monotonic()
         ingester = GdeltIngester(build_db_url(), playbooks_path=args.playbooks)
         end = datetime.now(UTC)
         start = end - timedelta(minutes=args.lookback_minutes)
-        rows = ingester.run(start, end)
+        try:
+            counts = run_slice(
+                ingester, start, end, budget_sec=getattr(args, "ingest_budget_sec", 60.0)
+            )
+            logger.info("ingest: %s", counts)
+        except Exception:
+            # Missing migration/checkpoint failure must be visible but must not
+            # block assessment of events already safely in the database.
+            logger.exception("GDELT bounded ingestion failed; continuing existing-event assessment")
+        finally:
+            ingester.engine.dispose()
         _phase_ms["ingest"] = (time.monotonic() - _t) * 1000.0
-        logger.info("ingest: %d new geo_events rows", rows)
 
     if args.scan:
         # RVOL scan runs BEFORE assess/digest so this cycle's digest

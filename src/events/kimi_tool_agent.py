@@ -18,6 +18,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from src.events.impact_agent import extract_json_object
+from src.events.passage_contract import PASSAGE_VERSION, PassageRegistry, passage_instructions
 from src.events.research_evidence import EVIDENCE_INSTRUCTIONS, DiscoveryOutcome, SourceDocument
 
 logger = logging.getLogger(__name__)
@@ -137,6 +138,7 @@ class KimiToolAgent:
         reasoning_effort: str = "low",
         create_fn: Any = None,
         max_prompt_chars: int = DEFAULT_MAX_PROMPT_CHARS,
+        passage_references: bool = False,
     ) -> None:
         self.universe = universe
         self.tools = tools  # ResearchTools (SEC excerpt + profile)
@@ -175,6 +177,7 @@ class KimiToolAgent:
         if type(max_prompt_chars) is not int or max_prompt_chars <= 0:
             raise ValueError("Kimi prompt character budget must be a positive integer")
         self.max_prompt_chars = max_prompt_chars
+        self.passage_references = passage_references
         #: Injectable create fn (model, messages, tools, ...) → response; the
         #: live path builds an OpenAI client lazily against the Moonshot base.
         self._create_fn = create_fn
@@ -288,6 +291,9 @@ class KimiToolAgent:
         """Per-invocation result: failures never masquerade as abstention."""
         outcome = DiscoveryOutcome("unavailable", provider="moonshot", model=self.model)
         outcome.prompt_version += ":kimi-budget-v3"
+        registry = PassageRegistry() if self.passage_references else None
+        if registry is not None:
+            outcome.prompt_version += ":" + PASSAGE_VERSION
         if not self.configured:
             logger.warning("kimi tool agent: no MOONSHOT_API_KEY — skipping")
             outcome.reason = "credentials_missing"
@@ -295,7 +301,10 @@ class KimiToolAgent:
         started = time.monotonic()
         outcome.input_tokens, outcome.output_tokens = 0, 0
         messages: list[dict[str, Any]] = [
-            {"role": "system", "content": _SYSTEM_PROMPT},
+            {
+                "role": "system",
+                "content": _SYSTEM_PROMPT + (passage_instructions() if registry else ""),
+            },
             {"role": "user", "content": self._user_prompt(event_row, playbook)},
         ]
         initial_messages = copy.deepcopy(messages)
@@ -321,7 +330,9 @@ class KimiToolAgent:
                         prompt_chars,
                         self.max_prompt_chars,
                     )
-                    packet_messages = _source_packet_finalization(initial_messages, outcome)
+                    packet_messages = _source_packet_finalization(
+                        initial_messages, outcome, registry
+                    )
                     packet_chars = len(json.dumps(packet_messages))
                     outcome.trace.append(
                         {
@@ -439,14 +450,19 @@ class KimiToolAgent:
                         outcome.status, outcome.reason = "partial", "incomplete_generation"
                         return outcome
                     try:
-                        ideas = extract_json_object(outcome.text).get("niche_ideas")
+                        parsed = extract_json_object(outcome.text)
+                        if registry is not None:
+                            outcome.text = registry.normalize(parsed)
+                        ideas = parsed.get("niche_ideas")
                         if not isinstance(ideas, list):
                             raise ValueError("missing ideas")
                         outcome.status = "completed" if ideas else "abstained"
                         outcome.reason = ""
                     except ValueError:
                         outcome.status = "invalid_output"
-                        outcome.reason = "invalid_idea_envelope"
+                        outcome.reason = (
+                            "invalid_passage_contract" if registry else "invalid_idea_envelope"
+                        )
                     return outcome
                 for tc in calls:
                     try:
@@ -487,7 +503,9 @@ class KimiToolAgent:
                             "tool_call_id": tc.id,
                             # Sources are already excerpt-bounded. Do not truncate
                             # JSON or a source ID/quote after recording its hash.
-                            "content": json.dumps(result),
+                            "content": json.dumps(
+                                registry.tool_result(result) if registry else result
+                            ),
                         }
                     )
                 finalize_next = tool_calls_made >= _MAX_TOOL_CALLS
@@ -518,6 +536,7 @@ class KimiToolAgent:
 def _source_packet_finalization(
     initial_messages: list[dict[str, Any]],
     outcome: DiscoveryOutcome,
+    registry: PassageRegistry | None = None,
 ) -> list[dict[str, Any]]:
     """CL-lu3d: new conversation, all observed facts, no orphaned tool turns.
 
@@ -548,6 +567,10 @@ def _source_packet_finalization(
             seen.add(identity)
             tool_results.append(entry)
     packet = {"sources": [s.to_dict() for s in outcome.sources], "tool_results": tool_results}
+    if registry is not None:
+        # Same registry preserves labels across the context transition. The
+        # ordinary pre-request character guard still bounds this full packet.
+        packet["passage_sources"] = registry.render(outcome.sources)
     return copy.deepcopy(initial_messages) + [
         {
             "role": "user",

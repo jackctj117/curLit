@@ -39,6 +39,7 @@ that A/B (and the other book's eligibility query).
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 from collections.abc import Callable
@@ -50,6 +51,12 @@ from typing import Any
 from sqlalchemy import text
 
 from src.events.prices import parse_ts
+from src.execution.alpaca_asset_eligibility import (
+    AssetEligibility,
+    AssetNotFoundError,
+    EligibilityStatus,
+    assess_asset,
+)
 from src.execution.alpaca_equity import AlpacaEquityClient
 from src.execution.alpaca_exposure import (
     ExposureUnavailableError,
@@ -281,6 +288,8 @@ def execute_pending_equities(
         "skipped_price_too_high": 0,
         "skipped_concentration": 0,
         "blocked_exposure": 0,
+        "blocked_eligibility": 0,
+        "skipped_unsupported_asset": 0,
         "no_price": 0,
         "misaligned": 0,
         "entry_delayed": 0,
@@ -377,6 +386,70 @@ def execute_pending_equities(
             counts["entry_delayed"] += 1
             continue
         try:
+            try:
+                eligibility = assess_asset(
+                    client.get_asset(ticker), ticker, short=side == SIDE_SHORT, now=now
+                )
+            except AssetNotFoundError:
+                # An earlier submission may have succeeded before a DB crash.
+                # Do not replace an unresolved original order with a terminal
+                # eligibility skip just because today's asset lookup is 404.
+                try:
+                    prior = client.get_order_by_client_id(f"curlit-eq-{idea['idea_id']}")
+                    eligibility = AssetEligibility(
+                        EligibilityStatus.UNSUPPORTED
+                        if prior is None
+                        else EligibilityStatus.UNAVAILABLE,
+                        ticker,
+                        now,
+                        reason="broker_asset_not_found"
+                        if prior is None
+                        else "existing_order_requires_reconciliation",
+                    )
+                except Exception as exc:
+                    eligibility = AssetEligibility(
+                        EligibilityStatus.UNAVAILABLE,
+                        ticker,
+                        now,
+                        reason=f"original_order_lookup_{type(exc).__name__}",
+                    )
+            except Exception as exc:
+                eligibility = AssetEligibility(
+                    EligibilityStatus.UNAVAILABLE, ticker, now, reason=type(exc).__name__
+                )
+            if not eligibility.eligible:
+                detail = {
+                    "status": eligibility.status.value,
+                    "symbol": ticker,
+                    "asset_id": eligibility.asset_id,
+                    "exchange": eligibility.exchange,
+                    "checked_at": now.isoformat(),
+                    "reason": eligibility.reason,
+                    "broker_base": getattr(client, "base", "unknown"),
+                    "reevaluation": "operator_review_new_expression"
+                    if eligibility.status == EligibilityStatus.UNSUPPORTED
+                    else "next_cycle",
+                }
+                if eligibility.status == EligibilityStatus.UNSUPPORTED:
+                    # Durable per-idea expression skip, not deletion of research.
+                    # Never classify a POST/422 or timeout as asset-not-found.
+                    _record(
+                        engine,
+                        {
+                            **base_skip,
+                            "status": "skipped_unsupported_asset",
+                            "detail": json.dumps(detail, sort_keys=True),
+                        },
+                    )
+                    counts["skipped_unsupported_asset"] += 1
+                else:
+                    counts["blocked_eligibility"] += 1
+                with LogContext(intent_id=str(idea["idea_id"]), symbol=ticker):
+                    logger.warning(
+                        "alpaca equity: entry blocked by broker eligibility",
+                        extra={"extra_data": detail},
+                    )
+                continue
             price = fetch(ticker)
             if not price or price <= 0:
                 counts["no_price"] += 1

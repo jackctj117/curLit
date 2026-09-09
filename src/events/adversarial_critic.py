@@ -222,7 +222,6 @@ class AdversarialCritic:
         as_of = as_of or datetime.now(UTC)
         verdicts = self.critique(ideas, event_row) if self.enabled else {}
         survivors: list[Any] = []
-        dropped = 0
         for idea in ideas:
             idea.review_provenance = {
                 "requested_model": self.model,
@@ -278,7 +277,6 @@ class AdversarialCritic:
             idea.review_reason = v.strongest_attack or "evidence_incomplete"
             idea.red_team_note = v.strongest_attack
             if status == "contradicted":
-                dropped += 1
                 idea.dropped_reason = "evidence_contradicted"
                 logger.info(
                     "red-team: REFUTED %s (%s) — %s",
@@ -293,11 +291,23 @@ class AdversarialCritic:
             if v.adjusted_confidence is not None:
                 idea.confidence = min(idea.confidence, v.adjusted_confidence)
             survivors.append(idea)
+        statuses = ("supported", "contradicted", "insufficient_evidence", "review_unavailable")
+        status_counts = {
+            status: sum(i.review_status == status for i in ideas) for status in statuses
+        }
+        status_counts["unreviewed"] = sum(i.review_status not in statuses for i in ideas)
         logger.info(
-            "red-team: event id=%s — %d critiqued, %d survived, %d refuted",
+            "red-team: event id=%s review_statuses=%s retained_research_leads=%d "
+            "research_eligible=%d (retention is not approval)",
             event_row.get("id"),
-            len(ideas),
+            status_counts,
             len(survivors),
-            dropped,
+            sum(bool(getattr(i, "research_eligible", False)) for i in ideas),
+            extra={
+                "extra_data": {
+                    "review_status_counts": status_counts,
+                    "retained_research_leads": len(survivors),
+                }
+            },
         )
         return ideas if not verdicts else survivors

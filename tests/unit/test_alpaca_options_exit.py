@@ -166,6 +166,21 @@ def _idea_status(engine, idea_id):
         ).scalar()
 
 
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize("held", [False, True])
+def test_shared_contract_never_consumes_another_rows_position(engine, reverse, held):
+    rows = [("old", "submitted"), ("new", None)]
+    for idea_id, exit_status in reversed(rows) if reverse else rows:
+        _seed(engine, idea_id, exit_status=exit_status, submitted_at="2026-07-01")
+    before = {idea_id: _row(engine, idea_id) for idea_id, _ in rows}
+    client = _FakeClient(positions=[_pos()] if held else [])
+    counts = manage_option_exits(engine, client, now=NOW)
+    assert client.orders == []
+    assert {idea_id: _row(engine, idea_id) for idea_id, _ in rows} == before
+    assert all(_idea_status(engine, idea_id) == "pending" for idea_id, _ in rows)
+    assert counts["reconciliation_required"] == 2
+
+
 # --------------------------------------------------------------------------- #
 # occ parsing
 # --------------------------------------------------------------------------- #

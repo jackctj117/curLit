@@ -212,6 +212,22 @@ def _row(engine, idea_id):
         )
 
 
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize("held", [False, True])
+def test_shared_symbol_never_consumes_another_rows_position(engine, reverse, held):
+    rows = [("old", "submitted"), ("new", None)]
+    for idea_id, exit_status in reversed(rows) if reverse else rows:
+        _seed(engine, idea_id, exit_status=exit_status, submitted_at="2026-07-01")
+    before = {idea_id: _row(engine, idea_id) for idea_id, _ in rows}
+    client = _FakeClient(positions=[_pos()] if held else [])
+    counts = manage_equity_exits(engine, client, now=NOW)
+    # One broker net position is not two independently owned allocations. No
+    # first-row aggregate sale and no second-row invented external closure.
+    assert client.orders == []
+    assert {idea_id: _row(engine, idea_id) for idea_id, _ in rows} == before
+    assert counts["reconciliation_required"] == 2
+
+
 # --------------------------------------------------------------------------- #
 # signed P&L — the short book must never be judged by long-side signs
 # --------------------------------------------------------------------------- #

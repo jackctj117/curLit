@@ -58,6 +58,66 @@ def _event() -> dict[str, Any]:
     return {"id": 1, "headline": "rare-earth ban", "theme": "sanctions_trade"}
 
 
+def test_summary_counts_review_statuses_without_calling_retained_leads_approved(
+    caplog, monkeypatch
+):
+    from datetime import UTC, datetime
+
+    from src.events.adversarial_critic import CritiqueVerdict
+    from src.events.research_evidence import SourceDocument
+
+    ideas = [_idea(ticker) for ticker in ("AAA", "BBB", "CCC", "DDD")]
+    documents = {
+        i.ticker: SourceDocument(
+            i.ticker,
+            "https://example.org/filing",
+            "2026-09-01T00:00:00Z",
+            "2026-09-08T00:00:00Z",
+            "Captured evidence",
+            "Item 1",
+        )
+        for i in ideas
+    }
+    for idea in ideas:
+        idea.sources = [documents[idea.ticker]]
+        idea.evidence_status = "source_backed"
+    critic = AdversarialCritic(client=MockLLMClient("{}"), enabled=True)
+    verdicts = {
+        "AAA": CritiqueVerdict(
+            "AAA",
+            "supported",
+            "Evidence supports",
+            None,
+            True,
+            ((documents["AAA"].source_id, "Captured evidence"),),
+        ),
+        "BBB": CritiqueVerdict(
+            "BBB",
+            "contradicted",
+            "Fatal counterfact",
+            None,
+            True,
+            ((documents["BBB"].source_id, "Captured evidence"),),
+        ),
+        "CCC": CritiqueVerdict("CCC", "insufficient_evidence", "Missing exposure", None, True),
+    }
+    monkeypatch.setattr(critic, "critique", lambda *args: verdicts)
+    with caplog.at_level("INFO"):
+        retained = critic.apply(ideas, _event(), as_of=datetime(2026, 9, 9, tzinfo=UTC))
+    assert [i.ticker for i in retained] == ["AAA", "CCC", "DDD"]
+    summaries = [r for r in caplog.records if hasattr(r, "extra_data")]
+    assert summaries[-1].extra_data["review_status_counts"] == {
+        "supported": 1,
+        "contradicted": 1,
+        "insufficient_evidence": 1,
+        "review_unavailable": 1,
+        "unreviewed": 0,
+    }
+    assert "survived" not in summaries[-1].getMessage()
+    assert "retention is not approval" in summaries[-1].getMessage()
+    assert all(not i.research_eligible for i in retained)  # Liquidity remains unknown.
+
+
 # --------------------------------------------------------------------------- #
 # critique parse
 # --------------------------------------------------------------------------- #

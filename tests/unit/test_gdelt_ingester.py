@@ -29,6 +29,261 @@ START = datetime(2026, 7, 14, 9, 0, tzinfo=UTC)
 END = datetime(2026, 7, 14, 10, 0, tzinfo=UTC)
 
 
+@pytest.fixture
+def bounded_ingester(sqlite_db_url, playbooks_yaml):
+    ingester = GdeltIngester(sqlite_db_url, playbooks_path=playbooks_yaml)
+    from migrations.run import _strip_sql_comments
+
+    migration = _strip_sql_comments(Path("migrations/021_gdelt_ingest_cursors.sql").read_text())
+    with ingester.engine.begin() as conn:
+        for stmt in migration.split(";"):
+            if stmt.strip():
+                conn.execute(text(stmt))
+    return ingester
+
+
+class _Clock:
+    def __init__(self):
+        self.value = END.timestamp()
+
+    def now(self):
+        return self.value
+
+    def sleep(self, seconds):
+        self.value += seconds
+
+
+def _cursor(ingester, theme):
+    with ingester.engine.connect() as conn:
+        return json.loads(
+            conn.execute(
+                text("SELECT payload FROM gdelt_ingest_cursors WHERE theme=:theme"),
+                {"theme": theme},
+            ).scalar_one()
+        )
+
+
+def test_bounded_429_yields_without_sleep_and_retry_survives_restart(bounded_ingester):
+    from src.data.gdelt_bounded import GdeltRead, run_slice
+
+    clock = _Clock()
+    calls = []
+
+    def read(query, start, end, timeout, limit):
+        calls.append(query)
+        return GdeltRead("rate_limited", retry_after=120)
+
+    kwargs = dict(read=read, wall_clock=clock.now, monotonic=clock.now, sleep=clock.sleep)
+    result = run_slice(bounded_ingester, START, END, **kwargs)
+    assert result["attempted"] == 1 and clock.value == END.timestamp()
+    first = _cursor(bounded_ingester, "theme_a")
+    assert first["status"] == "rate_limited" and "covered_until" not in first
+    assert first["window_start"] == START.isoformat()
+    # A new object is subject to the persisted source-wide Retry-After too.
+    again = run_slice(bounded_ingester, START, END, **kwargs)
+    assert again["attempted"] == 0 and len(calls) == 1
+    clock.sleep(121)
+    run_slice(bounded_ingester, START, END, **kwargs)
+    assert "opec" in calls[1]  # Deferred later themes are not starved.
+
+
+def test_bounded_requests_share_one_total_deadline(bounded_ingester):
+    from src.data.gdelt_bounded import GdeltRead, run_slice
+
+    clock = _Clock()
+    timeouts = []
+
+    def read(query, start, end, timeout, limit):
+        timeouts.append(timeout)
+        clock.sleep(timeout)
+        return GdeltRead("ReadTimeout")
+
+    result = run_slice(
+        bounded_ingester,
+        START,
+        END,
+        budget_sec=35,
+        read=read,
+        wall_clock=clock.now,
+        monotonic=clock.now,
+        sleep=clock.sleep,
+    )
+    assert timeouts == [30, 5]
+    assert clock.value == END.timestamp() + 35 and result["completed"] == 0
+
+
+def test_failed_persistence_keeps_pending_window_not_success(bounded_ingester, monkeypatch):
+    from src.data.gdelt_bounded import GdeltRead, run_slice
+
+    def fail(df):
+        raise RuntimeError("fixture database write failure")
+
+    monkeypatch.setattr(bounded_ingester, "upsert", fail)
+    with pytest.raises(RuntimeError, match="database write failure"):
+        run_slice(
+            bounded_ingester,
+            START,
+            END,
+            read=lambda *args: GdeltRead(
+                "success", [_article("https://example.org/a", "Headline")]
+            ),
+        )
+    state = _cursor(bounded_ingester, "theme_a")
+    assert state["status"] == "pending" and "covered_until" not in state
+    assert _cursor(bounded_ingester, "_source")["lease_owner"] is None
+
+
+def test_result_cap_cannot_advance_coverage(bounded_ingester):
+    from src.data.gdelt_bounded import GdeltRead, run_slice
+
+    clock = _Clock()
+    bounded_ingester.provider.max_records = 1
+    run_slice(
+        bounded_ingester,
+        START,
+        END,
+        budget_sec=1,
+        read=lambda *args: GdeltRead("success", [_article("https://example.org/a", "Headline")]),
+        wall_clock=clock.now,
+        monotonic=clock.now,
+        sleep=clock.sleep,
+    )
+    state = _cursor(bounded_ingester, "theme_a")
+    assert state["status"] == "result_cap_reached" and "covered_until" not in state
+
+
+def test_second_ingester_cannot_acquire_an_active_source_lease(bounded_ingester):
+    from src.data.gdelt_bounded import GdeltRead, run_slice
+
+    def read(*args):
+        second = run_slice(
+            bounded_ingester, START, END, read=lambda *args: pytest.fail("concurrent request")
+        )
+        assert second["attempted"] == 0
+        return GdeltRead("rate_limited")
+
+    run_slice(bounded_ingester, START, END, read=read)
+
+
+def test_pipeline_still_assesses_stored_events_during_gdelt_429(
+    bounded_ingester, sqlite_db_url, playbooks_yaml, monkeypatch
+):
+    from types import SimpleNamespace
+
+    from scripts import event_pipeline as ep
+
+    from src.data import gdelt_bounded
+    from src.events import impact_agent
+
+    with bounded_ingester.engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO geo_events (seen_at,source,external_id,headline,status,status_updated_at) VALUES (:now,'fixture','queued','Existing event','NEW',:now)"
+            ),
+            {"now": END.isoformat()},
+        )
+
+    async def limited(*args):
+        return gdelt_bounded.GdeltRead("rate_limited", retry_after=120)
+
+    assessed = []
+
+    def assess_existing(**kwargs):
+        # Stub only the assessment decision boundary; use the real queued row.
+        with bounded_ingester.engine.begin() as conn:
+            assessed.extend(
+                conn.execute(
+                    text("SELECT external_id FROM geo_events WHERE status='NEW'")
+                ).scalars()
+            )
+            conn.execute(text("UPDATE geo_events SET status='ASSESSED' WHERE external_id='queued'"))
+        return []
+
+    monkeypatch.setattr(gdelt_bounded, "fetch_once", limited)
+    monkeypatch.setattr(ep, "build_db_url", lambda: sqlite_db_url)
+    monkeypatch.setattr(
+        impact_agent,
+        "EventImpactAgent",
+        lambda **kwargs: SimpleNamespace(assess_new_events=assess_existing),
+    )
+    monkeypatch.setattr(ep, "_enrich_and_persist", lambda *args: ({}, {}))
+    args = ep._build_parser().parse_args(
+        ["--ingest", "--assess", "--once", "--playbooks", str(playbooks_yaml)]
+    )
+    args.niche = args.digest = args.poly = args.scan = False
+    ep._cycle(args)
+    assert assessed == ["queued"]
+    assert _cursor(bounded_ingester, "theme_a")["status"] == "rate_limited"
+
+
+@pytest.mark.parametrize(
+    "payload,expected",
+    [
+        ("upstream error", "invalid_json"),
+        ("{}", "invalid_articles"),
+        ('{"articles":[]}', "success"),
+        ('{"articles":[{}]}', "invalid_articles"),
+        (
+            '{"articles":[{"url":"https://example.org","title":"News","seendate":"bad"}]}',
+            "invalid_article_date",
+        ),
+    ],
+)
+def test_bounded_http_distinguishes_empty_news_from_failed_ingestion(
+    monkeypatch, payload, expected
+):
+    import asyncio
+
+    import httpx
+
+    from src.data import gdelt_bounded
+
+    original = httpx.AsyncClient
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, text=payload))
+    monkeypatch.setattr(
+        gdelt_bounded.httpx, "AsyncClient", lambda **kwargs: original(transport=transport, **kwargs)
+    )
+    assert asyncio.run(gdelt_bounded.fetch_once("query", START, END, 1, 50)).status == expected
+
+
+def test_bounded_http_honors_retry_after_without_waiting(monkeypatch):
+    import asyncio
+
+    import httpx
+
+    from src.data import gdelt_bounded
+
+    original = httpx.AsyncClient
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(429, headers={"Retry-After": "120"})
+    )
+    monkeypatch.setattr(
+        gdelt_bounded.httpx, "AsyncClient", lambda **kwargs: original(transport=transport, **kwargs)
+    )
+    result = asyncio.run(gdelt_bounded.fetch_once("query", START, END, 1, 50))
+    assert result.status == "rate_limited" and result.retry_after == 120
+
+
+def test_bounded_http_outer_deadline_cancels_a_stalled_response(monkeypatch):
+    import asyncio
+
+    import httpx
+
+    from src.data import gdelt_bounded
+
+    async def stalled(request):
+        await asyncio.sleep(1)
+        return httpx.Response(200, json={"articles": []})
+
+    original = httpx.AsyncClient
+    transport = httpx.MockTransport(stalled)
+    monkeypatch.setattr(
+        gdelt_bounded.httpx, "AsyncClient", lambda **kwargs: original(transport=transport, **kwargs)
+    )
+    result = asyncio.run(gdelt_bounded.fetch_once("query", START, END, 0.01, 50))
+    assert result.status == "TimeoutError"
+
+
 # ---------------------------------------------------------------------- #
 # fixtures
 # ---------------------------------------------------------------------- #

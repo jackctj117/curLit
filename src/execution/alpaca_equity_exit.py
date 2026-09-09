@@ -53,6 +53,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -63,6 +64,7 @@ from sqlalchemy import text
 from src.execution.alpaca_equity import AlpacaEquityClient
 from src.execution.alpaca_equity_executor import SIDE_SHORT
 from src.execution.alpaca_options_executor import _is_duplicate_client_order_id
+from src.monitoring.logging_setup import LogContext
 
 logger = logging.getLogger(__name__)
 
@@ -478,6 +480,7 @@ def manage_equity_exits(
         "recovered": 0,
         "error": 0,
         "market_closed": 0,
+        "reconciliation_required": 0,
     }
 
     # Closing orders are market orders too — rejected outside regular hours.
@@ -493,9 +496,26 @@ def manage_equity_exits(
         counts["error"] += 1
         return counts
 
-    for row in _fetch_open_rows(engine):
+    rows = _fetch_open_rows(engine)
+    owners = Counter(str(row.get("ticker") or "").upper() for row in rows)
+    for row in rows:
         idea_id = str(row["idea_id"])
         ticker = str(row.get("ticker") or "").upper()
+        if owners[ticker] > 1:
+            # CL-qz3f: pop() used to let the first row consume the net broker
+            # position, falsely finalizing the second as closed_external. Nor
+            # may either row close the aggregate inventory. Keep every row
+            # unchanged until fill-backed ownership is reconciled (CL-0deu.3).
+            positions.pop(ticker, None)  # Classified ambiguous, not unmatched.
+            counts["reconciliation_required"] += 1
+            with LogContext(intent_id=idea_id, symbol=ticker):
+                logger.warning(
+                    "equity exit: shared-symbol allocation unresolved; no order or status change",
+                    extra={
+                        "extra_data": {"reason": "ambiguous_allocation", "rows": owners[ticker]}
+                    },
+                )
+            continue
         pos = positions.pop(ticker, None)
         try:
             if pos is None:
