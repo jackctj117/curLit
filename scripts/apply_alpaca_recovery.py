@@ -49,6 +49,7 @@ def main() -> int:
     parser.add_argument("--verified-backup", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--restore-equity", action="append", default=[])
+    parser.add_argument("--restore-option", action="append", default=[])
     parser.add_argument("--apply-paper-repair", action="store_true")
     args = parser.parse_args()
     if not args.apply_paper_repair:
@@ -90,7 +91,13 @@ def main() -> int:
         if inventory(client.positions()) != inventory(current["positions_after"]):
             raise RuntimeError("broker inventory changed before repair")
         verify_writers_stopped()
-        result = apply_repairs(engine, baseline, current, restore_equities=set(args.restore_equity))
+        result = apply_repairs(
+            engine,
+            baseline,
+            current,
+            restore_equities=set(args.restore_equity),
+            restore_options=set(args.restore_option),
+        )
         write_private(args.output_dir / "result.json", result)
         print(json.dumps(result, sort_keys=True))
         return 0

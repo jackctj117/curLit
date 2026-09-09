@@ -125,7 +125,15 @@ def close_only_cycle(
     """Reconcile first, permit proven reductions only, and retain unknown attempts."""
     if book not in {"options", "equities"}:
         raise ValueError("unknown book")
-    counts = {"submitted": 0, "held": 0, "blocked": 0, "pending": 0, "closed": 0}
+    counts = {
+        "submitted": 0,
+        "held": 0,
+        "blocked": 0,
+        "pending": 0,
+        "closed": 0,
+        "unmanaged_allocations": 0,
+        "unresolved_allocations": 0,
+    }
     account = evidence.account_scope()
     ledger = Ledger(engine, account)
     # A session-scoped lock survives individual commits but is released on
@@ -156,6 +164,21 @@ def close_only_cycle(
                         ),
                         {"a": account, "b": book},
                     ).mappings()
+                )
+            managed_ids = {row["idea_id"] for row in managed}
+            counts["unmanaged_allocations"] = sum(
+                p["book"] == book
+                and p["allocation"]["signed_quantity"] != 0
+                and p["idea_id"] not in managed_ids
+                for p in eligible.values()
+            )
+            counts["unresolved_allocations"] = sum(
+                p["book"] == book and p["evidence_status"] != "fill_verified" for p in projections
+            )
+            if counts["unmanaged_allocations"] or counts["unresolved_allocations"]:
+                logger.warning(
+                    "Ledger allocations require operator attention",
+                    extra={"extra_data": {"book": book, **counts}},
                 )
             if not trading.is_market_open():
                 return {**counts, "market_closed": 1}

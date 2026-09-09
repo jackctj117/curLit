@@ -370,3 +370,105 @@ def test_account_fence_blocks_other_book_without_broker_reads(ledger_engine):
             assert result["blocked"] == 1
         finally:
             owner.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": lock_key(ACCOUNT)})
+
+
+def option_snapshot(engine):
+    """One original contract; the legacy false closure has no closing execution."""
+    seed(engine)
+    with engine.begin() as conn:
+        conn.execute(text("DELETE FROM alpaca_equity_orders"))
+        conn.execute(
+            text(
+                "INSERT INTO alpaca_option_orders(idea_id,ticker,occ_symbol,opt_type,qty,"
+                "premium_est,alpaca_order_id,status,submitted_at,exit_status,exit_reason,"
+                "exit_premium,pnl_pct,exited_at) VALUES "
+                "('a','ABC','ABC260918C00010000','call',1,100,'order-a','submitted',"
+                ":at,'closed','closed_external',0,-1,:later)"
+            ),
+            {"at": AT, "later": AT + timedelta(days=1)},
+        )
+    opening = order(qty=1)
+    opening.update(client_order_id="curlit-a", asset_class="us_option", symbol="ABC260918C00010000")
+    data = snapshot(engine, [opening])
+    data["activities"]["records"][0]["symbol"] = opening["symbol"]
+    data["positions_before"][0]["symbol"] = opening["symbol"]
+    data["positions_after"][0]["symbol"] = opening["symbol"]
+    data["contracts"] = {
+        opening["symbol"]: {"id": "asset", "symbol": opening["symbol"], "size": "100"}
+    }
+    return data
+
+
+def test_explicit_option_restoration_retains_clock_audit_and_replays(ledger_engine):
+    before = option_snapshot(ledger_engine)
+    result = apply_repairs(
+        ledger_engine, before, before, restore_equities=set(), restore_options={"a"}
+    )
+    assert result["applied"] == 1
+    with ledger_engine.connect() as conn:
+        actual = conn.execute(
+            text("SELECT submitted_at,exit_status,exit_premium,pnl_pct FROM alpaca_option_orders")
+        ).one()
+        assert tuple(actual) == (AT, None, None, None)
+        original = json.loads(
+            conn.execute(text("SELECT before_payload FROM alpaca_ledger_repairs")).scalar_one()
+        )
+        assert original["exit_reason"] == "closed_external"
+        assert original["pnl_pct"] == -1
+        assert (
+            conn.execute(text("SELECT management_enabled FROM alpaca_ledger_allocations")).scalar()
+            is True
+        )
+    current = copy.deepcopy(before)
+    current["internal"] = current["internal_after"] = json.loads(
+        json.dumps(internal_snapshot(ledger_engine), default=str)
+    )
+    repeated = apply_repairs(
+        ledger_engine, before, current, restore_equities=set(), restore_options={"a"}
+    )
+    assert repeated["applied"] == 0 and repeated["replayed"] == 1
+
+
+def test_option_restoration_requires_explicit_matching_approval(ledger_engine):
+    before = option_snapshot(ledger_engine)
+    apply_repairs(ledger_engine, before, before, restore_equities=set())
+    with ledger_engine.connect() as conn:
+        assert (
+            conn.execute(text("SELECT exit_status FROM alpaca_option_orders")).scalar() == "closed"
+        )
+        assert (
+            conn.execute(text("SELECT management_enabled FROM alpaca_ledger_allocations")).scalar()
+            is False
+        )
+    with pytest.raises(ValueError, match="absent"):
+        apply_repairs(
+            ledger_engine, before, before, restore_equities=set(), restore_options={"other"}
+        )
+
+
+def test_unmanaged_option_remains_visible_when_market_closed(ledger_engine, monkeypatch):
+    before = option_snapshot(ledger_engine)
+    monkeypatch.setattr("src.execution.alpaca_ledger_exits.capture", lambda *a, **kw: before)
+
+    class Evidence:
+        def account_scope(self):
+            return ACCOUNT
+
+    class Trading:
+        def is_market_open(self):
+            return False
+
+    from src.execution.alpaca_options_exit import OptionsExitConfig
+
+    counts = close_only_cycle(
+        ledger_engine, Evidence(), Trading(), book="options", cfg=OptionsExitConfig()
+    )
+    assert counts["market_closed"] == 1
+    assert counts["unmanaged_allocations"] == 1
+    assert counts["submitted"] == 0
+    apply_repairs(ledger_engine, before, before, restore_equities=set(), restore_options={"a"})
+    counts = close_only_cycle(
+        ledger_engine, Evidence(), Trading(), book="options", cfg=OptionsExitConfig()
+    )
+    assert counts["unmanaged_allocations"] == 0
+    assert counts["submitted"] == 0

@@ -30,19 +30,25 @@ SELECT_ROWS = {
 
 
 def apply_repairs(
-    engine: Engine, baseline: Record, current: Record, *, restore_equities: set[str]
+    engine: Engine,
+    baseline: Record,
+    current: Record,
+    *,
+    restore_equities: set[str],
+    restore_options: set[str] | None = None,
 ) -> Record:
     """Approved IDs are explicit; cannot adopt a ticker or invent an entry clock."""
     if baseline["account_scope"] != current["account_scope"]:
         raise ValueError("repair account identity changed")
     account = current["account_scope"]
+    approved = {"equities": restore_equities, "options": restore_options or set()}
     old = {(book, row["idea_id"]): row for book in TABLES for row in baseline["internal"][book]}
     latest = {(book, row["idea_id"]): row for book in TABLES for row in current["internal"][book]}
     projections = ingest_snapshot(engine, current)
     eligible = eligible_allocations(projections, current)
     changes = []
     for (book, idea), row in old.items():
-        restoring = book == "equities" and idea in restore_equities
+        restoring = idea in approved[book]
         closing = book == "options" and row.get("exit_status") == "submitted"
         if not restoring and not closing:
             continue
@@ -60,10 +66,10 @@ def apply_repairs(
                 exit_status=None,
                 exit_reason=None,
                 exit_order_id=None,
-                exit_price=None,
                 pnl_pct=None,
                 exited_at=None,
             )
+            after["exit_price" if book == "equities" else "exit_premium"] = None
         else:
             if allocation["signed_quantity"] != 0 or allocation["exit_quantity"] <= 0:
                 raise ValueError("pending exit has not closed its allocation")
@@ -80,8 +86,9 @@ def apply_repairs(
             )
         identity = fingerprint({"account": account, "book": book, "idea": idea, "before": row})
         changes.append((identity, book, idea, row, after))
-    if {idea for _, book, idea, _, _ in changes if book == "equities"} != restore_equities:
-        raise ValueError("approved restoration target absent")
+    for book, ids in approved.items():
+        if not ids.issubset({idea for _, b, idea, _, _ in changes if b == book}):
+            raise ValueError("approved restoration target absent")
     applied = replayed = 0
     logger.info("Applying approved historical corrections with row locks and original-value audit")
     with engine.begin() as conn:
@@ -90,11 +97,7 @@ def apply_repairs(
         for identity, book, idea, before, after in changes:
             # Table identifier selects one of two constants, never external input.
             suffix = " FOR UPDATE" if engine.dialect.name == "postgresql" else ""
-            row = dict(
-                conn.execute(text(SELECT_ROWS[book] + suffix), {"i": idea})
-                .mappings()
-                .one()
-            )
+            row = dict(conn.execute(text(SELECT_ROWS[book] + suffix), {"i": idea}).mappings().one())
             prior = conn.execute(
                 text("SELECT after_payload FROM alpaca_ledger_repairs WHERE repair_id=:r"),
                 {"r": identity},
@@ -116,6 +119,14 @@ def apply_repairs(
                     ),
                     {"i": idea},
                 )
+            elif idea in approved[book]:
+                conn.execute(
+                    text(
+                        "UPDATE alpaca_option_orders SET exit_status=NULL,exit_reason=NULL,"
+                        "exit_order_id=NULL,exit_premium=NULL,pnl_pct=NULL,exited_at=NULL WHERE idea_id=:i"
+                    ),
+                    {"i": idea},
+                )
             else:
                 conn.execute(
                     text(
@@ -124,11 +135,7 @@ def apply_repairs(
                     ),
                     {"i": idea, "p": after["exit_premium"], "at": after["exited_at"]},
                 )
-            actual_after = dict(
-                conn.execute(text(SELECT_ROWS[book]), {"i": idea})
-                .mappings()
-                .one()
-            )
+            actual_after = dict(conn.execute(text(SELECT_ROWS[book]), {"i": idea}).mappings().one())
             conn.execute(
                 text(
                     "INSERT INTO alpaca_ledger_repairs(repair_id,account_scope,book,idea_id,"
@@ -147,13 +154,11 @@ def apply_repairs(
                 },
             )
             applied += 1
-        # Existing active allocations and the explicitly restored seven retain
+        # Existing active allocations and explicitly approved restorations retain
         # management. Other closed/external rows are not automatically adopted.
         for projection in eligible.values():
             row = projection["legacy"]
-            restoring = (
-                projection["book"] == "equities" and projection["idea_id"] in restore_equities
-            )
+            restoring = projection["idea_id"] in approved[projection["book"]]
             if projection["allocation"]["signed_quantity"] == 0 or not (
                 restoring or row.get("exit_status") in {None, "submitted", "unsellable"}
             ):
