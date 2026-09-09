@@ -543,6 +543,69 @@ The final niche-focused suite passed 75 tests, including source/critic/liquidity
 gates through context finalization. Source mypy (225 files), Ruff, and medium/high
 Bandit passed. This is not an assertion that the final local full suite was green.
 
+### Context-v3 pipeline cutover (CL-9lrx)
+
+After CL-lu3d was resolved, source commit `0c824b5` passed hosted CI
+(`34287038969`: unit tests, lint, typecheck) and Security Scan (`34287039084`).
+The paid canaries' source hashes match this release. The encrypted backup and
+additive migration 020 were rechecked before cutover.
+
+At **2026-09-08 22:46:31 UTC**, the completed-cycle guard stopped only
+`gui/501/com.curlit.paper.event-pipeline`, confirmed PID **51644** exited, and
+bootstrapped its existing manifest with the new source marker. The single new
+pipeline writer is PID **58060**, source **`0c824b5`**, still
+`--ingest --assess --loop 900`, with the existing 256-file descriptor limit.
+FX/options/equities PIDs **28922 / 21444 / 21457** were not restarted. No broker
+orders, account resets, trading-limit changes or dependency upgrades were made
+by this rollout procedure.
+
+Two-cycle observation and read-only audit/eligibility verification **passed**;
+CL-9lrx is closed. The first completed cycle,
+at **2026-09-09 02:25:05 UTC**, had four qualifying discoveries and four matching
+independent audit records with verified payload hashes. Events **48603, 48602,
+48593** became EXPIRED during processing: their audits survived and their
+assessment merges were correctly skipped. Event **45679** retained its research
+projection. All four discoveries completed within the original resource caps;
+all eight candidates failed evidence/review eligibility and no niche ledger
+rows were created. Six candidates had malformed claim records; the other two
+contained unknown source IDs or nonmatching passages. **CL-uofe** retains this
+output-contract/citation-quality follow-up; completion is not evidence quality.
+
+The Mac slept during this first observation, confirmed by its power-management
+log and large sample gaps. The unchanged pipeline PID resumed after waking.
+Those sleeping hours are **not** uninterrupted healthy uptime; **CL-cmg9** tracks
+host availability and suspend/resume readiness. No power settings were changed.
+GDELT's pre-existing 429 backoffs also delay ingestion (628 seconds in the first
+new-code cycle), tracked separately in **CL-jk7i**, not attributed to Kimi
+credits or context handling.
+Private evidence is under ignored `data/deployments/2026-09-08_context_v3_*`.
+
+The second cycle completed at **2026-09-09 02:52:48 UTC**. Across both cycles:
+**15 qualifying discoveries = 15 unique hash-verified audits = 15 commit logs**;
+all three changed-event audits survived, and 12 assessment projections were
+present. Every discovery completed, with no abstentions, partial/budget/error
+outcomes in this observed sample. **All 23 candidates remained ineligible** for
+insufficient evidence; all their reviews were `insufficient_evidence`, while
+their liquidity measurements were sufficient. No new niche ledger rows or
+approval-gate violations were found. The critic's legacy "survived" log label
+also includes incomplete research leads; **CL-00c7** tracks replacing that
+misleading summary with explicit status counts.
+
+The 90 logged Kimi requests matched the persisted response traces, using
+516,903 input and 36,234 output tokens in total. Each invocation stayed within
+8 calls, 24 tools, 32,768 requested output tokens and 100,000 message characters;
+the largest observed prompt was 82,159 characters. No live invocation needed
+context compaction in these two cycles: the overflow path was proven by the
+separate exact-boundary paid canary above. Discovery latency was 52.7–184.6
+seconds; costs remain unknown, not zero. The unchanged pipeline PID was verified
+after both cycles, with 66 open descriptors and a sampled peak of 75 against
+the existing 256 limit. This short observation is not a long-duration leak test.
+FX/options/equities process identities remained unchanged. Verification artifact:
+`data/deployments/2026-09-08_context_v3_verified.json`.
+
+This completes the scoped pipeline rollout, **not** CL-uofe's useful-evidence
+evaluation or the broader CL-0deu operational/live-trading readiness gates.
+
 ## 4. Data layer
 
 | Store | Source | Refresh | Notes |
