@@ -33,29 +33,11 @@ from sqlalchemy import create_engine
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.data.db_env import build_db_url  # noqa: E402
+from src.risk.env_config import env_bool as _b  # noqa: E402
+from src.risk.env_config import env_float as _f
+from src.risk.env_config import env_int as _i
 
 logger = logging.getLogger(__name__)
-
-
-def _f(name: str, default: float) -> float:
-    try:
-        return float(os.environ.get(name, default))
-    except ValueError:
-        return default
-
-
-def _i(name: str, default: int) -> int:
-    try:
-        return int(os.environ.get(name, default))
-    except ValueError:
-        return default
-
-
-def _b(name: str, default: bool) -> bool:
-    raw = os.environ.get(name)
-    if raw is None:
-        return default
-    return raw.strip().lower() in ("1", "true", "yes", "on")
 
 
 def _config_from_env():  # noqa: ANN202
@@ -186,17 +168,18 @@ def main(argv: list[str] | None = None) -> int:
         manage_option_exits,
     )
 
-    engine = create_engine(build_db_url())
-    client = AlpacaOptionsClient(key, secret, paper=paper)
     cfg = _config_from_env()
     exit_enabled = _b("ALPACA_OPT_EXIT_ENABLED", default=True)
     exit_cfg = _exit_config_from_env()
+    ledger_close_only = _b("ALPACA_LEDGER_CLOSE_ONLY", default=False)
+    engine = create_engine(build_db_url())
+    client = AlpacaOptionsClient(key, secret, paper=paper)
     logger.info(
         "alpaca options executor: paper=%s policy=%s exit=%s %s", paper, cfg, exit_enabled, exit_cfg
     )
 
     def _run() -> None:
-        if _b("ALPACA_LEDGER_CLOSE_ONLY", default=False):
+        if ledger_close_only:
             if not paper:
                 raise RuntimeError("Recovery ledger mode is paper-only")
             from src.execution.alpaca_ledger_exits import close_only_cycle  # noqa: PLC0415

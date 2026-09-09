@@ -93,6 +93,11 @@ class EquityExitConfig:
     #: position costs nothing but opportunity, so the net can be loose.
     stale_grace_days: int = 5
 
+    def __post_init__(self) -> None:
+        from src.risk.env_config import validate_execution_config
+
+        validate_execution_config(self)
+
 
 # --------------------------------------------------------------------------- #
 # parsing helpers (DB rows arrive as Decimal from Postgres NUMERIC, str from

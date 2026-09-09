@@ -26,8 +26,10 @@ def _write_yaml(tmp_path: Path, body: str) -> Path:
 
 
 class TestActiveResolution:
-    def test_missing_config_falls_back_to_conservative(self, tmp_path: Path) -> None:
-        out = load_active_profile(tmp_path / "missing.yaml")
+    def test_missing_config_defaults_only_in_explicit_development(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError, match="config missing"):
+            load_active_profile(tmp_path / "missing.yaml")
+        out = load_active_profile(tmp_path / "missing.yaml", allow_development_defaults=True)
         assert out.name == "conservative"
         assert out.sizing.kelly_fraction == 0.25
 
@@ -63,7 +65,7 @@ profiles:
             out = load_active_profile(path)
         assert out.name == "aggressive"
 
-    def test_unknown_profile_falls_back(self, tmp_path: Path) -> None:
+    def test_unknown_profile_refuses_startup(self, tmp_path: Path) -> None:
         path = _write_yaml(
             tmp_path,
             """
@@ -72,8 +74,8 @@ profiles:
   conservative: {}
 """,
         )
-        out = load_active_profile(path)
-        assert out.name == "conservative"
+        with pytest.raises(ValueError, match="unknown profile"):
+            load_active_profile(path)
 
 
 class TestInheritance:
@@ -205,9 +207,9 @@ class TestRealConfig:
         assert out.bias.prefer_polymarket_no is True
 
 
-class TestTypoTolerance:
-    def test_unknown_field_in_section_ignored(self, tmp_path: Path) -> None:
-        # Typo'd keys must not raise; they get silently dropped.
+class TestTypoRejection:
+    def test_unknown_field_in_section_rejected(self, tmp_path: Path) -> None:
+        # CL-0deu.9 intentionally reverses the old unsafe typo-tolerance policy.
         path = _write_yaml(
             tmp_path,
             """
@@ -216,8 +218,8 @@ profiles:
   oops:
     sizing:
       kelly_fraction: 0.3
-      misspelled_field: 99   # should be ignored, not crash
+      misspelled_field: 99   # invalid trading configuration
 """,
         )
-        out = load_active_profile(path)
-        assert out.sizing.kelly_fraction == 0.3
+        with pytest.raises(ValueError, match="sizing: unknown field"):
+            load_active_profile(path)

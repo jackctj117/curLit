@@ -125,6 +125,11 @@ class OptionsExitConfig:
     #: Safety-net margin past the time stop (rule 6).
     stale_grace_days: int = 2
 
+    def __post_init__(self) -> None:
+        from src.risk.env_config import validate_execution_config
+
+        validate_execution_config(self)
+
 
 def occ_expiry(occ_symbol: str | None) -> date | None:
     """Expiration date parsed from an OCC symbol, or None."""

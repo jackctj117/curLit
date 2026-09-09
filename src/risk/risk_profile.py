@@ -13,7 +13,11 @@ audit the active risk settings.
 Override resolution:
   1. ``CURLIT_RISK_PROFILE`` env var (highest priority)
   2. ``active:`` field in configs/risk_profile.yaml
-  3. Hardcoded fallback to "conservative"
+  3. Named "conservative" profile when no explicit selector was supplied.
+
+Unknown names, malformed values and missing trading configuration fail startup.
+An absent file may use built-in defaults only with allow_development_defaults=True
+and no environment override. This is an explicit local-development mode.
 
 Aggressive-only knobs (``bias`` block) are present on the
 aggressive_short profile only — strategies that don't bias their
@@ -23,8 +27,10 @@ signal distributions ignore the field gracefully.
 from __future__ import annotations
 
 import logging
+import math
 import os
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +42,37 @@ logger = logging.getLogger(__name__)
 _DEFAULT_CONFIG_PATH: Path = Path("configs/risk_profile.yaml")
 _FALLBACK_PROFILE: str = "conservative"
 _ENV_OVERRIDE: str = "CURLIT_RISK_PROFILE"
+
+
+def _load_risk_yaml(data: str) -> Any:
+    """Safe parser boundary; reject duplicates before constructing mappings."""
+    loader = yaml.SafeLoader(data)
+    visited: set[int] = set()
+
+    def validate(node: Any) -> None:
+        if id(node) in visited:
+            return  # YAML anchors may share nodes; do not recurse forever.
+        visited.add(id(node))
+        if isinstance(node, yaml.MappingNode):
+            keys = set()
+            for key_node, value_node in node.value:
+                key = loader.construct_object(key_node, deep=True)
+                if not isinstance(key, str) or key in keys:
+                    raise ValueError("risk config: duplicate YAML key or non-string key")
+                keys.add(key)
+                validate(value_node)
+        elif isinstance(node, yaml.SequenceNode):
+            for child in node.value:
+                validate(child)
+
+    try:
+        node = loader.get_single_node()
+        if node is None:
+            return None
+        validate(node)
+        return loader.construct_document(node)
+    finally:
+        loader.dispose()
 
 
 @dataclass(frozen=True)
@@ -112,64 +149,65 @@ class RiskProfile:
 
 def load_active_profile(
     config_path: Path | str = _DEFAULT_CONFIG_PATH,
+    *,
+    allow_development_defaults: bool = False,
 ) -> RiskProfile:
     """Resolve which profile is active + return its parsed config.
 
     Resolution order:
       1. ``CURLIT_RISK_PROFILE`` env var (operator can flip at boot)
       2. ``active:`` field in the YAML
-      3. Hardcoded fallback "conservative"
+      3. Named conservative profile (must exist in the configuration)
 
-    Profile inheritance (``inherits: parent`` on the child) is one-deep;
-    the child's keys override the parent's. Useful for ``aggressive_short``
-    inheriting from ``aggressive``.
+    Profile inheritance is acyclic; child section keys override the parent's.
+    Every declared profile and inheritance chain is validated before selection.
     """
     path = Path(config_path)
     if not path.exists():
+        if not allow_development_defaults or _ENV_OVERRIDE in os.environ:
+            raise ValueError("risk profile config missing; trading startup refused")
         logger.warning(
             "risk profile config not found at %s — using conservative defaults",
             path,
         )
         return _build_profile(_FALLBACK_PROFILE, {})
 
-    raw = yaml.safe_load(path.read_text()) or {}
-    profiles = raw.get("profiles") or {}
+    config_text = path.read_text()
+    raw = _load_risk_yaml(config_text)
+    if not isinstance(raw, dict) or set(raw) - {"active", "profiles"}:
+        raise ValueError("risk config: expected active/profiles mapping; unknown top-level key")
+    profiles = raw.get("profiles")
+    if not isinstance(profiles, dict) or not profiles:
+        raise ValueError("risk config: profiles must be a nonempty mapping")
+    name = os.environ.get(_ENV_OVERRIDE, raw.get("active", _FALLBACK_PROFILE))
+    if not isinstance(name, str) or not name.strip() or name.strip() not in profiles:
+        raise ValueError("risk config: explicitly selected unknown profile")
+    name = name.strip()
+    # Validate every declared profile, including inactive sections. A child must
+    # not mask a malformed parent setting with an apparently valid override.
+    for profile_name, spec in profiles.items():
+        if not isinstance(profile_name, str) or not profile_name or not isinstance(spec, dict):
+            raise ValueError("risk config: invalid profile name/body")
+        _build_profile(profile_name, {k: v for k, v in spec.items() if k != "inherits"})
 
-    env_override = os.environ.get(_ENV_OVERRIDE, "").strip()
-    name = env_override or raw.get("active") or _FALLBACK_PROFILE
+    def resolve(selected: str, visiting: frozenset[str]) -> dict[str, Any]:
+        if selected in visiting:
+            raise ValueError("risk config: cyclic profile inheritance")
+        spec = dict(profiles[selected])
+        parent = spec.pop("inherits", None)
+        if parent is None and "inherits" not in profiles[selected]:
+            return spec
+        if not isinstance(parent, str) or parent not in profiles:
+            raise ValueError("risk config: inherits from unknown profile")
+        merged = resolve(parent, visiting | {selected})
+        for key, value in spec.items():
+            merged[key] = {**merged.get(key, {}), **value}
+        return merged
 
-    if name not in profiles:
-        logger.warning(
-            "risk profile %r not in config — falling back to %s",
-            name,
-            _FALLBACK_PROFILE,
-        )
-        name = _FALLBACK_PROFILE
-        if name not in profiles:
-            return _build_profile(name, {})
-
-    body = dict(profiles[name])
-    # Resolve one-level inheritance (e.g. aggressive_short inherits aggressive).
-    parent = body.pop("inherits", None)
-    if parent:
-        if parent not in profiles:
-            msg = f"risk profile {name!r} inherits from unknown profile {parent!r}"
-            raise ValueError(msg)
-        merged: dict[str, Any] = dict(profiles[parent])
-        # Per-section deep-merge: child keys override parent keys
-        # within a section, but missing sections fall through to parent.
-        for section, child_val in body.items():
-            if (
-                section in merged
-                and isinstance(merged[section], dict)
-                and isinstance(child_val, dict)
-            ):
-                section_merged = dict(merged[section])
-                section_merged.update(child_val)
-                merged[section] = section_merged
-            else:
-                merged[section] = child_val
-        body = merged
+    # Validate inheritance even on inactive profiles rather than delaying failure.
+    for profile_name in profiles:
+        resolve(profile_name, frozenset())
+    body = resolve(name, frozenset())
 
     profile = _build_profile(name, body)
     logger.info(
@@ -179,6 +217,13 @@ def load_active_profile(
         profile.sizing.max_position_pct,
         profile.kill_switches.daily_loss_limit_pct,
         profile.kill_switches.drawdown_limit_pct,
+        extra={
+            "extra_data": {
+                "effective_risk_profile": asdict(profile),
+                "config_sha256": sha256(config_text.encode()).hexdigest(),
+                "selected_by": "environment" if _ENV_OVERRIDE in os.environ else "configuration",
+            }
+        },
     )
     return profile
 
@@ -188,15 +233,51 @@ def _build_profile(name: str, body: dict[str, Any]) -> RiskProfile:
     sections fall back to the dataclass defaults (which equal the
     conservative values)."""
 
-    def _sub(key: str, cls: type) -> Any:
-        block = body.get(key) or {}
+    sections = {"sizing", "kill_switches", "strategy_gates", "holding", "bias"}
+    if not isinstance(body, dict) or set(body) - sections:
+        raise ValueError("risk profile: unknown section")
+
+    def _sub(key: str, cls: type[Any]) -> Any:
+        block = body.get(key, {})
         if not isinstance(block, dict):
-            block = {}
-        # Only keep fields the dataclass actually accepts — defends
-        # against typo'd keys in the YAML.
-        valid = {f for f in cls.__dataclass_fields__}  # type: ignore[attr-defined]
-        clean = {k: v for k, v in block.items() if k in valid}
-        return cls(**clean)
+            raise ValueError(f"risk profile.{key}: expected mapping")
+        defaults = vars(cls())
+        if set(block) - set(defaults):
+            raise ValueError(f"risk profile.{key}: unknown field")
+        for field_name, value in block.items():
+            path = f"risk profile.{key}.{field_name}"
+            default = defaults[field_name]
+            if type(default) is bool:
+                if type(value) is not bool:
+                    raise ValueError(path + ": expected boolean")
+                continue
+            if type(value) not in (int, float) or not math.isfinite(value):
+                raise ValueError(path + ": expected finite number, not string/bool")
+            if type(default) is int and type(value) is not int:
+                raise ValueError(path + ": expected integer")
+            # Unitless fractions/correlations are mathematically bounded, not
+            # strategy tuning. Negative loss thresholds use the documented sign.
+            if field_name in {"daily_loss_limit_pct", "drawdown_limit_pct"}:
+                valid = -1 <= value < 0
+            elif key == "sizing" or field_name in {
+                "trailing_stop_pct",
+                "open_position_corr_threshold",
+                "min_r_squared",
+            }:
+                valid = 0 <= value <= 1
+            elif field_name == "paper_relevance_floor":
+                valid = 0 <= value <= 10  # Existing research relevance score scale.
+            elif field_name == "open_position_corr_lookback_days":
+                valid = value >= 2  # Correlation needs at least two observations.
+            elif key == "bias":
+                valid = True  # Signed multipliers, including zero/-1, are documented.
+            elif field_name == "trailing_stop_cooldown_days":
+                valid = value >= 0
+            else:
+                valid = value > 0
+            if not valid:
+                raise ValueError(path + ": outside permitted range")
+        return cls(**block)
 
     return RiskProfile(
         name=name,

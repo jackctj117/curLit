@@ -131,6 +131,9 @@ class EquityExecConfig:
     allow_short: bool = True
 
     def __post_init__(self) -> None:
+        from src.risk.env_config import validate_execution_config
+
+        validate_execution_config(self)
         for name in ("max_positions_per_ticker", "max_per_day", "max_per_hour"):
             require_positive_int(name, getattr(self, name), allow_zero=True)
         if (

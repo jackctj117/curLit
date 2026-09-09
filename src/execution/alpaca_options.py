@@ -69,6 +69,11 @@ class ContractSelectionConfig:
     #: How far (± fraction) around the target strike to search.
     strike_window: float = 0.10
 
+    def __post_init__(self) -> None:
+        from src.risk.env_config import validate_execution_config
+
+        validate_execution_config(self)
+
 
 def parse_moneyness(text: str | None, default: float) -> float:
     m = _MONEYNESS_RE.search(text or "")

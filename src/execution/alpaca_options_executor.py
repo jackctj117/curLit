@@ -175,6 +175,11 @@ class OptionsExecConfig:
     min_alignment: float = -0.4
 
     def __post_init__(self) -> None:
+        from src.risk.env_config import validate_execution_config
+
+        validate_execution_config(self)
+        if not isinstance(self.selection, ContractSelectionConfig):
+            raise ValueError("selection: expected validated ContractSelectionConfig")
         require_positive_int("qty", self.qty)
         for name in (
             "max_contracts_per_symbol",

@@ -146,10 +146,13 @@ def test_entry_queries_bind_confidence(
     execute = engine.connect.return_value.__enter__.return_value.execute
     execute.return_value = []
     cfg = OptionsExecConfig() if book == "options" else EquityExecConfig()
-    # Deliberately bypass static typing at the configuration input boundary.
+    # CL-0deu.9 adds a constructor gate; independently retain the SQL-binding
+    # oracle for a forged/deserialized object that bypasses that first defense.
     payload = "0; DROP TABLE trade_ideas; --"
-    cfg = replace(cfg, min_confidence=payload, require_niche=require_niche,
-                  require_red_team=require_red_team)
+    with pytest.raises(ValueError, match="min_confidence"):
+        replace(cfg, min_confidence=payload)
+    cfg = replace(cfg, require_niche=require_niche, require_red_team=require_red_team)
+    object.__setattr__(cfg, "min_confidence", payload)
     if isinstance(cfg, OptionsExecConfig):
         option_ideas(engine, cfg)
     else:

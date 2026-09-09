@@ -709,7 +709,9 @@ profiles:
       open_position_corr_threshold: 0.5
       open_position_corr_lookback_days: 10
 """)
-        with patch.dict(os.environ, {"CURLIT_RISK_PROFILE": ""}):
+        # CL-0deu.9: an explicitly empty profile is invalid, not an unset override.
+        with patch.dict(os.environ):
+            os.environ.pop("CURLIT_RISK_PROFILE", None)
             profile = load_active_profile(yaml_path)
         ks = profile.kill_switches
         assert ks.trailing_stop_pct == 0.33
