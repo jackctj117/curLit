@@ -42,7 +42,7 @@ def internal_snapshot(engine: Engine) -> dict[str, Any]:
         conn.execute(text("SET TRANSACTION READ ONLY"))
         # Keep a stalled audit from holding a production snapshot indefinitely.
         conn.execute(text("SET LOCAL statement_timeout = '15s'"))
-        return {
+        books = {
             "options": [
                 dict(r._mapping)
                 for r in conn.execute(
@@ -59,8 +59,18 @@ def internal_snapshot(engine: Engine) -> dict[str, Any]:
                     )
                 )
             ],
+        }
+        referenced = sorted({r["idea_id"] for rows in books.values() for r in rows})
+        return {
+            **books,
             "idea_ids": [
-                r[0] for r in conn.execute(text("SELECT idea_id FROM trade_ideas ORDER BY idea_id"))
+                r[0]
+                for r in conn.execute(
+                    text(
+                        "SELECT idea_id FROM trade_ideas WHERE idea_id=ANY(:ids) ORDER BY idea_id"
+                    ),
+                    {"ids": referenced},
+                )
             ],
         }
 

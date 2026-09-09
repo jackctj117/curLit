@@ -373,6 +373,27 @@ def test_account_fence_blocks_other_book_without_broker_reads(ledger_engine):
             owner.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": lock_key(ACCOUNT)})
 
 
+def test_internal_ownership_snapshot_ignores_unrelated_research_but_detects_missing_owner(
+    ledger_engine,
+):
+    seed(ledger_engine)
+    before = internal_snapshot(ledger_engine)
+    with ledger_engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO trade_ideas(idea_id,geo_event_id,ticker,action,created_at,status_updated_at) VALUES ('unrelated',2,'OTHER','long',:at,:at)"
+            ),
+            {"at": AT},
+        )
+    assert internal_snapshot(ledger_engine) == before
+    with ledger_engine.begin() as conn:
+        conn.execute(text("DELETE FROM trade_ideas WHERE idea_id='a'"))
+    after = internal_snapshot(ledger_engine)
+    assert after != before
+    assert after["idea_ids"] == []
+    assert after["equities"] == before["equities"]
+
+
 def aggregate_snapshot(engine):
     seed(engine, "a", 10)
     seed(engine, "b", 5)

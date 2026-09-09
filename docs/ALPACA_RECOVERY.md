@@ -370,3 +370,62 @@ python -m scripts.alpaca_recovery_report --snapshot /private/snapshot.json \
 The operational migration and subsequent reconciliation must be verified
 separately under CL-koeg. Alpaca remains close-only; complete new-entry controls
 and representative research-quality validation are independent gates.
+
+### Accounting cutover evidence
+
+Release `398387b` passed hosted CI 34406115892 and security 34406118095 and
+was pushed to main. The first restore attempt failed because the operator
+command contained a mistyped local image ID; it is not counted as validation.
+The separate `2026-09-09_accounting_backup_verified/` full restore matched all
+42 source table counts. Both Alpaca writers were stopped before migration 023.
+Fresh evidence was matched against the reviewed historical allocations, then
+ingested twice with identical projections. There are **177 allocations, zero
+unresolved projections, 14 historical attribution records and 350 fee records**.
+The historical records conserve $4,886.51 of actual closing cash; they do not
+claim individual fill-price assignments. Original legacy rows were not changed
+and the repair submitted no orders. Proof is in
+`data/deployments/2026-09-09_accounting_applied/`, snapshot hash
+`ed3206cba84cc389c3bdf6d99d1046b72c7dc67ea255dbd8b5d51a5d369429de`.
+
+Options PID 60717 and equities PID 60719 were started close-only. Equities
+completed clean reconciliation; options initially yielded the account fence,
+then a later snapshot was rejected while unrelated research ideas were created.
+CL-evcu narrows ownership-existence checks to recorded orders' originating
+ideas; changed allocations or missing referenced ideas must still block. This
+is a consistency-check correction, not permission to disregard exposure changes.
+
+### Expanded captured research evaluation
+
+Four archived failures (48603, 48602, 48593, 45679) were exported with their
+original audits and tested using Kimi K3 on both output contracts. All eight
+arms completed or abstained within the existing identical limits. The baseline
+produced three candidates with malformed claims; passage references produced
+one structurally valid candidate with backed exposure but missing required
+relationship/catalyst evidence. Both arms had zero fully source-backed or
+eligible candidates. Measured usage was 147,739 input and 11,027 output tokens;
+billed cost remains unknown. No semantic reviewer was run on this comparison.
+
+This is a four-case engineering challenge set, not representative evidence of
+useful discovery or profitability. The original audits omitted the market-data
+receipt timestamp, so reconstructed liquidity remains unknown rather than
+inferred from a prior status. New research records preserve that timestamp for
+future replay. Private evidence is in
+`data/deployments/2026-09-09_quality_failures/`. The passage protocol remains
+opt-in and the running discovery model is unchanged. CL-uofe remains open.
+
+### Strict configuration policy
+
+CL-0deu.9 rejects unknown/duplicate YAML keys, malformed sections, invalid
+selectors, cyclic inheritance, wrong numeric/boolean types and invalid ranges.
+All declared profiles are checked, including inactive parents. Built-in defaults
+for a missing file require explicit `allow_development_defaults=True` and no
+environment selector. Execution environment parsing also rejects invalid values
+instead of replacing them with defaults; documented disable sentinels remain
+valid. Valid shipped profiles and operating thresholds are unchanged.
+
+The earlier tests expecting typo tolerance and unknown-profile fallback were
+intentionally reversed to cover the assigned safety requirement. The separate
+YAML-to-manager test now unsets its environment override rather than supplying
+an invalid empty name; its numerical assertions are unchanged. Passing this
+configuration work does not complete working-order exposure, atomic capacity
+reservations, price-bounded entries or shared cross-path halt acknowledgement.
