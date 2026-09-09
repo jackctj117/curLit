@@ -606,7 +606,7 @@ FX/options/equities process identities remained unchanged. Verification artifact
 This completes the scoped pipeline rollout, **not** CL-uofe's useful-evidence
 evaluation or the broader CL-0deu operational/live-trading readiness gates.
 
-### September 9 recovery development — not deployed
+### September 9 recovery investigation (historical, before cutover)
 
 Read-only broker/DB capture at 15:50:47–50 UTC verified that the six internally
 pending options exit orders are already filled, with matching individual fill
@@ -623,6 +623,45 @@ The running checkout, operational rows and daemon identities were unchanged;
 FX remains PID 28922 with its July 31 start time. **CL-koeg** tracks separately
 approved restoration and per-path rollout. Tests passing is not account repair
 or proof that the research revision produces better ideas.
+
+### September 9 authorized close-only recovery cutover
+
+As of 19:04 UTC, **`adddbe8` is pushed and deployed** to the Alpaca execution
+paths and a fresh FX process. Hosted CI and security passed. A fresh encrypted
+database backup was fully restored in isolation before migrations 021/022 and
+the audited 13-row repair. The six original pending option exits are now
+fill-backed closed; all seven approved equity allocations have original-date
+management restored. The repair itself submitted no orders. FRO subsequently
+closed its verified 22-share allocation, with the actual broker fill reflected
+in the ledger. See [the operational evidence](ALPACA_RECOVERY.md).
+
+Options PID **5004** and equities PID **5006** run
+`ALPACA_LEDGER_CLOSE_ONLY=1`: **no new Alpaca entries**, verified reductions only,
+one writer per path and an account-wide advisory fence. Do not turn this off
+to bypass remaining new-entry lifecycle/reservation work. Six further current
+option allocations with legacy `closed_external` state remain unmanaged pending
+explicit restoration approval (CL-jr3z); historical aggregate overcloses remain
+unresolved (CL-sweu). New reports separate fill-based gross P&L from unknown
+costs/net instead of reusing quote estimates.
+
+FX PID **5365** replaces July 31 PID 28922. OANDA practice was flat with no
+pending orders; startup reconciliation is clean, the aggressive profile is
+unchanged, and the fresh-process manifest's 256 source/config hashes match.
+`CURLIT_START_ENTRY_PAUSED=1` protects startup; monitoring/reconciliation continue
+while entries are paused. The morning digest was separately restarted with
+its daily dedup state preserved. Pipeline PID **6071** replaced PID 58060 only
+after the old cycle completed and its model children exited. The new process
+has release marker `adddbe8`. Its first real GDELT 429 was durably deferred and
+ingestion yielded in **13 seconds**, versus **615 seconds** in the old cycle;
+assessment began at 19:09:40 UTC after the unchanged volume scan. All 16
+incomplete themes remain explicitly deferred, not successfully covered. This
+proves the scheduling path progressed despite upstream throttling; it does not
+prove improved news availability or research quality.
+
+The paid same-capture Kimi baseline/passage comparison both abstained within
+the original bounds. This is an inconclusive research-quality result, not a
+reason to loosen evidence gates; passage references remain opt-in. CL-koeg,
+CL-uofe and the remaining CL-0deu dependencies stay open.
 
 ## 4. Data layer
 

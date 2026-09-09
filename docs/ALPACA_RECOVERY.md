@@ -1,10 +1,12 @@
 # Controlled recovery: evidence before account repair
 
-This development patch is **not deployed**. No operational order, cancellation,
-historical correction, or daemon restart was performed. CL-cojs provides the
-read-only report; CL-0deu.3 still owns the fill ledger and authorized repair.
+The approved **close-only recovery release `adddbe8` is deployed** to Alpaca
+and FX as of September 9, 19:04 UTC. The initial investigation below is retained
+as historical evidence; the operational cutover section records what actually
+changed. CL-koeg remains open for staged verification, and CL-0deu.3 is not a
+claim of complete accounting or new-entry readiness.
 
-## Observed September 9 inventory
+## Initial September 9 inventory (before the approved repair)
 
 GET/SELECT capture at 15:50:47–15:50:50 UTC exhausted the API-visible order and
 activity histories: 317 orders over two requests and 781 activities over nine.
@@ -236,3 +238,83 @@ strict checking of nine new ledger/operator modules, Ruff, workflow actionlint,
 medium/high Bandit and secret scanning pass. CI now also runs the disposable
 recovery integration suite. Publishing, migration application and each daemon's
 verified operational cutover are separate evidence recorded under CL-koeg.
+
+## Authorized operational cutover, September 9
+
+Release `adddbe809453d39fbf504d54f8a8ab48f31ad8b4` was committed, pushed and
+fast-forwarded into the operational checkout after hosted
+[CI 34390896602](https://github.com/jackctj117/curLit/actions/runs/34390896602)
+and [security 34390900171](https://github.com/jackctj117/curLit/actions/runs/34390900171)
+passed. These are actual results, not just added workflow definitions.
+
+Both old Alpaca writers were stopped and verified absent. A second fresh full
+backup was encrypted, restored into a disposable isolated TimescaleDB instance,
+and checked against all 34 table counts from the same exported source snapshot.
+The archive and restore manifest are private under
+`data/deployments/2026-09-09_recovery_cutover_backup/`. The pre-cutover `.env`,
+configuration and persisted strategy/risk clocks also have an encrypted,
+round-trip-verified archive. No paper account was reset.
+
+Migrations 021 and 022 committed together at 18:51 UTC. Fresh broker evidence
+and locked compare-and-swap repair applied **13 corrections**: all six original
+pending option exits now have fill-backed closed dispositions, and all seven
+approved equity allocations have management restored using their original
+dates. Original values remain in `alpaca_ledger_repairs`. The repair submitted
+no orders. Snapshot and result are private under
+`data/deployments/2026-09-09_recovery_applied/`; snapshot hash is
+`c58da7e35f24a99fc29ce2dd9a478124cad837a83a71adbd48ce0d856136d8bd`.
+Closed legacy `pnl_pct` is unknown rather than an estimated realized return.
+
+The replacement options and equity workers are PIDs **5004** and **5006**,
+respectively, using the existing 300-second cadence and persistent
+`ALPACA_LEDGER_CLOSE_ONLY=1`. They reconcile on each cycle and serialize through
+the account advisory fence. New entries remain disabled. FRO's restored
+22-share allocation sold at a broker-confirmed average **$47.39** at
+18:57:50 UTC; its actual fill was subsequently ingested into the ledger.
+This is a verified management/fill cycle, not a claim that all seven holdings
+have already exited. Gross accounting is available; missing costs/net remain
+explicitly unknown.
+
+By 19:12 UTC, DAC's six shares and RTX's four shares also have broker-filled
+orders and zero residual allocations in the ledger. All seven approved
+allocations remain management-enabled; DHT 51, LMT 1, MGA -15 and STNG 12 still
+remain under the original exit policy. A read-only audit confirmed all 13 repair
+records preserved `submitted_at`. No cadence acceleration or forced liquidation
+was used to make the verification finish sooner.
+
+The old July 31 FX writer PID 28922 exited after an explicit entry halt and a
+fresh OANDA-practice check of zero positions, open trades and pending orders.
+Replacement PID **5365** runs the approved release with the unchanged aggressive
+risk profile. Its cold-start reconciliation found zero entries/mismatches;
+all **256** recorded source/configuration hashes match the fresh-process
+manifest `data/runtime_manifests/engine_5365.json`. It starts entry-paused;
+resumption requires separate successful runtime verification. Persisted strategy
+holding clocks were not rewritten. The morning digest was restarted separately,
+retaining today's sent-state, to load fill-ledger reporting without a duplicate
+message.
+
+Further reconciliation identified **six additional current option allocations**
+incorrectly marked `closed_external`: FRO $47, DHT $20/$21, STNG $85 and RTX
+$230/$240 calls, all September 18 expiry, one contract each. These are different
+allocations from the six already-filled exits. Their automatic management is
+**not enabled** pending explicit policy approval and fresh repair safeguards
+(CL-jr3z). Four historical option and two equity aggregate overcloses also
+remain unresolved under CL-sweu. No arbitrary ownership or zero-cost assumption
+was used to make historical reporting appear complete.
+
+Pipeline PID **6071** replaced PID 58060 after the old cycle's completion marker
+and verification that no model child remained. The old cycle spent **614,933 ms**
+on ingestion and **1,214,867 ms** overall. The new process's first GDELT request
+received a real 429, persisted the retry window/status without advancing covered
+history, released its lease and yielded after approximately **13 seconds**.
+It recorded all 16 themes deferred; the unchanged volume scan then finished and
+assessment began at **19:09:40 UTC**. The configured ingestion ceiling is 60
+seconds. This is evidence of reduced scheduling blockage, not increased source
+availability or causal improvement in model output.
+
+Captured account activities include 350 fees: 220 carry execution references
+matching captured fill-ID suffixes; 130 have no such reference. All raw records
+are preserved. CL-z97c tracks validated fee links and visible account-level
+unallocated costs; fully verified per-trade net remains unknown until applicable
+costs can be attributed without arbitrary assumptions. Restoring account
+management and completing historical accounting remain distinct milestones.
