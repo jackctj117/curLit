@@ -28,6 +28,7 @@ import sys
 import time
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -127,8 +128,18 @@ def _newest_x_event(engine) -> datetime | None:  # noqa: ANN001
         return None
 
 
-def run_once(now: datetime | None = None) -> int:
-    """One watchdog cycle. Returns the number of pages sent."""
+def run_once(
+    now: datetime | None = None,
+    *,
+    clock: Any = None,
+    interval_sec: float | None = None,
+) -> int:
+    """One watchdog cycle. Returns the number of pages sent.
+
+    ``clock`` (a :class:`~src.monitoring.host_gap.CycleClock`) and
+    ``interval_sec`` (the loop period) drive host suspend/resume detection
+    (CL-cmg9); both are injectable for tests, sampled live otherwise.
+    """
     from sqlalchemy import create_engine  # noqa: PLC0415
 
     from src.data.db_env import build_db_url  # noqa: PLC0415
@@ -141,11 +152,39 @@ def run_once(now: datetime | None = None) -> int:
         parse_status,
         summarize_state,
     )
+    from src.monitoring.host_gap import (  # noqa: PLC0415
+        GAP_LATENCY,
+        GAP_NONE,
+        MAX_GAP_RECORDS,
+        CycleClock,
+        accumulate_observation,
+        classify_cycle_gap,
+        decide_readiness,
+    )
     from src.research.notifications import notify_operator  # noqa: PLC0415
 
     now = now or datetime.now(UTC)
+    # Sample BOTH clocks first thing (CL-cmg9): the wall-vs-monotonic
+    # difference since the previous cycle is the time this host was asleep.
+    sample = clock or CycleClock(wall=time.time(), mono=time.monotonic(), pid=os.getpid())
     state = _load_state()
     messages: list[str] = []
+    gap = classify_cycle_gap(CycleClock.from_dict(state.get("clock")), sample, interval_sec)
+    if gap.kind == GAP_LATENCY:
+        logger.warning(
+            "health watch: ACTIVE-RUNTIME latency — cycle took %.0fs awake "
+            "(host was not suspended; loop %.0fs)",
+            gap.active_elapsed_sec or 0.0,
+            interval_sec or 0.0,
+        )
+    elif gap.invalidates_readiness:
+        logger.warning(
+            "health watch: host gap %s — wall %.0fs, active %s, suspended %s",
+            gap.kind,
+            gap.wall_elapsed_sec,
+            f"{gap.active_elapsed_sec:.0f}s" if gap.active_elapsed_sec is not None else "n/a",
+            f"{gap.suspended_sec:.0f}s" if gap.suspended_sec is not None else "n/a",
+        )
 
     output = _fleet_status_output()
     if output is not None:
@@ -200,6 +239,30 @@ def run_once(now: datetime | None = None) -> int:
         messages.append(hmsg)
     state["engine_halted"] = is_halted
 
+    # Readiness (CL-cmg9): a suspend/unobserved gap makes it STALE; only a
+    # later awake cycle with fresh evidence — every daemon up, engine state
+    # readable, ingest fresh — restores it. Sleep never counts as observed.
+    fresh_evidence = (
+        output is not None and not state.get("down") and halted is not None and not is_stale
+    )
+    rpages, state["readiness"] = decide_readiness(
+        gap, state.get("readiness"), now, fresh_evidence=fresh_evidence
+    )
+    messages.extend(rpages)
+    state["observation"] = accumulate_observation(state.get("observation"), gap)
+    if gap.kind != GAP_NONE:
+        record = {
+            "at": now.isoformat(),
+            "kind": gap.kind,
+            "wall_sec": round(gap.wall_elapsed_sec, 1),
+            "active_sec": (
+                round(gap.active_elapsed_sec, 1) if gap.active_elapsed_sec is not None else None
+            ),
+            "suspended_sec": round(gap.suspended_sec, 1) if gap.suspended_sec is not None else None,
+        }
+        state["host_gaps"] = [*list(state.get("host_gaps") or []), record][-MAX_GAP_RECORDS:]
+    state["clock"] = sample.to_dict()
+
     sent = 0
     for m in messages:
         result = notify_operator("🩺 Fleet watchdog", m)
@@ -234,7 +297,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             while True:
                 try:
-                    run_once()
+                    run_once(interval_sec=float(args.loop))
                 except Exception:
                     logger.exception("health watch: cycle failed — retrying")
                 time.sleep(args.loop)

@@ -165,4 +165,12 @@ def summarize_state(state: dict[str, Any]) -> str:
     down = sorted((state.get("down") or {}).keys())
     stale = bool(state.get("x_stale"))
     halted = bool(state.get("engine_halted"))
-    return f"down={down or 'none'} x_stale={stale} engine_halted={halted}"
+    # CL-cmg9: host-suspend readiness + observed-vs-wall coverage.
+    readiness = str((state.get("readiness") or {}).get("status") or "ok")
+    obs = state.get("observation") or {}
+    wall = float(obs.get("wall_sec") or 0.0)
+    coverage = f" observed={float(obs.get('active_sec') or 0.0) / wall:.0%}" if wall > 0 else ""
+    return (
+        f"down={down or 'none'} x_stale={stale} engine_halted={halted} "
+        f"readiness={readiness}{coverage}"
+    )
