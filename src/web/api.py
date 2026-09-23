@@ -48,6 +48,7 @@ def set_runtime(
     oms: Any,
     strategies: list[Any],
     kill_switch_manager: Any | None = None,
+    halt_store: Any | None = None,
 ) -> None:
     """Wire the live engine's objects into the module-level runtime.
 
@@ -64,6 +65,27 @@ def set_runtime(
     _runtime["strategies"] = strategies
     if kill_switch_manager is not None:
         _runtime["kill_switch_manager"] = kill_switch_manager
+    # CL-0deu.2: durable account halt store. Same None-preserves rule as the
+    # kill-switch manager — the web task's second set_runtime call omits it.
+    if halt_store is not None:
+        _runtime["halt_store"] = halt_store
+
+
+class HaltRequest(BaseModel):
+    """Body for POST /api/system/halt (CL-0deu.2). All optional so an
+    emergency halt never fails on a missing field."""
+
+    mode: str = "PAUSE_ENTRIES"
+    reason: str | None = None
+    changed_by: str | None = None
+
+
+class ResumeRequest(BaseModel):
+    """Body for POST /api/system/resume. Required once the durable halt is
+    wired: a resume must say who and why (CL-0deu.2)."""
+
+    reason: str | None = None
+    changed_by: str | None = None
 
 
 class TradeRequest(BaseModel):
@@ -326,18 +348,88 @@ def system_status(_: None = Depends(verify_secret)) -> dict[str, Any]:
         "oms_wired": oms is not None,
         "oms_halted": _oms_halted(oms) if oms is not None else True,
         "kill_switch_manager_wired": (_runtime.get("kill_switch_manager") is not None),
+        "account_halt": _account_halt_summary(),
+    }
+
+
+def _account_halt_summary() -> dict[str, Any] | None:
+    """Current durable halt + per-path application, or None when unwired."""
+    store = _runtime.get("halt_store")
+    if store is None:
+        return None
+    try:
+        status = store.application_status()
+    except Exception as exc:
+        # Unreadable state blocks every entry path; say so, never hide it.
+        return {"readable": False, "entries_allowed": False, "error": str(exc)[:300]}
+    return {
+        "readable": True,
+        "mode": status.state.mode.value,
+        "version": status.state.version,
+        "entries_allowed": status.state.entries_allowed,
+        "reason": status.state.reason,
+        "changed_by": status.state.changed_by,
+        "changed_at": status.state.changed_at.isoformat() if status.state.changed_at else None,
+        "applied": status.applied,
+        "paths": status.paths,
     }
 
 
 @app.post("/api/system/halt")
-def halt_system(_: None = Depends(verify_secret)) -> dict[str, Any]:
+def halt_system(req: HaltRequest | None = None, _: None = Depends(verify_secret)) -> dict[str, Any]:
     oms = _require_oms()
+    # Local brake FIRST — it cannot fail and stops FX entries immediately,
+    # even if the durable write below cannot reach the database.
     oms.halt_new_trades()
-    return {"ok": True, "action": "halt", "oms_halted": _oms_halted(oms)}
+    store = _runtime.get("halt_store")
+    if store is not None:
+        from src.risk.trading_halt import HaltMode  # noqa: PLC0415
+
+        body = req or HaltRequest()
+        try:
+            mode = HaltMode(body.mode)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=f"unknown halt mode {body.mode!r}") from exc
+        try:
+            logger.warning("/api/system/halt: recording account halt %s", mode)
+            store.request(
+                mode,
+                reason=body.reason or "operator halt via /api/system/halt",
+                source="api",
+                changed_by=body.changed_by or "api-key-holder",
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            logger.exception("/api/system/halt: durable account halt NOT recorded")
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "FX OMS halted locally, but the account-wide halt could NOT be "
+                    f"recorded ({type(exc).__name__}) — Alpaca books are not covered"
+                ),
+            ) from exc
+    return {
+        "ok": True,
+        "action": "halt",
+        "oms_halted": _oms_halted(oms),
+        "account_halt": _account_halt_summary(),
+    }
+
+
+@app.get("/api/system/halt-status")
+def halt_status(_: None = Depends(verify_secret)) -> dict[str, Any]:
+    """Durable account halt and whether every execution path has applied it."""
+    summary = _account_halt_summary()
+    if summary is None:
+        raise HTTPException(status_code=503, detail="account halt store not wired")
+    return summary
 
 
 @app.post("/api/system/resume")
-def resume_system(_: None = Depends(verify_secret)) -> dict[str, Any]:
+def resume_system(
+    req: ResumeRequest | None = None, _: None = Depends(verify_secret)
+) -> dict[str, Any]:
     """Resume trading AND re-arm the kill switches (CL-8lv6).
 
     ``KillSwitchManager`` dedups each switch to one trigger per UTC day
@@ -349,6 +441,29 @@ def resume_system(_: None = Depends(verify_secret)) -> dict[str, Any]:
     world they are in.
     """
     oms = _require_oms()
+    store = _runtime.get("halt_store")
+    if store is not None:
+        # CL-0deu.2: resume is explicit and attributed, and the DURABLE record
+        # is cleared first — if that fails the OMS stays halted too.
+        body = req or ResumeRequest()
+        if not (body.reason or "").strip() or not (body.changed_by or "").strip():
+            raise HTTPException(
+                status_code=400,
+                detail="resume requires a JSON body with non-empty 'reason' and 'changed_by'",
+            )
+        try:
+            logger.warning(
+                "/api/system/resume: clearing account halt (by %s: %s)",
+                body.changed_by,
+                body.reason,
+            )
+            store.resume(reason=str(body.reason), source="api", changed_by=str(body.changed_by))
+        except Exception as exc:
+            logger.exception("/api/system/resume: durable resume FAILED — staying halted")
+            raise HTTPException(
+                status_code=503,
+                detail=f"account halt could not be cleared ({type(exc).__name__}); still halted",
+            ) from exc
     oms.resume_trades()
     manager = _runtime.get("kill_switch_manager")
     rearmed = False
@@ -370,6 +485,7 @@ def resume_system(_: None = Depends(verify_secret)) -> dict[str, Any]:
         "action": "resume",
         "oms_halted": _oms_halted(oms),
         "kill_switches_rearmed": rearmed,
+        "account_halt": _account_halt_summary(),
     }
     if not rearmed:
         resp["note"] = (

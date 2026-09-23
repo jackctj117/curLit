@@ -74,6 +74,7 @@ from src.execution.alpaca_options_executor import (
     _is_duplicate_client_order_id,
 )
 from src.monitoring.logging_setup import LogContext
+from src.risk.trading_halt import PATH_ALPACA_EQUITIES, TradingHaltStore
 
 logger = logging.getLogger(__name__)
 
@@ -273,6 +274,7 @@ def execute_pending_equities(
     cfg: EquityExecConfig | None = None,
     now: datetime | None = None,
     technicals_fn: Any = None,
+    halt_store: TradingHaltStore | None = None,
 ) -> dict[str, int]:
     """Execute eligible ideas as shares within the caps. Returns a count by
     outcome. Never raises — a per-idea failure is recorded/logged and the loop
@@ -298,9 +300,26 @@ def execute_pending_equities(
         "entry_delayed": 0,
         "error": 0,
         "market_closed": 0,
+        "halted": 0,
+        "halted_at_submit": 0,
     }
 
     # MARKET orders outside regular hours are rejected — don't even try.
+    # Account-wide entry halt (CL-0deu.2). Checked FIRST — before the market
+    # clock — so this path acknowledges a halt even while the market is shut.
+    # The top of a cycle is this single-threaded writer's quiescent point:
+    # every submission of the previous cycle has returned, so an ack here
+    # proves no pre-halt entry of ours is still in flight. Unknown state
+    # blocks (fail closed); exits are managed elsewhere and are unaffected.
+    store = halt_store if halt_store is not None else TradingHaltStore(engine)
+    gate = store.observe(PATH_ALPACA_EQUITIES, now=now)
+    if not gate.allowed:
+        logger.warning(
+            "alpaca equity: entries HALTED (%s) — %s", gate.reason_code, gate.detail or gate.mode
+        )
+        counts["halted"] = 1
+        return counts
+
     if not client.is_market_open():
         logger.info("alpaca equity: market closed — no orders this cycle")
         counts["market_closed"] = 1
@@ -558,6 +577,21 @@ def execute_pending_equities(
             # collide on one idea): a crash after the fill but before the DB
             # row makes the next cycle's resubmit fail Alpaca's uniqueness
             # check, which we recover below as already-executed.
+            # FINAL decision point (CL-0deu.2): re-read the durable halt
+            # immediately before sending new exposure, so a halt that landed
+            # mid-cycle stops this and every later submission. A submit already
+            # past this line is the residual window; it is covered by the next
+            # cycle-start acknowledgement (see application_status).
+            final_gate = store.entry_decision()
+            if not final_gate.allowed:
+                counts["halted_at_submit"] += 1
+                logger.warning(
+                    "alpaca equity: halt observed at submit (%s) — not sending %s; "
+                    "remaining ideas deferred",
+                    final_gate.reason_code,
+                    ticker,
+                )
+                break
             try:
                 logger.info(
                     "alpaca equity: submitting %s entry %d %s [idea %s]",

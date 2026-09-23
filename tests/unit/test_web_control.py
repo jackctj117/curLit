@@ -102,7 +102,9 @@ def test_trade_503_when_unwired(unwired):
 def test_halt_reports_halted_state(oms):
     r = client.post("/api/system/halt", headers=AUTH)
     assert r.status_code == 200
-    assert r.json() == {"ok": True, "action": "halt", "oms_halted": True}
+    # CL-0deu.2 intentionally adds ``account_halt`` to the contract; it is None
+    # when no durable halt store is wired (this OMS-only runtime).
+    assert r.json() == {"ok": True, "action": "halt", "oms_halted": True, "account_halt": None}
     assert oms._halted is True
 
 

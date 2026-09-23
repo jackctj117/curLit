@@ -182,6 +182,16 @@ def main(argv: list[str] | None = None) -> int:
         if ledger_close_only:
             if not paper:
                 raise RuntimeError("Recovery ledger mode is paper-only")
+            # CL-0deu.2: ledger close-only never opens exposure, so an account
+            # halt is inherently applied on this path. Acknowledge it here (the
+            # top of the cycle is quiescent) so halt-status can report it.
+            # observe() never raises; an unreadable record is acked as such.
+            from src.risk.trading_halt import (  # noqa: PLC0415
+                PATH_ALPACA_OPTIONS,
+                TradingHaltStore,
+            )
+
+            TradingHaltStore(engine).observe(PATH_ALPACA_OPTIONS)
             from src.execution.alpaca_ledger_exits import close_only_cycle  # noqa: PLC0415
             from src.execution.alpaca_recovery import PaperEvidenceClient  # noqa: PLC0415
 

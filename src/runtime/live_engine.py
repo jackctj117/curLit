@@ -428,6 +428,16 @@ class LiveEngine:
         rollover so a fired switch can fire again tomorrow after
         ``/api/system/resume``.
         """
+        # CL-0deu.2: acknowledge the durable account halt for the FX path on
+        # every tick, BEFORE any broker call that could raise, so a halt is
+        # reported applied even while the broker is unreachable. The OMS only
+        # writes the ack when no entry placement is in flight.
+        ack = getattr(self.oms, "acknowledge_portfolio_halt", None)
+        if callable(ack):
+            try:
+                ack()
+            except Exception:
+                logger.warning("Health: account-halt acknowledgement failed", exc_info=True)
         account = self.broker.get_account()
         logger.debug("Health: equity=%.2f", account.equity)
         if self.kill_switch_manager is None:

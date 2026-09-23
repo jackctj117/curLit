@@ -83,6 +83,7 @@ class OrderManager:
         rejection_handler: Any | None = None,
         on_strategy_halt: Callable[[str, str], None] | None = None,
         journal: TradeJournal | None = None,
+        halt_store: Any | None = None,
     ) -> None:
         """Construct an OMS.
 
@@ -114,6 +115,16 @@ class OrderManager:
         self._inflight_guard = threading.Lock()
         self._inflight: dict[str, threading.Lock] = {}
         self._halted = False
+        # CL-0deu.2: the DURABLE account-wide halt (src.risk.trading_halt).
+        # ``_halted`` above stays the engine-local brake (kill switches, cold
+        # start); the store is shared with the Alpaca books, survives restarts
+        # and fails closed when unreadable. None = not wired (unit tests and
+        # legacy callers keep the previous behavior).
+        self.halt_store = halt_store
+        # Non-reducing placements that passed the gate but whose place_order
+        # has not returned yet. The durable halt may only be ACKNOWLEDGED when
+        # this is zero, so "applied" proves no pre-halt entry is in flight.
+        self._inflight_entries = 0
         self._pending: dict[str, list[Order]] = {}
         # CL-vj74: intent kept alongside a PENDING order so an async
         # ORDER_FILL (OANDA transaction stream) can journal ORDER_FILLED and
@@ -201,10 +212,30 @@ class OrderManager:
             # flat); flips and adds are blocked. This gate MUST stay inside
             # the lock (halt-TOCTOU, CL-8lv6): halt_new_trades takes the same
             # lock, so the flag read and the place decision are atomic.
-            if self._halted and not bypass_halt:
-                reducing = abs(intent.target_position) < abs(current_qty) and (
-                    intent.target_position == 0.0 or intent.target_position * current_qty > 0
+            reducing = abs(intent.target_position) < abs(current_qty) and (
+                intent.target_position == 0.0 or intent.target_position * current_qty > 0
+            )
+            # CL-0deu.2: the durable account halt is consulted for every
+            # non-reducing intent, inside the same lock as the local flag, so
+            # the decision and the halt write serialize. Unknown state blocks.
+            durable_block = None
+            if not bypass_halt and not reducing and self.halt_store is not None:
+                decision = self.halt_store.entry_decision()
+                if not decision.allowed:
+                    durable_block = decision
+            if durable_block is not None:
+                logger.warning(
+                    "OMS: account halt (%s) — rejecting non-reducing intent %s "
+                    "(%s target=%.4f current=%.4f): %s",
+                    durable_block.reason_code,
+                    intent.intent_id,
+                    intent.symbol,
+                    intent.target_position,
+                    current_qty,
+                    durable_block.detail,
                 )
+                return intent.intent_id
+            if self._halted and not bypass_halt:
                 if not reducing:
                     logger.warning(
                         "OMS halted — rejecting non-reducing intent %s "
@@ -245,12 +276,24 @@ class OrderManager:
                 return intent.intent_id
 
             side = "buy" if delta > 0 else "sell"
+            # Registered under the lock, before it is released for the HTTP
+            # call: a concurrent acknowledge_portfolio_halt() then sees it.
+            counts_as_entry = not reducing and not bypass_halt
+            if counts_as_entry:
+                self._inflight_entries += 1
 
         # Lock RELEASED before the blocking submit (CL-8s2a): place_order HTTP
         # + RejectionHandler retry sleeps no longer hold the RLock, so a
         # concurrent bypass_halt emergency de-risk isn't queued behind a slow
         # strategy order. _submit_with_retry re-acquires the lock only for its
         # short _pending mutations.
+        if counts_as_entry:
+            try:
+                self._submit_with_retry(intent, side, abs(delta), emergency=bypass_halt)
+            finally:
+                with self._lock:
+                    self._inflight_entries -= 1
+            return intent.intent_id
         self._submit_with_retry(intent, side, abs(delta), emergency=bypass_halt)
         return intent.intent_id
 
@@ -514,6 +557,28 @@ class OrderManager:
             fill.get("price"),
         )
         return True
+
+    def acknowledge_portfolio_halt(self) -> bool:
+        """Acknowledge the durable halt for the FX path (CL-0deu.2).
+
+        Only at a quiescent point: when a non-reducing placement that passed
+        the gate is still inside place_order, acknowledging would let
+        "applied" hide pre-halt exposure. Returns True when an ack was
+        written. Every later non-reducing intent re-reads the store anyway.
+        """
+        if self.halt_store is None:
+            return False
+        with self._lock:
+            if self._inflight_entries > 0:
+                logger.info(
+                    "OMS: %d entry placement(s) in flight — deferring account-halt ack",
+                    self._inflight_entries,
+                )
+                return False
+            from src.risk.trading_halt import PATH_FX_OMS  # noqa: PLC0415
+
+            self.halt_store.observe(PATH_FX_OMS)
+            return True
 
     def halt_new_trades(self) -> None:
         # Under the same lock that guards submit_intent's halt check —

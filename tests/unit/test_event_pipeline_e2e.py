@@ -54,6 +54,7 @@ from src.execution.alpaca_options_executor import (
 )
 from src.execution.alpaca_options_exit import manage_option_exits
 from src.strategies.event_driven import EventDrivenConfig, EventDrivenStrategy
+from tests.unit._trading_halt_fixture import install_trading_halt
 
 # --------------------------------------------------------------------------- #
 # shared sqlite plumbing
@@ -557,6 +558,8 @@ def options_engine(tmp_path: Path) -> Engine:
         "018_option_entry_mid.sql",
     ):
         _apply_migration(engine, migration)
+    # CL-0deu.2: real halt schema, explicitly resumed (entries allowed).
+    install_trading_halt(engine)
     return engine
 
 

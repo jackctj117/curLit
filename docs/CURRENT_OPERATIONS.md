@@ -727,6 +727,37 @@ per-call billing. CLI budget/usage accounting limitations remain CL-h7c1.
   `POST /api/system/halt` + `/resume` for an emergency stop (resume also
   re-arms the kill-switch daily dedup when the manager is wired —
   check `kill_switches_rearmed` in the response, CL-8lv6).
+- **Account-wide entry halt (CL-0deu.2, migration 024 — development patch,
+  NOT deployed until the operator applies it).** One durable record
+  (`trading_halt_state`) is consulted immediately before new exposure by the
+  FX OMS (per non-reducing intent, incl. manual `/api/trade`) and by both
+  Alpaca entry executors (top of every cycle AND right before each submit).
+  Unreadable/missing state blocks entries (fail closed); risk-reducing FX
+  intents and the Alpaca exit managers are unaffected. A restart re-reads the
+  record, so it can never clear a halt.
+  - **Deploy consequence:** migration 024 seeds `PAUSE_ENTRIES`. After
+    applying it, NO path opens new exposure until an explicit resume.
+  - Halt: `POST /api/system/halt` with optional JSON
+    `{"reason": "...", "changed_by": "...", "mode": "PAUSE_ENTRIES"|"CLOSE_ONLY"}`
+    (bodyless still works; the FX OMS is braked locally first, then the
+    durable record is written — a failed write returns 503 and says the
+    Alpaca books are NOT covered). `EMERGENCY_FLATTEN` is refused until a
+    path implements it.
+  - Resume: `POST /api/system/resume` REQUIRES
+    `{"reason": "...", "changed_by": "..."}` once the store is wired (400
+    otherwise, still halted). Every change is versioned and appended to
+    `trading_halt_events`.
+  - Application: `GET /api/system/halt-status` (also `account_halt` in
+    `/api/system`) lists each path as `applied` / `lagging` / `missing` /
+    `unavailable`; the halt is only `applied: true` once every path has
+    acknowledged the current version at a quiescent point (Alpaca daemons:
+    top of cycle; FX: 60 s health tick, deferred while an entry placement is
+    in flight) or reported itself unavailable.
+  - Not yet covered (follow-up beads): cancelling opening orders still
+    working at the broker when a halt lands, verified CLOSE_ONLY reductions,
+    and EMERGENCY_FLATTEN. While `ALPACA_LEDGER_CLOSE_ONLY` is set the
+    Alpaca daemons open no entries at all and acknowledge any halt at the
+    top of each ledger cycle.
 - OANDA practice dashboard: fxTrade Practice login shows positions/history.
 - Alpaca paper dashboard: app.alpaca.markets (paper) shows option positions.
 - Telegram: digests (grounded trade cards, niche 🎯 tags, red-team bear

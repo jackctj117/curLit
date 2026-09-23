@@ -575,7 +575,15 @@ async def run_engine(broker_mode: str = "paper") -> None:
     snapshot_store = build_feature_snapshot_store(db_engine)
     blackout_evaluator = build_blackout_evaluator(config)
     rejection_handler = RejectionHandler(journal=journal)
-    oms = OrderManager(broker, rejection_handler=rejection_handler, journal=journal)
+    # CL-0deu.2: durable account-wide entry halt, shared with the Alpaca
+    # books and the web control plane. Unreadable/missing state blocks FX
+    # entries (fail closed); risk-reducing intents are unaffected.
+    from src.risk.trading_halt import TradingHaltStore  # noqa: PLC0415
+
+    halt_store = TradingHaltStore(db_engine)
+    oms = OrderManager(
+        broker, rejection_handler=rejection_handler, journal=journal, halt_store=halt_store
+    )
     strategies = build_strategies(
         config,
         broker,
@@ -638,7 +646,13 @@ async def run_engine(broker_mode: str = "paper") -> None:
         # kill_switch_manager: lets /api/system/resume re-arm the
         # once-per-day trigger dedup (CL-8lv6). set_runtime preserves it
         # if a later call omits the param.
-        set_runtime(broker, oms, strategies, kill_switch_manager=kill_switch_manager)
+        set_runtime(
+            broker,
+            oms,
+            strategies,
+            kill_switch_manager=kill_switch_manager,
+            halt_store=halt_store,
+        )
         logger.info("Web API runtime wired")
     except Exception:
         logger.exception(

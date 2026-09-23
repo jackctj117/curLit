@@ -23,6 +23,7 @@ from src.execution.alpaca_equity_executor import (
     execute_pending_equities,
     fetch_executable_ideas,
 )
+from tests.unit._trading_halt_fixture import install_trading_halt
 
 # Midday ET — outside the opening entry-delay window, so the delay gate is
 # inert everywhere except the tests that exercise it.
@@ -113,6 +114,8 @@ def engine(tmp_path):  # type: ignore[no-untyped-def]
         )
         for stmt in [s.strip() for s in sql.split(";") if s.strip()]:
             conn.execute(text(stmt))
+    # CL-0deu.2: real halt schema, explicitly resumed (entries allowed).
+    install_trading_halt(eng)
     return eng
 
 
