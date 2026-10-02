@@ -3,9 +3,12 @@
 import asyncio
 import json
 import logging
+import re
 import time
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
+from email.utils import parsedate_to_datetime
 from typing import Any
 
 import httpx
@@ -50,6 +53,79 @@ def _price_bound_str(
     quantum = Decimal(1).scaleb(int(exponent)) if int(exponent) < 0 else Decimal(1)
     rounding = ROUND_FLOOR if side == "buy" else ROUND_CEILING
     return str(raw.quantize(quantum, rounding=rounding))
+
+
+# --- Auth-rejection diagnostics (CL-wrsa) -----------------------------------
+#
+# Sporadic 401s from OANDA practice (summary/positions, and the price stream)
+# used to surface only as a bare traceback — no response body, no OANDA
+# RequestID, no server clock — so the cause could not be diagnosed. Every
+# 401/403 from this broker now logs one redacted diagnostic line first.
+
+#: Statuses that get a diagnostic line. Auth-class only: 400/404 are already
+#: frequent and self-describing (e.g. unmapped instruments) and logging their
+#: bodies at WARNING would drown the signal.
+_AUTH_DIAG_STATUSES = frozenset({401, 403})
+
+#: Max response-body chars logged. OANDA's error body is a short JSON object
+#: ({"errorMessage": "..."}, typically < 100 chars); 500 keeps the whole of
+#: any plausible error body while bounding a misbehaving proxy's HTML page.
+_DIAG_BODY_MAX_CHARS = 500
+
+_BEARER_RE = re.compile(r"(?i)bearer\s+[A-Za-z0-9._~+/=-]+")
+
+
+def _redact(text: str, secret: str | None) -> str:
+    """Strip the API token (verbatim, and any ``Bearer <x>`` form) from text.
+
+    The request headers are never logged at all; this guards the response
+    body in case an upstream/proxy ever echoes the Authorization value.
+    """
+    if secret:
+        text = text.replace(secret, "<redacted>")
+    return _BEARER_RE.sub("Bearer <redacted>", text)
+
+
+def _auth_diag_fields(
+    headers: Any,
+    body: str,
+    secret: str | None,
+) -> dict[str, str]:
+    """Diagnostic fields for an auth rejection — never request headers.
+
+    * ``request_id`` — OANDA v20's ``RequestID`` response header, the handle
+      OANDA support needs to look the request up on their side.
+    * ``server_date`` / ``clock_skew_s`` — the server's HTTP ``Date`` and
+      (local UTC now − server date), to confirm or rule out a host-clock /
+      wake-time skew next time instead of guessing.
+    * ``body`` — redacted, truncated response body (OANDA's errorMessage).
+    """
+    hdrs = headers if headers is not None else {}
+    try:
+        request_id = str(hdrs.get("RequestID") or hdrs.get("X-Request-ID") or "-")
+        server_date = str(hdrs.get("Date") or "-")
+    except Exception:  # defensive: a non-mapping headers object
+        request_id, server_date = "-", "-"
+    skew = "-"
+    if server_date != "-":
+        try:
+            server_dt = parsedate_to_datetime(server_date)
+            skew = f"{(datetime.now(UTC) - server_dt).total_seconds():+.1f}"
+        except (TypeError, ValueError):
+            skew = "unparseable"
+    return {
+        "request_id": _redact(request_id, secret),
+        "server_date": _redact(server_date, secret),
+        "clock_skew_s": skew,
+        "body": _redact(body, secret)[:_DIAG_BODY_MAX_CHARS],
+    }
+
+
+def _sync_body_text(resp: Any) -> str:
+    try:
+        return str(resp.text)
+    except Exception as exc:  # body not readable — say so, don't mask the 401
+        return f"<body unavailable: {type(exc).__name__}>"
 
 
 class OandaBroker(Broker):
@@ -131,6 +207,9 @@ class OandaBroker(Broker):
             if resp.status_code in (307, 308) and resp.headers.get("location"):
                 url = resp.headers["location"]
                 continue
+            # CL-wrsa: diagnose an auth rejection, but NEVER retry a write —
+            # a re-sent order/cancel is not idempotent on our side.
+            self._log_auth_rejection(method, url, resp, "write endpoint — NOT retried")
             resp.raise_for_status()
             return resp
         msg = f"OANDA {method} {url}: exceeded {self._MAX_307_HOPS} redirect hops"
@@ -138,6 +217,99 @@ class OandaBroker(Broker):
 
     def _post_following_307(self, url: str, json_body: dict[str, Any]) -> httpx.Response:
         return self._send_following_307("POST", url, json_body)
+
+    def _log_auth_rejection(self, method: str, path: str, resp: Any, action: str) -> None:
+        """One redacted WARNING line for a 401/403 response (CL-wrsa).
+
+        No-op for any other status. Never logs request headers (the
+        Authorization bearer token); the body is redacted and truncated.
+        """
+        status = getattr(resp, "status_code", None)
+        if status not in _AUTH_DIAG_STATUSES:
+            return
+        fields = _auth_diag_fields(
+            getattr(resp, "headers", None),
+            _sync_body_text(resp),
+            getattr(self, "api_key", None),
+        )
+        logger.warning(
+            "OANDA auth rejection: %s %s -> HTTP %s request_id=%s server_date=%s "
+            "clock_skew_s=%s body=%r — %s",
+            method,
+            path,
+            status,
+            fields["request_id"],
+            fields["server_date"],
+            fields["clock_skew_s"],
+            fields["body"],
+            action,
+        )
+
+    #: The ONLY endpoints eligible for the one-shot 401 retry (CL-wrsa):
+    #: idempotent, side-effect-free account READS. Orders, trades, cancels and
+    #: position closes are writes and go through _send_following_307, which
+    #: never retries. Kept as an explicit allowlist so a future caller cannot
+    #: route a write through the retrying helper by accident.
+    _RETRYABLE_READ_SUFFIXES = frozenset({"summary", "positions"})
+
+    #: Delay before the single 401 retry. Evidence (CL-wrsa): 15 of 16 observed
+    #: practice REST 401s landed within ~60 s after a :00/:30 wall-clock
+    #: boundary (one at +180 s), and the price stream's 2 s backoff reconnect succeeded on the next
+    #: attempt in 2 of 3 stream-401 incidents. 2 s is short enough for the
+    #: 60 s health tick (which runs in a worker thread) and the strategy tick.
+    _READ_401_RETRY_DELAY_SEC = 2.0
+
+    def _get_account_read(self, suffix: str) -> httpx.Response:
+        """GET ``/v3/accounts/{id}/{suffix}`` with ONE retry on a 401 (CL-wrsa).
+
+        Only for the read-only endpoints in ``_RETRYABLE_READ_SUFFIXES``. A
+        401 is logged with diagnostics, retried exactly once after
+        ``_READ_401_RETRY_DELAY_SEC``, and if the retry is still rejected the
+        HTTPStatusError propagates exactly as before (callers' fail-safe
+        handling unchanged). Any other status is never retried here.
+        """
+        assert suffix in self._RETRYABLE_READ_SUFFIXES, (
+            f"{suffix!r} is not an allowlisted read-only endpoint"
+        )
+        path = f"/v3/accounts/{self.account_id}/{suffix}"
+        resp = self.client.get(path)
+        if resp.status_code == 401:
+            self._log_auth_rejection(
+                "GET",
+                path,
+                resp,
+                f"read-only endpoint — retrying ONCE in {self._READ_401_RETRY_DELAY_SEC:.0f}s",
+            )
+            time.sleep(self._READ_401_RETRY_DELAY_SEC)
+            resp = self.client.get(path)
+            if not 200 <= resp.status_code < 300:
+                # Still failing (401 again, a different error such as 403/5xx,
+                # or an unfollowable 3xx that raise_for_status also rejects):
+                # diagnose THIS response too — only a 2xx is a recovery — and
+                # let raise_for_status below propagate it.
+                self._log_auth_rejection(
+                    "GET", path, resp, "retry ALSO rejected — raising (no further retries)"
+                )
+                if resp.status_code not in _AUTH_DIAG_STATUSES:
+                    logger.warning(
+                        "OANDA GET %s single 401 retry failed with HTTP %s body=%r "
+                        "— raising (no further retries)",
+                        path,
+                        resp.status_code,
+                        _redact(_sync_body_text(resp), getattr(self, "api_key", None))[
+                            :_DIAG_BODY_MAX_CHARS
+                        ],
+                    )
+            else:
+                logger.warning(
+                    "OANDA GET %s recovered on the single 401 retry (HTTP %s)",
+                    path,
+                    resp.status_code,
+                )
+        else:
+            self._log_auth_rejection("GET", path, resp, "not retried")
+        resp.raise_for_status()
+        return resp
 
     def place_order(self, order: Order) -> Order:
         body: dict[str, dict[str, Any]] = {
@@ -288,6 +460,12 @@ class OandaBroker(Broker):
                 f"/v3/accounts/{self.account_id}/pricing",
                 params={"instruments": self._to_oanda(order.symbol)},
             )
+            self._log_auth_rejection(
+                "GET",
+                f"/v3/accounts/{self.account_id}/pricing",
+                resp,
+                "order-path slippage reference — NOT retried",
+            )
             resp.raise_for_status()
             p = resp.json()["prices"][0]
             ref_str = (
@@ -340,8 +518,7 @@ class OandaBroker(Broker):
         raise NotImplementedError
 
     def get_positions(self) -> list[Position]:
-        resp = self.client.get(f"/v3/accounts/{self.account_id}/positions")
-        resp.raise_for_status()
+        resp = self._get_account_read("positions")  # one 401 retry (CL-wrsa)
         positions = []
         for p in resp.json().get("positions", []):
             lq = float(p["long"]["units"])
@@ -362,8 +539,7 @@ class OandaBroker(Broker):
         return positions
 
     def get_account(self) -> Account:
-        resp = self.client.get(f"/v3/accounts/{self.account_id}/summary")
-        resp.raise_for_status()
+        resp = self._get_account_read("summary")  # one 401 retry (CL-wrsa)
         a = resp.json()["account"]
         return Account(
             balance=float(a["balance"]),
@@ -375,6 +551,9 @@ class OandaBroker(Broker):
         resp = self.client.get(
             f"/v3/accounts/{self.account_id}/pricing",
             params={"instruments": self._to_oanda(symbol)},
+        )
+        self._log_auth_rejection(
+            "GET", f"/v3/accounts/{self.account_id}/pricing", resp, "not retried"
         )
         resp.raise_for_status()
         p = resp.json()["prices"][0]
@@ -399,6 +578,31 @@ class OandaBroker(Broker):
     #: good while the very same credentials kept working elsewhere. Retry a
     #: few times with backoff, then declare it permanent.
     _STREAM_MAX_4XX_RETRIES = 3
+
+    async def _stream_rejection_diag(self, resp: Any) -> str:
+        """Redacted diagnostic suffix for a rejected stream connect (CL-wrsa).
+
+        Reads the (small) error body of the streaming response so a stream
+        401 carries the same request_id / server clock / body evidence as a
+        REST 401. Empty string for non-auth statuses.
+        """
+        if getattr(resp, "status_code", None) not in _AUTH_DIAG_STATUSES:
+            return ""
+        body = ""
+        aread = getattr(resp, "aread", None)
+        if aread is not None:
+            try:
+                raw = await aread()
+                body = raw.decode("utf-8", errors="replace")
+            except Exception as exc:  # body unreadable — keep the 401 path alive
+                body = f"<body unavailable: {type(exc).__name__}>"
+        fields = _auth_diag_fields(
+            getattr(resp, "headers", None), body, getattr(self, "api_key", None)
+        )
+        return (
+            f" [request_id={fields['request_id']} server_date={fields['server_date']} "
+            f"clock_skew_s={fields['clock_skew_s']} body={fields['body']!r}]"
+        )
 
     @classmethod
     def _stream_timeout(cls) -> httpx.Timeout:
@@ -471,12 +675,14 @@ class OandaBroker(Broker):
                     if resp.status_code >= 400:
                         if resp.status_code < 500:
                             rejections += 1
+                            diag = await self._stream_rejection_diag(resp)
                             if rejections > self._STREAM_MAX_4XX_RETRIES:
                                 logger.critical(
                                     "OANDA price stream rejected with %d "
-                                    "(bad credentials / request) %d times — NOT retrying",
+                                    "(bad credentials / request) %d times — NOT retrying%s",
                                     resp.status_code,
                                     rejections,
+                                    diag,
                                 )
                                 resp.raise_for_status()
                             # A SPURIOUS 4xx (OANDA returns 401s on rapid
@@ -484,11 +690,12 @@ class OandaBroker(Broker):
                             # retry a bounded number of times first (CL-j2y9).
                             logger.warning(
                                 "OANDA price stream rejected with %d (attempt %d/%d) "
-                                "— reconnecting in %.0fs",
+                                "— reconnecting in %.0fs%s",
                                 resp.status_code,
                                 rejections,
                                 self._STREAM_MAX_4XX_RETRIES,
                                 backoff,
+                                diag,
                             )
                         else:
                             logger.warning(
@@ -598,22 +805,25 @@ class OandaBroker(Broker):
                     if resp.status_code >= 400:
                         if resp.status_code < 500:
                             rejections += 1
+                            diag = await self._stream_rejection_diag(resp)
                             if rejections > self._STREAM_MAX_4XX_RETRIES:
                                 logger.critical(
                                     "OANDA transaction stream rejected with %d "
-                                    "(bad credentials / request) %d times — NOT retrying",
+                                    "(bad credentials / request) %d times — NOT retrying%s",
                                     resp.status_code,
                                     rejections,
+                                    diag,
                                 )
                                 resp.raise_for_status()
                             # Spurious 4xx must not kill the stream (CL-j2y9).
                             logger.warning(
                                 "OANDA transaction stream rejected with %d (attempt %d/%d) "
-                                "— reconnecting in %.0fs",
+                                "— reconnecting in %.0fs%s",
                                 resp.status_code,
                                 rejections,
                                 self._STREAM_MAX_4XX_RETRIES,
                                 backoff,
+                                diag,
                             )
                         else:
                             logger.warning(

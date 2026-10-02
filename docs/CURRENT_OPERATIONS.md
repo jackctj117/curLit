@@ -63,6 +63,23 @@ Everything is PAPER. No real money moves anywhere.
   — trust that log. State: `data/risk_context_state.json` (day-start +
   peak equity; a corrupt file refuses boot — repair or remove it
   deliberately).
+- **Sporadic practice 401s (CL-wrsa)**: OANDA practice intermittently
+  returns `401 Unauthorized` on `GET accounts/<id>/summary` / `/positions`
+  (and on price-stream connects). Observed 2026-07-21..10-01: 15 of 16 REST
+  401s and 5 of 5 stream 401s landed within ~60 s after a :00/:30
+  wall-clock boundary (one REST 401 at +180 s). Where sleep/wake history
+  exists (2026-09-26 onward) none was within 23 min of a wake; most were
+  hours into continuous uptime. The token is never mutated in-process and
+  no further broker-read failure was logged in the 10 min after any REST
+  401. Strongest supported
+  hypothesis: a periodic, short OANDA-side auth rejection — UNPROVEN (no
+  body/RequestID was logged before this fix). Now: every 401/403 logs one `OANDA auth rejection:` line
+  with `request_id`, `server_date`, `clock_skew_s` and the redacted body —
+  quote the `request_id` to OANDA support if it recurs. Summary/positions
+  READS are retried exactly once after 2 s; orders, cancels and the
+  order-path `/pricing` GET are NEVER retried. A `clock_skew_s` of more than
+  a few seconds is only a clue toward the host clock (response latency also
+  inflates it) — corroborate before acting on it.
 - **Other engine strategies**: rate_diff is DATA-FED (n≈252 daily rows) but
   SIGNAL-GATED — it refuses to trade while rolling R² < 0.25 (currently far
   below; refits weekly). carry_vol has its OIS/CVIX inputs and rebalances
