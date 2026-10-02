@@ -234,3 +234,20 @@ def test_watchdog_stays_stale_while_evidence_is_not_fresh(
     monkeypatch.setattr(watch, "_engine_halt_state", lambda: None)
     watch.run_once(clock=_c(3 * 3600 + LOOP, 2 * LOOP), interval_sec=LOOP)
     assert _state(watch)["readiness"]["status"] == READINESS_STALE
+
+
+def test_watchdog_stays_stale_while_a_daemon_state_is_unknown(
+    watch: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """CL-wv3v: a stalled process scan prints '? name UNKNOWN'; parse_status
+    omits it, so without an explicit check it would count as 'every daemon up'."""
+    watch.run_once(clock=_c(0, 0), interval_sec=LOOP)
+    watch.run_once(clock=_c(3 * 3600, LOOP), interval_sec=LOOP)
+    monkeypatch.setattr(
+        watch,
+        "_fleet_status_output",
+        lambda: "  ✓ engine (pid 1)\n  ? x_monitor UNKNOWN — process scan stalled (>5.0s)\n",
+    )
+    watch.run_once(clock=_c(3 * 3600 + LOOP, 2 * LOOP), interval_sec=LOOP)
+    assert _state(watch)["readiness"]["status"] == READINESS_STALE
+    assert not any("DOWN" in m for m in watch._sent)  # unknown is not a death page

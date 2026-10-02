@@ -44,6 +44,19 @@ def parse_status(output: str) -> dict[str, bool]:
     return out
 
 
+_UNKNOWN_RE = re.compile(r"^\s*\?\s+(\S+)")
+
+
+def parse_unknown(output: str) -> list[str]:
+    """Daemons whose state ``daemons.sh status`` could not determine (CL-wv3v).
+
+    A stalled/inconclusive process scan prints ``  ? name UNKNOWN …``.
+    ``parse_status`` deliberately omits these (neither a DOWN page nor UP);
+    callers that need "every daemon up" evidence must check this list too.
+    """
+    return [m.group(1) for line in output.splitlines() if (m := _UNKNOWN_RE.match(line))]
+
+
 def decide_fleet_alerts(
     current: dict[str, bool],
     prev_down: dict[str, str],

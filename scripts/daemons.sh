@@ -7,7 +7,7 @@
 #   ./scripts/daemons.sh status [name]    # one line per daemon
 #   ./scripts/daemons.sh restart [name]   # stop + start + VERIFY the pid changed
 #
-# Idempotent: start skips anything already running (pgrep match). Each daemon
+# Idempotent: start skips anything already running (argv match). Each daemon
 # logs to logs/<name>.log. Gated daemons (Alpaca/Reddit) self-disable when
 # their env keys are absent — safe to run the full fleet on a fresh device.
 #
@@ -66,70 +66,45 @@ target="${2:-}"
 fail=0
 matched=0
 
-# All three helpers read the loop variables $name / $pattern / $launch.
+# Process discovery and control go through a bounded, identity-verified
+# helper (CL-wv3v). On 2026-09-08 each `pgrep -f` here took tens of seconds
+# on macOS (it reads every process's argv) and the unbounded 1 s poll loops
+# stretched a 30 s restart into minutes. The helper runs each argv scan in a
+# worker it abandons at a hard timeout, tracks the old writer by pid + start
+# time (no argv read; PID-reuse safe), signals only re-verified identities,
+# refuses to launch when two writers match or when a scan could not confirm
+# none is running, and gives restart a TOTAL deadline whose failures name the
+# phase (discover / stop-wait / start / verify) and the last known writer
+# state. Launch is unchanged: `nohup $launch >> logs/<name>.log 2>&1`.
+# Pattern and launch command travel in the environment, never argv, so a
+# helper cannot match its own pattern. Status lines are unchanged (fleet_watch
+# parses them); a stalled scan prints "  ? <name> UNKNOWN", which it ignores.
+PD=src/runtime/proc_discovery.py
+: "${DAEMONS_RESTART_DEADLINE_S:=60}"
+
+# All helpers read the loop variables $name / $pattern / $launch.
+pd() {
+  CURLIT_PROC_PATTERN="$pattern" CURLIT_PROC_LAUNCH="$launch" \
+    "$PY" "$PD" "$@" --name "$name" --log "logs/${name}.log"
+}
+
 start_one() {
-  local pid
-  pid="$(pgrep -f "$pattern" | head -1 || true)"
-  if [ -n "$pid" ]; then
-    echo "  ✓ $name already running (pid $pid)"
-    return 0
-  fi
-  # $launch is a deliberate multi-word command — word splitting wanted.
-  # shellcheck disable=SC2086
-  nohup $launch >> "logs/${name}.log" 2>&1 &
-  disown || true
-  sleep 1
-  pid="$(pgrep -f "$pattern" | head -1 || true)"
-  if [ -n "$pid" ]; then
-    echo "  ▶ $name started (pid $pid)"
-  else
-    echo "  ✗ $name FAILED — check logs/${name}.log"
-    return 1
-  fi
+  pd start
 }
 
+# SIGTERM, wait for actual exit (30s grace — daemons finish their in-flight
+# cycle; returning early let a following `start` see the dying process, bit
+# us twice on 2026-07-22), then SIGKILL the same verified identity.
 stop_one() {
-  local pid waited
-  pid="$(pgrep -f "$pattern" | head -1 || true)"
-  if [ -z "$pid" ]; then
-    echo "  - $name not running"
-    return 0
-  fi
-  kill -TERM "$pid" || true
-  # WAIT for actual exit (up to 30s, then SIGKILL): daemons finish
-  # their in-flight cycle on SIGTERM (x_monitor can take minutes) —
-  # returning early let a following `start` see the dying process,
-  # print "already running", and leave a gap when it finally exited
-  # (bit us twice on 2026-07-22).
-  waited=0
-  while pgrep -f "$pattern" >/dev/null 2>&1 && [ "$waited" -lt 30 ]; do
-    sleep 1
-    waited=$((waited + 1))
-  done
-  if pgrep -f "$pattern" >/dev/null 2>&1; then
-    pkill -KILL -f "$pattern" || true
-    sleep 1
-    echo "  ■ $name KILLED after ${waited}s (graceful stop timed out)"
-  else
-    echo "  ■ $name stopped (pid $pid, ${waited}s)"
-  fi
+  pd stop
 }
 
-# stop + start + verify: the pid that survives must differ from the pid we
-# began with, else the reload did NOT happen (CL-obgy — the 2026-07-31
-# near-miss: a wrong pid-file guess left execute_options running pre-fix
-# code while everything looked green).
+# stop + start + verify the surviving identity differs from the one we began
+# with, else the reload did NOT happen (CL-obgy — the 2026-07-31 near-miss: a
+# wrong pid-file guess left execute_options running pre-fix code while
+# everything looked green). Bounded by DAEMONS_RESTART_DEADLINE_S in total.
 restart_one() {
-  local oldpid newpid
-  oldpid="$(pgrep -f "$pattern" | head -1 || true)"
-  stop_one
-  start_one || true
-  newpid="$(pgrep -f "$pattern" | head -1 || true)"
-  if [ -z "$newpid" ] || { [ -n "$oldpid" ] && [ "$newpid" = "$oldpid" ]; }; then
-    echo "  ✗ $name RESTART FAILED (old pid ${oldpid:-none} → ${newpid:-none}) — check logs/${name}.log"
-    return 1
-  fi
-  echo "  ↻ $name restart verified (pid ${oldpid:-none} → $newpid)"
+  pd restart --deadline "$DAEMONS_RESTART_DEADLINE_S"
 }
 
 case "$cmd" in start|stop|status|restart) ;; *)
@@ -149,18 +124,13 @@ for entry in "${DAEMONS[@]}"; do
       start_one || fail=1
       ;;
     stop)
-      stop_one
+      stop_one || true  # stop keeps its historical always-0 exit
       ;;
     restart)
       restart_one || fail=1
       ;;
     status)
-      pid="$(pgrep -f "$pattern" | head -1 || true)"
-      if [ -n "$pid" ]; then
-        echo "  ✓ $name (pid $pid)"
-      else
-        echo "  ✗ $name NOT RUNNING"
-      fi
+      pd status || echo "  ? $name UNKNOWN — status helper failed"
       ;;
   esac
 done

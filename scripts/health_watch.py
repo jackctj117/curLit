@@ -150,6 +150,7 @@ def run_once(
         decide_halt_alert,
         decide_x_staleness_alert,
         parse_status,
+        parse_unknown,
         summarize_state,
     )
     from src.monitoring.host_gap import (  # noqa: PLC0415
@@ -187,8 +188,13 @@ def run_once(
         )
 
     output = _fleet_status_output()
+    unknown: list[str] = []
     if output is not None:
         current = parse_status(output)
+        # CL-wv3v: a stalled/inconclusive process scan is "unknown", not up.
+        unknown = parse_unknown(output)
+        if unknown:
+            logger.warning("health watch: daemon state UNKNOWN this cycle: %s", ", ".join(unknown))
         alerts, new_down = decide_fleet_alerts(
             current,
             dict(state.get("down") or {}),
@@ -243,7 +249,11 @@ def run_once(
     # later awake cycle with fresh evidence — every daemon up, engine state
     # readable, ingest fresh — restores it. Sleep never counts as observed.
     fresh_evidence = (
-        output is not None and not state.get("down") and halted is not None and not is_stale
+        output is not None
+        and not unknown
+        and not state.get("down")
+        and halted is not None
+        and not is_stale
     )
     rpages, state["readiness"] = decide_readiness(
         gap, state.get("readiness"), now, fresh_evidence=fresh_evidence

@@ -9,6 +9,7 @@ from src.monitoring.fleet_watch import (
     decide_halt_alert,
     decide_x_staleness_alert,
     parse_status,
+    parse_unknown,
 )
 
 NOW = datetime(2026, 7, 22, 19, 30, tzinfo=UTC)
@@ -25,6 +26,13 @@ def test_parse_status():
         "x_monitor": False,
         "health_watch": True,
     }
+
+
+def test_parse_unknown_lists_undetermined_daemons_only():
+    out = STATUS + "  ? x_monitor UNKNOWN — process scan stalled (>5.0s)\n"
+    assert parse_unknown(out) == ["x_monitor"]
+    assert parse_unknown(STATUS) == []
+    assert "x_monitor" in parse_status(STATUS)  # existing contract unchanged
 
 
 def test_down_pages_once_then_silent():

@@ -252,6 +252,24 @@ one daemon use `restart <name>` — it waits for the old process to die,
 starts a new one, and fails loudly (exit 1) unless the surviving pid
 differs from the old one (CL-obgy: a wrong pid-file guess once left
 `execute_options` running pre-fix code while everything looked green).
+Process discovery is bounded and identity-verified (CL-wv3v, via
+`src/runtime/proc_discovery.py`): each argv scan runs in a worker abandoned
+after 10 s (5 s for `status`). The old writer is tracked by PID plus process
+start time, so a recycled PID is never treated as the old writer. Only
+re-verified identities are signalled. Restart has a TOTAL deadline of
+`DAEMONS_RESTART_DEADLINE_S` (default 60 s: 30 s SIGTERM grace, then SIGKILL,
+then start/verify). A failure prints
+`RESTART FAILED [phase=discover|stop-wait|start|verify]` with the last known
+writer state. Two matching processes are refused and reported. A scan that
+cannot confirm "none running" never launches. That includes a stalled scan
+and a scan that hit an unreadable process running as our user. Either way, a
+third writer is never started. SIGKILL is re-verified against a fresh scan,
+and launch verification checks the launched PID's start time. `status` lines
+are unchanged. A duplicate appends `— DUPLICATE: N matching processes`. A
+stalled scan prints `? <name> UNKNOWN`. The watchdog neither pages that as
+down nor counts it as "every daemon up" for readiness. Launch is unchanged:
+`nohup`, same process group as the caller, SIGINT/SIGQUIT ignored like bash
+`cmd &`. It does not cover the launchd-owned `com.curlit.paper.*` jobs.
 Fresh-device
 bring-up from zero: [`BOOTSTRAP.md`](BOOTSTRAP.md). Every entrypoint runs
 the interpreter-health canary (pyexpat, CL-169t) and the engine additionally
