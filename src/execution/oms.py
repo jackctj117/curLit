@@ -588,6 +588,12 @@ class OrderManager:
             self._halted = True
             logger.warning("OMS: new trades halted")
 
+    def is_halted(self) -> bool:
+        """Engine-local halt flag (CL-d7ex): read by the kill-switch manager
+        so a halt it did not record is never auto-resumed away."""
+        with self._lock:
+            return self._halted
+
     def has_pending(self) -> bool:
         return len(self._pending) > 0
 

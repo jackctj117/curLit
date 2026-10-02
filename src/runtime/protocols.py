@@ -86,6 +86,8 @@ class KillSwitchManagerLike(Protocol):
 
     def attempt_auto_resume(self, context: dict[str, Any]) -> bool: ...
 
+    def record_external_halt(self, cause: str) -> None: ...
+
 
 @runtime_checkable
 class ReconcilerLike(Protocol):

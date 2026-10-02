@@ -40,11 +40,19 @@ CL-i4tx de-facades the rest of the subsystem (code review 2026-07-21
 * ``reset_daily()`` is now actually invoked (health tick, on UTC-day
   rollover detected by the context builder) so a fired switch can
   re-arm the next day after ``/api/system/resume``.
+
+CL-d7ex makes auto-resume lift ONLY halts it owns: operator / startup /
+cold-start-reconciliation halts are recorded as sticky ``external:*``
+causes via ``record_external_halt``, and a halt already in force with no
+recorded cause is adopted as ``external:unattributed_prior_halt`` before a
+data gate piles on, so a cleared ``stale_prices`` can never silently lift
+an entry-paused engine. Only ``/api/system/resume`` clears them.
 """
 
 import json
 import logging
 import os
+import threading
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -99,6 +107,20 @@ _PRICE_STREAM_STALE_SEC: float = 600.0
 # stale prices; the stream reconnects; trading should resume on its own
 # instead of needing a manual /api/system/resume.
 _DATA_GATE_SWITCHES: frozenset[str] = frozenset({"stale_prices"})
+
+# CL-d7ex — halt causes that did NOT come from a kill switch (operator
+# entry-paused startup, cold-start reconciliation mismatch/failure,
+# /api/system/halt). They are recorded in ``_active_halt_causes`` under this
+# prefix so the cause set is never empty while such a halt is in force; they
+# are never data gates, so ``attempt_auto_resume`` can never drain them and
+# only a manual /api/system/resume (``reset_daily()``) clears them. The
+# prefix keeps them disjoint from switch names.
+EXTERNAL_HALT_PREFIX: str = "external:"
+
+# CL-d7ex — recorded when a switch fires while the OMS is ALREADY halted with
+# no recorded cause (a halt from a path that did not register itself). That
+# halt was not ours, so it must outlive the data gate that piled on top.
+_UNATTRIBUTED_PRIOR_HALT: str = EXTERNAL_HALT_PREFIX + "unattributed_prior_halt"
 
 # Below this net quantity a broker position is dust — flatten/reduce
 # intents are not worth a market order.
@@ -401,6 +423,11 @@ class KillSwitchManager:
         # Empty while the OMS is halted ⇒ a NON-switch halt (manual
         # /api/system/halt) — never auto-resumed.
         self._active_halt_causes: set[str] = set()
+        # CL-d7ex: serializes the auto-resume drain-and-resume decision
+        # against record_external_halt (called from the API thread) so an
+        # operator halt landing mid-drain is never resumed away. RLock so a
+        # nested call from the same thread cannot self-deadlock.
+        self._cause_lock = threading.RLock()
         # CL-i4tx fail-closed accounting: consecutive evaluation failures
         # per switch. Reset to 0 on any successful evaluation.
         self._consecutive_failures: dict[str, int] = {}
@@ -603,6 +630,7 @@ class KillSwitchManager:
                         sw.name,
                         failures,
                     )
+                    self._adopt_unattributed_halt()
                     self.oms.halt_new_trades()
                     self._active_halt_causes.add(sw.name)
                 continue
@@ -616,6 +644,9 @@ class KillSwitchManager:
                     log_ctx,
                 )
                 effective = True
+                # CL-d7ex: snapshot a pre-existing cause-less halt BEFORE this
+                # switch's action halts the OMS and records its own cause.
+                self._adopt_unattributed_halt()
                 try:
                     effective = self._execute_action(sw.action)
                 except Exception:
@@ -874,7 +905,80 @@ class KillSwitchManager:
             )
         self._triggered_today.clear()
         if clear_causes:
-            self._active_halt_causes.clear()
+            with self._cause_lock:
+                if self._active_halt_causes:
+                    logger.warning(
+                        "Clearing ALL halt causes on manual resume: %s",
+                        sorted(self._active_halt_causes),
+                    )
+                self._active_halt_causes.clear()
+
+    def active_halt_causes(self) -> frozenset[str]:
+        """Snapshot of the causes currently holding the halt (CL-d7ex)."""
+        with self._cause_lock:
+            return frozenset(self._active_halt_causes)
+
+    def record_external_halt(self, cause: str) -> None:
+        """Record a NON-switch halt and halt the OMS (CL-d7ex).
+
+        Called by the live engine's startup (operator entry-paused start,
+        cold-start reconciliation mismatch/failure/unavailable) and by
+        ``/api/system/halt``. The cause is stored as ``external:<cause>`` —
+        never a data gate — so ``attempt_auto_resume`` can never lift this
+        halt; only a manual ``/api/system/resume`` (``reset_daily()``) does.
+
+        The OMS halt is (re)applied UNDER the cause lock: if a concurrent
+        health-tick auto-resume drained the data-gate causes and resumed the
+        OMS just before this call took the lock, the halt is re-applied here,
+        so the operator's halt always wins the race. ``halt_new_trades`` is
+        idempotent.
+        """
+        assert cause and cause.strip(), "external halt cause must be non-empty"
+        name = cause if cause.startswith(EXTERNAL_HALT_PREFIX) else EXTERNAL_HALT_PREFIX + cause
+        with self._cause_lock:
+            logger.warning(
+                "Recording external halt cause %s — halting new trades; "
+                "auto-resume will NOT lift this (manual /api/system/resume only)",
+                name,
+            )
+            self._active_halt_causes.add(name)
+            self.oms.halt_new_trades()
+            # Postcondition checked INSIDE the lock: a concurrent manual
+            # resume (reset_daily) may legitimately clear the cause the
+            # instant the lock is released.
+            assert name in self._active_halt_causes
+
+    def _oms_is_halted(self) -> bool | None:
+        """The OMS local halt flag, or None when the OMS cannot report it
+        (CL-d7ex). Only a real ``bool`` counts — a mock's auto-attribute or a
+        legacy OMS without ``is_halted`` is "unknown", never "halted"."""
+        probe = getattr(self.oms, "is_halted", None)
+        if not callable(probe):
+            return None
+        try:
+            value = probe()
+        except Exception:
+            logger.warning("kill switches: oms.is_halted() failed", exc_info=True)
+            return None
+        return value if isinstance(value, bool) else None
+
+    def _adopt_unattributed_halt(self) -> None:
+        """Before a switch adds its own cause, adopt a pre-existing halt that
+        has NO recorded cause (CL-d7ex). Without this, a halt from a path that
+        did not call ``record_external_halt`` would look data-gate-only once
+        ``stale_prices`` fired on top of it, and auto-resume would lift a
+        halt it never created."""
+        with self._cause_lock:
+            if self._active_halt_causes:
+                return  # an owned halt is already being tracked
+            if self._oms_is_halted() is not True:
+                return
+            logger.warning(
+                "OMS already halted with no recorded cause — adopting it as "
+                "sticky cause %s so a data-gate auto-resume cannot lift it",
+                _UNATTRIBUTED_PRIOR_HALT,
+            )
+            self._active_halt_causes.add(_UNATTRIBUTED_PRIOR_HALT)
 
     def attempt_auto_resume(self, context: dict[str, Any]) -> bool:
         """Auto-lift a halt caused ONLY by data-availability gates whose
@@ -890,13 +994,27 @@ class KillSwitchManager:
         Resume fires only when the cause set drains to empty via data-gate
         clearing; an already-empty cause set means a non-switch (manual)
         halt, which is left untouched.
+
+        CL-d7ex: operator / startup / cold-start-reconciliation halts are
+        ``external:*`` causes (``record_external_halt``, or adopted by
+        ``_adopt_unattributed_halt``) — never data gates — so a halt whose
+        cause set includes one is never lifted here.
         """
+        # CL-d7ex: the drain-and-resume decision runs under the cause lock so
+        # a concurrent record_external_halt either lands before (blocks the
+        # resume) or after (re-halts) — never lost in between.
+        with self._cause_lock:
+            return self._attempt_auto_resume_locked(context)
+
+    def _attempt_auto_resume_locked(self, context: dict[str, Any]) -> bool:
+        """Body of :meth:`attempt_auto_resume`; caller holds ``_cause_lock``."""
         if not self._active_halt_causes:
             return False  # nothing WE halted for — don't touch a manual halt
         by_name = {sw.name: sw for sw in self.switches}
+        cleared: list[str] = []
         for name in list(self._active_halt_causes):
             if name not in _DATA_GATE_SWITCHES:
-                continue  # risk cause — stays sticky
+                continue  # risk / external cause — stays sticky
             sw = by_name.get(name)
             if sw is None:
                 continue
@@ -909,11 +1027,22 @@ class KillSwitchManager:
             if not still_bad:
                 self._active_halt_causes.discard(name)
                 self._triggered_today.discard(name)  # re-arm
+                cleared.append(name)
                 logger.info(
                     "Data-gate %s cleared — condition no longer true",
                     name,
                 )
+        if cleared and self._active_halt_causes:
+            # CL-d7ex: make the withheld resume visible — the data gate is
+            # gone but a sticky (risk / external) cause still holds the halt.
+            logger.warning(
+                "auto-resume WITHHELD: data gate(s) %s cleared but halt still "
+                "held by %s — manual /api/system/resume required",
+                cleared,
+                sorted(self._active_halt_causes),
+            )
         if not self._active_halt_causes:
+            logger.info("auto-resume: cause set drained — resuming OMS")
             try:
                 self.oms.resume_trades()
             except Exception:

@@ -381,6 +381,19 @@ def halt_system(req: HaltRequest | None = None, _: None = Depends(verify_secret)
     # Local brake FIRST — it cannot fail and stops FX entries immediately,
     # even if the durable write below cannot reach the database.
     oms.halt_new_trades()
+    # CL-d7ex: record the operator halt as a sticky external cause so a later
+    # stale_prices trip + recovery cannot auto-resume it away. Only
+    # /api/system/resume clears it.
+    manager = _runtime.get("kill_switch_manager")
+    record = getattr(manager, "record_external_halt", None)
+    if callable(record):
+        logger.warning("/api/system/halt: recording operator halt on kill-switch manager")
+        record("operator_api_halt")
+    else:
+        logger.warning(
+            "/api/system/halt: kill_switch_manager not wired (or lacks "
+            "record_external_halt) — operator halt not recorded as a halt cause"
+        )
     store = _runtime.get("halt_store")
     if store is not None:
         from src.risk.trading_halt import HaltMode  # noqa: PLC0415

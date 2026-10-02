@@ -139,12 +139,18 @@ class LiveEngine:
         await self._run_tasks()
 
     def _reconcile_startup(self) -> None:
-        """CL-0deu.18: a failed/dirty startup stays observable but entry-paused."""
+        """CL-0deu.18: a failed/dirty startup stays observable but entry-paused.
+
+        CL-d7ex: every startup halt is also recorded on the kill-switch
+        manager as a sticky ``external:*`` cause, so a later ``stale_prices``
+        trip + recovery cannot auto-resume entries the operator (or a dirty
+        reconciliation) deliberately paused.
+        """
         if os.environ.get("CURLIT_START_ENTRY_PAUSED", "0").lower() in {"1", "true", "yes"}:
             logger.warning(
                 "Operator-requested entry-paused startup; verified reductions remain available"
             )
-            self.oms.halt_new_trades()
+            self._startup_halt("operator_entry_paused_startup")
         if self.cold_start_reconciler is not None:
             try:
                 self._last_reconciliation_report = self.cold_start_reconciler.reconcile()
@@ -157,15 +163,28 @@ class LiveEngine:
                     logger.error(
                         "Cold-start account mismatch: new entries blocked until operator reconciliation"
                     )
-                    self.oms.halt_new_trades()
+                    self._startup_halt("cold_start_reconciliation_mismatch")
             except Exception:
-                self.oms.halt_new_trades()
+                self._startup_halt("cold_start_reconciliation_failed")
                 logger.exception(
                     "Cold-start reconciliation failed — entries blocked; monitoring/recovery continue"
                 )
         else:
             logger.error("Cold-start reconciler unavailable: entries blocked")
-            self.oms.halt_new_trades()
+            self._startup_halt("cold_start_reconciler_unavailable")
+
+    def _startup_halt(self, cause: str) -> None:
+        """Halt new entries for a startup ``cause`` (CL-d7ex).
+
+        The OMS halt comes FIRST and unconditionally — it cannot fail and is
+        the brake. The cause is then recorded on the kill-switch manager (when
+        wired) so auto-resume treats this halt as operator-owned and never
+        lifts it; only ``/api/system/resume`` does.
+        """
+        logger.warning("Startup halt (%s): halting new trades", cause)
+        self.oms.halt_new_trades()
+        if self.kill_switch_manager is not None:
+            self.kill_switch_manager.record_external_halt(cause)
 
     async def _run_tasks(self) -> None:
         # Track tasks as asyncio.Task so graceful_shutdown() can cancel them.
