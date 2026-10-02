@@ -55,6 +55,7 @@ from src.research.agents.resolver import (
 )
 from src.research.agents.reviewer import Position, parse_position
 from src.research.config import DebateConfig, ResearchConfig, RoundType
+from src.research.llm.client import format_usd, sum_or_unknown
 
 logger = logging.getLogger(__name__)
 
@@ -164,11 +165,14 @@ class TranscriptEntry:
     content: str
     model: str
     provider: str
-    input_tokens: int
-    output_tokens: int
-    usd_cost: float
+    # None = not reported / not metered — never a measured 0 (CL-h7c1).
+    input_tokens: int | None
+    output_tokens: int | None
+    usd_cost: float | None
     elapsed_sec: float
     metadata: dict[str, Any] = field(default_factory=dict)
+    requested_model: str | None = None
+    cost_provenance: str = ""
 
 
 @dataclass
@@ -190,7 +194,9 @@ class DebateResult:
     final_positions: dict[str, Position]
     open_questions: list[str]
     resolved_questions: list[ResolvedQuestion]
-    total_cost_usd: float
+    #: None when ANY entry's cost is unknown (e.g. claude-code subscription
+    #: calls) — a partial sum is not the debate's cost (CL-h7c1).
+    total_cost_usd: float | None
     total_elapsed_sec: float
 
 
@@ -334,7 +340,8 @@ class DebateOrchestrator:
             transcript_md_path,
             final_positions=final_positions,
             open_questions=open_questions,
-            total_cost=sum(e.usd_cost for e in entries),
+            total_cost=sum_or_unknown(e.usd_cost for e in entries),
+            cost_provenances=sorted({e.cost_provenance or "unspecified" for e in entries}),
         )
 
         return DebateResult(
@@ -345,7 +352,7 @@ class DebateOrchestrator:
             final_positions=final_positions,
             open_questions=open_questions,
             resolved_questions=resolved_questions,
-            total_cost_usd=sum(e.usd_cost for e in entries),
+            total_cost_usd=sum_or_unknown(e.usd_cost for e in entries),
             total_elapsed_sec=time.time() - run_started,
         )
 
@@ -625,6 +632,8 @@ class DebateOrchestrator:
             usd_cost=resp.usd_cost,
             elapsed_sec=resp.elapsed_sec,
             metadata=dict(resp.metadata),
+            requested_model=resp.requested_model,
+            cost_provenance=resp.cost_provenance,
         )
 
     def _persist_entry(
@@ -646,7 +655,8 @@ class DebateOrchestrator:
             f"({entry.role})\n"
             f"*ts={entry.timestamp} model={entry.model} "
             f"in/out_tokens={entry.input_tokens}/{entry.output_tokens} "
-            f"cost=${entry.usd_cost:.4f} elapsed={entry.elapsed_sec:.2f}s*\n\n"
+            f"cost={format_usd(entry.usd_cost)} ({entry.cost_provenance or 'unspecified'}) "
+            f"elapsed={entry.elapsed_sec:.2f}s*\n\n"
             f"{entry.content}\n\n---\n"
         )
 
@@ -671,15 +681,25 @@ class DebateOrchestrator:
         md_path: Path,
         final_positions: dict[str, Position],
         open_questions: list[str],
-        total_cost: float,
+        total_cost: float | None,
+        cost_provenances: list[str] | None = None,
     ) -> None:
         lines = ["\n## Debate summary\n"]
+        provenance = ", ".join(cost_provenances or ["unspecified"])
         for name, pos in final_positions.items():
             lines.append(f"- **{name}**: {pos.value}\n")
         if open_questions:
             lines.append("\n### Open questions\n")
             for oq in open_questions:
                 lines.append(f"- {oq}\n")
-        lines.append(f"\n**Total cost**: ${total_cost:.4f}\n")
+        if total_cost is None:
+            lines.append(
+                "\n**Total cost**: unknown — at least one call has no measured "
+                "USD cost (see per-entry cost provenance)\n"
+            )
+        else:
+            # Label the KIND of figure (CL-h7c1 review): API costs are
+            # price-table estimates, not invoices.
+            lines.append(f"\n**Total cost**: ${total_cost:.4f} ({provenance})\n")
         with md_path.open("a") as f:
             f.write("".join(lines))

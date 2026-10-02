@@ -220,9 +220,13 @@ dollar ceiling. Provider/tokenizer differences and internal model computation
 still differ. An exceeded cap, incomplete generation or actual-model substitution
 remains visible; it is not silently included as a comparable successful trial.
 
-The Claude challenger uses the **Anthropic API**, not Claude Code: inspection
-found that the existing CLI driver accepts but does not enforce `max_tokens`
-(CL-h7c1). The same API-based critic is applied to both arms. Runtime Kimi
+The Claude challenger uses the **Anthropic API**, not Claude Code. Inspection
+found that the CLI driver accepted `max_tokens` but did not enforce it. CL-h7c1
+now passes it to the CLI as `CLAUDE_CODE_MAX_OUTPUT_TOKENS`, but the CLI still
+cannot enforce `temperature`, has no metered per-call USD cost, and its usage
+and serving-model reports differ from the API's (see
+`docs/CURRENT_OPERATIONS.md` §5), so the API path remains the comparable arm.
+The same API-based critic is applied to both arms. Runtime Kimi
 discovery remains its existing native-tool baseline; the shadow experiment
 standardizes the protocol for *both* providers rather than claiming their
 existing different production methods are equivalent.

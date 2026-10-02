@@ -172,7 +172,14 @@ class TestComplete:
         assert resp.model == "claude-fable-5"
         assert resp.input_tokens == 175  # input + cache_creation + cache_read
         assert resp.output_tokens == 7
-        assert resp.usd_cost == 0.0  # subscription — never bills the API org
+        # CL-h7c1 intentionally changed this expectation (was == 0.0): a
+        # subscription call has no metered USD cost, and 0.0 read as a
+        # MEASURED zero in spend totals. Unknown is None + an explicit
+        # provenance; the CLI's figure is kept only as a labelled estimate.
+        assert resp.usd_cost is None
+        assert resp.cost_provenance == "subscription_unmetered"
+        assert resp.nominal_usd_cost == pytest.approx(0.12)
+        assert resp.requested_model == "claude-fable-5"
         cmd = run.call_args.args[0]
         # Prompt rides STDIN now (CL-8s2a), not argv: `-p` is bare and the
         # prompt is passed through a preloaded stdin file (CL-ep4q).
@@ -310,3 +317,158 @@ class TestComplete:
             pytest.raises(RuntimeError, match="non-JSON"),
         ):
             drv.complete([Message("user", "hi")], model="claude-fable-5")
+
+
+def _run_with(payload: dict[str, Any], **complete_kwargs: Any) -> tuple[Any, MagicMock]:
+    """Run one complete() against a canned CLI payload; return (resp, run mock)."""
+    drv = _driver()
+    kwargs: dict[str, Any] = {"model": "claude-fable-5", **complete_kwargs}
+    with patch("subprocess.run", return_value=_proc(json.dumps(payload))) as run:
+        resp = drv.complete([Message("user", "hi")], **kwargs)
+    return resp, run
+
+
+class TestBudgetControls:
+    """CL-h7c1: requested caps reach the CLI, or their non-enforcement is
+    explicit. Oracle: the installed CLI (2.1.287) has no --max-tokens /
+    --temperature flag; it reads CLAUDE_CODE_MAX_OUTPUT_TOKENS from the env."""
+
+    def test_max_tokens_reaches_cli_as_output_cap_env(self) -> None:
+        _, run = _run_with(_OK_PAYLOAD, max_tokens=1234)
+        assert run.call_args.kwargs["env"]["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] == "1234"
+
+    def test_requested_cap_overrides_ambient_env(self) -> None:
+        # An inherited operator setting must not silently replace the cap
+        # the caller asked for.
+        with patch.dict("os.environ", {"CLAUDE_CODE_MAX_OUTPUT_TOKENS": "64000"}):
+            _, run = _run_with(_OK_PAYLOAD, max_tokens=900)
+        assert run.call_args.kwargs["env"]["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] == "900"
+
+    def test_default_max_tokens_is_forwarded_too(self) -> None:
+        _, run = _run_with(_OK_PAYLOAD)
+        assert run.call_args.kwargs["env"]["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] == "4096"
+
+    @pytest.mark.parametrize("bad", [0, -5, True, 12.5])
+    def test_invalid_cap_refused_before_spawn(self, bad: Any) -> None:
+        # The CLI ignores a non-positive/non-int value and runs UNCAPPED;
+        # refusing is the only way not to drop the cap silently.
+        drv = _driver()
+        with (
+            patch("subprocess.run") as run,
+            pytest.raises(ValueError, match="max_tokens"),
+        ):
+            drv.complete([Message("user", "hi")], model="claude-fable-5", max_tokens=bad)
+        run.assert_not_called()
+
+    def test_temperature_reported_unenforced_and_logged(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        caplog.set_level("WARNING", logger="src.research.llm.claude_code")
+        resp, run = _run_with(_OK_PAYLOAD, temperature=0.7)
+        assert resp.unenforced_params == ("temperature",)
+        cmd = run.call_args.args[0]
+        assert not any("temperature" in str(a) for a in cmd)  # nothing pretends to apply it
+        assert any("cannot enforce temperature" in r.getMessage() for r in caplog.records)
+
+    def test_unrecognised_kwargs_reported_not_dropped(self) -> None:
+        resp, _ = _run_with(_OK_PAYLOAD, top_p=0.9, stop=["x"])
+        assert resp.unenforced_params == ("temperature", "stop", "top_p")
+
+
+class TestUsageProvenance:
+    """CL-h7c1: missing usage is UNKNOWN (None), never coerced to 0."""
+
+    def test_missing_usage_block_is_unknown(self) -> None:
+        payload = {k: v for k, v in _OK_PAYLOAD.items() if k != "usage"}
+        resp, _ = _run_with(payload)
+        assert resp.input_tokens is None
+        assert resp.output_tokens is None
+        assert resp.total_tokens is None
+
+    def test_missing_output_tokens_is_unknown(self) -> None:
+        usage = {k: v for k, v in _OK_PAYLOAD["usage"].items() if k != "output_tokens"}
+        resp, _ = _run_with(dict(_OK_PAYLOAD, usage=usage))
+        assert resp.input_tokens == 175
+        assert resp.output_tokens is None
+
+    def test_missing_cache_component_makes_input_unknown(self) -> None:
+        usage = {k: v for k, v in _OK_PAYLOAD["usage"].items() if k != "cache_read_input_tokens"}
+        resp, _ = _run_with(dict(_OK_PAYLOAD, usage=usage))
+        assert resp.input_tokens is None
+        assert resp.output_tokens == 7
+
+    @pytest.mark.parametrize("bad", ["100", None, -1, 1.5, True])
+    def test_malformed_count_is_unknown(self, bad: Any) -> None:
+        usage = dict(_OK_PAYLOAD["usage"], input_tokens=bad)
+        resp, _ = _run_with(dict(_OK_PAYLOAD, usage=usage))
+        assert resp.input_tokens is None
+
+    def test_measured_zero_output_stays_zero(self) -> None:
+        # Distinctness cuts both ways: a REPORTED 0 is a measurement.
+        usage = dict(_OK_PAYLOAD["usage"], output_tokens=0)
+        resp, _ = _run_with(dict(_OK_PAYLOAD, usage=usage))
+        assert resp.output_tokens == 0
+
+    def test_cost_is_never_a_measured_zero(self) -> None:
+        payload = {k: v for k, v in _OK_PAYLOAD.items() if k != "total_cost_usd"}
+        resp, _ = _run_with(payload)
+        assert resp.usd_cost is None
+        assert resp.nominal_usd_cost is None  # absent estimate is unknown, not $0
+        assert resp.cost_provenance == "subscription_unmetered"
+
+
+class TestServingModelAttribution:
+    """CL-h7c1: modelUsage lists Claude Code's internal utility calls; only an
+    entry matching the REQUESTED model proves who served."""
+
+    def test_utility_model_never_reported_as_server(self) -> None:
+        # Reproduces the prior smoke: requested sonnet, modelUsage shows only
+        # the Haiku utility call (6688 in / 11 out). Old code said "haiku".
+        payload = dict(
+            _OK_PAYLOAD,
+            modelUsage={"claude-haiku-4-5-20251001": {"inputTokens": 6688, "outputTokens": 11}},
+        )
+        resp, _ = _run_with(payload, model="claude-sonnet-4-6")
+        assert resp.model == "unverified"
+        assert resp.requested_model == "claude-sonnet-4-6"
+
+    def test_requested_model_verified_even_with_fewer_output_tokens(self) -> None:
+        payload = dict(
+            _OK_PAYLOAD,
+            modelUsage={
+                "claude-haiku-4-5-20251001": {"outputTokens": 11},
+                "claude-sonnet-4-6": {"outputTokens": 5},
+            },
+        )
+        resp, _ = _run_with(payload, model="claude-sonnet-4-6")
+        assert resp.model == "claude-sonnet-4-6"
+
+    def test_dated_snapshot_and_variant_tag_match_request(self) -> None:
+        dated = dict(_OK_PAYLOAD, modelUsage={"claude-haiku-4-5-20251001": {"outputTokens": 3}})
+        resp, _ = _run_with(dated, model="claude-haiku-4-5")
+        assert resp.model == "claude-haiku-4-5-20251001"
+        tagged = dict(_OK_PAYLOAD, modelUsage={"claude-fable-5[1m]": {"outputTokens": 3}})
+        resp, _ = _run_with(tagged, model="claude-fable-5")
+        assert resp.model == "claude-fable-5[1m]"
+
+    def test_prefix_of_another_model_does_not_match(self) -> None:
+        payload = dict(_OK_PAYLOAD, modelUsage={"claude-opus-4-8": {"outputTokens": 9}})
+        resp, _ = _run_with(payload, model="claude-opus-4")
+        assert resp.model == "unverified"
+
+    def test_requested_entry_without_output_is_unverified(self) -> None:
+        payload = dict(
+            _OK_PAYLOAD,
+            modelUsage={
+                "claude-fable-5": {"outputTokens": 0},
+                "claude-opus-4-8": {"outputTokens": 40},
+            },
+        )
+        resp, _ = _run_with(payload)
+        assert resp.model == "unverified"
+
+    def test_missing_model_usage_is_unverified_not_the_request(self) -> None:
+        payload = {k: v for k, v in _OK_PAYLOAD.items() if k != "modelUsage"}
+        resp, _ = _run_with(payload)
+        assert resp.model == "unverified"
+        assert resp.requested_model == "claude-fable-5"

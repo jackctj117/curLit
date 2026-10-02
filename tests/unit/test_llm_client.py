@@ -15,8 +15,10 @@ from src.research.llm.client import (
     LLMResponse,
     Message,
     _cost_usd,
+    format_usd,
     get_client,
     register_driver,
+    sum_or_unknown,
 )
 
 
@@ -53,9 +55,83 @@ class TestCostHelper:
         cost = _cost_usd("claude-fable-5", 1_000_000, 1_000_000)
         assert cost == pytest.approx(10.0 + 50.0)
 
-    def test_unknown_model_zero_cost(self) -> None:
-        # Unknown model returns 0 — caller can decide to log/warn
-        assert _cost_usd("not-a-real-model", 1000, 1000) == 0.0
+    def test_unknown_model_cost_is_unknown_not_zero(self) -> None:
+        # CL-h7c1 intentionally changed this expectation (was == 0.0): an
+        # unpriced model's cost is UNKNOWN, and 0.0 was summed into spend
+        # totals as if measured.
+        assert _cost_usd("not-a-real-model", 1000, 1000) is None
+
+
+class TestSumOrUnknown:
+    def test_any_unknown_makes_total_unknown(self) -> None:
+        assert sum_or_unknown([0.5, None, 1.0]) is None
+
+    def test_all_known_sums(self) -> None:
+        assert sum_or_unknown([0.5, 0.0, 1.0]) == pytest.approx(1.5)
+
+    def test_empty_is_measured_zero(self) -> None:
+        assert sum_or_unknown([]) == 0.0
+
+    def test_format_usd_never_renders_unknown_as_zero(self) -> None:
+        assert format_usd(None) == "unknown"
+        assert format_usd(0.0) == "$0.0000"
+
+
+class _UnmeteredDriver(Driver):
+    """Returns a subscription-style response: usage and cost unknown."""
+
+    name = "unmetered"
+
+    def __init__(self, api_key: str = "k") -> None:
+        super().__init__(api_key)
+
+    def complete(self, messages, model, max_tokens=4096, temperature=0.0, **kwargs):  # noqa: ANN001
+        return LLMResponse(
+            text="x",
+            model=model,
+            provider=self.name,
+            input_tokens=None,
+            output_tokens=None,
+            usd_cost=None,
+            elapsed_sec=0.01,
+            cost_provenance="subscription_unmetered",
+        )
+
+
+class TestUnknownAggregation:
+    """CL-h7c1: ``usd_total += resp.usd_cost`` must not turn unknown into 0."""
+
+    def test_unknown_cost_and_usage_never_summed_as_zero(self) -> None:
+        stub = _StubDriver()
+        unmetered = _UnmeteredDriver()
+        client = LLMClient(driver=stub)
+        client.complete([Message("user", "a")], model="deepseek-chat")
+        client.driver = unmetered
+        client.complete([Message("user", "b")], model="claude-fable-5")
+        summary = client.usage_summary()
+        assert summary["calls"] == 2
+        assert summary["usd_cost"] is None
+        assert summary["usd_unknown_calls"] == 1
+        # The known part is still available, explicitly labelled partial.
+        assert summary["usd_cost_known"] == pytest.approx((100 * 0.27 + 50 * 1.10) / 1e6)
+        assert summary["input_tokens"] is None
+        assert summary["total_tokens"] is None
+        assert summary["usage_unknown_calls"] == 1
+
+    def test_summary_labels_estimated_totals(self) -> None:
+        # A numeric total from API drivers is a price-table ESTIMATE; the
+        # summary must say so rather than present a bare figure.
+        client = LLMClient(driver=_StubDriver())
+        client.complete([Message("user", "a")], model="deepseek-chat")
+        summary = client.usage_summary()
+        assert summary["usd_cost"] is not None
+        assert summary["usd_cost_provenance"] == ["unspecified"]  # stub declares none
+        client.driver = _UnmeteredDriver()
+        client.complete([Message("user", "b")], model="claude-fable-5")
+        assert client.usage_summary()["usd_cost_provenance"] == [
+            "subscription_unmetered",
+            "unspecified",
+        ]
 
     def test_grok_meaningfully_cheaper_than_fable(self) -> None:
         # Sanity check: grok-4.5 should be much cheaper for the same

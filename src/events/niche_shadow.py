@@ -353,6 +353,8 @@ class ClaudeResearchModel:
             type(getattr(usage, k, None)) is not int for k in ("input_tokens", "output_tokens")
         ):
             raise ValueError("usage_unavailable")
+        if response.input_tokens is None or response.output_tokens is None:
+            raise ValueError("usage_unavailable")  # unknown is not zero (CL-h7c1)
         return ModelReply(
             response.text,
             response.model,

@@ -93,6 +93,8 @@ class _FakeAgent:
     responses: list[str]
     calls: list[dict[str, Any]] = field(default_factory=list)
     _idx: int = 0
+    usd_cost: float | None = 0.001
+    cost_provenance: str = "price_table_estimate"
 
     def run(
         self,
@@ -118,8 +120,9 @@ class _FakeAgent:
             provider="null",
             input_tokens=10,
             output_tokens=20,
-            usd_cost=0.001,
+            usd_cost=self.usd_cost,
             elapsed_sec=0.01,
+            cost_provenance=self.cost_provenance,
         )
 
 
@@ -552,6 +555,65 @@ class TestTranscriptPersistence:
             assert row["agent_name"] in ("bull", "bear")
             assert "content" in row
             assert "usd_cost" in row
+
+    def test_unmetered_cost_is_unknown_in_ledger_and_totals(
+        self,
+        rules_file: Path,
+        transcript_root: Path,
+    ) -> None:
+        """CL-h7c1: one unmetered (claude-code) call makes the debate total
+        unknown — never a $0.0000 line or a partial sum labelled as total."""
+        bull = _FakeAgent("bull", "bull", ["**FINAL_POSITION**: PROMOTE"])
+        bear = _FakeAgent(
+            "bear",
+            "bear",
+            ["**FINAL_POSITION**: REJECT"],
+            usd_cost=None,
+            cost_provenance="subscription_unmetered",
+        )
+        cfg = _build_config(rules_file, [RoundConfig(name="r1", type=RoundType.PARALLEL)])
+        orch = DebateOrchestrator(
+            research_config=cfg,
+            debate_name="promotion_review",
+            agent_factory=_make_factory({"bull": bull, "bear": bear}),
+            transcript_root=transcript_root,
+        )
+        result = orch.run_debate(strategy_slug="strat-unk", candidate_report_text="m")
+        assert result.total_cost_usd is None
+        md_text = result.transcript_path.read_text()
+        assert "cost=unknown (subscription_unmetered)" in md_text
+        assert "cost=$0.0010 (price_table_estimate)" in md_text
+        assert "**Total cost**: unknown" in md_text
+        rows = [
+            json.loads(line)
+            for line in (transcript_root / "strat-unk" / "transcript.jsonl")
+            .read_text()
+            .splitlines()
+        ]
+        bear_row = next(r for r in rows if r["agent_name"] == "bear")
+        assert bear_row["usd_cost"] is None
+        assert bear_row["cost_provenance"] == "subscription_unmetered"
+
+    def test_all_metered_total_is_summed(
+        self,
+        rules_file: Path,
+        transcript_root: Path,
+    ) -> None:
+        bull = _FakeAgent("bull", "bull", ["**FINAL_POSITION**: PROMOTE"])
+        bear = _FakeAgent("bear", "bear", ["**FINAL_POSITION**: REJECT"])
+        cfg = _build_config(rules_file, [RoundConfig(name="r1", type=RoundType.PARALLEL)])
+        orch = DebateOrchestrator(
+            research_config=cfg,
+            debate_name="promotion_review",
+            agent_factory=_make_factory({"bull": bull, "bear": bear}),
+            transcript_root=transcript_root,
+        )
+        result = orch.run_debate(strategy_slug="strat-known", candidate_report_text="m")
+        assert result.total_cost_usd == pytest.approx(0.002)
+        # The figure is labelled as an estimate, never bare "measured" spend.
+        assert "**Total cost**: $0.0020 (price_table_estimate)" in (
+            result.transcript_path.read_text()
+        )
 
     def test_open_questions_appear_in_summary_footer(
         self,

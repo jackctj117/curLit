@@ -384,20 +384,38 @@ client (`src/research/llm/client.py`). Costs surface in three places:
   inspect the transcripts or `jq` the per-run summary).
 
 Provider pricing lives in `src/research/llm/client.py:_PRICING_USD_PER_MTOK`.
-When a provider re-prices, edit that table; unknown models log $0
-(silent — watch for new model IDs in the transcripts).
+API-driver costs are **estimates** from that table
+(`cost_provenance="price_table_estimate"`), not invoices. When a provider
+re-prices, edit the table. A model missing from the table gets
+`usd_cost: null` (`"unpriced_model"`), not $0 (CL-h7c1).
 
-To estimate spend per run:
+**claude-code (the live provider) has no per-call USD cost.** Its rows carry
+`usd_cost: null` with `cost_provenance: "subscription_unmetered"`. Any total
+that includes such a row is reported as unknown, never as a partial sum: the
+`DebateResult.total_cost_usd` field is `None` and the `transcript.md` footer
+reads "Total cost: unknown". `nominal_usd_cost` on `LLMResponse` (the CLI's
+API-equivalent figure) is an estimate and is never counted as spend. Older
+ledgers wrote these rows as `"usd_cost": 0.0`; read any `provider:
+"claude-code"` row as unmetered. See `docs/CURRENT_OPERATIONS.md` §5 for the
+CLI budget controls (`max_tokens` enforced, `temperature` not).
+
+To tally the *estimated* spend across debates without counting unknown as
+$0. Every numeric `usd_cost` here is a price-table estimate, not an invoice:
 
 ```bash
-# Tally costs across today's runs
 .venv/bin/python -c "
 import json, glob
-total = 0.0
+estimated, unknown = 0.0, 0
 for f in glob.glob('docs/research/debates/*/transcript.jsonl'):
     for line in open(f):
-        total += json.loads(line).get('usd_cost', 0)
-print(f'\${total:.2f} across {len(glob.glob(\"docs/research/debates/*/\"))} debates')
+        r = json.loads(line)
+        c = r.get('usd_cost')
+        if r.get('provider') == 'claude-code' or not isinstance(c, (int, float)):
+            unknown += 1
+        else:
+            estimated += c
+print(f'ESTIMATED (price table, not billed) \${estimated:.2f}; '
+      f'{unknown} calls with NO cost figure (total unknown if > 0)')
 "
 ```
 

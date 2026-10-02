@@ -44,7 +44,7 @@ from pathlib import Path
 from typing import Any
 
 from src.dotenv_bootstrap import load_project_env
-from src.research.llm.client import LLMResponse, Message, get_client
+from src.research.llm.client import LLMResponse, Message, format_usd, get_client, sum_or_unknown
 
 logger = logging.getLogger(__name__)
 
@@ -109,11 +109,15 @@ class ComparisonRow:
     provider: str
     model: str
     text: str
-    input_tokens: int
-    output_tokens: int
-    usd_cost: float
+    # None = not reported / not metered — never a measured 0 (CL-h7c1).
+    input_tokens: int | None
+    output_tokens: int | None
+    usd_cost: float | None
     elapsed_sec: float
     quality: QualityScore
+    cost_provenance: str = ""
+    requested_model: str | None = None
+    unenforced_params: tuple[str, ...] = ()
 
 
 def _score_structure(text: str, expected_format: str) -> float:
@@ -205,14 +209,28 @@ def run_one(
     return ComparisonRow(
         prompt_name=prompt.name,
         provider=provider,
-        model=model,
+        # The SERVING model as the driver proved it ("unverified" when it
+        # could not) — never the request relabelled as the server (CL-h7c1).
+        model=resp.model,
         text=resp.text,
         input_tokens=resp.input_tokens,
         output_tokens=resp.output_tokens,
         usd_cost=resp.usd_cost,
         elapsed_sec=resp.elapsed_sec,
         quality=quality,
+        cost_provenance=resp.cost_provenance,
+        requested_model=resp.requested_model or model,
+        unenforced_params=resp.unenforced_params,
     )
+
+
+def cost_ratio(numerator_usd: float | None, denominator_usd: float | None) -> float | None:
+    """Provider cost ratio; unknown when either side's cost is unknown
+    (CL-h7c1) — never a crash, never a ratio against an implied $0."""
+    if numerator_usd is None or denominator_usd is None:
+        return None
+    # 1e-6 floor: avoid division by zero when a provider total is exactly $0.
+    return numerator_usd / max(1e-6, denominator_usd)
 
 
 def load_prompts(path: Path) -> list[PromptSpec]:
@@ -237,18 +255,24 @@ def summarize(rows: list[ComparisonRow]) -> dict[str, Any]:
         n = len(items)
         if n == 0:
             continue
-        total_cost = sum(r.usd_cost for r in items)
+        # Unknown cost (claude-code subscription / unpriced model) makes the
+        # provider total unknown — never a $0 that wins "value per dollar"
+        # by default (CL-h7c1).
+        total_cost = sum_or_unknown(r.usd_cost for r in items)
         avg_quality = sum(r.quality.weighted for r in items) / n
         avg_latency = sum(r.elapsed_sec for r in items) / n
         # USD per "quality point" — lower is better. Floor quality at
         # 0.01 to avoid division-by-zero on a totally broken response.
-        cost_per_quality = total_cost / max(0.01, avg_quality * n)
+        cost_per_quality = None if total_cost is None else total_cost / max(0.01, avg_quality * n)
         summary[prov] = {
             "n_prompts": n,
-            "total_usd": round(total_cost, 6),
+            "total_usd": None if total_cost is None else round(total_cost, 6),
+            "cost_unknown_calls": sum(1 for r in items if r.usd_cost is None),
+            "cost_provenance": sorted({r.cost_provenance for r in items}),
+            "unenforced_params": sorted({p for r in items for p in r.unenforced_params}),
             "avg_quality": round(avg_quality, 3),
             "avg_latency_sec": round(avg_latency, 2),
-            "usd_per_quality": round(cost_per_quality, 6),
+            "usd_per_quality": None if cost_per_quality is None else round(cost_per_quality, 6),
         }
     return summary
 
@@ -326,12 +350,13 @@ def main(argv: list[str] | None = None) -> int:
                 continue
             rows.append(row)
             logger.info(
-                "%s/%s [%s]: q=%.3f cost=$%.4f t=%.1fs",
+                "%s/%s [%s]: q=%.3f cost=%s (%s) t=%.1fs",
                 provider,
                 model,
                 prompt.name,
                 row.quality.weighted,
-                row.usd_cost,
+                format_usd(row.usd_cost),
+                row.cost_provenance,
                 row.elapsed_sec,
             )
 
@@ -350,16 +375,14 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  {k:20s} {v}")
 
     if "claude" in summary and "deepseek" in summary:
-        cost_ratio = summary["claude"]["total_usd"] / max(
-            1e-6,
-            summary["deepseek"]["total_usd"],
-        )
+        ratio = cost_ratio(summary["claude"]["total_usd"], summary["deepseek"]["total_usd"])
         quality_ratio = summary["claude"]["avg_quality"] / max(
             0.01,
             summary["deepseek"]["avg_quality"],
         )
+        cost_txt = "unknown" if ratio is None else f"{ratio:.1f}×"
         print(
-            f"\nClaude / DeepSeek ratios:  cost={cost_ratio:.1f}×  quality={quality_ratio:.2f}×",
+            f"\nClaude / DeepSeek ratios:  cost={cost_txt}  quality={quality_ratio:.2f}×",
         )
 
     print(f"\nFull report: {args.out}")

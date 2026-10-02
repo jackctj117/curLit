@@ -259,6 +259,8 @@ def _agent_resp_dict(resp: AgentResponse) -> dict[str, Any]:
         "provider": resp.provider,
         "input_tokens": resp.input_tokens,
         "output_tokens": resp.output_tokens,
-        "usd_cost": resp.usd_cost,
+        "usd_cost": resp.usd_cost,  # None = unmetered (CL-h7c1)
+        "cost_provenance": resp.cost_provenance,
+        "requested_model": resp.requested_model,
         "elapsed_sec": resp.elapsed_sec,
     }

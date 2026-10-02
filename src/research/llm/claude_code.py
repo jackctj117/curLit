@@ -23,11 +23,36 @@ Operational notes:
     default agent prompt with the role's persona, and the subprocess
     runs from a neutral temp cwd so project CLAUDE.md / settings are
     not loaded into every role call (~19K tokens saved per call).
-  * ``max_tokens`` / ``temperature`` are accepted for interface
-    compatibility but not forwarded — the CLI does not expose them.
-  * ``usd_cost`` is reported as 0.0 (nothing bills to the API org);
-    the CLI's nominal API-equivalent cost is logged at DEBUG for
-    visibility.
+Budget controls and provenance (CL-h7c1) — verified against the
+installed CLI (Claude Code 2.1.287: ``claude --help`` plus the binary's
+env-var handling), not assumed:
+
+  * ``max_tokens`` IS enforced. The CLI has no ``--max-tokens`` flag but
+    honours the ``CLAUDE_CODE_MAX_OUTPUT_TOKENS`` environment variable as
+    the per-request output cap (thinking included); a value above the
+    model's own ceiling is clamped DOWN to that ceiling, never raised.
+    The driver sets it from ``max_tokens`` on every call. Per the binary,
+    hitting the cap yields an API-error result ("exceeded the N output
+    token maximum"); an ``is_error`` payload raises here (fail loud). Not
+    yet observed live — no real calls are made in development.
+  * ``temperature`` is NOT enforceable — the CLI exposes no sampling
+    control. It is reported in ``LLMResponse.unenforced_params`` (and any
+    other unrecognised kwarg alongside it) and logged, never dropped
+    silently.
+  * ``usd_cost`` is None with ``cost_provenance="subscription_unmetered"``:
+    nothing is invoiced per call to the API org, but subscription usage is
+    not a measured $0 either. The CLI's ``total_cost_usd`` is an
+    API-EQUIVALENT ESTIMATE kept in ``nominal_usd_cost`` — never summed as
+    spend.
+  * Tokens come from the payload's ``usage`` block (input + cache
+    creation + cache read; output). A missing / malformed field makes the
+    count None (unknown), never 0.
+  * ``model`` is the serving model only when ``modelUsage`` proves it: an
+    entry matching the REQUESTED model (exact, or with a ``-YYYYMMDD`` /
+    ``[...]`` suffix) that produced output tokens. Otherwise it is
+    ``"unverified"`` — ``modelUsage`` also lists Claude Code's internal
+    utility calls (e.g. Haiku), so "most output tokens" is not proof of
+    who answered. The request is kept in ``requested_model``.
 """
 
 from __future__ import annotations
@@ -35,6 +60,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -43,6 +69,8 @@ import weakref
 from typing import Any
 
 from src.research.llm.client import (
+    COST_SUBSCRIPTION_UNMETERED,
+    UNVERIFIED_MODEL,
     Driver,
     LLMResponse,
     Message,
@@ -54,6 +82,80 @@ logger = logging.getLogger(__name__)
 # Generous per-call ceiling — Fable-class turns on hard prompts can run
 # minutes; the pipeline's role calls are single-shot text generation.
 _CALL_TIMEOUT_SEC = 900
+
+#: Env var the claude CLI reads as its per-request output-token cap (CL-h7c1;
+#: confirmed in the installed 2.1.287 binary — clamped to the model ceiling).
+MAX_OUTPUT_TOKENS_ENV = "CLAUDE_CODE_MAX_OUTPUT_TOKENS"
+
+#: Parameters the CLI cannot enforce at all — reported, never silently dropped.
+_UNENFORCEABLE_PARAMS: tuple[str, ...] = ("temperature",)
+
+#: Cache components of ``usage`` that count toward input load.
+_CACHE_INPUT_FIELDS: tuple[str, ...] = (
+    "cache_creation_input_tokens",
+    "cache_read_input_tokens",
+)
+
+#: modelUsage key suffixes that denote the same model: a dated snapshot
+#: (``claude-haiku-4-5`` → ``claude-haiku-4-5-20251001``) and/or a context
+#: variant tag (``claude-fable-5[1m]``).
+_DATED_SUFFIX = r"(?:-\d{8})?"
+_VARIANT_TAG = re.compile(r"\[[^\]]*\]$")
+
+
+def _nonneg_int(value: object) -> int | None:
+    """A token count, or None when absent / malformed (bool is not a count)."""
+    if type(value) is int and value >= 0:
+        return value
+    return None
+
+
+def _usage_tokens(usage: object) -> tuple[int | None, int | None]:
+    """(input incl. cache, output) from the CLI ``usage`` block.
+
+    Any missing or malformed component makes that side None (unknown) —
+    never coerced to 0 (CL-h7c1).
+    """
+    if not isinstance(usage, dict):
+        return None, None
+    in_tok = _nonneg_int(usage.get("input_tokens"))
+    for key in _CACHE_INPUT_FIELDS:
+        part = _nonneg_int(usage.get(key))
+        in_tok = None if in_tok is None or part is None else in_tok + part
+    return in_tok, _nonneg_int(usage.get("output_tokens"))
+
+
+def _matches_requested(key: str, requested: str) -> bool:
+    base = _VARIANT_TAG.sub("", key)
+    want = _VARIANT_TAG.sub("", requested)
+    return re.fullmatch(re.escape(want) + _DATED_SUFFIX, base) is not None
+
+
+def _resolve_served_model(model_usage: object, requested: str) -> str:
+    """The modelUsage key proven to have served ``requested``, else
+    ``UNVERIFIED_MODEL``. Proof = an entry matching the request that
+    produced output tokens; a different model is never promoted to
+    "served" by output-token volume (the CL-h7c1 Haiku mislabel)."""
+    if not isinstance(model_usage, dict):
+        return UNVERIFIED_MODEL
+    matches = [
+        key
+        for key, entry in model_usage.items()
+        if isinstance(key, str)
+        and _matches_requested(key, requested)
+        and isinstance(entry, dict)
+        and (_nonneg_int(entry.get("outputTokens")) or 0) > 0
+    ]
+    if len(matches) == 1:
+        return matches[0]
+    return UNVERIFIED_MODEL
+
+
+def _nominal_cost(value: object) -> float | None:
+    """The CLI's API-equivalent estimate, or None when absent/malformed."""
+    if isinstance(value, bool) or not isinstance(value, int | float) or value < 0:
+        return None
+    return float(value)
 
 
 class ClaudeCodeDriver(Driver):
@@ -76,6 +178,9 @@ class ClaudeCodeDriver(Driver):
             )
             raise ValueError(msg)
         self._bin: str = bin_path
+        # One WARNING per driver for the unenforceable params; every response
+        # still carries them in ``unenforced_params`` (CL-h7c1).
+        self._warned_unenforced = False
         # Neutral cwd so the CLI doesn't ingest this repo's CLAUDE.md /
         # settings into every role call.
         self._workdir = tempfile.mkdtemp(prefix="curlit-claude-code-")
@@ -100,6 +205,13 @@ class ClaudeCodeDriver(Driver):
         no_tools: bool = False,
         **kwargs: Any,
     ) -> LLMResponse:
+        # The cap is forwarded to the CLI below; a non-positive / non-int
+        # value would be ignored by the CLI (falls back to its default),
+        # i.e. silently uncapped — refuse it instead.
+        if type(max_tokens) is not int or max_tokens <= 0:
+            msg = f"claude-code: max_tokens must be a positive int, got {max_tokens!r}"
+            raise ValueError(msg)
+        unenforced = _UNENFORCEABLE_PARAMS + tuple(sorted(kwargs))
         system_text = "\n\n".join(m.content for m in messages if m.role == "system")
         # The CLI takes one prompt string; flatten multi-turn
         # transcripts with role labels (single [system, user] calls —
@@ -144,6 +256,16 @@ class ClaudeCodeDriver(Driver):
             for k, v in os.environ.items()
             if k not in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
         }
+        # CL-h7c1: enforce the requested output cap. Overrides any inherited
+        # value so the caller's max_tokens — not ambient env — is the cap.
+        env[MAX_OUTPUT_TOKENS_ENV] = str(max_tokens)
+        if not self._warned_unenforced:
+            self._warned_unenforced = True
+            logger.warning(
+                "claude-code: the claude CLI cannot enforce %s — requested "
+                "values are reported in LLMResponse.unenforced_params, not applied",
+                ", ".join(unenforced),
+            )
 
         t0 = time.time()
         # CL-ep4q: pre-load stdin before spawn. A live PIPE can miss the
@@ -154,7 +276,15 @@ class ClaudeCodeDriver(Driver):
             prompt_file.write(prompt.encode("utf-8"))
             prompt_file.flush()
             prompt_file.seek(0)
-            logger.info("claude-code: starting model=%s with preloaded stdin", model)
+            logger.info(
+                "claude-code: starting model=%s max_output_tokens=%d (enforced via %s) "
+                "temperature=%s (NOT enforceable) unenforced=%s with preloaded stdin",
+                model,
+                max_tokens,
+                MAX_OUTPUT_TOKENS_ENV,
+                temperature,
+                list(unenforced),
+            )
             proc = subprocess.run(
                 cmd,
                 capture_output=True,
@@ -196,30 +326,37 @@ class ClaudeCodeDriver(Driver):
             )
             raise RuntimeError(msg)
 
-        usage = payload.get("usage") or {}
-        # Count cached prefix tokens too — they're real context the
-        # call consumed, and the spend summary should reflect load.
-        in_tok = (
-            int(usage.get("input_tokens", 0))
-            + int(usage.get("cache_creation_input_tokens", 0))
-            + int(usage.get("cache_read_input_tokens", 0))
-        )
-        out_tok = int(usage.get("output_tokens", 0))
-        nominal = float(payload.get("total_cost_usd") or 0.0)
-        logger.debug(
-            "claude-code[%s] nominal API-equivalent cost $%.4f "
-            "(billed to subscription, not the API org)",
+        # Count cached prefix tokens too — they're real context the call
+        # consumed. Missing/malformed usage → None (unknown), never 0.
+        in_tok, out_tok = _usage_tokens(payload.get("usage"))
+        if in_tok is None or out_tok is None:
+            logger.warning(
+                "claude-code[%s]: usage not fully reported (in=%s out=%s) — "
+                "recorded as UNKNOWN, not zero",
+                model,
+                in_tok,
+                out_tok,
+            )
+        nominal = _nominal_cost(payload.get("total_cost_usd"))
+        served = _resolve_served_model(payload.get("modelUsage"), model)
+        if served == UNVERIFIED_MODEL:
+            model_usage = payload.get("modelUsage")
+            logger.warning(
+                "claude-code: serving model UNVERIFIED for requested=%s — "
+                "modelUsage keys %s do not prove it",
+                model,
+                sorted(model_usage) if isinstance(model_usage, dict) else None,
+            )
+        logger.info(
+            "claude-code: done requested=%s served=%s in=%s out=%s "
+            "nominal_api_equiv=%s (ESTIMATE; subscription, usd_cost unmetered) "
+            "elapsed=%.2fs",
             model,
-            nominal,
-        )
-        # modelUsage can include Claude Code's internal utility calls
-        # (haiku) alongside the responder — the serving model is the
-        # one that produced the output tokens.
-        model_usage = payload.get("modelUsage") or {}
-        served = max(
-            model_usage,
-            key=lambda m: model_usage[m].get("outputTokens", 0),
-            default=model,
+            served,
+            in_tok,
+            out_tok,
+            "unknown" if nominal is None else f"${nominal:.4f}",
+            elapsed,
         )
         return LLMResponse(
             text=str(payload.get("result", "")),
@@ -227,9 +364,14 @@ class ClaudeCodeDriver(Driver):
             provider=self.name,
             input_tokens=in_tok,
             output_tokens=out_tok,
-            usd_cost=0.0,  # subscription — nothing bills to the API org
+            # Subscription: no per-call USD is metered — unknown, not $0.
+            usd_cost=None,
             elapsed_sec=elapsed,
             raw=payload,
+            requested_model=model,
+            cost_provenance=COST_SUBSCRIPTION_UNMETERED,
+            nominal_usd_cost=nominal,
+            unenforced_params=unenforced,
         )
 
 

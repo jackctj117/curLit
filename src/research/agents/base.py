@@ -45,11 +45,14 @@ class AgentResponse:
     text: str
     model: str
     provider: str
-    input_tokens: int
-    output_tokens: int
-    usd_cost: float
+    # None = not reported / not metered — never a measured 0 (CL-h7c1).
+    input_tokens: int | None
+    output_tokens: int | None
+    usd_cost: float | None
     elapsed_sec: float
     metadata: dict[str, Any] = field(default_factory=dict)
+    requested_model: str | None = None
+    cost_provenance: str = ""
 
 
 class Agent:
@@ -169,6 +172,8 @@ class Agent:
             output_tokens=resp.output_tokens,
             usd_cost=resp.usd_cost,
             elapsed_sec=resp.elapsed_sec,
+            requested_model=resp.requested_model,
+            cost_provenance=resp.cost_provenance,
         )
 
     @staticmethod

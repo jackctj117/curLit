@@ -748,7 +748,37 @@ Grok: no subscription-billed API path exists; deliberately not used.
 Cost controls: triage relevance gate, niche urgency ≥ 7 gate,
 `KIMI_MAX_ITERATIONS`, red-team batching, per-day Alpaca caps.
 The subscription labels describe the existing authentication path, not verified
-per-call billing. CLI budget/usage accounting limitations remain CL-h7c1.
+per-call billing.
+
+**claude-code budget and cost provenance (CL-h7c1 — in code; running daemons pick
+it up only when the operator next restarts them).** Checked against the installed
+CLI (Claude Code 2.1.287), not assumed:
+
+- `max_tokens` IS enforced: the driver sets `CLAUDE_CODE_MAX_OUTPUT_TOKENS` (the
+  CLI has no `--max-tokens` flag) to each caller's `max_tokens`. The cap includes
+  thinking tokens, and the CLI lowers any value above the model's own limit to
+  that limit. Before CL-h7c1 the cap was ignored and calls ran under the CLI
+  default, so a call whose output (thinking included) used to exceed its
+  configured `max_tokens` now fails loudly instead.
+- `temperature` cannot be enforced (the CLI has no sampling control). Each
+  response records it in `LLMResponse.unenforced_params`, and the driver logs it
+  once per driver at WARNING.
+- `usd_cost` is `None` with `cost_provenance="subscription_unmetered"`. It is no
+  longer `0.0`, because nothing meters per-call USD on a subscription. The CLI's
+  `total_cost_usd` is kept only as `nominal_usd_cost`, an API-equivalent
+  ESTIMATE that is never summed as spend. Spend totals (`LLMClient.usage_summary`,
+  `DebateResult.total_cost_usd`, the transcript footer, `scripts/scorecard.py`'s
+  research-spend metric, `scripts/compare_llm_providers.py`) report UNKNOWN when
+  any call in the total is unmetered. The weekly scorecard therefore shows
+  research spend as UNKNOWN (AMBER) while research runs on claude-code. Ledger
+  rows that older code wrote as `provider=claude-code, usd_cost=0.0` are also
+  treated as unknown.
+- Tokens come from the CLI `usage` block. A missing or malformed count is `None`
+  (unknown), never 0.
+- `model` is the serving model only when the payload's `modelUsage` has an entry
+  matching the requested model that produced output. Otherwise it is
+  `"unverified"`, because `modelUsage` also lists Claude Code's internal Haiku
+  utility calls. The request is always kept in `requested_model`.
 
 ---
 

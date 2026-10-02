@@ -24,6 +24,7 @@ import logging
 import os
 import time
 from abc import ABC, abstractmethod
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -73,30 +74,98 @@ class Message:
     content: str
 
 
+# Cost provenance labels (CL-h7c1). ``usd_cost`` alone cannot say whether a
+# number is an estimate, and ``None`` alone cannot say why it is unknown —
+# every response carries one of these so ledgers stay auditable.
+#: tokens x the static ``_PRICING_USD_PER_MTOK`` table — an ESTIMATE of the
+#: API invoice, not a billed amount.
+COST_PRICE_TABLE_ESTIMATE = "price_table_estimate"
+#: model absent from the price table — ``usd_cost`` is None (unknown), never 0.
+COST_UNPRICED_MODEL = "unpriced_model"
+#: ran on a Claude subscription via the ``claude`` CLI — no per-call USD is
+#: metered or invoiced, so ``usd_cost`` is None (unknown), never a measured 0.
+COST_SUBSCRIPTION_UNMETERED = "subscription_unmetered"
+#: driver did not declare a provenance (test doubles, dry-run fakes).
+COST_UNSPECIFIED = "unspecified"
+
+#: ``LLMResponse.model`` value when the provider payload does not prove which
+#: model served the call (CL-h7c1). The requested model is kept separately in
+#: ``LLMResponse.requested_model``; never substitute it here.
+UNVERIFIED_MODEL = "unverified"
+
+
 @dataclass
 class LLMResponse:
-    """Standardized response shape across providers."""
+    """Standardized response shape across providers.
+
+    Unknown is distinct from zero (CL-h7c1): ``input_tokens`` /
+    ``output_tokens`` are None when the provider did not report usage, and
+    ``usd_cost`` is None when no USD figure exists (see ``cost_provenance``).
+    Aggregate with :func:`sum_or_unknown`, never a bare ``sum``.
+    """
 
     text: str
+    #: The SERVING model as proven by the provider payload, or
+    #: ``UNVERIFIED_MODEL`` when the payload does not prove it.
     model: str
     provider: str
-    input_tokens: int
-    output_tokens: int
-    usd_cost: float
+    input_tokens: int | None
+    output_tokens: int | None
+    usd_cost: float | None
     elapsed_sec: float
     raw: Any = field(default=None, repr=False)
+    #: The model the caller asked for (may differ from ``model``).
+    requested_model: str | None = None
+    #: One of the ``COST_*`` labels above.
+    cost_provenance: str = COST_UNSPECIFIED
+    #: Provider-reported API-equivalent cost when nothing is actually billed
+    #: (claude CLI ``total_cost_usd``) — an ESTIMATE, never summed into spend.
+    nominal_usd_cost: float | None = None
+    #: Requested parameters the transport could NOT enforce (e.g.
+    #: ``("temperature",)`` on the claude CLI). Explicit, never silent.
+    unenforced_params: tuple[str, ...] = ()
 
     @property
-    def total_tokens(self) -> int:
+    def total_tokens(self) -> int | None:
+        if self.input_tokens is None or self.output_tokens is None:
+            return None
         return self.input_tokens + self.output_tokens
 
 
-def _cost_usd(model: str, input_tokens: int, output_tokens: int) -> float:
-    """Look up the per-Mtok price and compute cost. 0.0 if model unknown."""
+def _cost_usd(model: str, input_tokens: int, output_tokens: int) -> float | None:
+    """Estimate cost from the per-Mtok price table.
+
+    None when the model is not in the table — an unpriced model's cost is
+    UNKNOWN, not zero (CL-h7c1), so spend totals cannot silently undercount.
+    """
     if model not in _PRICING_USD_PER_MTOK:
-        return 0.0
+        return None
     in_price, out_price = _PRICING_USD_PER_MTOK[model]
     return (input_tokens * in_price + output_tokens * out_price) / 1_000_000.0
+
+
+def _cost_provenance(usd_cost: float | None) -> str:
+    """Provenance label for a price-table estimate (API drivers)."""
+    return COST_PRICE_TABLE_ESTIMATE if usd_cost is not None else COST_UNPRICED_MODEL
+
+
+def sum_or_unknown(values: Iterable[float | None]) -> float | None:
+    """Sum costs where ANY unknown (None) makes the total unknown.
+
+    A total with an unmeasured component is not a measurement (CL-h7c1);
+    callers that want a lower bound must compute and label it explicitly.
+    """
+    total = 0.0
+    for v in values:
+        if v is None:
+            return None
+        total += v
+    return total
+
+
+def format_usd(value: float | None) -> str:
+    """Render a cost for logs/reports; unknown never prints as $0."""
+    return "unknown" if value is None else f"${value:.4f}"
 
 
 # =============================================================================
@@ -233,15 +302,18 @@ class _ClaudeDriver(Driver):
         usage = resp.usage
         in_tok = int(getattr(usage, "input_tokens", 0))
         out_tok = int(getattr(usage, "output_tokens", 0))
+        cost = _cost_usd(served_model, in_tok, out_tok)
         return LLMResponse(
             text=text,
             model=served_model,
             provider=self.name,
             input_tokens=in_tok,
             output_tokens=out_tok,
-            usd_cost=_cost_usd(served_model, in_tok, out_tok),
+            usd_cost=cost,
             elapsed_sec=elapsed,
             raw=resp,
+            requested_model=model,
+            cost_provenance=_cost_provenance(cost),
         )
 
 
@@ -284,15 +356,18 @@ class _OpenAICompatDriver(Driver):
         usage = resp.usage
         in_tok = int(getattr(usage, "prompt_tokens", 0))
         out_tok = int(getattr(usage, "completion_tokens", 0))
+        cost = _cost_usd(model, in_tok, out_tok)
         return LLMResponse(
             text=text,
             model=model,
             provider=self.name,
             input_tokens=in_tok,
             output_tokens=out_tok,
-            usd_cost=_cost_usd(model, in_tok, out_tok),
+            usd_cost=cost,
             elapsed_sec=elapsed,
             raw=resp,
+            requested_model=model,
+            cost_provenance=_cost_provenance(cost),
         )
 
 
@@ -328,7 +403,10 @@ class LLMClient:
     """Provider-agnostic client. Instantiate via ``get_client(provider)``.
 
     Tracks cumulative cost + token usage across calls so the loop runner
-    can summarize daily spend per provider.
+    can summarize daily spend per provider. ``*_total`` counters hold the
+    sum of KNOWN values only; calls with unknown usage / cost are counted
+    separately so a summary never presents a partial sum as the total
+    (CL-h7c1).
     """
 
     def __init__(self, driver: Driver) -> None:
@@ -337,6 +415,11 @@ class LLMClient:
         self.input_tokens_total: int = 0
         self.output_tokens_total: int = 0
         self.usd_total: float = 0.0
+        self.usage_unknown_calls: int = 0
+        self.usd_unknown_calls: int = 0
+        #: Provenance labels of every call — a numeric total is only as
+        #: "measured" as these say (all current drivers: estimates/unknown).
+        self.cost_provenances: set[str] = set()
 
     @property
     def provider(self) -> str:
@@ -358,28 +441,47 @@ class LLMClient:
             **kwargs,
         )
         self.calls += 1
-        self.input_tokens_total += resp.input_tokens
-        self.output_tokens_total += resp.output_tokens
-        self.usd_total += resp.usd_cost
+        if resp.input_tokens is None or resp.output_tokens is None:
+            self.usage_unknown_calls += 1
+        else:
+            self.input_tokens_total += resp.input_tokens
+            self.output_tokens_total += resp.output_tokens
+        if resp.usd_cost is None:
+            self.usd_unknown_calls += 1
+        else:
+            self.usd_total += resp.usd_cost
+        self.cost_provenances.add(resp.cost_provenance)
         logger.debug(
-            "llm[%s/%s] in=%d out=%d cost=$%.4f elapsed=%.2fs",
+            "llm[%s/%s requested=%s] in=%s out=%s cost=%s (%s) elapsed=%.2fs",
             resp.provider,
             resp.model,
+            resp.requested_model,
             resp.input_tokens,
             resp.output_tokens,
-            resp.usd_cost,
+            format_usd(resp.usd_cost),
+            resp.cost_provenance,
             resp.elapsed_sec,
         )
         return resp
 
     def usage_summary(self) -> dict[str, Any]:
+        """Totals are None when ANY call's value was unknown (CL-h7c1); the
+        ``*_known`` fields carry the partial sums, labelled as such, and
+        ``usd_cost_provenance`` says what kind of figure ``usd_cost`` is
+        (e.g. ``["price_table_estimate"]`` — an estimate, not an invoice)."""
+        usage_known = self.usage_unknown_calls == 0
+        known_tokens = self.input_tokens_total + self.output_tokens_total
         return {
             "provider": self.provider,
             "calls": self.calls,
-            "input_tokens": self.input_tokens_total,
-            "output_tokens": self.output_tokens_total,
-            "total_tokens": self.input_tokens_total + self.output_tokens_total,
-            "usd_cost": round(self.usd_total, 6),
+            "input_tokens": self.input_tokens_total if usage_known else None,
+            "output_tokens": self.output_tokens_total if usage_known else None,
+            "total_tokens": known_tokens if usage_known else None,
+            "usage_unknown_calls": self.usage_unknown_calls,
+            "usd_cost": round(self.usd_total, 6) if self.usd_unknown_calls == 0 else None,
+            "usd_cost_known": round(self.usd_total, 6),
+            "usd_unknown_calls": self.usd_unknown_calls,
+            "usd_cost_provenance": sorted(self.cost_provenances),
         }
 
 

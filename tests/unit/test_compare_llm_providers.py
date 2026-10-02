@@ -117,6 +117,70 @@ class TestSummarize:
         # deepseek 0.0001 / 0.8 ≈ 0.000125
         assert out["claude"]["usd_per_quality"] > out["deepseek"]["usd_per_quality"]
 
+    def test_unmetered_provider_cost_is_unknown_not_cheapest(self) -> None:
+        # CL-h7c1: a claude-code (subscription) row has usd_cost None. Summed
+        # as 0 it would "win" value-per-dollar in a CLI-vs-API experiment.
+        rows = [
+            ComparisonRow(
+                prompt_name=f"p{i}",
+                provider="claude-code",
+                model="claude-fable-5",
+                text="t",
+                input_tokens=10,
+                output_tokens=20,
+                usd_cost=cost,
+                elapsed_sec=2.0,
+                quality=QualityScore(1.0, 1.0, 1.0, 1.0),
+                cost_provenance="subscription_unmetered",
+                unenforced_params=("temperature",),
+            )
+            for i, cost in enumerate([None, None])
+        ]
+        out = summarize(rows)["claude-code"]
+        assert out["total_usd"] is None
+        assert out["usd_per_quality"] is None
+        assert out["cost_unknown_calls"] == 2
+        assert out["cost_provenance"] == ["subscription_unmetered"]
+        assert out["unenforced_params"] == ["temperature"]
+
+
+class TestUnknownCostAndModel:
+    """CL-h7c1 review round 1: unknown cost must not crash the ratio, and the
+    report must carry the driver's serving-model verdict, not the request."""
+
+    def test_cost_ratio_unknown_when_either_side_unknown(self) -> None:
+        from scripts.compare_llm_providers import cost_ratio
+
+        assert cost_ratio(None, 0.01) is None
+        assert cost_ratio(0.01, None) is None
+        assert cost_ratio(0.02, 0.01) == pytest.approx(2.0)
+
+    def test_run_one_records_unverified_serving_model(self) -> None:
+        from unittest.mock import MagicMock, patch
+
+        from scripts.compare_llm_providers import run_one
+
+        from src.research.llm.client import LLMResponse
+
+        client = MagicMock()
+        client.complete.return_value = LLMResponse(
+            text="hi",
+            model="unverified",
+            provider="claude-code",
+            input_tokens=None,
+            output_tokens=None,
+            usd_cost=None,
+            elapsed_sec=0.1,
+            requested_model="claude-sonnet-4-6",
+            cost_provenance="subscription_unmetered",
+            unenforced_params=("temperature",),
+        )
+        with patch("scripts.compare_llm_providers.get_client", return_value=client):
+            row = run_one("claude-code", "claude-sonnet-4-6", PromptSpec("p", "s", "u"))
+        assert row.model == "unverified"
+        assert row.requested_model == "claude-sonnet-4-6"
+        assert row.usd_cost is None
+
 
 class TestPromptFile:
     def test_seed_file_loads(self) -> None:

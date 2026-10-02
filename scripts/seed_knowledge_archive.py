@@ -37,7 +37,7 @@ from sqlalchemy import text
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.research.embedding import Embedder, embedding_dim
-from src.research.llm.client import Message, get_client
+from src.research.llm.client import Message, format_usd, get_client
 from src.runtime.run_engine import _build_db_engine
 
 logger = logging.getLogger(__name__)
@@ -180,11 +180,12 @@ def _extract_llm_prior_knowledge(
         except (KeyError, ValueError):
             logger.warning("Skipping malformed chunk in %r: %r", entry.title, c)
     logger.info(
-        "Extracted %d chunks for %r via %s (cost $%.4f)",
+        "Extracted %d chunks for %r via %s (cost %s, %s)",
         len(chunks),
         entry.title,
         resp.provider,
-        resp.usd_cost,
+        format_usd(resp.usd_cost),
+        resp.cost_provenance,
     )
     return chunks
 

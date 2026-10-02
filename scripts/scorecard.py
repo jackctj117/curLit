@@ -245,9 +245,16 @@ def sum_debate_spend(
     lines: Iterable[str],
     start: datetime | None = None,
     end: datetime | None = None,
-) -> float:
+) -> float | None:
     """Sum usd_cost across debate-ledger JSONL entries within window
-    (docs/research/debates/*/transcript.jsonl, field ``usd_cost``)."""
+    (docs/research/debates/*/transcript.jsonl, field ``usd_cost``).
+
+    None (UNKNOWN) when any in-window entry has no measured cost (CL-h7c1):
+    a null / missing / malformed ``usd_cost``, or a ``claude-code`` entry —
+    subscription calls are never metered in USD, and pre-CL-h7c1 ledgers
+    wrote them as ``0.0``, which is not a measurement. A partial sum would
+    understate spend against the budget, so it is not reported as the total.
+    """
     total = 0.0
     for line in lines:
         try:
@@ -261,10 +268,14 @@ def sum_debate_spend(
             continue
         if end is not None and (ts is None or ts > end):
             continue
-        try:
-            total += float(rec.get("usd_cost", 0.0) or 0.0)
-        except (TypeError, ValueError):
-            continue
+        cost = rec.get("usd_cost")
+        if (
+            rec.get("provider") == "claude-code"
+            or isinstance(cost, bool)
+            or not isinstance(cost, int | float)
+        ):
+            return None
+        total += float(cost)
     return total
 
 
@@ -497,6 +508,13 @@ def build_metrics(data: WeekData) -> list[Metric]:
             "Research LLM spend",
             data.spend_usd,
             display=("n/a" if data.spend_usd is None else f"${data.spend_usd:,.2f}"),
+            # Ledger costs are price-table ESTIMATES, not invoices (CL-h7c1).
+            note=(
+                "unknown: window includes calls with no USD cost figure "
+                "(claude-code subscription / unpriced)"
+                if data.spend_usd is None
+                else "price-table estimate, not billed spend"
+            ),
         ),
         build_metric(
             "prices_age_days",

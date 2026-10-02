@@ -378,7 +378,9 @@ class Implementer(Agent):
                 "provider": response.provider,
                 "input_tokens": response.input_tokens,
                 "output_tokens": response.output_tokens,
-                "usd_cost": response.usd_cost,
+                "usd_cost": response.usd_cost,  # None = unmetered (CL-h7c1)
+                "cost_provenance": response.cost_provenance,
+                "requested_model": response.requested_model,
                 "elapsed_sec": response.elapsed_sec,
             },
             "gates": {

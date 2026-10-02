@@ -194,7 +194,6 @@ class TestDebateSpend:
             json.dumps({"timestamp": "2026-07-14T12:00:00+00:00", "usd_cost": 1.75}),
             json.dumps({"timestamp": "2026-06-01T12:00:00+00:00", "usd_cost": 99.0}),
             "garbage line",
-            json.dumps({"timestamp": "2026-07-14T13:00:00+00:00"}),  # no cost
         ]
 
     def test_sums_within_window(self):
@@ -207,6 +206,32 @@ class TestDebateSpend:
 
     def test_no_window_sums_all_valid(self):
         assert sum_debate_spend(self._lines()) == pytest.approx(101.0)
+
+    # CL-h7c1 intentionally changed this fixture: it used to include an
+    # in-window record with NO usd_cost that was skipped (counted as $0) and
+    # still expected a 2.0 total. A record without a measured cost now makes
+    # the window total UNKNOWN — covered by the tests below.
+
+    @pytest.mark.parametrize(
+        "rec",
+        [
+            {"timestamp": "2026-07-14T13:00:00+00:00"},  # no cost field
+            {"timestamp": "2026-07-14T13:00:00+00:00", "usd_cost": None},
+            {"timestamp": "2026-07-14T13:00:00+00:00", "usd_cost": "n/a"},
+            # Pre-CL-h7c1 claude-code ledgers wrote 0.0 for unmetered calls.
+            {"timestamp": "2026-07-14T13:00:00+00:00", "provider": "claude-code", "usd_cost": 0.0},
+        ],
+    )
+    def test_unmeasured_cost_in_window_makes_total_unknown(self, rec):
+        lines = [*self._lines(), json.dumps(rec)]
+        total = sum_debate_spend(lines, start=T0 - timedelta(days=1), end=T0 + timedelta(days=7))
+        assert total is None
+
+    def test_unmeasured_cost_outside_window_is_ignored(self):
+        rec = {"timestamp": "2026-06-01T13:00:00+00:00", "provider": "claude-code", "usd_cost": 0.0}
+        lines = [*self._lines(), json.dumps(rec)]
+        total = sum_debate_spend(lines, start=T0 - timedelta(days=1), end=T0 + timedelta(days=7))
+        assert total == pytest.approx(2.0)
 
 
 # =============================================================================

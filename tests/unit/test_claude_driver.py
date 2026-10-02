@@ -108,3 +108,24 @@ class TestTemperatureDeprecationRetry:
 
         # No retry should have happened
         assert mock_client.messages.create.call_count == 1
+
+
+class TestCostProvenance:
+    """CL-h7c1: API costs are labelled price-table ESTIMATES; an unpriced
+    model's cost is unknown, never $0."""
+
+    def test_priced_model_is_labelled_estimate(self) -> None:
+        driver, mock_client = _build_driver_with_mock_client()
+        mock_client.messages.create.return_value = _fake_response()
+        resp = driver.complete([Message("user", "hi")], model="claude-sonnet-4-6")
+        # 10 in x $3/Mtok + 20 out x $15/Mtok (client._PRICING_USD_PER_MTOK)
+        assert resp.usd_cost == (10 * 3.0 + 20 * 15.0) / 1e6
+        assert resp.cost_provenance == "price_table_estimate"
+        assert resp.requested_model == "claude-sonnet-4-6"
+
+    def test_unpriced_model_cost_unknown(self) -> None:
+        driver, mock_client = _build_driver_with_mock_client()
+        mock_client.messages.create.return_value = _fake_response()
+        resp = driver.complete([Message("user", "hi")], model="claude-unknown-9")
+        assert resp.usd_cost is None
+        assert resp.cost_provenance == "unpriced_model"
