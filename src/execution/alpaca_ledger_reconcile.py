@@ -155,12 +155,15 @@ def ingest_snapshot(engine: Engine, snapshot: Record) -> list[Record]:
     ledger = Ledger(engine, account)
     logger.info("Persisting immutable account evidence and allocation projections")
     # Intent persistence precedes order observation and can safely be replayed if
-    # later evidence conflicts. No network submission is possible in this module.
+    # later evidence conflicts. No network submission is possible in this module,
+    # so per-intent lines are DEBUG with one aggregate INFO per call (CL-cw5x).
+    replayed = newly_recorded = 0
     for projection in projections:
         if projection["evidence_status"] != "fill_verified":
             continue
         for index, order in enumerate(projection["orders"]):
-            ledger.create_intent(
+            replayed += 1
+            newly_recorded += ledger.create_intent(
                 intent_id=order["client_order_id"],
                 client_id=order["client_order_id"],
                 book=projection["book"],
@@ -173,8 +176,13 @@ def ingest_snapshot(engine: Engine, snapshot: Record) -> list[Record]:
                 multiplier=projection["multiplier"],
                 created_at=timestamp(order["submitted_at"]),
                 detail={"origin": "broker_backfill"},
+                replay=True,
             )
             ledger.observe_order(order["client_order_id"], order)
+    logger.info(
+        "Replayed broker-observed order intents (no broker submission)",
+        extra={"extra_data": {"replayed": replayed, "newly_recorded": newly_recorded}},
+    )
     with engine.begin() as conn:
         conn.execute(
             text(

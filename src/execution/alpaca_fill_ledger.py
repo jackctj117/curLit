@@ -278,7 +278,18 @@ class Ledger:
         multiplier: Decimal,
         created_at: datetime,
         detail: Record,
+        replay: bool = False,
     ) -> bool:
+        """Durably record an order intent and its attempt; True only if newly inserted.
+
+        ``replay`` changes LOGGING ONLY (CL-cw5x). Callers recording orders the
+        broker already reports (``ingest_snapshot`` backfill, re-run every
+        close-only cycle) pass ``replay=True``: no broker submission follows, so
+        the per-intent line is DEBUG and the caller logs a per-cycle aggregate.
+        The default keeps the INFO "before broker submission" line, emitted
+        before any write, for intents a caller is about to submit. The SQL
+        executed, its order, and the return value are identical either way.
+        """
         if (
             book not in {"options", "equities"}
             or purpose not in {"entry", "exit"}
@@ -291,10 +302,13 @@ class Ledger:
         ):
             raise ValueError("invalid intent")
         timestamp(created_at)
-        logger.info(
-            "Persisting order intent before broker submission",
-            extra={"extra_data": {"intent_id": intent_id, "purpose": purpose, "symbol": symbol}},
-        )
+        context = {"extra_data": {"intent_id": intent_id, "purpose": purpose, "symbol": symbol}}
+        if replay:
+            logger.debug(
+                "Persisting broker-observed order intent (replay, no submission)", extra=context
+            )
+        else:
+            logger.info("Persisting order intent before broker submission", extra=context)
         with self.engine.begin() as conn:
             conn.execute(
                 text(
