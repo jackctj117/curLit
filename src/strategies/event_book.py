@@ -50,6 +50,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
@@ -225,22 +226,17 @@ class EventBook:
             return
         try:
             payload = json.loads(path.read_text())
-        except (ValueError, OSError):
-            # A silently reset book under-counts losses, but refusing to
-            # boot over a torn file is worse. Back the file up loudly and
-            # start fresh — the operator can restore realized_pnl by hand.
-            corrupt = path.with_name(path.name + ".corrupt")
-            logger.error(
-                "Event book state %s is corrupt — backing up to %s and starting "
-                "a FRESH book (realized P&L reset to 0; loss cap restarts).",
-                path,
-                corrupt,
-            )
-            try:
-                os.replace(path, corrupt)
-            except OSError:
-                logger.exception("Could not back up corrupt event book state")
-            return
+        except (ValueError, OSError) as exc:
+            # CL-74u9: preserve the evidence in place. A fresh book would
+            # silently erase owned positions and grant a new loss budget.
+            raise ValueError(
+                f"Event book state {path} unreadable; reconciliation required"
+            ) from exc
+        if not isinstance(payload, dict):
+            raise ValueError(f"Event book state {path} must be an object")
+        for collection in ("open_positions", "pending_exits", "pending_entries"):
+            if collection in payload and not isinstance(payload[collection], dict):
+                raise ValueError(f"Event book {collection} must be an object")
         # Fail LOUD on a symbol present in more than one book (CL-9dhg
         # finding 11; extended to pending_entries by the entry half of
         # CL-hqyj): a leg awaits its stop (open), awaits broker flat
@@ -263,14 +259,15 @@ class EventBook:
             )
         self.realized_pnl = float(payload.get("realized_pnl", 0.0))
         self.closed_trades = int(payload.get("closed_trades", 0))
+        if not math.isfinite(self.realized_pnl) or self.closed_trades < 0:
+            raise ValueError("Event book has invalid loss/trade history; reconciliation required")
         for sym, pos in (payload.get("open_positions") or {}).items():
             try:
                 self.open_positions[sym] = self._position_from_payload(sym, pos)
-            except (KeyError, TypeError, ValueError):
-                logger.warning(
-                    "Skipping unparseable persisted event position %r",
-                    sym,
-                )
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"Unparseable event position {sym}; refusing partial book"
+                ) from exc
         # pending_exits is ABSENT from pre-CL-8cw1 state files (the live
         # format at rollout) — a missing key MUST load as an empty dict.
         for sym, entry in (payload.get("pending_exits") or {}).items():
@@ -291,11 +288,8 @@ class EventBook:
                     emit_count=int(entry.get("emit_count", 1)),
                     trigger_broker_qty=(float(qty_raw) if qty_raw is not None else None),
                 )
-            except (KeyError, TypeError, ValueError):
-                logger.warning(
-                    "Skipping unparseable persisted pending exit %r",
-                    sym,
-                )
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ValueError(f"Unparseable pending exit {sym}; refusing partial book") from exc
         # pending_entries is ABSENT from every pre-CL-hqyj-entry state file
         # (the live format at rollout) — a missing key MUST load as an empty
         # dict (backward compat with data/event_book_state.json).
@@ -311,16 +305,12 @@ class EventBook:
                     entry_broker_qty=(float(qty_raw) if qty_raw is not None else None),
                     confirmed_qty=float(entry.get("confirmed_qty", 0.0)),
                 )
-            except (KeyError, TypeError, ValueError):
-                logger.warning(
-                    "Skipping unparseable persisted pending entry %r",
-                    sym,
-                )
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ValueError(f"Unparseable pending entry {sym}; refusing partial book") from exc
 
     @staticmethod
     def _position_from_payload(sym: str, pos: dict[str, Any]) -> EventPosition:
-        """Parse one persisted position payload (raises on bad shape —
-        callers decide the skip-with-warning policy)."""
+        """Parse one persisted position; invalid state must prevent startup."""
         entry_ts = datetime.fromisoformat(pos["entry_ts"])
         if entry_ts.tzinfo is None:
             entry_ts = entry_ts.replace(tzinfo=UTC)

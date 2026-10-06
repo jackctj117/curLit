@@ -421,7 +421,7 @@ class TestRobustness:
         # EURUSD shows up as orphaned_broker because no good state record.
         assert any(e.symbol == "EURUSD" for e in report.entries)
 
-    def test_broker_exception_returns_empty(self) -> None:
+    def test_broker_exception_preserves_unknown_instead_of_flat(self) -> None:
         class _BrokenBroker:
             def get_positions(self) -> list[Position]:
                 raise RuntimeError("broker offline")
@@ -450,9 +450,9 @@ class TestRobustness:
             _FakeStateStore({"s1": None}),  # type: ignore[arg-type]
             strategies=[_StrategyDouble("s1")],
         )
-        report = recon.reconcile()
-        # No entries because broker had no positions and internal is flat.
-        assert report.entries == []
+        # CL-oqos: no snapshot means no classification or book mutation.
+        with pytest.raises(RuntimeError, match="snapshot unavailable"):
+            recon.reconcile()
 
     def test_no_strategies_rejected(self) -> None:
         broker = _make_broker_with([])

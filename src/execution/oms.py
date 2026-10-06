@@ -76,6 +76,26 @@ class OrderIntent:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
+class SubmissionStatus(enum.StrEnum):
+    """CL-o9sq: acknowledgement is not execution, and a timeout is not rejection."""
+
+    FILLED = "filled"
+    AT_TARGET = "at_target"
+    WORKING = "working"
+    REJECTED = "rejected"
+    BLOCKED = "blocked"
+    SKIPPED = "skipped"
+    UNKNOWN = "submission_unknown"
+
+
+@dataclass(frozen=True)
+class SubmissionResult:
+    intent_id: str
+    status: SubmissionStatus
+    target_reached: bool = False
+    order_id: str | None = None
+
+
 class OrderManager:
     def __init__(
         self,
@@ -140,6 +160,18 @@ class OrderManager:
         bypass_halt: bool = False,
         positions: list[Any] | None = None,
     ) -> str:
+        """Legacy ID-only interface; the returned ID is NOT proof of execution."""
+        return self.submit_intent_result(
+            intent, bypass_halt=bypass_halt, positions=positions
+        ).intent_id
+
+    def submit_intent_result(
+        self,
+        intent: OrderIntent,
+        *,
+        bypass_halt: bool = False,
+        positions: list[Any] | None = None,
+    ) -> SubmissionResult:
         """Convert one intent into a broker order (delta vs current position).
 
         bypass_halt (CL-i4tx): reserved for the risk layer's emergency
@@ -189,7 +221,7 @@ class OrderManager:
         *,
         bypass_halt: bool = False,
         positions: list[Any] | None = None,
-    ) -> str:
+    ) -> SubmissionResult:
         """submit_intent body, run while holding the per-symbol reservation
         (CL-sbrp). ``positions`` is forced to None when the reservation was
         contended, so the delta is recomputed from a fresh, post-fill book."""
@@ -215,6 +247,18 @@ class OrderManager:
             reducing = abs(intent.target_position) < abs(current_qty) and (
                 intent.target_position == 0.0 or intent.target_position * current_qty > 0
             )
+            if bypass_halt and not reducing and delta != 0:
+                # A position can change between the risk snapshot and this
+                # submit. An emergency label must never authorize buying back
+                # an already-reduced leg or crossing through zero.
+                logger.critical(
+                    "Emergency intent %s is no longer reducing (%s %.4f -> %.4f); blocked",
+                    intent.intent_id,
+                    intent.symbol,
+                    current_qty,
+                    intent.target_position,
+                )
+                return SubmissionResult(intent.intent_id, SubmissionStatus.BLOCKED)
             # CL-0deu.2: the durable account halt is consulted for every
             # non-reducing intent, inside the same lock as the local flag, so
             # the decision and the halt write serialize. Unknown state blocks.
@@ -234,7 +278,7 @@ class OrderManager:
                     current_qty,
                     durable_block.detail,
                 )
-                return intent.intent_id
+                return SubmissionResult(intent.intent_id, SubmissionStatus.BLOCKED)
             if self._halted and not bypass_halt:
                 if not reducing:
                     logger.warning(
@@ -245,7 +289,7 @@ class OrderManager:
                         intent.target_position,
                         current_qty,
                     )
-                    return intent.intent_id
+                    return SubmissionResult(intent.intent_id, SubmissionStatus.BLOCKED)
                 logger.warning(
                     "OMS halted — allowing risk-REDUCING intent %s (%s target=%.4f current=%.4f)",
                     intent.intent_id,
@@ -273,7 +317,12 @@ class OrderManager:
             )
 
             if abs(delta) < self._min_trade_size(intent.symbol):
-                return intent.intent_id
+                # Dust below venue minimum is not a completed flatten.
+                return SubmissionResult(
+                    intent.intent_id,
+                    SubmissionStatus.AT_TARGET if delta == 0 else SubmissionStatus.SKIPPED,
+                    target_reached=delta == 0,
+                )
 
             side = "buy" if delta > 0 else "sell"
             # Registered under the lock, before it is released for the HTTP
@@ -289,13 +338,11 @@ class OrderManager:
         # short _pending mutations.
         if counts_as_entry:
             try:
-                self._submit_with_retry(intent, side, abs(delta), emergency=bypass_halt)
+                return self._submit_with_retry(intent, side, abs(delta), emergency=bypass_halt)
             finally:
                 with self._lock:
                     self._inflight_entries -= 1
-            return intent.intent_id
-        self._submit_with_retry(intent, side, abs(delta), emergency=bypass_halt)
-        return intent.intent_id
+        return self._submit_with_retry(intent, side, abs(delta), emergency=bypass_halt)
 
     async def submit_intent_async(
         self,
@@ -327,7 +374,7 @@ class OrderManager:
         original_qty: float,
         *,
         emergency: bool = False,
-    ) -> None:
+    ) -> SubmissionResult:
         """Place the order, applying RejectionHandler policy on broker failures."""
         attempt = 1
         size_fraction = 1.0
@@ -359,7 +406,13 @@ class OrderManager:
                             intent.symbol,
                             intent.target_position,
                         )
-                        return
+                        return SubmissionResult(
+                            intent.intent_id,
+                            SubmissionStatus.AT_TARGET
+                            if residual == 0
+                            else SubmissionStatus.SKIPPED,
+                            target_reached=residual == 0,
+                        )
                 except Exception:
                     logger.debug(
                         "retry re-read failed for %s; proceeding with retry",
@@ -387,6 +440,12 @@ class OrderManager:
             )
             try:
                 placed = self.broker.place_order(order)
+                if placed.status == OrderStatus.CANCELLED:
+                    # A generic canceled order may already have partial fills;
+                    # this adapter contract has no cumulative-fill field.
+                    return SubmissionResult(
+                        intent.intent_id, SubmissionStatus.UNKNOWN, order_id=placed.order_id or None
+                    )
                 if placed.status == OrderStatus.REJECTED:
                     # Ultrareview #2: a REJECTED status must flow through the
                     # SAME rejection policy as a transport exception — before
@@ -453,12 +512,45 @@ class OrderManager:
                             "attempt": attempt,
                         },
                     )
-                return
+                return SubmissionResult(
+                    intent.intent_id,
+                    SubmissionStatus.FILLED
+                    if placed.status == OrderStatus.FILLED
+                    else SubmissionStatus.WORKING,
+                    target_reached=(
+                        placed.status == OrderStatus.FILLED
+                        and qty == original_qty
+                        and placed.quantity == original_qty
+                    ),
+                    order_id=placed.order_id or None,
+                )
             except Exception as exc:
+                # Emergency retries must not turn an ambiguous acceptance into
+                # duplicate closes. Preserve uncertainty for reconciliation.
+                # Explicit broker rejects are terminal and safe to reconsider
+                # on the next risk tick against the original reduction target.
+                if emergency:
+                    status = (
+                        SubmissionStatus.REJECTED
+                        if isinstance(exc, BrokerRejectedOrderError)
+                        else SubmissionStatus.UNKNOWN
+                    )
+                    logger.error(
+                        "Emergency submission unresolved: intent=%s status=%s; no blind retry",
+                        intent.intent_id,
+                        status,
+                        exc_info=True,
+                    )
+                    return SubmissionResult(intent.intent_id, status)
                 if self.rejection_handler is None:
                     # Legacy behavior: log and drop.
                     logger.exception("Order failed for %s", intent.intent_id)
-                    return
+                    return SubmissionResult(
+                        intent.intent_id,
+                        SubmissionStatus.REJECTED
+                        if isinstance(exc, BrokerRejectedOrderError)
+                        else SubmissionStatus.UNKNOWN,
+                    )
 
                 outcome = self.rejection_handler.handle(
                     intent=intent,
@@ -483,7 +575,12 @@ class OrderManager:
                         attempt,
                         outcome.final_resolution.value,
                     )
-                    return
+                    return SubmissionResult(
+                        intent.intent_id,
+                        SubmissionStatus.REJECTED
+                        if isinstance(exc, BrokerRejectedOrderError)
+                        else SubmissionStatus.UNKNOWN,
+                    )
 
                 if outcome.sleep_sec > 0:
                     self.rejection_handler.sleep(outcome.sleep_sec)

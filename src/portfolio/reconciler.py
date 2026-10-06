@@ -23,6 +23,7 @@ audit trail starts at engine boot, not after the first trade.
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import Enum
@@ -475,13 +476,28 @@ class PositionReconciler:
     def _fetch_broker_positions(self) -> dict[str, Position]:
         try:
             positions = self.broker.get_positions()
-        except Exception:
-            logger.exception("Reconciliation: broker.get_positions() failed")
-            return {}
+            if not isinstance(positions, list):
+                raise ValueError("positions must be a complete list")
+            result: dict[str, Position] = {}
+            for position in positions:
+                key = canonical_symbol(position.symbol)
+                if (
+                    not key
+                    or key in result
+                    or isinstance(position.quantity, bool)
+                    or not math.isfinite(position.quantity)
+                ):
+                    raise ValueError("invalid or duplicate broker position")
+                result[key] = position
+        except Exception as exc:
+            logger.exception("Reconciliation: snapshot unavailable; no book or order changes")
+            # LiveEngine._reconcile_startup already catches this and halts.
+            # Do not call confirm_entries or apply any policy using fake flatness.
+            raise RuntimeError("Reconciliation snapshot unavailable") from exc
         # CL-n5xk (P0): canonical keys so an underscore-dialect broker leg
         # (paper USD_CAD) matches the canonical internal key (USDCAD) instead
         # of being flattened as a false orphan.
-        return {canonical_symbol(p.symbol): p for p in positions}
+        return result
 
     def _fetch_internal_positions_per_symbol(
         self,

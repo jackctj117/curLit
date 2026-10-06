@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import math
 import os
 import time
 from datetime import UTC, datetime
@@ -76,6 +77,7 @@ class LiveEngine:
         # _ALIGNMENT_MISMATCH_STREAK_TO_FLAG consecutive checks.
         self._position_mismatch: bool | None = None
         self._alignment_mismatch_streak = 0
+        self._account_read_failures = 0
         # CL-i4tx: RiskContextBuilder assembles the REAL kill-switch context
         # each health tick (daily PnL, portfolio DD, VIX/CVIX, price age,
         # position mismatch) — before this only {"equity"} was passed and
@@ -457,12 +459,29 @@ class LiveEngine:
                 ack()
             except Exception:
                 logger.warning("Health: account-halt acknowledgement failed", exc_info=True)
-        account = self.broker.get_account()
-        logger.debug("Health: equity=%.2f", account.equity)
+        try:
+            account = self.broker.get_account()
+            # Missing/nonfinite equity cannot enter the drawdown calculation.
+            equity = float(account.equity)
+            if isinstance(account.equity, bool) or not math.isfinite(equity):
+                raise ValueError("account equity is nonfinite")
+        except Exception:
+            self._account_read_failures += 1
+            logger.exception(
+                "Health account snapshot unavailable (consecutive=%d)",
+                self._account_read_failures,
+            )
+            # Match the existing three-failure switch-evaluation policy, but
+            # count independently because check() cannot run without equity.
+            if self._account_read_failures >= 3:
+                self._startup_halt("account_snapshot_unavailable")
+            return
+        self._account_read_failures = 0
+        logger.debug("Health: equity=%.2f", equity)
         if self.kill_switch_manager is None:
             return
         if self.risk_context_builder is not None:
-            context = self.risk_context_builder.build(float(account.equity))
+            context = self.risk_context_builder.build(equity)
             if self.risk_context_builder.consume_day_rollover():
                 # CL-ssoh (P1): automatic rollover re-arms the daily trigger
                 # dedup but must NOT clear active halt causes while the OMS is
@@ -471,7 +490,7 @@ class LiveEngine:
                 # manual /api/system/resume path keeps the default (clears).
                 self.kill_switch_manager.reset_daily(clear_causes=False)
         else:
-            context = {"equity": account.equity}
+            context = {"equity": equity}
         self.kill_switch_manager.check(context)
         # CL-nxjx: after evaluating, auto-lift a halt whose ONLY cause was a
         # data-availability gate (stale_prices) that has since cleared — so

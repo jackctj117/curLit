@@ -308,7 +308,9 @@ class _BlockingBroker(Broker):
         raise NotImplementedError
 
     def get_positions(self) -> list[Position]:
-        return []
+        # The concurrent emergency request targets 500: give it a real 1000
+        # holding to reduce. An emergency label alone cannot open a position.
+        return [Position("GBPUSD", 1000.0, 1.3)]
 
     def get_account(self) -> Account:
         return Account(balance=100_000.0, equity=100_000.0)

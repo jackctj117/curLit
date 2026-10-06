@@ -51,6 +51,7 @@ an entry-paused engine. Only ``/api/system/resume`` clears them.
 
 import json
 import logging
+import math
 import os
 import threading
 from collections.abc import Callable, Iterable
@@ -61,7 +62,7 @@ from pathlib import Path
 from typing import Any
 
 from src.execution.broker import canonical_symbol
-from src.execution.oms import OrderIntent
+from src.execution.oms import OrderIntent, SubmissionResult, SubmissionStatus
 from src.monitoring.metrics import kill_switch_triggered
 
 logger = logging.getLogger(__name__)
@@ -416,6 +417,11 @@ class KillSwitchManager:
         # Exposed for the live engine's RiskContextBuilder wiring (CL-i4tx).
         self.data_provider = data_provider
         self._triggered_today: set[str] = set()
+        # CL-o9sq: fixed per-action targets avoid repeated halving when only
+        # some legs complete. Uncertain/working submissions fence the symbol
+        # across ALL de-risk actions until explicitly reconciled.
+        self._derisk_targets: dict[str, dict[str, tuple[str, float]]] = {}
+        self._derisk_results: dict[tuple[str, str], SubmissionResult] = {}
         # CL-nxjx: switches currently responsible for a halt. A DATA-gate
         # cause is removed (and re-armed) by attempt_auto_resume when its
         # condition clears; a RISK cause stays until a manual resume. When
@@ -643,19 +649,15 @@ class KillSwitchManager:
                     sw.action,
                     log_ctx,
                 )
-                effective = True
+                effective = False
                 # CL-d7ex: snapshot a pre-existing cause-less halt BEFORE this
                 # switch's action halts the OMS and records its own cause.
                 self._adopt_unattributed_halt()
                 try:
                     effective = self._execute_action(sw.action)
                 except Exception:
-                    # A PARTIALLY applied action still spends the trigger —
-                    # endless re-fires of a half-working action are worse
-                    # than one audit-trailed attempt. Only a could-not-even-
-                    # attempt (position fetch failed → effective=False)
-                    # leaves the trigger unspent so it re-fires next tick
-                    # while open risk persists (CL-8cw1).
+                    # An exception is never evidence of completed de-risking.
+                    self.oms.halt_new_trades()
                     logger.exception(
                         "Kill switch %s action %s failed",
                         sw.name,
@@ -727,7 +729,7 @@ class KillSwitchManager:
                 )
                 return False
             logger.critical(
-                "reduce_50pct executed: %d halving intents submitted via OMS; "
+                "reduce_50pct completed: %d original reduction targets confirmed; "
                 "new trades halted. OPERATOR ACTION REQUIRED: verify fills "
                 "and residual exposure. Open-position correlation evidence "
                 "(if corr-triggered): directions=%s mean_adjusted=%s "
@@ -765,7 +767,7 @@ class KillSwitchManager:
                 )
                 return False
             logger.critical(
-                "flatten_all executed: %d closing intents submitted via OMS; "
+                "flatten_all completed: %d closing targets confirmed; "
                 "new trades halted. OPERATOR ACTION REQUIRED: verify all "
                 "positions closed at the broker.",
                 result[0],
@@ -788,8 +790,8 @@ class KillSwitchManager:
         strategy_id: str,
     ) -> tuple[int, int] | None:
         """Submit ``target = net_qty * target_fraction`` intents for every
-        net open broker position. Returns ``(submitted, actionable)`` — how
-        many intents were accepted vs how many net positions needed one — so
+        net open broker position. Returns ``(completed, actionable)`` — how
+        many targets were confirmed vs how many positions needed one — so
         the caller can distinguish a COMPLETE de-risk from a PARTIAL one
         (some legs rejected, CL-xh6g). ``None`` when the position fetch failed
         (nothing was even attempted — distinct from (0, 0), genuinely flat).
@@ -803,10 +805,22 @@ class KillSwitchManager:
         ever REDUCE exposure.
         """
         try:
-            positions = self.broker.get_positions() or []
+            positions = self.broker.get_positions()
+            if not isinstance(positions, list):
+                raise ValueError("Broker position snapshot is not a list")
+            # Validate the WHOLE snapshot before acting on any leg; a partial
+            # parse must not make omitted exposure look flat.
+            for pos in positions:
+                if (
+                    not isinstance(pos.symbol, str)
+                    or not canonical_symbol(pos.symbol)
+                    or isinstance(pos.quantity, bool)
+                    or not math.isfinite(float(pos.quantity))
+                ):
+                    raise ValueError("Broker position snapshot contains an invalid leg")
         except Exception:
             logger.exception(
-                "%s: broker.get_positions() failed — no intents submitted; halting only",
+                "%s: broker position snapshot unavailable/invalid — no orders; halting only",
                 strategy_id,
             )
             # None (not 0) so the caller can distinguish "couldn't
@@ -823,34 +837,76 @@ class KillSwitchManager:
             key = canonical_symbol(symbol)
             net_qty[key] = net_qty.get(key, 0.0) + float(qty)
             route_symbol.setdefault(key, str(symbol))
-        submitted = 0
-        actionable = 0
+        targets = self._derisk_targets.setdefault(strategy_id, {})
         for key in sorted(net_qty):
             qty = net_qty[key]
             if abs(qty) < _MIN_ACTIONABLE_QTY:
                 continue
-            actionable += 1
+            targets.setdefault(key, (route_symbol[key], qty * target_fraction))
+        submitted = 0
+        actionable = len(targets)
+        for key, (symbol, target) in targets.items():
+            previous = self._derisk_results.get((strategy_id, key))
+            if any(
+                sym == key and result.status in (SubmissionStatus.WORKING, SubmissionStatus.UNKNOWN)
+                for (_, sym), result in self._derisk_results.items()
+            ):
+                logger.critical(
+                    "%s: %s has an unresolved order; no duplicate close; reconciliation required",
+                    strategy_id,
+                    symbol,
+                )
+                continue
+            qty = net_qty.get(key, 0.0)
+            # Another verified reduction may have passed the original target.
+            # Never buy back exposure or flip direction to recreate it.
+            if qty == target or (abs(qty) < abs(target) and qty * target >= 0):
+                submitted += 1
+                continue
+            if previous is not None and previous.target_reached:
+                # A confirmed fill plus a disagreeing current snapshot needs
+                # reconciliation (stale positions or newly-added exposure).
+                # Neither declare the book safe nor blindly repeat the fill.
+                logger.critical(
+                    "%s: %s previously filled but target no longer verified; reconcile",
+                    strategy_id,
+                    symbol,
+                )
+                continue
+            if target != 0 and qty * target < 0:
+                logger.critical(
+                    "%s: %s reversed since risk decision; reconcile", strategy_id, symbol
+                )
+                continue
             intent = OrderIntent(
                 strategy_id=strategy_id,
-                symbol=route_symbol[key],
-                target_position=qty * target_fraction,
+                symbol=symbol,
+                target_position=target,
                 urgency="urgent",
             )
             try:
-                self.oms.submit_intent(intent, bypass_halt=True)
-                submitted += 1
+                # An ID-only OMS is not capable of confirming risk completion.
+                outcome = self.oms.submit_intent_result(intent, bypass_halt=True)
+                if not isinstance(outcome, SubmissionResult):
+                    outcome = SubmissionResult(intent.intent_id, SubmissionStatus.UNKNOWN)
+                self._derisk_results[(strategy_id, key)] = outcome
+                if outcome.target_reached:
+                    submitted += 1
                 logger.warning(
                     "%s: intent %s target %.4f (was %.4f)",
                     strategy_id,
-                    route_symbol[key],
-                    qty * target_fraction,
+                    symbol,
+                    target,
                     qty,
                 )
             except Exception:
+                self._derisk_results[(strategy_id, key)] = SubmissionResult(
+                    intent.intent_id, SubmissionStatus.UNKNOWN
+                )
                 logger.exception(
                     "%s: submit_intent failed for %s",
                     strategy_id,
-                    route_symbol[key],
+                    symbol,
                 )
         return submitted, actionable
 
@@ -904,6 +960,21 @@ class KillSwitchManager:
                 sorted(self._triggered_today),
             )
         self._triggered_today.clear()
+        # Reset completed/rejected decisions only. Never discard an unresolved
+        # order fence at midnight or on an ordinary resume.
+        unresolved = {
+            action
+            for (action, _), result in self._derisk_results.items()
+            if result.status in (SubmissionStatus.WORKING, SubmissionStatus.UNKNOWN)
+        }
+        self._derisk_targets = {
+            action: targets
+            for action, targets in self._derisk_targets.items()
+            if action in unresolved
+        }
+        self._derisk_results = {
+            key: result for key, result in self._derisk_results.items() if key[0] in unresolved
+        }
         if clear_causes:
             with self._cause_lock:
                 if self._active_halt_causes:

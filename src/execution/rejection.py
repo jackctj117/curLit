@@ -35,6 +35,8 @@ from datetime import UTC, datetime
 from enum import Enum
 from typing import Any
 
+import httpx
+
 from src.execution.broker import Order
 from src.execution.oms import OrderIntent
 from src.execution.trade_journal import EventType, TradeJournal
@@ -181,9 +183,18 @@ _CLASSIFICATION_PATTERNS: list[tuple[re.Pattern[str], RejectionClass]] = [
         re.compile(r"timeout|connection[_\s]+(reset|refused|aborted)", re.I),
         RejectionClass.TRANSIENT,
     ),
-    (re.compile(r"5\d\d|service[_\s]+unavailable|gateway", re.I), RejectionClass.TRANSIENT),
     (
-        re.compile(r"(400|422|bad[_\s]+request|invalid[_\s]+(json|payload|param))", re.I),
+        re.compile(
+            r"(?:^|\s)HTTP(?:/\d(?:\.\d)?)?\s+5\d\d\b|service[_\s]+unavailable|bad[_\s]+gateway",
+            re.I,
+        ),
+        RejectionClass.TRANSIENT,
+    ),
+    (
+        re.compile(
+            r"(?:^|\s)HTTP(?:/\d(?:\.\d)?)?\s+(?:400|422)\b|bad[_\s]+request|invalid[_\s]+(json|payload|param)",
+            re.I,
+        ),
         RejectionClass.MALFORMED,
     ),
 ]
@@ -199,10 +210,30 @@ def classify_exception(
     UNKNOWN when no pattern matches — the conservative default policy then
     aborts rather than retrying mystery errors.
     """
+    # CL-uolk: URL/account/price digits are not HTTP status. httpx is the
+    # broker transport; structured 4xx decisions outrank words in a URL/body.
+    if isinstance(exc, httpx.HTTPStatusError):
+        status = exc.response.status_code
+        if status in (400, 422):
+            return RejectionClass.MALFORMED
+        if 500 <= status <= 599:
+            return RejectionClass.TRANSIENT
+        if status in (401, 403):
+            return RejectionClass.HALT
+        return RejectionClass.UNKNOWN
     text_parts = [str(exc), exc.__class__.__name__]
     if response_text:
         text_parts.append(response_text)
     text = " | ".join(text_parts)
+
+    # Explicit venue cancellations, not incidental substrings. Price-bound
+    # failure is deliberately UNKNOWN/abort: smaller size doesn't repair it.
+    if re.search(r"\b(?:PRICE_BOUND_EXCEEDED|SLIPPAGE_EXCEEDED)\b", text):
+        return RejectionClass.UNKNOWN
+    if re.search(r"\b(?:FOK_ORDER_REJECTED|INSUFFICIENT_LIQUIDITY)\b", text):
+        return RejectionClass.LIQUIDITY
+    if re.search(r"\bMARKET_HALTED\b", text):
+        return RejectionClass.HALT
 
     for pattern, cls in _CLASSIFICATION_PATTERNS:
         if pattern.search(text):

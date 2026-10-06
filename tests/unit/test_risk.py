@@ -27,6 +27,7 @@ import pandas as pd
 import pytest
 
 from src.execution.broker import Position
+from src.execution.oms import OrderIntent, SubmissionResult, SubmissionStatus
 from src.risk.kill_switches import KillSwitchManager
 from src.risk.regime_sizing import RegimeAwareSizer
 from src.risk.risk_profile import load_active_profile
@@ -58,6 +59,15 @@ class _FakeOMS:
     def submit_intent(self, intent, *, bypass_halt: bool = False) -> str:  # noqa: ANN001
         self.intents.append((intent.symbol, intent.target_position, bypass_halt))
         return intent.intent_id
+
+    def submit_intent_result(
+        self, intent: OrderIntent, *, bypass_halt: bool = False
+    ) -> SubmissionResult:
+        # CL-o9sq: these legacy action-wiring fixtures explicitly simulate a
+        # full fill. An ID alone no longer proves completion. Real OMS reject,
+        # timeout, working and partial-action oracles live in test_derisk_outcomes.
+        self.submit_intent(intent, bypass_halt=bypass_halt)
+        return SubmissionResult(intent.intent_id, SubmissionStatus.FILLED, target_reached=True)
 
 
 class _FakeBroker:
