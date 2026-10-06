@@ -27,11 +27,13 @@ Budget controls and provenance (CL-h7c1) — verified against the
 installed CLI (Claude Code 2.1.287: ``claude --help`` plus the binary's
 env-var handling), not assumed:
 
-  * ``max_tokens`` IS enforced. The CLI has no ``--max-tokens`` flag but
-    honours the ``CLAUDE_CODE_MAX_OUTPUT_TOKENS`` environment variable as
-    the per-request output cap (thinking included); a value above the
-    model's own ceiling is clamped DOWN to that ceiling, never raised.
-    The driver sets it from ``max_tokens`` on every call. Per the binary,
+  * ``max_tokens`` enforcement is GATED (``CURLIT_CLAUDE_ENFORCE_OUTPUT_CAP``,
+    default OFF). The CLI has no ``--max-tokens`` flag but honours the
+    ``CLAUDE_CODE_MAX_OUTPUT_TOKENS`` environment variable as the per-request
+    output cap (thinking included); a value above the model's own ceiling is
+    clamped DOWN to that ceiling, never raised. With the gate ON the driver
+    sets it from ``max_tokens`` on every call; with it OFF the environment is
+    untouched and ``max_tokens`` is reported in ``unenforced_params``. Per the binary,
     hitting the cap yields an API-error result ("exceeded the N output
     token maximum"); an ``is_error`` payload raises here (fail loud). Not
     yet observed live — no real calls are made in development.
