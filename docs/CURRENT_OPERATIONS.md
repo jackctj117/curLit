@@ -754,12 +754,14 @@ per-call billing.
 it up only when the operator next restarts them).** Checked against the installed
 CLI (Claude Code 2.1.287), not assumed:
 
-- `max_tokens` IS enforced: the driver sets `CLAUDE_CODE_MAX_OUTPUT_TOKENS` (the
-  CLI has no `--max-tokens` flag) to each caller's `max_tokens`. The cap includes
-  thinking tokens, and the CLI lowers any value above the model's own limit to
-  that limit. Before CL-h7c1 the cap was ignored and calls ran under the CLI
-  default, so a call whose output (thinking included) used to exceed its
-  configured `max_tokens` now fails loudly instead.
+- `max_tokens` enforcement is GATED, default OFF (`CURLIT_CLAUDE_ENFORCE_OUTPUT_CAP`):
+  when enabled the driver sets `CLAUDE_CODE_MAX_OUTPUT_TOKENS` (the CLI has no
+  `--max-tokens` flag) to each caller's `max_tokens`; the cap includes thinking
+  tokens and is clamped to the model limit. Caller caps (triage 900, impact 2000,
+  ...) were never calibrated as total output+thinking budgets, so enforcing them
+  could fail previously-successful calls. While OFF the env is untouched (calls
+  run under the CLI default, as before) and `max_tokens` is listed in
+  `LLMResponse.unenforced_params`. Enable only after calibrating caller budgets.
 - `temperature` cannot be enforced (the CLI has no sampling control). Each
   response records it in `LLMResponse.unenforced_params`, and the driver logs it
   once per driver at WARNING.

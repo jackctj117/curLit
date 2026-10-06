@@ -222,7 +222,7 @@ remains visible; it is not silently included as a comparable successful trial.
 
 The Claude challenger uses the **Anthropic API**, not Claude Code. Inspection
 found that the CLI driver accepted `max_tokens` but did not enforce it. CL-h7c1
-now passes it to the CLI as `CLAUDE_CODE_MAX_OUTPUT_TOKENS`, but the CLI still
+can pass it to the CLI as `CLAUDE_CODE_MAX_OUTPUT_TOKENS` behind a default-off rollout gate, but the CLI still
 cannot enforce `temperature`, has no metered per-call USD cost, and its usage
 and serving-model reports differ from the API's (see
 `docs/CURRENT_OPERATIONS.md` §5), so the API path remains the comparable arm.

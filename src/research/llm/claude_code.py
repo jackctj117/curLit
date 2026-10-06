@@ -87,6 +87,20 @@ _CALL_TIMEOUT_SEC = 900
 #: confirmed in the installed 2.1.287 binary — clamped to the model ceiling).
 MAX_OUTPUT_TOKENS_ENV = "CLAUDE_CODE_MAX_OUTPUT_TOKENS"
 
+#: Rollout gate for output-cap ENFORCEMENT (CL-h7c1 review round 4). Callers
+#: pass caps (triage 900, impact 2000, ...) that were never enforced before
+#: and were never calibrated as TOTAL output+thinking budgets; enforcing them
+#: unvalidated could fail previously-successful calls. Default OFF: the cap is
+#: then reported in ``unenforced_params`` (never silently dropped) and the
+#: ambient environment is left exactly as before. Enable ("1") only after the
+#: caller budgets are calibrated on representative workloads.
+ENFORCE_CAP_ENV = "CURLIT_CLAUDE_ENFORCE_OUTPUT_CAP"
+
+
+def _cap_enforcement_enabled() -> bool:
+    return os.environ.get(ENFORCE_CAP_ENV, "").strip().lower() in ("1", "true", "yes", "on")
+
+
 #: Parameters the CLI cannot enforce at all — reported, never silently dropped.
 _UNENFORCEABLE_PARAMS: tuple[str, ...] = ("temperature",)
 
@@ -211,7 +225,10 @@ class ClaudeCodeDriver(Driver):
         if type(max_tokens) is not int or max_tokens <= 0:
             msg = f"claude-code: max_tokens must be a positive int, got {max_tokens!r}"
             raise ValueError(msg)
-        unenforced = _UNENFORCEABLE_PARAMS + tuple(sorted(kwargs))
+        enforce_cap = _cap_enforcement_enabled()
+        unenforced = (
+            _UNENFORCEABLE_PARAMS + (() if enforce_cap else ("max_tokens",)) + tuple(sorted(kwargs))
+        )
         system_text = "\n\n".join(m.content for m in messages if m.role == "system")
         # The CLI takes one prompt string; flatten multi-turn
         # transcripts with role labels (single [system, user] calls —
@@ -256,9 +273,12 @@ class ClaudeCodeDriver(Driver):
             for k, v in os.environ.items()
             if k not in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
         }
-        # CL-h7c1: enforce the requested output cap. Overrides any inherited
-        # value so the caller's max_tokens — not ambient env — is the cap.
-        env[MAX_OUTPUT_TOKENS_ENV] = str(max_tokens)
+        # CL-h7c1: enforce the requested output cap only behind the rollout
+        # gate. When enabled it overrides any inherited value so the caller's
+        # max_tokens — not ambient env — is the cap; when disabled the env is
+        # untouched (pre-CL-h7c1 behavior) and the cap is reported unenforced.
+        if enforce_cap:
+            env[MAX_OUTPUT_TOKENS_ENV] = str(max_tokens)
         if not self._warned_unenforced:
             self._warned_unenforced = True
             logger.warning(
@@ -277,10 +297,11 @@ class ClaudeCodeDriver(Driver):
             prompt_file.flush()
             prompt_file.seek(0)
             logger.info(
-                "claude-code: starting model=%s max_output_tokens=%d (enforced via %s) "
+                "claude-code: starting model=%s max_output_tokens=%d (enforced=%s via %s) "
                 "temperature=%s (NOT enforceable) unenforced=%s with preloaded stdin",
                 model,
                 max_tokens,
+                enforce_cap,
                 MAX_OUTPUT_TOKENS_ENV,
                 temperature,
                 list(unenforced),

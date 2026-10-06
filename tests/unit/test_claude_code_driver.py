@@ -331,7 +331,14 @@ def _run_with(payload: dict[str, Any], **complete_kwargs: Any) -> tuple[Any, Mag
 class TestBudgetControls:
     """CL-h7c1: requested caps reach the CLI, or their non-enforcement is
     explicit. Oracle: the installed CLI (2.1.287) has no --max-tokens /
-    --temperature flag; it reads CLAUDE_CODE_MAX_OUTPUT_TOKENS from the env."""
+    --temperature flag; it reads CLAUDE_CODE_MAX_OUTPUT_TOKENS from the env.
+
+    These run with the rollout gate ENABLED (fixture below); the gate-off
+    default is covered by TestCapRolloutGate."""
+
+    @pytest.fixture(autouse=True)
+    def _enforce(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("CURLIT_CLAUDE_ENFORCE_OUTPUT_CAP", "1")
 
     def test_max_tokens_reaches_cli_as_output_cap_env(self) -> None:
         _, run = _run_with(_OK_PAYLOAD, max_tokens=1234)
@@ -472,3 +479,34 @@ class TestServingModelAttribution:
         resp, _ = _run_with(payload)
         assert resp.model == "unverified"
         assert resp.requested_model == "claude-fable-5"
+
+
+class TestCapRolloutGate:
+    """CL-h7c1 round-4 review: enforcement is gated OFF by default until caller
+    budgets are calibrated. Off = pre-CL-h7c1 env behavior, but the cap is
+    REPORTED unenforced rather than silently dropped."""
+
+    def test_gate_off_by_default_leaves_env_untouched(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("CURLIT_CLAUDE_ENFORCE_OUTPUT_CAP", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_MAX_OUTPUT_TOKENS", raising=False)
+        resp, run = _run_with(_OK_PAYLOAD, max_tokens=900)
+        assert "CLAUDE_CODE_MAX_OUTPUT_TOKENS" not in run.call_args.kwargs["env"]
+        assert "max_tokens" in resp.unenforced_params
+
+    def test_gate_off_preserves_ambient_operator_setting(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("CURLIT_CLAUDE_ENFORCE_OUTPUT_CAP", raising=False)
+        monkeypatch.setenv("CLAUDE_CODE_MAX_OUTPUT_TOKENS", "64000")
+        _, run = _run_with(_OK_PAYLOAD, max_tokens=900)
+        assert run.call_args.kwargs["env"]["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] == "64000"
+
+    def test_gate_on_enforces_and_does_not_report_unenforced(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("CURLIT_CLAUDE_ENFORCE_OUTPUT_CAP", "1")
+        resp, run = _run_with(_OK_PAYLOAD, max_tokens=900)
+        assert run.call_args.kwargs["env"]["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] == "900"
+        assert "max_tokens" not in resp.unenforced_params
