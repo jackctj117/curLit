@@ -1,5 +1,24 @@
 # Security Architecture — curLit
 
+## Implementation status
+
+The vault is an available component, **not a verified credential boundary for
+the whole trading system**. The FX/Alpaca and research paths still consume
+environment-provided credentials; the Polymarket secret loader is the current
+vault-client integration. Encrypting a vault file does not remove secrets from
+those services' environments or from child processes.
+
+The systemd templates are not a working deployment recipe as written: the vault
+agent and engine use different service UIDs despite the agent's same-UID peer
+check; the agent declares `Type=notify` without readiness notification; and
+interactive passphrase entry requires a terminal. CL-t398 tracks this deployment
+work. Do not weaken peer authentication to make the templates appear to work.
+
+The layers and operational procedures below describe the intended vault design,
+not verified adoption, backup execution, or recovery drills on a running host.
+Use `docs/CURRENT_OPERATIONS.md` for recorded operational context; code review
+alone does not establish today's deployed state.
+
 ## Layers
 
 ```

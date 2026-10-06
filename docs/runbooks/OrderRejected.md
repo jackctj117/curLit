@@ -18,6 +18,28 @@ The broker (OANDA) rejected an order. The OMS classified the rejection and appli
 
 Defaults are in `RejectionPolicy.default()` in `src/execution/rejection.py`. Per-class behavior is configurable via `OrderManager(rejection_handler=...)` wiring.
 
+### Emergency de-risking exception (CL-o9sq)
+
+The table describes the ordinary order path, not kill-switch emergency orders.
+Emergency submissions return an explicit OMS outcome. Only a confirmed full
+fill or an already-reached target counts as completion; an intent ID or broker
+acknowledgement does not. A confirmed rejection leaves the risk trigger armed.
+Original reduction targets are retained so retrying one failed leg does not
+halve an already-completed leg again. The OMS verifies that an emergency target
+still reduces current exposure before sending it.
+
+Working, partial, canceled, and uncertain emergency submissions require
+reconciliation and are fenced against repeat submission in the running process.
+A canceled order may have partial fills. Midnight rollover does not clear these
+fences. They are **not yet durable across restart**, and automatic broker-evidence
+recovery remains open in CL-pksi. Do not use restart or resume to clear an unknown
+order. This patch is not evidence of restart-safe unattended execution.
+
+HTTP classification uses structured transport status when available. Digits in
+prices and account URLs are not status codes. `PRICE_BOUND_EXCEEDED` and
+`SLIPPAGE_EXCEEDED` abort rather than being interpreted as transient 5xx errors.
+This change does not widen trading slippage limits.
+
 ## Immediate actions
 1. Identify the rejection class from the alert / log: search for `Order reject` in the live engine logs.
 2. Confirm the auto-resolution behaved as expected (Prometheus: `fx_orders_rejected_total{pair, reason}`).

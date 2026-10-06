@@ -425,9 +425,13 @@ class TestFxOms:
             def get_account(self) -> Any:
                 raise ConnectionError("broker unreachable")
 
-        fake_engine = SimpleNamespace(oms=oms, broker=_DeadBroker(), kill_switch_manager=None)
-        with pytest.raises(ConnectionError):
-            LiveEngine._health_tick(fake_engine)  # type: ignore[arg-type]
+        fake_engine = SimpleNamespace(
+            oms=oms, broker=_DeadBroker(), kill_switch_manager=None, _account_read_failures=0
+        )
+        # Account failures now feed the halt counter instead of escaping the
+        # health tick. Acknowledgement must still precede the failed read.
+        LiveEngine._health_tick(fake_engine)  # type: ignore[arg-type]
+        assert fake_engine._account_read_failures == 1
         assert store.application_status().paths[PATH_FX_OMS] == "applied"
 
 

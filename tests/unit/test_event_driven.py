@@ -1372,13 +1372,15 @@ class TestStatePersistence:
         assert "USD_CAD" in strat2.open_positions
         assert strat2.open_positions["USD_CAD"].entry_price == pytest.approx(1.0)
 
-    def test_corrupt_state_file_does_not_break_boot(self, tmp_path: Any) -> None:
+    def test_corrupt_state_file_blocks_boot_without_erasing_evidence(self, tmp_path: Any) -> None:
         state_path = tmp_path / "event_book_state.json"
         state_path.write_text("{not json !!!")
-        strat = make_strategy(tmp_path, db=make_db())
-        assert strat.open_positions == {}
-        assert run(strat, {}) == []
-        assert (tmp_path / "event_book_state.json.corrupt").exists()
+        # CL-74u9 intentionally reverses fail-open reset: missing ownership
+        # and loss history require reconciliation, not a fresh risk budget.
+        with pytest.raises(ValueError, match="reconciliation required"):
+            make_strategy(tmp_path, db=make_db())
+        assert state_path.read_text() == "{not json !!!"
+        assert not (tmp_path / "event_book_state.json.corrupt").exists()
 
     def test_legacy_state_file_without_pending_key_loads_empty(
         self,
