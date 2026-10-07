@@ -68,6 +68,14 @@ def _name_lookup(tools: FrozenTools) -> Any:
     return lookup
 
 
+def _token_total(calls: Sequence[Mapping[str, Any]], key: str) -> int | None:
+    """Traversal + entailment usage; any unknown (or no call) is unknown."""
+    values = [c.get(key) for c in calls]
+    if not values or any(type(v) is not int for v in values):
+        return None
+    return sum(v for v in values if isinstance(v, int))
+
+
 def _hop_depths(hop_counts: Iterable[int]) -> dict[str, int]:
     counts = Counter(hop_counts)
     return {str(k): counts[k] for k in sorted(counts)}
@@ -148,8 +156,8 @@ def run_hopgraph_arm(
         "cost": {
             "usd_cost": sum_or_unknown(usd) if usd else None,
             "cost_provenance": sorted({str(c.get("cost_provenance")) for c in calls}),
-            "input_tokens": result.outcome.input_tokens,
-            "output_tokens": result.outcome.output_tokens,
+            "input_tokens": _token_total(calls, "input_tokens"),
+            "output_tokens": _token_total(calls, "output_tokens"),
         },
         "candidates": [i.to_trade_idea() for i in ideas],
         "graph": result.to_dict(),

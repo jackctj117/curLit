@@ -604,3 +604,20 @@ def test_seed_frontier_is_sent_to_model() -> None:
     _, _, model = run_world()
     assert model.calls[0]["payload"]["frontier"][0]["id"] == ROUTE_ID
     assert model.calls[0]["payload"]["hop"] == 1
+
+
+def test_upstream_limiting_disclosures_reach_the_critic_input() -> None:
+    hedge = "Our exposure to voyages through the Strait of Hormuz is hedged with war-risk cover."
+    docs = {"FRO": [doc("FRO", FRO_DOC.text + " " + hedge)], "ACME": Retriever().docs["ACME"]}
+    result, _, _ = run_world(retriever=Retriever(docs))
+    hop1 = result.candidate_paths["ACME"].edges[0]
+    assert [c.passage for c in hop1.disconfirming] == [hedge]
+    idea = next(i for i in result.candidates if i.ticker == "ACME")
+    # Not a candidate claim (the gate binds claims to ACME's own filings) ...
+    assert all(c.passage != hedge for c in idea.claims)
+    # ... but visible in the thesis text the critic is given.
+    assert "LIMITING DISCLOSURES" in idea.rationale and hedge in idea.rationale
+    prompt = AdversarialCritic(client=SupportiveCritic(), model="c")._user_prompt(
+        [idea], world_event()
+    )
+    assert hedge in prompt

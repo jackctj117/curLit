@@ -649,9 +649,10 @@ def path_rationale(path: HopPath) -> str:
     parts = []
     for edge in path.edges:
         cites = " ".join(_cite(c, edge.sources) for c in edge.evidence)
+        limits = " ".join(_cite(c, edge.sources) for c in edge.disconfirming)
         parts.append(
             f"hop {edge.hop}: {edge.dst.display} {edge.relation} {edge.src.display} "
-            f"- {edge.claim} {cites}"
+            f"- {edge.claim} {cites}" + (f" LIMITING DISCLOSURES: {limits}" if limits else "")
         )
     return f"Hop-graph path ({path.hop_count} hops): " + " | ".join(parts)
 
@@ -818,7 +819,9 @@ class HopGraphTraversal:
             try:
                 forbidden = set(self.memory.load_contradicted(as_of))
                 remembered = [
-                    e for e in self.memory.load_sourced(theme, as_of) if e.is_sourced(as_of)
+                    e
+                    for e in self.memory.load_sourced(theme, as_of)
+                    if e.is_sourced(as_of) and e.key not in forbidden
                 ]
             except Exception as exc:
                 # Memory is an optimization; an outage must not invent edges.
@@ -848,9 +851,13 @@ class HopGraphTraversal:
             known.update(n.ticker for n in frontier if n.ticker)
             frontier_ids = {n.node_id for n in frontier}
             new_edges: list[Edge] = []
-            # 1. Memory pre-seed: reuse sourced edges out of this frontier.
-            for edge in remembered:
+            # 1. Memory pre-seed: reuse sourced edges out of this frontier,
+            #    bounded by the same per-node edge cap as model proposals.
+            for edge in sorted(remembered, key=lambda e: e.key):
                 if edge.src.node_id in frontier_ids and edge.key not in graph.edge_keys():
+                    have = sum(1 for e in graph.edges if e.src.node_id == edge.src.node_id)
+                    if have >= self.max_edges_per_node:
+                        continue
                     edge.hop, edge.origin = hop, "memory"
                     edge.src = graph.nodes[edge.src.node_id]
                     edge.dst = graph.add_node(edge.dst)
@@ -859,7 +866,10 @@ class HopGraphTraversal:
             out_count: dict[str, int] = {}
             for edge in graph.edges:
                 out_count[edge.src.node_id] = out_count.get(edge.src.node_id, 0) + 1
-            to_ask = [n for n in frontier if out_count.get(n.node_id, 0) < self.max_edges_per_node]
+            # Every frontier node is asked even when memory filled its edge cap:
+            # directions and terminal facts are event-specific and never stored,
+            # so memory saves verification work, not traversal calls.
+            to_ask = list(frontier)
             # 2. Traversal model proposals, NODES_PER_CALL frontier nodes per call.
             for start in range(0, len(to_ask), self.nodes_per_call):
                 if len(calls) >= self.max_model_calls:
