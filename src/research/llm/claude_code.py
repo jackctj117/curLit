@@ -109,9 +109,9 @@ def _cap_enforcement_enabled() -> bool:
 
 
 #: Exact environment variables the ``claude`` subprocess may inherit
-#: (CL-esh6). Everything else in this process's env — broker keys, DB
-#: passwords, Telegram/Moonshot tokens, WEB_API_SECRET, all loaded from
-#: .env by dotenv_bootstrap — is withheld from the child. Determined by
+#: (CL-esh6). Everything else in this process's env — broker credentials,
+#: database and messaging settings, the web API header value, everything
+#: dotenv_bootstrap loads from .env — is withheld from the child. Determined by
 #: reading the installed CLI (2.1.292) rather than assumed:
 #:
 #: * PATH / HOME / USER / LOGNAME / SHELL / TERM / TMPDIR / LANG / TZ —
