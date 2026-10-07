@@ -15,11 +15,12 @@ regexTarget = "secret"
 regexes = ['''^PLACEHOLDER_ECB_Q3_YES$''']
 
 [[rules.allowlists]]
-# Verified in commit f5044d5b88b8637c33582c93d97c97895d61d4dd: a module comment
-# listing the NAMES of withheld environment variables (no values). The wording
-# was changed in the current source; this covers the historical commit only.
-description = "CL-esh6: env-allowlist comment naming withheld secrets, not a secret"
+# Verified in commit f5044d5b88b8637c33582c93d97c97895d61d4dd and in the
+# config-shape test that quoted it: the detector captures the words naming
+# two vendors after "passwords," in a comment about WITHHELD env variables.
+# No value is present. Scoped to the two files that ever carried the text.
+description = "CL-esh6: vendor names in an env-allowlist comment, not a secret"
 condition = "AND"
-paths = ['''^src/research/llm/claude_code\.py$''']
-regexTarget = "line"
-regexes = ['''^#: passwords, Telegram/Moonshot tokens, WEB_API_SECRET, all loaded from$''']
+paths = ['''^(src/research/llm/claude_code\.py|tests/unit/test_security_workflow\.py)$''']
+regexTarget = "secret"
+regexes = ['''^Telegram/Moonshot$''']
