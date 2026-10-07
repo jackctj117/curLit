@@ -2304,6 +2304,39 @@ class TestEntryLifecycle:
         booked = strat.book.open_positions["USD_CAD"]
         assert booked.quantity == pytest.approx(50_000.0)  # our delta, not 90k
 
+    @pytest.mark.parametrize("failure", ["raises", "malformed"])
+    def test_unreadable_baseline_blocks_entry_until_snapshot_recovers(
+        self, tmp_path: Any, failure: str
+    ) -> None:
+        # CL-oqos (Codex r3): with a co-holder at 40k and an unreadable
+        # submit-time snapshot, the old path parked a baseline-None leg whose
+        # after-grace best-effort promotion claimed the co-holder's 40k as
+        # our fill. Now: no entry while the snapshot is unknown, the event is
+        # NOT consumed, and the next readable tick enters with the real
+        # 40k baseline (co-held safe).
+        class _FlakyBroker(_BrokerWithNetQty):
+            down = True
+
+            def get_positions(self) -> Any:
+                if self.down:
+                    if failure == "raises":
+                        raise OSError("positions endpoint down")
+                    return {"USDCAD": 40_000.0}  # not a list: unknown, not flat
+                return super().get_positions()
+
+        db = make_db()
+        insert_event(db)
+        strat = make_strategy(
+            tmp_path, db=db, provider=confirming_provider(), per_instrument_max_pct=1.0
+        )
+        broker = _FlakyBroker({"USDCAD": 40_000.0})
+        assert run(strat, CONFIRM_PRICES, broker) == []
+        assert strat.book.pending_entries == {}
+        broker.down = False
+        intents = run(strat, CONFIRM_PRICES, broker)
+        assert len(intents) == 1
+        assert strat.book.pending_entries["USD_CAD"].entry_broker_qty == pytest.approx(40_000.0)
+
     def test_pending_entry_occupies_a_slot(self, tmp_path: Any) -> None:
         # A submitted-but-unfilled entry must count against
         # max_concurrent_event_positions so the strategy can't over-submit
