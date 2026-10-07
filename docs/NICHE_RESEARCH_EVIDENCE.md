@@ -286,3 +286,132 @@ bonus, review failures and duplicate verdicts, sourced positive/negative review,
 full evidence-to-merge flow, immutable inputs, equivalent tool access and
 bounded shadow loops. No paid comparison or production migration is implied by
 these tests.
+
+## Hop-graph discovery (CL-ynuh, shadow only)
+
+**Status: shadow only.** Nothing in the hop graph is wired into
+`niche_agent`, `scripts/event_pipeline.py`, `trade_ideas`, a ledger or an
+order path. Promotion is a separate operator decision after the
+pre-registered comparison below. The evidence gate, liquidity rule, critic,
+`research_eligible` and `merge_into_assessment` are unchanged.
+
+Motivation (30-day logs): 192 Kimi runs gave 307 candidates, all identity
+verified, but only 4 passed the evidence gate and 2 were eligible. One
+agentic loop did discovery *and* verification; tools could only fetch the
+filing of a ticker the model had already guessed; and a relationship is
+usually disclosed in the *other* party's filing (a supplier's
+customer-concentration note names its customer). Every event started cold.
+
+The hop graph separates those concerns:
+
+1. **Traversal** (`src/events/hop_graph.py`). A typed graph of nodes
+   (`commodity`, `route`, `company`, `product`, `country`) and edges
+   (`supplies`, `buys_from`, `competes_with`, `substitutes_for`,
+   `depends_on_route`, `hedged_by`, `priced_off`), each with a falsifiable
+   claim and a where-to-look pointer (ticker, section, keywords). Hop 0 is the
+   playbook's equity/FX instruments, tickers already named by the impact
+   assessment, and optional captured `hop_seeds`. A text-only model
+   (`no_tools=True`) proposes at most **4 edges per frontier node**. It is not
+   asked to hold evidence. Hard caps, which the constructor refuses to raise:
+   **3 hops, 12 frontier nodes per hop, 6 traversal model calls per event**
+   (6 nodes per call). Frontier order uses unseen tickers first, then the
+   legacy `torque_from_reason` and market-cap smallness heuristics, then the
+   node id. That order is search priority only and never counts as
+   evidence. Given the same model and verifier replies, the result is
+   deterministic.
+2. **Edge verification** (`src/events/hop_graph_verify.py`). For each edge, the
+   verifier retrieves filings for **both endpoints with tickers**: pointer
+   first, then the other. The budget is **at most 2 retrievals per edge**,
+   through `ResearchTools.filing_documents(cik, symbol, query=...)` (live) or
+   the capture's frozen collection (shadow). A candidate passage is an exact
+   sentence of a usable captured source that names the counterparty. A
+   Haiku-class entailment check (`no_tools=True`) answers only
+   yes/no/unclear:
+   - yes and no "no": `sourced`, with a `documented_fact` /
+     `relationship` claim;
+   - no and no "yes": `contradicted`;
+   - anything else (unclear, mixed, no passage, transport error):
+     `unverifiable`.
+
+   Hedging, contract-expiry, termination and "<5% / not material"
+   sentences in the same documents become `disconfirming` claims for the
+   critic. Edges run on a bounded thread pool with a per-thread
+   `claude-code` client.
+3. **Path assembly.** Only simple paths from a seed whose **every** edge is
+   sourced become `NicheIdea` candidates: status `sourced` plus exact
+   passages backed by usable captured sources (`Edge.is_sourced`). The
+   terminal must be a listed company that is not a seed and has a
+   bullish/bearish direction. `hop_count` is the path length. The rationale
+   is the chain with a source id, locator and passage for each hop. The
+   terminal's own exposure and catalyst claims are verified the same way, with
+   8-K documents preferred for catalysts.
+4. **Unchanged gates.** Candidates go through `verify_ideas` →
+   `evidence_score` → `AdversarialCritic.apply`.
+
+**Documented deviation (evidence binding).** The unchanged gate binds every
+claim and critic citation to the **candidate's own** filings, because
+`RelationshipClaim.backed` and the critic check `source.symbol`. A
+candidate therefore carries only claims sourced from its own filings. That
+includes the edge into it when the edge is disclosed there, which is the
+customer-concentration case. Upstream hops sourced from other companies'
+filings remain in the rationale and the path record, where the hop-graph
+verifier enforced them. If the only relationship evidence sits in the near
+node's filing, the unchanged gate marks the candidate
+`insufficient_evidence`. The gate was not relaxed to accept it.
+
+**Memory** (`src/events/hop_graph_memory.py`, migration
+`025_niche_edges.sql`, additive). Sourced and contradicted edges are stored
+with the source hash, exact passage, locator, full source record, theme,
+`as_of` and `expires_at = as_of + 730 days`, the same two-filing-cycle
+policy as documents. Before traversal:
+- Non-expired sourced edges for the theme, recorded at or before the cutoff,
+  pre-seed the graph. Each is re-verified against its stored hash and
+  passage and must still be usable at the cutoff.
+- Non-expired contradicted edges from any theme are dropped whenever they
+  are re-proposed, and are listed to the model as `do_not_propose`.
+
+Unverifiable edges carry no evidence and are not stored. A memory outage or
+corrupt row means "no memory", never evidence. The memory never supplies a
+trade direction.
+
+**Models** (all through `get_client("claude-code")`, injectable in tests):
+- `NICHE_HOPGRAPH_TRAVERSAL_MODEL` defaults to `niche_agent.DEFAULT_MODEL`.
+- `NICHE_HOPGRAPH_ENTAILMENT_MODEL` defaults to `claude-haiku-4-5-20251001`.
+
+No particular new model is assumed. Subscription CLI calls report USD cost as
+unknown (`subscription_unmetered`), never $0.
+
+**Shadow comparison** (`scripts/niche_hopgraph_shadow.py`,
+`src/events/hop_graph_shadow.py`). The script replays captured events (the
+`CapturedInput` format above) through the hop graph and, optionally, the
+existing equivalent-tool baseline. Both arms get the same identity universe,
+market data, cutoff and critic instance. For each event and in total, the
+report covers:
+- candidates, evidence-gate passes and eligible ideas;
+- hop-depth distribution;
+- traversal, entailment and tool calls;
+- tokens and cost provenance.
+
+Unit tests run it end to end on fakes only. An operator runs it like this:
+
+```sh
+.venv/bin/python scripts/niche_hopgraph_shadow.py \
+  --captures /path/to/captures/ --output /path/to/new-report.json \
+  --baseline moonshot --baseline-model YOUR_AVAILABLE_KIMI_MODEL \
+  --memory-sqlite /path/to/hopgraph-memory.sqlite --allow-model-calls
+```
+
+Without `--allow-model-calls` the script validates the captures and stops.
+The script refuses to overwrite a report. Edge memory goes only to a local
+sqlite file. The production `.env` and database are never read.
+
+Pre-registered acceptance (bead): at least 20 captured events, comparing for
+the hop graph and the Kimi baseline under identical gates:
+- eligible ideas per event;
+- hop-depth distribution;
+- gate pass rate;
+- tool calls and cost.
+
+Development produced **no live measurement**; only the code and tests exist.
+Substring provenance plus a cheap entailment answer does not prove truth. Human
+evaluation of the eligible ideas remains necessary.
