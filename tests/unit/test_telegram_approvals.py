@@ -46,6 +46,11 @@ from src.research.telegram_approvals import (
 CHAT_ID = "123456789"
 FOREIGN_CHAT_ID = 987654321
 TOKEN = "1111111111:AAAAfake-token-must-never-leak"
+# CL-esh6: the Telegram USER id allowed to approve/reject/skip, and one
+# that is a chat member but not an approver.
+APPROVER_ID = 424242
+STRANGER_ID = 777001
+APPROVERS = frozenset({APPROVER_ID})
 
 HASH_A = "a1b2c3d4e5f6a7b8"  # short id a1b2c3
 HASH_B = "a1b2ffee00112233"  # collides with HASH_A at prefix a1b2
@@ -89,10 +94,19 @@ def _seed(path: Path, state: LoopState) -> None:
     save_state_atomic(state, path)
 
 
-def _update(update_id: int, text: str, chat_id: Any = CHAT_ID) -> dict[str, Any]:
+def _update(
+    update_id: int,
+    text: str,
+    chat_id: Any = CHAT_ID,
+    sender_id: Any = APPROVER_ID,
+) -> dict[str, Any]:
     return {
         "update_id": update_id,
-        "message": {"chat": {"id": chat_id}, "text": text},
+        "message": {
+            "chat": {"id": chat_id},
+            "from": {"id": sender_id, "is_bot": False},
+            "text": text,
+        },
     }
 
 
@@ -126,6 +140,7 @@ def _make_bot(
     api = FakeApi(batches)
     bot = TelegramApprovalBot(
         token=TOKEN,
+        approver_ids=APPROVERS,
         chat_id=CHAT_ID,
         state_path=state_path,
         offset_path=tmp_path / "telegram_offset.json",
@@ -320,6 +335,7 @@ class TestCliEquivalence:
 
         bot = TelegramApprovalBot(
             token=TOKEN,
+            approver_ids=APPROVERS,
             chat_id=CHAT_ID,
             state_path=tg_path,
             offset_path=tmp_path / "off.json",
@@ -347,6 +363,7 @@ class TestCliEquivalence:
 
         bot = TelegramApprovalBot(
             token=TOKEN,
+            approver_ids=APPROVERS,
             chat_id=CHAT_ID,
             state_path=tg_path,
             offset_path=tmp_path / "off.json",
@@ -406,6 +423,7 @@ class TestResolution:
         _seed(state_path, state)
         bot = TelegramApprovalBot(
             token=TOKEN,
+            approver_ids=APPROVERS,
             chat_id=CHAT_ID,
             state_path=state_path,
             offset_path=tmp_path / "off.json",
@@ -469,7 +487,7 @@ class TestHandleText:
         assert "pending" in result.reply
 
     def test_malformed_missing_id(self) -> None:
-        result = handle_text(_make_state(), "approve")
+        result = handle_text(_make_state(), "approve", sender_authorized=True)
         assert not result.state_changed
         assert "Usage" in result.reply
 
@@ -547,7 +565,7 @@ class TestAckReplies:
         # Force the race path: resolve by exact slug of a decided entry
         # is impossible (not pending), so drive act_gate1 directly via
         # a state where the entry flips between resolve and act.
-        result = handle_text(state, "approve a1b2c3")
+        result = handle_text(state, "approve a1b2c3", sender_authorized=True)
         assert not result.state_changed
         assert "Already decided" in result.reply or result.reply.startswith("⏸")
 
@@ -708,6 +726,7 @@ class TestTokenSafety:
         _seed(state_path, state)
         bot = TelegramApprovalBot(
             token=TOKEN,
+            approver_ids=APPROVERS,
             chat_id=CHAT_ID,
             state_path=state_path,
             offset_path=tmp_path / "off.json",
@@ -752,6 +771,7 @@ class TestTokenSafety:
         api = FlakySendApi([[_update(3, "approve a1b2c3")]])
         bot = TelegramApprovalBot(
             token=TOKEN,
+            approver_ids=APPROVERS,
             chat_id=CHAT_ID,
             state_path=state_path,
             offset_path=tmp_path / "off.json",

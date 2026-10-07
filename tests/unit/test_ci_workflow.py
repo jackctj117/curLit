@@ -83,10 +83,20 @@ def test_ci_installs_declared_dev_dependencies_and_supports_python_floor(
     commands = [step.get("run", "") for step in steps]
     assert 'python -m pip install -e ".[dev]"' in commands
     assert 'python -m pip install -e ".[audio,polymarket]"' in commands
-    assert any('setuptools>=83.0.0' in command for command in commands)
+    assert any("setuptools>=83.0.0" in command for command in commands)
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())
     dev = project["project"]["optional-dependencies"]["dev"]
     assert any(requirement.startswith("pytest-timeout>=") for requirement in dev)
     core = project["project"]["dependencies"]
     assert any(requirement.startswith("psutil>=") for requirement in core)
     assert any(requirement.startswith("cryptography>=") for requirement in core)
+
+
+def test_pyarrow_is_a_declared_test_dependency_not_a_runtime_one() -> None:
+    """CL-nix8: test_trade_journal's Parquet export needs pyarrow; CI installs
+    it from the dev extra, and it stays out of the runtime dependencies."""
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text())
+    dev = project["project"]["optional-dependencies"]["dev"]
+    core = project["project"]["dependencies"]
+    assert any(re.match(r"pyarrow\s*>=", requirement) for requirement in dev)
+    assert not any(requirement.startswith("pyarrow") for requirement in core)

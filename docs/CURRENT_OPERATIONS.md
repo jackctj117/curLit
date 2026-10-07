@@ -829,7 +829,51 @@ CLI (Claude Code 2.1.287), not assumed:
 - Alpaca paper dashboard: app.alpaca.markets (paper) shows option positions.
 - Telegram: digests (grounded trade cards, niche 🎯 tags, red-team bear
   cases, Polymarket shift alerts), gate approvals (`approve <id>`), `ideas`.
+  - **Approver allowlist (CL-esh6):** `approve` / `reject` / `skip` are
+    accepted only from Telegram USER ids listed in `TELEGRAM_APPROVER_IDS`
+    (comma-separated, e.g. `TELEGRAM_APPROVER_IDS=123456789`; find your id
+    from the `from.id` of any message the bot receives, or the refusal log
+    line). **Unset = default deny**: the bot logs one WARNING at startup that
+    approvals are disabled and refuses every mutating command (use
+    `scripts/research_approve.py` meanwhile). A malformed value (non-integer,
+    zero, or a negative chat id) makes the bot exit 2 at startup. Refused
+    attempts log `refusing '<verb>' from unauthorized sender id=<id>` and
+    change nothing. `help` / `pending` / `ideas` / `idea` stay open to anyone
+    in `TELEGRAM_CHAT_ID` (read-only). **Deploy consequence:** set
+    `TELEGRAM_APPROVER_IDS` before restarting `telegram_approval_bot`, or
+    Telegram approvals stop working.
 - Grafana/Prometheus/Loki via `docker compose --profile full`.
+- **Prometheus `/metrics` bind (CL-esh6):** the engine's metrics endpoint
+  (`CURLIT_METRICS_PORT`, default 8099) binds `METRICS_BIND_ADDR`, default
+  `127.0.0.1` (it was every interface). Local checks (`curl
+  localhost:8099/metrics`, `health_watch`, `soak_monitor`) are unaffected. To
+  expose it deliberately, set `METRICS_BIND_ADDR` (e.g. `0.0.0.0`) — only behind a
+  firewall or a loopback-published container port; `docker-compose.app.yml`
+  sets `0.0.0.0` inside the engine container for exactly that reason. The
+  engine logs a WARNING at startup whenever the bind is non-loopback.
+  Prometheus-in-Docker scrapes the native engine via `host.docker.internal:8099`;
+  on Docker Desktop (macOS) that reaches the host's loopback, but on a Linux
+  host (`host-gateway`) a loopback bind is NOT reachable from the container —
+  set `METRICS_BIND_ADDR` to the bridge gateway address there. Verify the
+  `fx_live_engine` target is UP in Prometheus after the first restart.
+- **claude CLI child environment (CL-esh6):** research/event LLM calls spawn
+  `claude -p` with an explicit environment allowlist (PATH, HOME, USER,
+  LOGNAME, SHELL, TERM, TMPDIR, LANG, LC_*, TZ, XDG_CONFIG_HOME,
+  CLAUDE_CONFIG_DIR, CLAUDE_SECURESTORAGE_CONFIG_DIR, CLAUDE_CODE_OAUTH_TOKEN,
+  CLAUDE_CODE_MAX_OUTPUT_TOKENS, proxy/CA variables). Broker, DB, Telegram,
+  Moonshot and web-API secrets — and `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN` —
+  never reach it. If a host needs another variable for the CLI, add it to
+  `_CLI_ENV_ALLOWLIST` in `src/research/llm/claude_code.py` deliberately.
+- **Strategy registry (CL-nix8):** `configs/live_portfolio.yaml` entries are
+  routed by their `class:` path (or, without one, by the four canonical ids)
+  through `STRATEGY_CLASS_REGISTRY` / `STRATEGY_ID_REGISTRY` in
+  `src/runtime/run_engine.py` — no longer by id substring. An enabled entry
+  with an unregistered class, an unknown id without `class:`, a duplicate id,
+  or an id/class mismatch now **fails engine startup** with
+  `StrategyConfigError` (previously misrouted or silently skipped). The live
+  four resolve exactly as before. A PROMOTE-registered paper-shadow entry
+  (`src/research/promote.py`) needs a registry entry + builder before it is
+  enabled, or set `enabled: false` to park it.
 
 ---
 

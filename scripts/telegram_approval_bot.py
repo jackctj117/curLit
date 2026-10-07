@@ -16,6 +16,12 @@ Usage:
 
 Requires ``TELEGRAM_BOT_TOKEN`` + ``TELEGRAM_CHAT_ID`` (auto-loaded
 from ``.env`` via the project dotenv bootstrap; explicit env wins).
+
+``TELEGRAM_APPROVER_IDS`` (CL-esh6) — comma-separated Telegram USER ids
+allowed to approve / reject / skip. Unset or empty = DEFAULT DENY: the
+bot still runs and answers the read-only commands (help / pending /
+ideas / idea) but refuses every mutating command. A malformed value is
+a startup error (exit 2) rather than a silently shortened allowlist.
 """
 
 from __future__ import annotations
@@ -39,6 +45,7 @@ from src.research.telegram_approvals import (  # noqa: E402
     DEFAULT_OFFSET_PATH,
     DEFAULT_POLL_TIMEOUT_SEC,
     TelegramApprovalBot,
+    parse_approver_ids,
 )
 
 logger = logging.getLogger(__name__)
@@ -95,6 +102,11 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 2
+    try:
+        approver_ids = parse_approver_ids(os.environ.get("TELEGRAM_APPROVER_IDS"))
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
 
     bot = TelegramApprovalBot(
         token=token,
@@ -102,6 +114,7 @@ def main(argv: list[str] | None = None) -> int:
         state_path=args.state,
         offset_path=args.offset_file,
         poll_timeout_sec=args.poll_timeout,
+        approver_ids=approver_ids,
     )
 
     if args.once:

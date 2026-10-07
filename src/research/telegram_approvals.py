@@ -33,6 +33,18 @@ Design:
     configured ``TELEGRAM_CHAT_ID`` are processed; everything else is
     logged at WARNING and dropped. The bot token is never logged; all
     HTTP errors are scrubbed the way ``notifications.py`` scrubs them.
+  * **Sender authorization (CL-esh6)** — the chat check alone admits
+    every member of the chat. The MUTATING verbs (``approve`` /
+    ``reject`` / ``skip``) additionally require the message's
+    ``from.id`` to be in ``TELEGRAM_APPROVER_IDS`` (comma-separated
+    Telegram user ids). Unset / empty = DEFAULT DENY: every mutating
+    command is refused and the bot logs once at startup that approvals
+    are disabled. Unauthorized attempts are logged at WARNING with the
+    sender id and ignored (no state change, a short refusal reply).
+    Messages posted on behalf of a chat/channel (``sender_chat``) or by
+    a bot never authorize. The READ-ONLY verbs (``help`` / ``pending``
+    / ``ideas`` / ``idea``) stay open to any sender in the authorized
+    chat — they mutate nothing.
   * **Shared mutations** — gate transitions go through
     ``src.research.approvals`` (the same code path as the CLI
     approver), and state writes are atomic so the concurrently-running
@@ -92,6 +104,15 @@ SHORT_ID_LEN: int = 6
 _SEND_RETRIES: int = 1
 
 _ACTION_VERBS = frozenset({"approve", "reject", "skip"})
+
+#: Env var holding the comma-separated Telegram USER ids allowed to run
+#: the mutating verbs (CL-esh6). Unset/empty = default deny.
+APPROVER_IDS_ENV = "TELEGRAM_APPROVER_IDS"
+
+UNAUTHORIZED_REPLY = (
+    "⛔ Not authorized: approve/reject/skip are restricted to the "
+    "configured approvers (TELEGRAM_APPROVER_IDS). Nothing was changed."
+)
 _KNOWN_VERBS = _ACTION_VERBS | {"pending", "help", "start", "ideas", "idea"}
 
 HELP_TEXT = (
@@ -649,10 +670,20 @@ def render_idea_detail(
     return "\n".join(lines)
 
 
-def handle_text(state: LoopState, text: str) -> CommandResult:
+def handle_text(
+    state: LoopState,
+    text: str,
+    *,
+    sender_authorized: bool = False,
+) -> CommandResult:
     """Process one operator message against the loaded state. Pure
     over ``state`` — caller persists ``state`` iff ``state_changed``
-    (``ideas`` reads the trade_ideas ledger, never the loop state)."""
+    (``ideas`` reads the trade_ideas ledger, never the loop state).
+
+    ``sender_authorized`` (CL-esh6) gates the mutating verbs and
+    defaults to False, so a caller that forgets to authorize the sender
+    is refused rather than silently trusted. Read-only verbs ignore it.
+    """
     cmd = parse_command(text)
     if cmd is None:
         return CommandResult(
@@ -673,7 +704,9 @@ def handle_text(state: LoopState, text: str) -> CommandResult:
                 reply=("Usage: idea <id> — send 'ideas' for the open ideas and their ids."),
             )
         return CommandResult(reply=render_idea_detail(cmd.target))
-    # approve / reject / skip
+    # approve / reject / skip — mutating: the sender must be allowlisted.
+    if not sender_authorized:
+        return CommandResult(reply=UNAUTHORIZED_REPLY)
     if not cmd.target:
         return CommandResult(
             reply=(f"Usage: {cmd.verb} <id> [reason] — send 'pending' for the ids awaiting you."),
@@ -721,10 +754,63 @@ def _chat_id_matches(actual: Any, expected: str) -> bool:
         return False
 
 
+def parse_approver_ids(raw: str | None) -> frozenset[int]:
+    """Parse ``TELEGRAM_APPROVER_IDS`` (CL-esh6): comma-separated
+    positive Telegram USER ids, whitespace tolerated. Unset / blank →
+    empty set (default deny). A malformed or non-positive entry raises
+    ``ValueError`` — a typo must fail the bot's startup loudly, not
+    quietly drop an approver (negative ids are group/channel CHAT ids,
+    never a person, so they are rejected as a misconfiguration)."""
+    if raw is None or not raw.strip():
+        return frozenset()
+    ids: set[int] = set()
+    for part in raw.split(","):
+        token = part.strip()
+        if not token:
+            continue
+        try:
+            value = int(token)
+        except ValueError:
+            msg = f"{APPROVER_IDS_ENV}: {token!r} is not an integer Telegram user id"
+            raise ValueError(msg) from None
+        if value <= 0:
+            msg = (
+                f"{APPROVER_IDS_ENV}: {value} is not a positive Telegram user id "
+                "(negative ids are chats/channels, not people)"
+            )
+            raise ValueError(msg)
+        ids.add(value)
+    return frozenset(ids)
+
+
+def _sender_id(message: dict[str, Any]) -> int | None:
+    """The human sender's Telegram user id, or None when the message
+    cannot be attributed to a person: no ``from``, a non-integer id,
+    a bot account, or a post made on behalf of a chat/channel
+    (``sender_chat`` — e.g. anonymous group admins, whose ``from`` is a
+    shared placeholder bot). None never authorizes."""
+    if message.get("sender_chat"):
+        return None
+    sender = message.get("from")
+    if not isinstance(sender, dict) or sender.get("is_bot") is True:
+        return None
+    raw = sender.get("id")
+    if isinstance(raw, bool):
+        return None
+    try:
+        return int(str(raw).strip())
+    except (TypeError, ValueError):
+        return None
+
+
 @dataclass
 class TelegramApprovalBot:
     """Long-polling approval bot. One ``poll_once()`` = one
-    ``getUpdates`` batch: authorize, handle, reply, ack offset."""
+    ``getUpdates`` batch: authorize, handle, reply, ack offset.
+
+    ``approver_ids`` (CL-esh6) is the allowlist of Telegram user ids
+    that may run approve/reject/skip; the empty default denies them all.
+    """
 
     token: str
     chat_id: str
@@ -732,10 +818,29 @@ class TelegramApprovalBot:
     offset_path: Path = field(default=DEFAULT_OFFSET_PATH)
     poll_timeout_sec: int = DEFAULT_POLL_TIMEOUT_SEC
     api_call: ApiCall | None = None
+    approver_ids: frozenset[int] = field(default_factory=frozenset)
 
     def __post_init__(self) -> None:
         self.state_path = Path(self.state_path)
         self.offset_path = Path(self.offset_path)
+        self.approver_ids = frozenset(self.approver_ids)
+        assert all(type(i) is int and i > 0 for i in self.approver_ids), (
+            "approver_ids must be positive int Telegram user ids"
+        )
+        if self.approver_ids:
+            logger.info(
+                "Telegram approvals ENABLED for %d approver id(s): %s",
+                len(self.approver_ids),
+                sorted(self.approver_ids),
+            )
+        else:
+            logger.warning(
+                "%s is unset/empty — Telegram approve/reject/skip are DISABLED "
+                "(default deny); read-only commands (help/pending/ideas/idea) "
+                "still answer. Use scripts/research_approve.py or set %s.",
+                APPROVER_IDS_ENV,
+                APPROVER_IDS_ENV,
+            )
         if self.api_call is None:
             self.api_call = make_httpx_api(self.token)
 
@@ -821,8 +926,22 @@ class TelegramApprovalBot:
         text = str(message.get("text") or "").strip()
         if not text:
             return
+        cmd = parse_command(text)
+        sender_id = _sender_id(message)
+        authorized = sender_id is not None and sender_id in self.approver_ids
+        if cmd is not None and cmd.verb in _ACTION_VERBS and not authorized:
+            # Sender id only — never the token, and not the free-text
+            # reason (operator chat content).
+            logger.warning(
+                "refusing %r from unauthorized sender id=%r in update %s (not in %s%s)",
+                cmd.verb,
+                sender_id,
+                update.get("update_id"),
+                APPROVER_IDS_ENV,
+                "" if self.approver_ids else "; allowlist empty, approvals disabled",
+            )
         state = load_state(self.state_path)
-        result = handle_text(state, text)
+        result = handle_text(state, text, sender_authorized=authorized)
         if result.state_changed:
             save_state_atomic(state, self.state_path)
             logger.info(

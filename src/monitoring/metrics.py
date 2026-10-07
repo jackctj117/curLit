@@ -460,15 +460,44 @@ class HeartbeatTracker:
         service_up.labels(service=self.service_name).set(0)
 
 
-def start_metrics_server(port: int = 8000) -> None:
-    """Start the Prometheus /metrics HTTP endpoint."""
+#: Env var naming the interface the /metrics endpoint binds (CL-esh6).
+METRICS_BIND_ADDR_ENV = "METRICS_BIND_ADDR"
+
+#: Loopback by default: /metrics exposes positions, PnL and strategy state
+#: without authentication, so it must never listen on every interface by
+#: accident (prometheus_client's own default is "0.0.0.0"). Exposing it is a
+#: deliberate act: set METRICS_BIND_ADDR (e.g. "0.0.0.0" inside a container
+#: whose published port is itself loopback-bound) — see docs/SECURITY.md.
+DEFAULT_METRICS_BIND_ADDR = "127.0.0.1"
+
+
+def metrics_bind_addr() -> str:
+    """The bind address from ``METRICS_BIND_ADDR``; unset/blank → loopback."""
+    import os
+
+    return os.environ.get(METRICS_BIND_ADDR_ENV, "").strip() or DEFAULT_METRICS_BIND_ADDR
+
+
+def start_metrics_server(port: int = 8000, addr: str | None = None) -> None:
+    """Start the Prometheus /metrics HTTP endpoint on ``addr`` (default:
+    ``METRICS_BIND_ADDR``, else 127.0.0.1 — CL-esh6)."""
     import logging
 
     logger = logging.getLogger(__name__)
+    bind_addr = addr if addr is not None else metrics_bind_addr()
+    assert bind_addr, "metrics bind address must be non-empty"
+    level = logging.INFO if bind_addr in ("127.0.0.1", "::1", "localhost") else logging.WARNING
+    logger.log(
+        level,
+        "Starting Prometheus metrics server on %s:%d%s",
+        bind_addr,
+        port,
+        "" if level == logging.INFO else " (NON-LOOPBACK: reachable beyond this host)",
+    )
     try:
-        start_http_server(port)
+        start_http_server(port, addr=bind_addr)
     except OSError:
-        logger.warning("Port %d unavailable — metrics server not started", port)
+        logger.warning("%s:%d unavailable — metrics server not started", bind_addr, port)
 
 
 import threading  # noqa: E402

@@ -19,6 +19,18 @@ not verified adoption, backup execution, or recovery drills on a running host.
 Use `docs/CURRENT_OPERATIONS.md` for recorded operational context; code review
 alone does not establish today's deployed state.
 
+## Operational exposure controls (CL-esh6)
+
+These are code-enforced today, independent of the vault:
+
+| Control | Env var | Default | Behavior |
+|---|---|---|---|
+| Telegram gate approvals | `TELEGRAM_APPROVER_IDS` | unset = **deny** | `approve`/`reject`/`skip` require the sender's Telegram user id (`from.id`) to be listed (comma-separated positive ids). Unset/empty disables them, logged once at bot startup; malformed values fail startup (exit 2). Refusals are logged with the sender id, never the bot token, and change nothing. Messages posted as a chat/channel (`sender_chat`) or by bots never authorize. Read-only `help`/`pending`/`ideas`/`idea` remain open within `TELEGRAM_CHAT_ID`. |
+| Prometheus `/metrics` | `METRICS_BIND_ADDR` | `127.0.0.1` | The unauthenticated metrics endpoint (positions, PnL, strategy state) listens on loopback. Exposing it is deliberate: set the variable (e.g. `0.0.0.0` inside a container whose published port is loopback-bound, or a specific private interface behind a firewall); a non-loopback bind is logged at WARNING. |
+| `claude` CLI subprocess | — | allowlist | The research LLM driver passes only an explicit allowlist of variables to `claude -p` (process basics, config-dir/subscription-login variables, the output cap, proxy/CA settings — see `_CLI_ENV_ALLOWLIST` in `src/research/llm/claude_code.py`). Broker, DB, messaging and web-API secrets and `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN` are withheld. |
+
+Operational steps and deploy consequences: `docs/CURRENT_OPERATIONS.md` §6.
+
 ## Layers
 
 ```

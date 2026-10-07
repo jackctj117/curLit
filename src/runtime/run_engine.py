@@ -50,6 +50,114 @@ logger = logging.getLogger(__name__)
 CONFIG_PATH = Path(os.environ.get("FX_CONFIG", "configs/live_portfolio.yaml"))
 
 
+# --------------------------------------------------------------------------- #
+# Strategy registry (CL-nix8)
+# --------------------------------------------------------------------------- #
+# Strategy entries used to be routed by SUBSTRING of their id ("rate_diff" in
+# sid, "cb" in sid, ...), so an id that merely contained a fragment was built
+# as the wrong strategy and an unmatched id was silently dropped. Routing is
+# now an explicit registry, validated before anything is constructed:
+#   * an entry's ``class:`` (the dotted path live_portfolio.yaml already
+#     carries) must name a registered strategy class;
+#   * an entry without ``class:`` must use one of the canonical ids below;
+#   * a canonical id paired with a DIFFERENT class, a duplicate id, an empty
+#     id or an unregistered class/id fails startup (StrategyConfigError).
+
+_REGISTERED_STRATEGY_CLASSES: tuple[type, ...] = (
+    RateDiffMRStrategy,
+    CBSentimentShiftStrategy,
+    CarryVolFilterStrategy,
+    EventDrivenStrategy,
+)
+
+
+def _class_path(cls: type) -> str:
+    return f"{cls.__module__}.{cls.__qualname__}"
+
+
+#: YAML ``class:`` dotted path → strategy class.
+STRATEGY_CLASS_REGISTRY: dict[str, type] = {
+    _class_path(cls): cls for cls in _REGISTERED_STRATEGY_CLASSES
+}
+
+#: Canonical strategy ids (configs/live_portfolio.yaml) → strategy class, for
+#: entries that omit ``class:``.
+STRATEGY_ID_REGISTRY: dict[str, type] = {
+    "eurusd_rate_diff_mr": RateDiffMRStrategy,
+    "cb_sentiment_shift": CBSentimentShiftStrategy,
+    "carry_vol_filter": CarryVolFilterStrategy,
+    "event_driven": EventDrivenStrategy,
+}
+
+
+class StrategyConfigError(ValueError):
+    """The ``strategies:`` config cannot be resolved unambiguously (CL-nix8)."""
+
+
+def resolve_strategy_entries(
+    entries: Any,
+) -> list[tuple[str, type, dict[str, Any]]]:
+    """Validate the ``strategies:`` list and resolve each ENABLED entry to
+    ``(id, strategy class, config dict)`` in config order. Raises
+    ``StrategyConfigError`` on any unknown, colliding or malformed entry —
+    before a single strategy is constructed. Disabled entries
+    (``enabled: false``) are id-checked for collisions but not resolved, so
+    an unbuilt strategy can be parked in the file."""
+    if entries is None:
+        return []
+    if not isinstance(entries, list):
+        msg = f"strategies: expected a list, got {type(entries).__name__}"
+        raise StrategyConfigError(msg)
+    seen: set[str] = set()
+    resolved: list[tuple[str, type, dict[str, Any]]] = []
+    for idx, entry in enumerate(entries):
+        if not isinstance(entry, dict):
+            msg = f"strategies[{idx}]: expected a mapping, got {type(entry).__name__}"
+            raise StrategyConfigError(msg)
+        sid = entry.get("id")
+        if not isinstance(sid, str) or not sid.strip():
+            msg = f"strategies[{idx}]: missing or empty 'id'"
+            raise StrategyConfigError(msg)
+        if sid in seen:
+            msg = f"strategies[{idx}]: duplicate strategy id {sid!r}"
+            raise StrategyConfigError(msg)
+        seen.add(sid)
+        if entry.get("enabled", True) is False:
+            logger.info("Strategy %s disabled via config (enabled: false) — skipping", sid)
+            continue
+        class_path = entry.get("class")
+        by_id = STRATEGY_ID_REGISTRY.get(sid)
+        if class_path is not None:
+            cls = STRATEGY_CLASS_REGISTRY.get(class_path) if isinstance(class_path, str) else None
+            if cls is None:
+                msg = (
+                    f"strategy {sid!r}: class {class_path!r} is not a registered strategy "
+                    f"(registered: {sorted(STRATEGY_CLASS_REGISTRY)})"
+                )
+                raise StrategyConfigError(msg)
+            if by_id is not None and by_id is not cls:
+                msg = (
+                    f"strategy {sid!r}: id is registered to {_class_path(by_id)} but "
+                    f"class: names {class_path}"
+                )
+                raise StrategyConfigError(msg)
+        elif by_id is not None:
+            cls = by_id
+        else:
+            msg = (
+                f"strategy {sid!r}: unknown id and no 'class:' given "
+                f"(canonical ids: {sorted(STRATEGY_ID_REGISTRY)})"
+            )
+            raise StrategyConfigError(msg)
+        scfg = entry.get("config") or {}
+        if not isinstance(scfg, dict):
+            msg = f"strategy {sid!r}: 'config' must be a mapping"
+            raise StrategyConfigError(msg)
+        logger.info("Strategy %s resolved to %s", sid, _class_path(cls))
+        resolved.append((sid, cls, scfg))
+    return resolved
+
+
 def load_config(path: Path) -> dict[str, Any]:
     if not path.exists():
         logger.warning("Config not found at %s — using defaults", path)
@@ -247,6 +355,9 @@ def build_strategies(
     snapshot_store: FeatureSnapshotStore | None = None,
     engine: Any | None = None,
 ) -> list[Any]:
+    # CL-nix8: resolve + validate every entry BEFORE touching the DB or
+    # constructing anything — a bad registry entry fails startup loudly.
+    resolved = resolve_strategy_entries(config.get("strategies", []))
     # Strategies always need a live engine for their DataProvider /
     # NLPProvider / StrategyStateStore. The shared engine (CL-7vn9) is passed
     # in; if the boot couldn't build one (engine is None) fall back to a
@@ -299,15 +410,12 @@ def build_strategies(
         )
 
     strategies: list[Any] = []
-    for sconf in config.get("strategies", []):
-        sid = sconf.get("id", "")
-        scfg = sconf.get("config", {})
-        # CL-mnhw: honor an explicit `enabled: false` on any strategy
-        # entry. Missing/true keeps the legacy always-on behavior.
-        if sconf.get("enabled", True) is False:
-            logger.info("Strategy %s disabled via config (enabled: false) — skipping", sid)
-            continue
-        if "rate_diff" in sid:
+    # CL-mnhw: `enabled: false` entries were already dropped (and logged) by
+    # resolve_strategy_entries; CL-nix8: dispatch on the RESOLVED class, never
+    # on substrings of the id.
+    for sid, strategy_cls, scfg in resolved:
+        logger.info("Building strategy %s (%s)", sid, strategy_cls.__name__)
+        if strategy_cls is RateDiffMRStrategy:
             strategies.append(
                 RateDiffMRStrategy(
                     RateDiffMRConfig(**scfg) if scfg else RateDiffMRConfig(),
@@ -317,7 +425,7 @@ def build_strategies(
                     liquidity_profile=liquidity_profile,
                 )
             )
-        elif "sentiment" in sid or "cb" in sid:
+        elif strategy_cls is CBSentimentShiftStrategy:
             cb_cfg = CBSentimentConfig(**scfg) if scfg else CBSentimentConfig()
             # CL-885p: give the live strategy a durable state path (config
             # default is None so unit tests stay isolated) so its book survives
@@ -333,7 +441,7 @@ def build_strategies(
                     snapshot_store=snapshot_store,
                 )
             )
-        elif "carry" in sid or "vol_filter" in sid:
+        elif strategy_cls is CarryVolFilterStrategy:
             carry_cfg = CarryVolFilterConfig(**scfg) if scfg else CarryVolFilterConfig()
             # CL-885p: durable basket path for the live strategy (config
             # default None keeps unit tests isolated).
@@ -348,7 +456,7 @@ def build_strategies(
                     liquidity_profile=liquidity_profile,
                 )
             )
-        elif "event" in sid:
+        elif strategy_cls is EventDrivenStrategy:
             # CL-mnhw: current-events consumer. Gets the raw DB engine
             # (not just DataProvider) for geo_events polling + status
             # transitions. NO-OP that logs once if the producer's
@@ -363,6 +471,9 @@ def build_strategies(
                     liquidity_profile=liquidity_profile,
                 )
             )
+        else:  # unreachable: every registry class has a branch above
+            msg = f"strategy {sid!r}: no builder for {strategy_cls!r}"
+            raise StrategyConfigError(msg)
     if not strategies:
         strategies.append(
             RateDiffMRStrategy(
