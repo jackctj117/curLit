@@ -50,7 +50,7 @@ an entry-paused engine. Only ``/api/system/resume`` clears them.
 
 CL-o9sq/CL-pksi make emergency closes evidence-driven and restart-safe:
 every flatten/reduce order is persisted as an :class:`EmergencyAttempt`
-(migration 025) BEFORE it is sent; a WORKING/UNKNOWN/partial outcome fences
+(migration 027) BEFORE it is sent; a WORKING/UNKNOWN/partial outcome fences
 the symbol (here AND in the OMS, so no other writer can size off a book that
 may not include it) and records the sticky external halt cause
 ``unresolved_emergency_orders``. Only verified broker evidence resolves a
@@ -80,6 +80,7 @@ from typing import Any
 from src.execution.broker import BrokerOrderNotFoundError, Order, canonical_symbol
 from src.execution.oms import OrderIntent, SubmissionResult, SubmissionStatus
 from src.monitoring.metrics import kill_switch_triggered
+from src.portfolio.reconciler import SnapshotUnavailableError, validate_broker_snapshot
 from src.risk.emergency_attempts import (
     EVIDENCE_FILL_EVENT,
     EVIDENCE_OPERATOR,
@@ -919,7 +920,7 @@ class KillSwitchManager:
                 strategy_id,
             )
             return None
-        self._confirm_positions(net_qty)
+        self._confirm_positions(positions)
         current = self._derisk_targets.get(strategy_id, {})
         targets = dict(current)
         for key in sorted(net_qty):
@@ -1151,11 +1152,33 @@ class KillSwitchManager:
             release(route_symbol)
         logger.info("no unresolved emergency order on %s — OMS fence released", key)
 
-    def _confirm_positions(self, net_qty: dict[str, float]) -> None:
+    def _confirm_positions(self, positions: Any) -> None:
         """Release restart confirmation fences whose leg the position feed now
         shows at (or beyond, same side) its target. Only for legs whose fill
         is already VERIFIED by broker evidence — this never resolves an order.
+
+        CL-pksi / CL-oqos: ``positions`` is the RAW broker snapshot. It must
+        pass the shared :func:`validate_broker_snapshot` rules (a list; every
+        row a non-empty canonical symbol with a finite, non-bool quantity; no
+        canonical duplicates) before ANY fence is released. A malformed or
+        unavailable snapshot (``{}``, a non-list, a duplicate leg, a NaN
+        quantity) would otherwise read as "flat" — missing exposure taken as
+        zero — and release a fence while the feed still holds the pre-fill
+        position, letting the cold-start reconciler close (and reverse) it
+        again. Such a snapshot keeps every fence and logs why.
         """
+        if not self._confirm_pending:
+            return
+        try:
+            validated = validate_broker_snapshot(positions)
+        except SnapshotUnavailableError as exc:
+            logger.warning(
+                "position snapshot unavailable (%s) — every confirmation fence kept: %s",
+                exc,
+                sorted(self._confirm_pending),
+            )
+            return
+        net_qty = {key: float(pos.quantity) for key, pos in validated.items()}
         with self._attempt_lock:
             for key, (route, target, _action) in list(self._confirm_pending.items()):
                 qty = net_qty.get(key, 0.0)
@@ -1174,16 +1197,12 @@ class KillSwitchManager:
         if not self._confirm_pending:
             return
         try:
+            logger.info("reading broker positions to confirm verified emergency fills")
             positions = self.broker.get_positions()
-            net: dict[str, float] = {}
-            for pos in positions:
-                net[canonical_symbol(pos.symbol)] = net.get(
-                    canonical_symbol(pos.symbol), 0.0
-                ) + float(pos.quantity)
         except Exception:
             logger.warning("position confirmation read failed — fences kept", exc_info=True)
             return
-        self._confirm_positions(net)
+        self._confirm_positions(positions)
 
     def _begin_attempt(
         self, intent: OrderIntent, key: str, symbol: str, qty: float, target: float

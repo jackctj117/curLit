@@ -1,4 +1,4 @@
-"""Hop-graph edge memory over migration 025 on sqlite (CL-ynuh).
+"""Hop-graph edge memory over migration 026 on sqlite (CL-ynuh).
 
 Schema comes from the real migration file with the documented sqlite shim
 (TIMESTAMPTZ -> TEXT, NUMERIC -> FLOAT). Oracles: the 730-day policy from the

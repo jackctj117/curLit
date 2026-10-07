@@ -1,4 +1,4 @@
-"""Persistent hop-graph edge memory over ``niche_edges`` (CL-ynuh, mig 025).
+"""Persistent hop-graph edge memory over ``niche_edges`` (CL-ynuh, mig 026).
 
 SHADOW ONLY. Read/written through an INJECTED SQLAlchemy engine (unit tests
 use sqlite with the TIMESTAMPTZ -> TEXT shim); nothing in the trading path

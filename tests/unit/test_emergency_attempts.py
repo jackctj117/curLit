@@ -9,7 +9,7 @@ Oracles (independent of the implementation):
 * Fill accounting is checked against the arithmetic sum of DISTINCT venue
   transaction ids — the definition of an idempotent fill ledger.
 * Persistence is checked by reading the sqlite rows of the production
-  migration (025) directly, not through the store under test.
+  migration (027) directly, not through the store under test.
 """
 
 from __future__ import annotations
@@ -154,7 +154,7 @@ def mk(
 
 
 def install_attempts(engine: Any) -> None:
-    """Apply the PRODUCTION migration 025 to sqlite (TIMESTAMPTZ shimmed)."""
+    """Apply the PRODUCTION migration 027 to sqlite (TIMESTAMPTZ shimmed)."""
     from migrations.run import _strip_sql_comments
 
     sql = _strip_sql_comments((REPO / "migrations" / "027_fx_emergency_attempts.sql").read_text())
@@ -1146,3 +1146,151 @@ def test_reset_daily_keeps_confirmation_state_durable(tmp_path: Path) -> None:
     _, risk4 = _restart(url, broker1.net, {})
     risk4.recover_emergency_attempts()
     assert risk4.derisk_fence_summary()["awaiting_position_confirmation"] == []
+
+
+# --------------------------------------------------------------------------- #
+# CL-pksi / CL-oqos integration review: confirmation fences need a VALID
+# snapshot; emergency recovery must not depend on the account read
+# --------------------------------------------------------------------------- #
+
+
+@dataclass
+class SnapshotBroker(VenueBroker):
+    """VenueBroker whose position feed returns ``snapshots`` in order (the
+    last one repeats) — the raw, possibly malformed broker response."""
+
+    snapshots: list[Any] = field(default_factory=list)
+
+    def get_positions(self) -> Any:  # type: ignore[override]
+        if len(self.snapshots) > 1:
+            return self.snapshots.pop(0)
+        return self.snapshots[0]
+
+
+#: Snapshots CL-oqos ``validate_broker_snapshot`` rejects as unavailable.
+#: Every one of them makes the EURUSD leg look flat (absent, or netted to
+#: zero) to a naive parser — exactly the verified-fill target of 0.
+MALFORMED_SNAPSHOTS: dict[str, Any] = {
+    "empty_dict": {},
+    "non_list_tuple": (),
+    "duplicate_symbol": [Position("EURUSD", 1000.0, 1.0), Position("EUR_USD", -1000.0, 1.0)],
+    "nan_quantity": [Position("GBPUSD", float("nan"), 1.0)],
+}
+
+
+@pytest.mark.parametrize("name", sorted(MALFORMED_SNAPSHOTS))
+def test_malformed_snapshot_never_releases_confirmation_fence(tmp_path: Path, name: str) -> None:
+    """Reviewer scenario end to end: verified fill 1,000 -> 0, restart, the
+    position feed answers with a malformed snapshot, then (still lagging)
+    with the stale pre-fill 1,000. The cold-start reconciler's sell must be
+    BLOCKED — a released fence would sell 1,000 into a flat book (-1,000)."""
+    url = f"sqlite:///{tmp_path / 'snap.db'}"
+    install_attempts(create_engine(url))
+    broker1 = VenueBroker({"EURUSD": 1000.0}, script=["fill"])
+    mk(broker1, store=SqlEmergencyAttemptStore(create_engine(url))).check(DD)
+    assert broker1.net["EURUSD"] == 0.0  # verified, durable fill
+
+    malformed = MALFORMED_SNAPSHOTS[name]
+    stale = [Position("EURUSD", 1000.0, 1.0)]
+    broker2 = SnapshotBroker({"EURUSD": 0.0}, snapshots=[malformed, stale])
+    risk2 = mk(broker2, store=SqlEmergencyAttemptStore(create_engine(url)))
+    risk2.recover_emergency_attempts()  # first confirmation read is malformed
+    # Cold-start reconciler now sees the stale pre-fill 1,000 and tries to sell.
+    assert _reconciler_close(risk2) is SubmissionStatus.BLOCKED
+    assert broker2.orders == []
+    assert risk2.derisk_fence_summary()["awaiting_position_confirmation"] == ["EURUSD"]
+    risk2.refresh_unresolved_derisk()
+    risk2.check(DD)
+    assert _reconciler_close(risk2) is SubmissionStatus.BLOCKED
+    assert risk2.derisk_fence_summary()["awaiting_position_confirmation"] == ["EURUSD"]
+    assert broker2.orders == []
+    assert broker2.net["EURUSD"] == 0.0
+
+    # A VALID snapshot showing the leg at its target releases the fence.
+    broker2.snapshots = [[]]
+    risk2.refresh_unresolved_derisk()
+    assert risk2.derisk_fence_summary()["awaiting_position_confirmation"] == []
+    assert risk2.oms.fenced_symbols() == {}
+    assert broker2.orders == []
+
+
+@pytest.mark.parametrize("name", sorted(MALFORMED_SNAPSHOTS))
+def test_confirm_positions_rejects_malformed_raw_snapshot(name: str) -> None:
+    """Unit level: the fence-release routine itself validates its input."""
+    risk = mk(VenueBroker({}))
+    risk._confirm_pending["EURUSD"] = ("EURUSD", 0.0, "drawdown_limit")
+    risk._confirm_positions(MALFORMED_SNAPSHOTS[name])
+    assert risk._confirm_pending == {"EURUSD": ("EURUSD", 0.0, "drawdown_limit")}
+    risk._confirm_positions([Position("GBPUSD", 5.0, 1.0)])  # valid; EURUSD flat
+    assert risk._confirm_pending == {}
+
+
+def test_account_read_failures_do_not_stop_emergency_recovery(tmp_path: Path) -> None:
+    """A persistent account-read failure (CL-9ird: the paper venue cannot
+    mark a position) must not freeze emergency recovery: every tick still
+    retries the store, lifts the OMS submission block once it is readable,
+    and keeps querying the broker — while the account halt still trips."""
+    from src.execution.paper_broker import AccountMarkUnavailableError
+    from src.runtime.live_engine import LiveEngine
+
+    url = f"sqlite:///{tmp_path / 'acct.db'}"
+    install_attempts(create_engine(url))
+    first = VenueBroker({"EURUSD": 1000.0}, script=["working"])
+    mk(first, store=SqlEmergencyAttemptStore(create_engine(url))).check(DD)
+    client_id = str(first.orders[0].client_order_id)
+
+    class Flaky(SqlEmergencyAttemptStore):
+        fail = True
+
+        def load_unresolved(self) -> list[EmergencyAttempt]:
+            if self.fail:
+                raise OSError("db down")
+            return super().load_unresolved()
+
+    def no_account() -> Any:
+        raise AccountMarkUnavailableError("EURUSD cannot be marked in USD")
+
+    broker = VenueBroker({"EURUSD": 1000.0})
+    broker.lookups[client_id] = ConnectionError("lookup down")
+    broker.get_account = no_account  # type: ignore[attr-defined]
+    store = Flaky(create_engine(url))
+    risk = mk(broker, store=store)
+    risk.recover_emergency_attempts()
+    assert risk.oms.submission_block() is not None
+
+    refreshes: list[int] = []
+    real_refresh = risk.refresh_unresolved_derisk
+
+    def counting_refresh() -> int:
+        refreshes.append(1)
+        return real_refresh()
+
+    risk.refresh_unresolved_derisk = counting_refresh  # type: ignore[method-assign]
+    engine = LiveEngine(
+        [],
+        risk.oms,
+        broker,  # type: ignore[arg-type]
+        kill_switch_manager=risk,
+        risk_context_builder=_context_stub(),
+    )
+
+    engine._health_tick()  # store still down: recovery retried, block kept
+    assert refreshes == [1]
+    assert risk.oms.submission_block() is not None
+    store.fail = False  # store recovers while the account read keeps failing
+    engine._health_tick()  # (a successful recovery re-enters refresh once)
+    assert len(refreshes) > 1
+    lookups_after_second = len(broker.lookup_calls)
+    refreshes_after_second = len(refreshes)
+    engine._health_tick()
+
+    assert len(refreshes) == refreshes_after_second + 1  # every tick
+    assert engine._account_read_failures == 3
+    assert risk.oms.submission_block() is None  # recovery lifted the block
+    assert risk.unresolved_derisk_symbols() == ["EURUSD"]  # fence re-installed
+    assert len(broker.lookup_calls) > lookups_after_second > 0  # lookups progress
+    # The account-read halt is unchanged.
+    assert risk.oms.is_halted
+    assert "external:account_snapshot_unavailable" in risk.active_halt_causes()
+    assert _reconciler_close(risk) is SubmissionStatus.BLOCKED
+    assert broker.orders == []

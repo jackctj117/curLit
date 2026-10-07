@@ -41,7 +41,7 @@ from src.events.niche_shadow import CapturedInput, ResearchModel  # noqa: E402
 
 logger = logging.getLogger("scripts.niche_hopgraph_shadow")
 
-MIGRATION_025 = Path(__file__).resolve().parents[1] / "migrations" / "026_niche_edges.sql"
+MIGRATION_026 = Path(__file__).resolve().parents[1] / "migrations" / "026_niche_edges.sql"
 
 
 @dataclass
@@ -69,7 +69,7 @@ def sqlite_memory(path: Path) -> NicheEdgeMemory:
     from sqlalchemy import create_engine, text  # noqa: PLC0415
 
     engine = create_engine(f"sqlite:///{path}")
-    sql = _strip_sql_comments(MIGRATION_025.read_text()).replace("TIMESTAMPTZ", "TEXT")
+    sql = _strip_sql_comments(MIGRATION_026.read_text()).replace("TIMESTAMPTZ", "TEXT")
     with engine.begin() as conn:
         for stmt in [s.strip() for s in sql.split(";") if s.strip()]:
             conn.execute(text(stmt))

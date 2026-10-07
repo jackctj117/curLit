@@ -524,6 +524,22 @@ class LiveEngine:
                 ack()
             except Exception:
                 logger.warning("Health: account-halt acknowledgement failed", exc_info=True)
+        # CL-pksi / CL-oqos: emergency recovery is equity-independent and runs
+        # EVERY tick, BEFORE the account read can return early — store-recovery
+        # retry (lifts the OMS submission block once the store is readable),
+        # broker order lookups and position-confirmation fences. A persistent
+        # account-read failure (e.g. CL-9ird AccountMarkUnavailableError on the
+        # paper venue) must not freeze them. It also runs before the switches
+        # act, so a verified zero-fill outcome can be retried (once) this tick
+        # and a filled one is never re-sent. Account-read counting and the
+        # account_snapshot_unavailable halt below are unchanged.
+        refresh = getattr(self.kill_switch_manager, "refresh_unresolved_derisk", None)
+        if callable(refresh):
+            try:
+                logger.debug("Health: refreshing unresolved emergency-order evidence")
+                refresh()
+            except Exception:
+                logger.exception("Health: emergency-order evidence refresh failed; fences kept")
         try:
             account = self.broker.get_account()
             # Missing/nonfinite equity cannot enter the drawdown calculation.
@@ -556,15 +572,6 @@ class LiveEngine:
                 self.kill_switch_manager.reset_daily(clear_causes=False)
         else:
             context = {"equity": equity}
-        # CL-pksi: resolve unresolved emergency-order fences from broker order
-        # evidence BEFORE the switches act, so a verified zero-fill outcome can
-        # be retried (once) this tick and a filled one is never re-sent.
-        refresh = getattr(self.kill_switch_manager, "refresh_unresolved_derisk", None)
-        if callable(refresh):
-            try:
-                refresh()
-            except Exception:
-                logger.exception("Health: emergency-order evidence refresh failed; fences kept")
         self.kill_switch_manager.check(context)
         # CL-nxjx: after evaluating, auto-lift a halt whose ONLY cause was a
         # data-availability gate (stale_prices) that has since cleared — so
