@@ -762,6 +762,19 @@ class OrderManager:
                     if placed.order_id:
                         with self._lock:
                             self._fills_journaling.discard(placed.order_id)
+                            if (
+                                sync_journaled
+                                and self.journal is not None
+                                and self._deferred_fills.pop(placed.order_id, None) is not None
+                            ):
+                                # The streamed copy arrived first and was deferred
+                                # (journal unreadable); this row makes it durable.
+                                # Listeners already ran for the streamed copy.
+                                logger.info(
+                                    "deferred fill %s journaled by the placement "
+                                    "response — deferral cleared",
+                                    placed.order_id,
+                                )
                             if not sync_journaled:
                                 # Let the streamed / replayed copy journal it
                                 # (its listeners never fired for a sync fill).
@@ -949,10 +962,13 @@ class OrderManager:
             if fill_id and fill_id in self._seen_fills:
                 # Already handled (redelivery or sync fill); durable only once
                 # the claimant's journal append has completed.
-                return FillOutcome(
-                    newly_processed=False,
-                    durable=self.journal is not None and fill_id not in self._fills_journaling,
-                )
+                durable = self.journal is not None and fill_id not in self._fills_journaling
+                if durable and self._deferred_fills.pop(fill_id, None) is not None:
+                    # Journaled by another path (e.g. the synchronous placement
+                    # response) after it was deferred: no longer deferred, so
+                    # the checkpoint may pass it (integration review r4).
+                    logger.info("deferred fill %s is now journaled — deferral cleared", fill_id)
+                return FillOutcome(newly_processed=False, durable=durable)
             retry = bool(fill_id) and (
                 fill_id in self._unjournaled_fills or fill_id in self._deferred_fills
             )
@@ -960,10 +976,12 @@ class OrderManager:
                 # A previous delivery claimed this fill but its journal append
                 # failed (or was deferred and the journal now shows no row):
                 # reuse its attribution, do not re-fire listeners.
+                deferred_entry = self._deferred_fills.pop(fill_id, None)
                 if fill_id in self._unjournaled_fills:
                     intent = self._unjournaled_fills.pop(fill_id)
                 else:
-                    intent = self._deferred_fills.pop(fill_id)[0]
+                    assert deferred_entry is not None
+                    intent = deferred_entry[0]
             else:
                 intent = self._pending_intents.pop(str(client_id), None) if client_id else None
                 if client_id:
