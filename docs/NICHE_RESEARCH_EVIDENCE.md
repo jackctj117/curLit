@@ -369,7 +369,7 @@ marks the candidate `insufficient_evidence`. The gate was not relaxed to
 accept it.
 
 **Memory** (`src/events/hop_graph_memory.py`, migration
-`025_niche_edges.sql`, additive). Sourced and contradicted edges are stored
+`026_niche_edges.sql`, additive). Sourced and contradicted edges are stored
 with the primary source hash, exact passage, locator and source record, plus
 an evidence bundle holding every supporting and limiting claim and its
 source (both endpoints' filings). Each row also has the theme, `as_of` and

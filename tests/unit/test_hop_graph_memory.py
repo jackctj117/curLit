@@ -38,7 +38,7 @@ def _engine(tmp_path: Path) -> Any:
     from migrations.run import _strip_sql_comments
 
     engine = create_engine(f"sqlite:///{tmp_path / 'edges.db'}")
-    sql = _strip_sql_comments(Path("migrations", "025_niche_edges.sql").read_text())
+    sql = _strip_sql_comments(Path("migrations", "026_niche_edges.sql").read_text())
     sql = sql.replace("TIMESTAMPTZ", "TEXT").replace("NUMERIC", "FLOAT")
     with engine.begin() as conn:
         for stmt in [s.strip() for s in sql.split(";") if s.strip()]:

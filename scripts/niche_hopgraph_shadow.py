@@ -41,7 +41,7 @@ from src.events.niche_shadow import CapturedInput, ResearchModel  # noqa: E402
 
 logger = logging.getLogger("scripts.niche_hopgraph_shadow")
 
-MIGRATION_025 = Path(__file__).resolve().parents[1] / "migrations" / "025_niche_edges.sql"
+MIGRATION_025 = Path(__file__).resolve().parents[1] / "migrations" / "026_niche_edges.sql"
 
 
 @dataclass
