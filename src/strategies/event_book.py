@@ -1291,6 +1291,33 @@ class EventBook:
 
         return canonical_symbol(sym)
 
+    @staticmethod
+    def validated_snapshot(raw: Any) -> list[Any] | None:
+        """The broker snapshot as a list, or None when it is malformed (CL-oqos).
+
+        Same whole-snapshot contract as the cold-start reconciler
+        (:func:`src.portfolio.reconciler.validate_broker_snapshot`): a
+        non-list, an empty/unreadable symbol, a nonfinite/bool quantity, or
+        two rows for one canonical symbol (``USD_CAD`` + ``USDCAD``) make
+        the WHOLE snapshot unknown. Partial use is unsafe — ``{}`` would read
+        as flat (rejecting a filled pending entry) and duplicate rows would
+        sum into an overstated fill.
+        """
+        from src.portfolio.reconciler import (  # noqa: PLC0415
+            SnapshotUnavailableError,
+            validate_broker_snapshot,
+        )
+
+        try:
+            validate_broker_snapshot(raw)
+        except SnapshotUnavailableError as exc:
+            logger.warning(
+                "event_driven: broker snapshot malformed (%s) — no prune/confirm this tick",
+                exc.reason,
+            )
+            return None
+        return list(raw)
+
     def reconcile(self, broker: Any, now: datetime) -> list[Any] | None:
         """Prune phantom open_positions (CL-v9g4) and return the broker
         position snapshot for reuse (CL-8cw1).
@@ -1318,13 +1345,16 @@ class EventBook:
         if not self.open_positions and not self.pending_exits and not self.pending_entries:
             return None
         try:
-            positions = list(broker.get_positions())
+            raw = broker.get_positions()
         except Exception:
             logger.debug(
                 "event_driven: broker positions unavailable — skipping phantom reconciliation",
                 exc_info=True,
             )
             return None
+        positions = self.validated_snapshot(raw)
+        if positions is None:
+            return None  # malformed snapshot: prune nothing, confirm nothing
         held = {self._norm_symbol(p.symbol) for p in positions}
         grace = timedelta(seconds=self._reconcile_grace_sec)
         pruned = 0
