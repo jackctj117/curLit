@@ -114,6 +114,27 @@ Everything is PAPER. No real money moves anywhere.
     (`ALPACA_OPT_MIN_CONFIDENCE`); niche/red-team gates OFF
     (`ALPACA_OPT_REQUIRE_NICHE/RED_TEAM=0`) — re-tighten before any
     real-money move;
+  - **what the niche/red-team gates mean (CL-7kuu, development change, not
+    yet deployed)**: when `ALPACA_{OPT,EQ}_REQUIRE_NICHE` or `_RED_TEAM` is
+    on, an idea is a candidate only if it has a write-once
+    `idea_research_status` row (migration 025) with `research_eligible` true
+    and the recorded statuses — niche: discovery `completed`, evidence
+    `source_backed`, liquidity `sufficient`; red-team: review `supported`.
+    The row is written by the idea ledger in the same transaction as the
+    idea, only for ideas the niche merge created from a research-eligible
+    NicheIdea; note text, an LLM-emitted `niche`/`research` key, or an idea
+    persisted earlier never gains one. Executors only read it; a Postgres
+    rule discards any UPDATE. Ideas persisted before migration 025 have no
+    row, so they are NOT executable under the gates;
+  - with both gates **off** (the current paper `.env`), the candidate query
+    is byte-identical to before CL-7kuu — no behavior change;
+  - `ALPACA_LEGACY_NOTE_MATCH=1` (default 0, read by both daemons) restores
+    the old `notes LIKE '%niche%' / '%red-team%'` matching as an explicit
+    transition shim and logs a WARNING at config load and every cycle;
+    no effect when both gates are off. Deploy order: apply migration 025
+    BEFORE the new event pipeline: without the table, the first event with a
+    merged niche idea raises in the ledger (logged, fail-soft) and that
+    cycle's idea writes from that event onward are lost;
   - up to `ALPACA_OPT_MAX_PER_DAY` (10) buys/day, PACED at `ALPACA_OPT_MAX_PER_HOUR` (2) so entries spread across the session instead of a single open burst — intraday events can still be bought in the afternoon (CL-h02l). Top-by-confidence first;
     1 contract each (`ALPACA_OPT_QTY`), skipping any contract whose premium
     exceeds $500 (`ALPACA_OPT_MAX_PREMIUM`);

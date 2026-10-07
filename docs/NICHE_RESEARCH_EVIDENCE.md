@@ -143,6 +143,13 @@ existing order-consumed `trade_ideas` feed just because the execution policy
 does not require red-team tags. Existing non-niche ideas, historical ledger
 rows and open positions are not rewritten by this patch.
 
+CL-7kuu: execution eligibility is now persisted structurally. When the niche
+merge adds an eligible candidate, the idea ledger writes a write-once
+`idea_research_status` row (statuses, eligibility, source hashes, score version,
+invocation id) with the `trade_ideas` row. With their niche/red-team policy flags
+on, the Alpaca executors select on that row instead of note substrings; the
+legacy note match survives only behind `ALPACA_LEGACY_NOTE_MATCH=1`.
+
 **Intentional behavior change:** research failures preserve leads, not trading
 eligibility. This may substantially reduce new niche entries, including when
 the critic is disabled or the configured provider is unfunded. The initial

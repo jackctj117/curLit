@@ -40,7 +40,7 @@ def validate_execution_config(config: object) -> None:
     for name, value in vars(config).items():
         if name == "selection":
             continue  # ContractSelectionConfig has a separate instrument contract.
-        if name.startswith("require_") or name == "allow_short":
+        if name.startswith("require_") or name in {"allow_short", "legacy_note_match"}:
             if type(value) is not bool:
                 raise ValueError(f"{name}: expected boolean")
             continue

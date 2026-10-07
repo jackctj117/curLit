@@ -40,6 +40,17 @@ from src.risk.env_config import env_int as _i
 logger = logging.getLogger(__name__)
 
 
+def _legacy_note_match() -> bool:
+    """ALPACA_LEGACY_NOTE_MATCH (CL-7kuu): explicit, logged compatibility shim."""
+    enabled = _b("ALPACA_LEGACY_NOTE_MATCH", default=False)
+    if enabled:
+        logger.warning(
+            "ALPACA_LEGACY_NOTE_MATCH=1: niche/red-team policy will match NOTE "
+            "SUBSTRINGS, not validated research status (CL-7kuu transition shim)"
+        )
+    return enabled
+
+
 def _config_from_env():  # noqa: ANN202
     from src.execution.alpaca_options_executor import OptionsExecConfig  # noqa: PLC0415
 
@@ -54,6 +65,9 @@ def _config_from_env():  # noqa: ANN202
         # the paper track record actually accumulates a sample.
         require_niche=_b("ALPACA_OPT_REQUIRE_NICHE", default=True),
         require_red_team=_b("ALPACA_OPT_REQUIRE_RED_TEAM", default=True),
+        # CL-7kuu transition shim, shared by both books, default OFF: select
+        # by legacy note substrings instead of validated research status.
+        legacy_note_match=_legacy_note_match(),
         # Technical-alignment gate (CL-3xoj): skip ideas whose computed price
         # structure scores below this against the thesis. -1.01 disables.
         min_alignment=_f("ALPACA_OPT_MIN_ALIGNMENT", -0.4),

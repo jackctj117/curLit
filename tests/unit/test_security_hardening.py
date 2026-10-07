@@ -160,8 +160,11 @@ def test_entry_queries_bind_confidence(
     query, params = execute.call_args.args
     assert payload not in str(query)
     assert params == {"min_conf": payload}
-    assert ("LIKE '%niche%'" in str(query)) == require_niche
-    assert ("LIKE '%red-team%'" in str(query)) == require_red_team
+    # CL-7kuu: policy flags select on the research-status row, never notes.
+    assert "LIKE" not in str(query)
+    assert ("idea_research_status" in str(query)) == (require_niche or require_red_team)
+    assert ("rs.review_status = 'supported'" in str(query)) == require_red_team
+    assert ("rs.evidence_status = 'source_backed'" in str(query)) == require_niche
 
 
 @pytest.mark.parametrize("bounded", [False, True])

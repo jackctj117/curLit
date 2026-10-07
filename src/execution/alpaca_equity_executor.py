@@ -51,6 +51,7 @@ from typing import Any
 from sqlalchemy import text
 
 from src.events.prices import parse_ts
+from src.events.research_status import eligibility_clauses
 from src.execution.alpaca_asset_eligibility import (
     AssetEligibility,
     AssetNotFoundError,
@@ -108,6 +109,12 @@ class EquityExecConfig:
     max_positions_per_ticker: int = 1
     require_niche: bool = True
     require_red_team: bool = True
+    #: CL-7kuu transition shim (ALPACA_LEGACY_NOTE_MATCH=1, default OFF). With
+    #: the require_* flags on, eligibility is a recorded research-eligible
+    #: ``idea_research_status`` row, never note text. Setting this restores the
+    #: old ``notes LIKE '%niche%' / '%red-team%'`` filter and logs a WARNING
+    #: every cycle. It has no effect when both require_* flags are off.
+    legacy_note_match: bool = False
     #: Technical-alignment gate (CL-3xoj): skip an idea whose computed price
     #: structure is strongly AGAINST the thesis. Fail-open when no context is
     #: computable. -1.01 disables.
@@ -186,10 +193,16 @@ def fetch_executable_ideas(
         "status = 'pending'",
         "NOT EXISTS (SELECT 1 FROM alpaca_equity_orders a WHERE a.idea_id = ti.idea_id)",
     ]
-    if cfg.require_niche:
-        where.append("lower(notes) LIKE '%niche%'")
-    if cfg.require_red_team:
-        where.append("lower(notes) LIKE '%red-team%'")
+    # CL-7kuu: policy flags select on the write-once research-status row
+    # (read-only here), not note substrings. Both flags off adds nothing.
+    where += eligibility_clauses(
+        require_niche=cfg.require_niche,
+        require_red_team=cfg.require_red_team,
+        legacy_note_match=cfg.legacy_note_match,
+        notes_column="notes",
+        idea_alias="ti",
+        book="alpaca equity",
+    )
     # CL-u59z: where contains only literals above; min_conf is a bind parameter.
     sql = (
         "SELECT idea_id, ticker, action, confidence, preferred_instrument, notes, "  # nosec B608
