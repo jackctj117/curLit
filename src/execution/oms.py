@@ -182,6 +182,10 @@ class OrderManager:
         # intent is kept here so the retry keeps its attribution, and the
         # listeners — which already ran — are not fired twice.
         self._unjournaled_fills: dict[str, OrderIntent | None] = {}
+        # Fills whose journal state was UNKNOWN when they arrived live (lookup
+        # failed): claimed and fed to listeners, never appended blind; the
+        # next journal-checked replay appends them only if no row exists.
+        self._deferred_fills: dict[str, OrderIntent | None] = {}
         # Fill ids claimed by a delivery whose journal append is in progress.
         self._fills_journaling: set[str] = set()
         # CL-80tv: per-canonical-symbol change counter, bumped (under _lock)
@@ -863,7 +867,13 @@ class OrderManager:
         """
         return self.process_fill(fill).newly_processed
 
-    def process_fill(self, fill: dict[str, Any], *, check_journal: bool = False) -> FillOutcome:
+    def process_fill(
+        self,
+        fill: dict[str, Any],
+        *,
+        check_journal: bool = False,
+        defer_on_lookup_failure: bool = False,
+    ) -> FillOutcome:
         """:meth:`on_fill` plus the durability verdict the stream checkpoint
         needs (CL-pksi catch-up).
 
@@ -877,6 +887,15 @@ class OrderManager:
         is empty): look the fill up in the journal first, so a fill journaled
         before the restart is not journaled twice. That DB read runs outside
         ``_lock``; a lookup failure propagates (the caller must not advance).
+        A fill found in the journal is still handed to the fill listeners
+        (they dedup by transaction id): a crash between the journal commit and
+        a listener's own persistence must not lose that evidence on replay.
+
+        ``defer_on_lookup_failure`` (live stream, integration review): when
+        the journal lookup fails the fill's journal state is UNKNOWN, so it is
+        never appended. It is claimed (pending cleared, listeners fed) and
+        parked as DEFERRED with ``durable=False``; the next catch-up replay
+        looks it up again and appends it only if the row is really missing.
 
         Exactly-once: the claim (dedup check + pending pop + version bump) is
         one ``_lock`` section; journaling and listeners run outside it, and a
@@ -885,17 +904,40 @@ class OrderManager:
         """
         fill_id = str(fill.get("transaction_id") or "")
         client_id = fill.get("client_order_id")
+        if fill_id and not check_journal:
+            with self._lock:
+                if fill_id in self._deferred_fills:
+                    # Journal state unknown: only a journal-checked replay may
+                    # append it (never a blind path).
+                    return FillOutcome(newly_processed=False, durable=False)
         if check_journal and fill_id:
             with self._lock:
                 known = fill_id in self._seen_fills or fill_id in self._unjournaled_fills
-            if not known and self._fill_already_journaled(fill_id, client_id):
-                with self._lock:
-                    if fill_id not in self._unjournaled_fills:
-                        self._remember_fill_locked(fill_id)
+                deferred = fill_id in self._deferred_fills
+            if not known:
+                try:
+                    already = self._fill_already_journaled(fill_id, client_id)
+                except Exception:
+                    if not defer_on_lookup_failure:
+                        raise
+                    return self._defer_fill(fill, fill_id, client_id, deferred=deferred)
+                was_deferred = False
+                if already:
+                    with self._lock:
+                        if fill_id in self._unjournaled_fills:
+                            already = False  # a failed append of OURS: retry below
+                        else:
+                            was_deferred = self._deferred_fills.pop(fill_id, False) is not False
+                            self._remember_fill_locked(fill_id)
+                    if already:
                         logger.info(
-                            "fill %s already journaled before restart — replay skips it",
+                            "fill %s already journaled — no second ORDER_FILLED row",
                             fill_id,
                         )
+                        if not was_deferred:
+                            # Listeners dedup by transaction id; the journal
+                            # row alone does not prove they persisted it.
+                            self._deliver_fill_listeners(fill, fill_id)
                         return FillOutcome(newly_processed=False, durable=True)
         with self._lock:
             if fill_id and fill_id in self._seen_fills:
@@ -905,11 +947,17 @@ class OrderManager:
                     newly_processed=False,
                     durable=self.journal is not None and fill_id not in self._fills_journaling,
                 )
-            retry = bool(fill_id) and fill_id in self._unjournaled_fills
+            retry = bool(fill_id) and (
+                fill_id in self._unjournaled_fills or fill_id in self._deferred_fills
+            )
             if retry:
                 # A previous delivery claimed this fill but its journal append
-                # failed: reuse its attribution, do not re-fire listeners.
-                intent = self._unjournaled_fills.pop(fill_id)
+                # failed (or was deferred and the journal now shows no row):
+                # reuse its attribution, do not re-fire listeners.
+                if fill_id in self._unjournaled_fills:
+                    intent = self._unjournaled_fills.pop(fill_id)
+                else:
+                    intent = self._deferred_fills.pop(fill_id)
             else:
                 intent = self._pending_intents.pop(str(client_id), None) if client_id else None
                 if client_id:
@@ -978,15 +1026,48 @@ class OrderManager:
         if not retry:
             # CL-pksi: hand the NEWLY processed fill (post-dedup) to listeners —
             # the kill-switch manager resolves emergency-order fences from it.
-            # A listener failure must never break fill journaling.
-            for listener in list(self._fill_listeners):
-                try:
-                    listener(dict(fill))
-                except Exception:
-                    logger.exception("fill listener failed for fill %s", fill_id or "?")
+            self._deliver_fill_listeners(fill, fill_id)
         # Durable only when a journal actually holds the row: with no journal
         # nothing survives a restart, so a checkpoint must never pass it.
         return FillOutcome(newly_processed=True, durable=journaled and self.journal is not None)
+
+    def _deliver_fill_listeners(self, fill: dict[str, Any], fill_id: str) -> None:
+        """Feed one fill to every listener (CL-pksi). Listeners must be
+        idempotent per transaction id (the emergency-attempt ledger is); a
+        listener failure must never break fill handling."""
+        for listener in list(self._fill_listeners):
+            try:
+                listener(dict(fill))
+            except Exception:
+                logger.exception("fill listener failed for fill %s", fill_id or "?")
+
+    def _defer_fill(
+        self, fill: dict[str, Any], fill_id: str, client_id: Any, *, deferred: bool
+    ) -> FillOutcome:
+        """Journal state of a live fill is unknown (lookup failed): claim it
+        WITHOUT appending, feed the listeners once, and park it for the next
+        journal-checked replay (integration review defect 1)."""
+        logger.error(
+            "journal lookup for fill %s failed — ORDER_FILLED deferred to the next "
+            "catch-up replay (no blind append)",
+            fill_id,
+            exc_info=True,
+        )
+        if deferred:
+            return FillOutcome(newly_processed=False, durable=False)
+        with self._lock:
+            if fill_id in self._deferred_fills or fill_id in self._seen_fills:
+                return FillOutcome(newly_processed=False, durable=False)
+            intent = self._pending_intents.pop(str(client_id), None) if client_id else None
+            if client_id:
+                self._pending.pop(str(client_id), None)
+            self._bump_symbol_version_locked(
+                str(fill.get("instrument") or (intent.symbol if intent else ""))
+            )
+            if len(self._deferred_fills) < _SEEN_FILLS_CAP:
+                self._deferred_fills[fill_id] = intent
+        self._deliver_fill_listeners(fill, fill_id)
+        return FillOutcome(newly_processed=True, durable=False)
 
     def _fill_already_journaled(self, fill_id: str, client_id: Any) -> bool:
         """True when an ORDER_FILLED row for venue fill ``fill_id`` is already

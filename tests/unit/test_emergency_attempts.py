@@ -663,7 +663,7 @@ def test_cumulative_fill_is_sum_of_distinct_transactions(
     expected = float(sum(units.values()))
     assert attempt.cumulative_fill_qty == expected
     assert seen == sorted(seen)  # monotone: duplicates never subtract or add
-    assert (attempt.status is AttemptStatus.FILLED) == (expected >= 999.0)
+    assert (attempt.status is AttemptStatus.FILLED) == (expected >= 999.0 and expected > 0)
 
 
 def test_fill_exactly_at_tolerance_is_complete_and_below_is_not() -> None:
@@ -1321,3 +1321,117 @@ def test_account_read_failures_do_not_stop_emergency_recovery(tmp_path: Path) ->
     assert "external:account_snapshot_unavailable" in risk.active_halt_causes()
     assert _reconciler_close(risk) is SubmissionStatus.BLOCKED
     assert broker.orders == []
+
+
+# --------------------------------------------------------------------------- #
+# Integration review r2: completion needs execution; replay feeds the ledger
+# --------------------------------------------------------------------------- #
+
+
+def test_complete_requires_some_execution() -> None:
+    from src.risk.emergency_attempts import _complete
+
+    assert _complete(0.0, 1.0) is False
+    assert _complete(1.0, 1.0) is True
+    assert _complete(999.0, 1000.0) is True
+    assert _complete(998.999, 1000.0) is False
+    assert _complete(0.0, 0.0) is False
+
+
+def test_one_unit_working_submission_with_zero_executed_stays_working() -> None:
+    from src.execution.oms import SubmissionResult
+    from src.risk.emergency_attempts import EVIDENCE_SUBMISSION
+
+    attempt = apply_evidence(
+        replace_status(_attempt(requested=1.0), AttemptStatus.SUBMITTING),
+        DeriskEvidence(
+            source=EVIDENCE_SUBMISSION,
+            client_order_id="i1",
+            submission=SubmissionResult("i1", SubmissionStatus.WORKING, requested_qty=1.0),
+        ),
+        now=T0,
+    )
+    assert attempt.cumulative_fill_qty == 0.0
+    assert attempt.status is AttemptStatus.WORKING
+
+
+class _ReplayJournal:
+    """Minimal TradeJournal stand-in (record + query_by_intent)."""
+
+    def __init__(self) -> None:
+        self.rows: list[SimpleNamespace] = []
+
+    def record(
+        self,
+        *,
+        event_type: Any,
+        payload: dict[str, Any],
+        intent_id: str | None,
+        strategy_id: str | None,
+        symbol: str | None,
+    ) -> None:
+        self.rows.append(
+            SimpleNamespace(event_type=event_type, payload=payload, intent_id=intent_id)
+        )
+
+    def query_by_intent(self, intent_id: str) -> list[SimpleNamespace]:
+        return [r for r in self.rows if r.intent_id == intent_id]
+
+
+def test_replay_of_already_journaled_fill_still_resolves_recovered_attempt(
+    tmp_path: Path,
+) -> None:
+    """Crash after the stream fill's ORDER_FILLED commit but before the
+    emergency ledger persisted it: the replay must still deliver the fill as
+    evidence (journal dedup only skips the second append)."""
+    from src.execution.trade_journal import EventType
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'a.db'}")
+    install_attempts(engine)
+    broker1 = VenueBroker({"EURUSD": 1000.0}, script=["lost_filled"])
+    mk(broker1, store=SqlEmergencyAttemptStore(engine)).check(DD)
+    order = broker1.orders[0]
+    cid = str(order.client_order_id)
+    assert rows(engine)[cid][1] == "UNKNOWN"
+    fill = fill_event(order, -1000.0, "T77")
+    journal = _ReplayJournal()
+    # Process 1 journaled the streamed fill, then died before the listener
+    # persisted the transition (the attempt row is still UNKNOWN).
+    journal.record(
+        event_type=EventType.ORDER_FILLED,
+        payload={"fill_id": "T77", "source": "oanda_transaction_stream"},
+        intent_id=cid,
+        strategy_id="oanda-fill-stream",
+        symbol="EURUSD",
+    )
+
+    broker2 = VenueBroker(dict(broker1.net))
+    broker2.lookups[cid] = ConnectionError("order lookup unavailable")
+    oms2 = OrderManager(broker2, journal=journal)  # type: ignore[arg-type]
+    risk2 = KillSwitchManager(
+        broker2,
+        oms2,
+        {},
+        clock=Clock(),
+        trailing_state_path=None,
+        attempt_store=SqlEmergencyAttemptStore(engine),
+    )
+    risk2.recover_emergency_attempts()
+    assert risk2.unresolved_derisk_symbols() == ["EURUSD"]
+
+    out = oms2.process_fill(fill, check_journal=True)
+    assert out.durable and not out.newly_processed
+    assert len(journal.rows) == 1  # no second ORDER_FILLED row
+    assert attempt_for(risk2, cid).status is AttemptStatus.FILLED
+    assert attempt_for(risk2, cid).cumulative_fill_qty == 1000.0
+    assert rows(engine)[cid][1:3] == ("FILLED", 1000.0)
+    assert risk2.unresolved_derisk_symbols() == []
+    # Verified fill, position feed not yet confirmed: every writer stays fenced.
+    assert "EURUSD" in risk2._confirm_pending
+    assert "EURUSD" in oms2.fenced_symbols()
+
+    again = oms2.process_fill(fill, check_journal=True)  # second replay: no-op
+    assert not again.newly_processed and again.durable
+    assert len(journal.rows) == 1
+    assert attempt_for(risk2, cid).cumulative_fill_qty == 1000.0
+    assert rows(engine)[cid][1:3] == ("FILLED", 1000.0)

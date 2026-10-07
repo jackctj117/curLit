@@ -469,18 +469,61 @@ class TestReviewRound3:
         cu.handle_live(newest)
         assert journal.fill_ids().count("900") == 1
 
-    def test_live_journal_lookup_failure_still_processes_and_freezes(self):
+    # Integration review r2 defect 1 changed the requirement: a live fill whose
+    # journal state is UNKNOWN (lookup failed) is never appended — the old
+    # expectation (append immediately) could write a second row. It is
+    # deferred to the next journal-checked replay instead.
+    def test_lookup_failure_with_existing_row_never_duplicates(self, monkeypatch):
+        import src.execution.oms as oms_mod
+
+        monkeypatch.setattr(oms_mod, "_SEEN_FILLS_CAP", 2)
         acct, _broker_, journal, oms, store, cu = _setup(checkpoint=100)
         cu._frozen = False
+        fill_101 = _broker_._normalize_fill(_txn(101))
+        assert oms.on_fill(fill_101)  # journaled once
+        for fid in ("901", "902", "903"):  # evicts 101 from the in-memory set
+            oms.on_fill({"transaction_id": fid, "client_order_id": f"intent-{fid}"})
+        assert "101" not in oms._seen_fills
+        real_query = journal.query_by_intent
 
         def broken(_iid):  # noqa: ANN001, ANN202
             raise RuntimeError("db down")
 
         journal.query_by_intent = broken
-        cu.handle_live({"transaction_id": "101", "client_order_id": "intent-101"})
-        assert journal.fill_ids() == ["101"]  # never dropped
-        assert cu.frozen
-        assert store.load(ACC) == 100
+        cu.handle_live(fill_101)
+        assert journal.fill_ids().count("101") == 1  # no blind second append
+        assert cu.frozen and store.load(ACC) == 100
+        journal.query_by_intent = real_query  # journal readable again
+        acct.visible_upto = 101
+        assert cu.catch_up() == 0  # replay finds the row: nothing appended
+        assert journal.fill_ids().count("101") == 1
+        assert store.load(ACC) == 101 and not cu.frozen
+
+    def test_lookup_failure_without_row_is_journaled_once_by_next_replay(self):
+        acct, _broker_, journal, oms, store, cu = _setup(checkpoint=100)
+        cu._frozen = False
+        seen: list[str] = []
+        oms.add_fill_listener(lambda f: seen.append(f["transaction_id"]))
+        real_query = journal.query_by_intent
+
+        def broken(_iid):  # noqa: ANN001, ANN202
+            raise RuntimeError("db down")
+
+        journal.query_by_intent = broken
+        fill_101 = _broker_._normalize_fill(_txn(101))
+        cu.handle_live(fill_101)
+        cu.handle_live(fill_101)  # redelivery during the outage: still deferred
+        assert journal.fill_ids() == []  # journal state unknown: not appended
+        assert seen == ["101"]  # evidence still reaches listeners, once
+        assert cu.frozen and store.load(ACC) == 100
+        journal.query_by_intent = real_query
+        acct.visible_upto = 101
+        assert cu.catch_up() == 1
+        assert journal.fill_ids() == ["101"]
+        assert seen == ["101"]  # replay journals it without re-firing listeners
+        assert store.load(ACC) == 101
+        assert cu.catch_up() == 0  # a second replay is a no-op
+        assert journal.fill_ids() == ["101"]
 
 
 class TestSqlCheckpointStore:
