@@ -173,6 +173,35 @@ def decide_halt_alert(
     return (None, currently_halted)
 
 
+def describe_halt_causes(system: dict[str, Any] | None) -> str | None:
+    """Halt reason from the engine's ``/api/system`` JSON (CL-oqos), or None.
+
+    Prefers the authoritative ``halt_causes`` the kill-switch manager holds
+    (e.g. ``external:account_snapshot_unavailable``), adding the consecutive
+    ``account_read_failures`` count and a non-``ok`` ``last_reconciliation``
+    so the page says WHY entries are blocked. Missing/older fields (an
+    engine predating CL-oqos) yield None and callers fall back to the log
+    scrape — never a fabricated cause.
+    """
+    if not isinstance(system, dict):
+        return None
+    parts: list[str] = []
+    causes = system.get("halt_causes")
+    if isinstance(causes, list) and causes:
+        parts.append("causes: " + ", ".join(str(c) for c in causes))
+    failures = system.get("account_read_failures")
+    if isinstance(failures, int) and not isinstance(failures, bool) and failures > 0:
+        parts.append(f"account reads failing x{failures}")
+    recon = system.get("last_reconciliation")
+    if isinstance(recon, dict) and recon.get("status") not in (None, "ok"):
+        detail = f" ({recon['reason']})" if recon.get("reason") else ""
+        parts.append(
+            f"last reconciliation {recon.get('status')}{detail} "
+            f"[{recon.get('source', '?')} @ {recon.get('at', '?')}]"
+        )
+    return "; ".join(parts) or None
+
+
 def summarize_state(state: dict[str, Any]) -> str:
     """One-line state summary for the cycle log."""
     down = sorted((state.get("down") or {}).keys())

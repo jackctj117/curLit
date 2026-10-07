@@ -188,7 +188,9 @@ def watch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
     monkeypatch.setattr(hw, "STATE_PATH", tmp_path / "state.json")
     monkeypatch.setattr(hw, "_fleet_status_output", lambda: "  ✓ engine (pid 1)\n")
     monkeypatch.setattr(hw, "_newest_x_event", lambda _e: datetime.now(UTC))
-    monkeypatch.setattr(hw, "_engine_halt_state", lambda: False)
+    monkeypatch.setattr(
+        hw, "_engine_system_status", lambda: {"oms_wired": True, "oms_halted": False}
+    )
     monkeypatch.setattr(hw, "_recent_halt_reason", lambda: None)
     monkeypatch.setattr("src.data.db_env.build_db_url", lambda: "sqlite://")
     sent: list[str] = []
@@ -231,7 +233,7 @@ def test_watchdog_stays_stale_while_evidence_is_not_fresh(
     watch.run_once(clock=_c(0, 0), interval_sec=LOOP)
     watch.run_once(clock=_c(3 * 3600, LOOP), interval_sec=LOOP)
     # Engine API unreachable after wake: halt state UNKNOWN → not fresh.
-    monkeypatch.setattr(watch, "_engine_halt_state", lambda: None)
+    monkeypatch.setattr(watch, "_engine_system_status", lambda: None)
     watch.run_once(clock=_c(3 * 3600 + LOOP, 2 * LOOP), interval_sec=LOOP)
     assert _state(watch)["readiness"]["status"] == READINESS_STALE
 

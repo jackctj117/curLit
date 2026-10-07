@@ -21,6 +21,7 @@ from src.portfolio.reconciler import (
     ReconciliationPolicy,
     ReconciliationReport,
     ReconciliationStatus,
+    SnapshotUnavailableError,
 )
 from src.portfolio.risk_parity import (
     diagnose_allocation,
@@ -40,6 +41,7 @@ __all__ = [
     "ReconciliationPolicy",
     "ReconciliationReport",
     "ReconciliationStatus",
+    "SnapshotUnavailableError",
     "RejectionEvent",
     "RejectionReason",
     "StrategyAllocation",

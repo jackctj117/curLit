@@ -17,6 +17,7 @@ import hmac
 import logging
 import math
 import os
+from collections.abc import Callable
 from typing import Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException
@@ -32,6 +33,9 @@ _runtime: dict[str, Any] = {
     "oms": None,
     "strategies": [],
     "kill_switch_manager": None,
+    # CL-oqos: LiveEngine.safety_status — account-read failures + last
+    # reconciliation outcome for /api/system.
+    "safety_status": None,
 }
 
 #: Manual-trade size cap in units (CL-8lv6). ``|target_position|`` above
@@ -49,6 +53,7 @@ def set_runtime(
     strategies: list[Any],
     kill_switch_manager: Any | None = None,
     halt_store: Any | None = None,
+    safety_status: Callable[[], dict[str, Any]] | None = None,
 ) -> None:
     """Wire the live engine's objects into the module-level runtime.
 
@@ -69,6 +74,9 @@ def set_runtime(
     # kill-switch manager — the web task's second set_runtime call omits it.
     if halt_store is not None:
         _runtime["halt_store"] = halt_store
+    # CL-oqos: same None-preserves rule.
+    if safety_status is not None:
+        _runtime["safety_status"] = safety_status
 
 
 class HaltRequest(BaseModel):
@@ -349,6 +357,40 @@ def system_status(_: None = Depends(verify_secret)) -> dict[str, Any]:
         "oms_halted": _oms_halted(oms) if oms is not None else True,
         "kill_switch_manager_wired": (_runtime.get("kill_switch_manager") is not None),
         "account_halt": _account_halt_summary(),
+        **_entry_block_reasons(),
+    }
+
+
+def _entry_block_reasons() -> dict[str, Any]:
+    """CL-oqos: WHY entries are blocked — additive /api/system fields.
+
+    ``halt_causes``: the kill-switch manager's active causes (switch names and
+    sticky ``external:*`` causes such as ``external:account_snapshot_unavailable``);
+    ``account_read_failures``: consecutive health-tick account-read failures;
+    ``last_reconciliation``: latest cold-start/alignment outcome
+    (``ok`` / ``mismatch`` / ``unavailable`` / ``failed`` with source,
+    reason and UTC timestamp). Each is None when unwired or unreadable —
+    unknown, never a fabricated "healthy".
+    """
+    causes: list[str] | None = None
+    manager = _runtime.get("kill_switch_manager")
+    active = getattr(manager, "active_halt_causes", None)
+    if callable(active):
+        try:
+            causes = sorted(str(c) for c in active())
+        except Exception:
+            logger.warning("/api/system: active_halt_causes() failed", exc_info=True)
+    safety: dict[str, Any] = {}
+    provider = _runtime.get("safety_status")
+    if callable(provider):
+        try:
+            safety = dict(provider())
+        except Exception:
+            logger.warning("/api/system: engine safety_status() failed", exc_info=True)
+    return {
+        "halt_causes": causes,
+        "account_read_failures": safety.get("account_read_failures"),
+        "last_reconciliation": safety.get("last_reconciliation"),
     }
 
 
