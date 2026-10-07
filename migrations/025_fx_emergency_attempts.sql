@@ -32,12 +32,15 @@ CREATE TABLE IF NOT EXISTS fx_emergency_attempts (
     cumulative_fill_qty  DOUBLE PRECISION NOT NULL DEFAULT 0 CHECK (cumulative_fill_qty >= 0),
     last_evidence        TEXT NOT NULL DEFAULT '{}',
     created_at           TIMESTAMPTZ NOT NULL,
-    updated_at           TIMESTAMPTZ NOT NULL
+    updated_at           TIMESTAMPTZ NOT NULL,
+    episode_id           TEXT
 );
 
 -- Startup recovery and every health tick read the unresolved rows.
 CREATE INDEX IF NOT EXISTS fx_emergency_attempts_status_idx
     ON fx_emergency_attempts (status, symbol);
+CREATE INDEX IF NOT EXISTS fx_emergency_attempts_episode_idx
+    ON fx_emergency_attempts (episode_id);
 
 -- The FIXED per-leg targets of each active kill-switch action (flatten_all /
 -- reduce_50pct), written before any of its orders. A restart restores them so

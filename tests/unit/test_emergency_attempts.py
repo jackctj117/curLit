@@ -935,3 +935,80 @@ def test_oanda_sync_fill_reports_executed_units() -> None:
         400.0,
         "2",
     )
+
+
+def test_restart_with_lagging_snapshot_keeps_completed_fill_protection(tmp_path: Path) -> None:
+    url = f"sqlite:///{tmp_path / 'lag.db'}"
+    install_attempts(create_engine(url))
+    broker1 = VenueBroker({"EURUSD": 1000.0}, script=["fill"])
+    mk(broker1, store=SqlEmergencyAttemptStore(create_engine(url))).check(DD)
+    assert broker1.net["EURUSD"] == 0.0
+    # New process; the position feed still shows the pre-fill 1000.
+    broker2 = VenueBroker({"EURUSD": 0.0})
+    broker2.stale_book = {"EURUSD": 1000.0}
+    risk2 = mk(broker2, store=SqlEmergencyAttemptStore(create_engine(url)))
+    risk2.recover_emergency_attempts()
+    for _ in range(3):
+        risk2.check(DD)
+    assert broker2.orders == []  # never a second close that would open -1000
+
+
+def test_recovery_retry_installs_fences_before_unblocking(tmp_path: Path) -> None:
+    url = f"sqlite:///{tmp_path / 'order.db'}"
+    install_attempts(create_engine(url))
+    first = VenueBroker({"EURUSD": 1000.0}, script=["working"])
+    mk(first, store=SqlEmergencyAttemptStore(create_engine(url))).check(DD)
+
+    class Flaky(SqlEmergencyAttemptStore):
+        fail = True
+
+        def load_unresolved(self) -> list[EmergencyAttempt]:
+            if self.fail:
+                raise OSError("db down")
+            return super().load_unresolved()
+
+    class RecordingOMS(OrderManager):
+        fences_at_unblock: list[dict[str, str]] = []
+
+        def unblock_all_submissions(self) -> None:
+            self.fences_at_unblock.append(self.fenced_symbols())
+            super().unblock_all_submissions()
+
+    broker = VenueBroker({"EURUSD": 1000.0})
+    store = Flaky(create_engine(url))
+    oms = RecordingOMS(broker)  # type: ignore[arg-type]
+    risk = KillSwitchManager(
+        broker, oms, {}, clock=Clock(), trailing_state_path=None, attempt_store=store
+    )
+    risk.recover_emergency_attempts()
+    assert oms.submission_block() is not None
+    store.fail = False
+    risk.refresh_unresolved_derisk()
+    assert oms.submission_block() is None
+    assert [set(f) for f in oms.fences_at_unblock] == [{"EURUSD"}]
+    out = oms.submit_intent_result(
+        OrderIntent(strategy_id="rate_diff", symbol="EURUSD", target_position=0.0)
+    )
+    assert out.status is SubmissionStatus.BLOCKED
+    assert broker.orders == []
+
+
+def test_failed_target_persistence_never_submits_on_a_later_tick() -> None:
+    class NoEpisodes(InMemoryEmergencyAttemptStore):
+        failures = 2
+
+        def save_episode(self, *args: Any, **kwargs: Any) -> None:
+            if self.failures:
+                self.failures -= 1
+                raise OSError("db down")
+            super().save_episode(*args, **kwargs)
+
+    store = NoEpisodes()
+    broker = VenueBroker({"EURUSD": 1000.0})
+    risk = mk(broker, store=store)
+    risk.check(VIX)
+    risk.check(VIX)
+    assert broker.orders == []  # both ticks failed to persist the fixed targets
+    risk.check(VIX)
+    assert [o.quantity for o in broker.orders] == [500.0]
+    assert [t for _, _, t in store.load_open_episodes()] == [{"EURUSD": ("EURUSD", 500.0)}]

@@ -128,7 +128,9 @@ Everything is PAPER. No real money moves anywhere.
   - **Restart.** Each action's FIXED per-leg targets are persisted before its
     first order (`fx_emergency_episodes`, OPEN until the daily re-arm /
     operator resume drops them), so a restart never reduces an already
-    completed leg again. Startup restores open episodes, re-loads every
+    completed leg again (a failed write sends nothing that tick). Startup
+    restores open episodes AND their attempts' verified fills (so a lagging
+    position feed cannot trigger a second close), re-loads every
     unresolved attempt, re-fences it (before the cold-start reconciler can
     submit), records `external:unresolved_emergency_orders`, then asks OANDA.
     A restart never resolves anything. If the tables are unreadable, EVERY OMS
