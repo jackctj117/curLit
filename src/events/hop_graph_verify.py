@@ -61,6 +61,12 @@ DEFAULT_MAX_WORKERS = 4
 _ENTAILMENT_MAX_TOKENS = 200
 # Sentences longer than this are tables/run-ons; the substring is still exact.
 _MAX_PASSAGE_CHARS = 600
+# Limiting disclosures are kept whole up to this length; a qualifier ("fully
+# hedged and not material") often closes a long sentence. 2,000 chars bounds
+# the critic prompt while covering typical risk-factor sentences.
+_MAX_LIMITING_CHARS = 2000
+# When a sentence exceeds that cap, keep this much text after the phrase.
+_LIMITING_TAIL_CHARS = 300
 # Fragments shorter than this ("Item 7.") cannot state a relationship.
 _MIN_PASSAGE_CHARS = 20
 _MAX_DISCONFIRMING = 2
@@ -266,13 +272,23 @@ def scored_passages(
 def disconfirming_passages(
     doc: SourceDocument, terms: Sequence[str], ticker: str | None, keywords: Sequence[str]
 ) -> list[str]:
+    """Limiting sentences, scanned WHOLE (a qualifier late in a long sentence
+    must not be cut off). A sentence longer than the cap is cut to a window
+    that ends after the limiting phrase, still an exact substring."""
     out = []
     for _, full in sentences(doc.text):
-        sentence = full[:_MAX_PASSAGE_CHARS].strip()
-        if len(sentence) < _MIN_PASSAGE_CHARS or not _DISCONFIRM_RE.search(sentence):
+        match = _DISCONFIRM_RE.search(full)
+        if len(full) < _MIN_PASSAGE_CHARS or match is None:
             continue
-        if _mentions(sentence, terms, ticker) or _keyword_hits(sentence, keywords):
-            out.append(sentence)
+        if not (_mentions(full, terms, ticker) or _keyword_hits(full, keywords)):
+            continue
+        if len(full) <= _MAX_LIMITING_CHARS:
+            passage = full
+        else:
+            end = min(len(full), match.end() + _LIMITING_TAIL_CHARS)
+            passage = full[max(0, end - _MAX_LIMITING_CHARS) : end].strip()
+        assert passage in doc.text and _DISCONFIRM_RE.search(passage)
+        out.append(passage)
     return out[:_MAX_DISCONFIRMING]
 
 
