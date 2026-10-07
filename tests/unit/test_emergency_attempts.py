@@ -157,7 +157,7 @@ def install_attempts(engine: Any) -> None:
     """Apply the PRODUCTION migration 025 to sqlite (TIMESTAMPTZ shimmed)."""
     from migrations.run import _strip_sql_comments
 
-    sql = _strip_sql_comments((REPO / "migrations" / "025_fx_emergency_attempts.sql").read_text())
+    sql = _strip_sql_comments((REPO / "migrations" / "027_fx_emergency_attempts.sql").read_text())
     sql = sql.replace("TIMESTAMPTZ", "TEXT")
     with engine.begin() as conn:
         for stmt in [s.strip() for s in sql.split(";") if s.strip()]:
