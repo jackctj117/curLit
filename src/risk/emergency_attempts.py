@@ -552,7 +552,7 @@ class SqlEmergencyAttemptStore:
         with self.engine.begin() as conn:
             conn.execute(
                 text(
-                    f"INSERT INTO fx_emergency_attempts ({_COLUMNS}) VALUES "
+                    f"INSERT INTO fx_emergency_attempts ({_COLUMNS}) VALUES "  # nosec B608 — constant columns, bound values
                     "(:intent_id, :client_order_id, :action, :symbol, :route_symbol, "
                     ":original_qty, :target, :requested_qty, :status, :broker_order_id, "
                     ":cumulative_fill_qty, :last_evidence, :created_at, :updated_at, "
@@ -590,7 +590,7 @@ class SqlEmergencyAttemptStore:
         with self.engine.connect() as conn:
             rows = conn.execute(
                 text(
-                    f"SELECT {_COLUMNS} FROM fx_emergency_attempts "
+                    f"SELECT {_COLUMNS} FROM fx_emergency_attempts "  # nosec B608 — constant columns, bound placeholders
                     f"WHERE status IN ({placeholders}) ORDER BY created_at"
                 ),
                 {f"s{i}": v for i, v in enumerate(wanted)},
@@ -604,7 +604,7 @@ class SqlEmergencyAttemptStore:
         with self.engine.connect() as conn:
             rows = conn.execute(
                 text(
-                    f"SELECT {_COLUMNS} FROM fx_emergency_attempts "
+                    f"SELECT {_COLUMNS} FROM fx_emergency_attempts "  # nosec B608 — constant columns, bound placeholders
                     f"WHERE episode_id IN ({placeholders}) ORDER BY created_at"
                 ),
                 {f"e{i}": v for i, v in enumerate(episode_ids)},
