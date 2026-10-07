@@ -84,6 +84,9 @@ _MALFORMED: list[Any] = [
     [Position("USD_CAD", True, 1.36)],  # type: ignore[arg-type]
     [Position("USD_CAD", -500.0, 1.36), Position("USDCAD", -500.0, 1.36)],
     [Position("", -500.0, 1.36)],
+    [Position(None, -500.0, 1.36)],  # type: ignore[arg-type]
+    [Position(" ", -500.0, 1.36)],
+    [Position("USD CAD", -500.0, 1.36)],
     [object()],
 ]
 

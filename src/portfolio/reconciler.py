@@ -187,7 +187,9 @@ def validate_broker_snapshot(positions: Any) -> dict[str, Position]:
     """Canonical-keyed broker snapshot, or :class:`SnapshotUnavailableError` (CL-oqos).
 
     A snapshot is usable only if it is a complete list whose rows each have
-    a non-empty canonical symbol, a finite non-bool quantity, and no
+    a ``str`` symbol with a non-empty, whitespace-free canonical key (``None``
+    would canonicalize to ``"NONE"`` and ``" "`` to ``" "`` — both silently
+    "absent" for every real instrument), a finite non-bool quantity, and no
     canonical-symbol duplicates (CL-n5xk: ``USD_CAD`` and ``USDCAD`` are the
     same leg — two rows for it means the snapshot cannot be trusted).
     """
@@ -196,11 +198,14 @@ def validate_broker_snapshot(positions: Any) -> dict[str, Position]:
     result: dict[str, Position] = {}
     for position in positions:
         try:
-            key = canonical_symbol(position.symbol)
+            symbol = position.symbol
+            key = canonical_symbol(symbol) if isinstance(symbol, str) else ""
             qty = position.quantity
             valid_qty = not isinstance(qty, bool) and math.isfinite(qty)
         except Exception as exc:
             raise SnapshotUnavailableError(f"unreadable position row ({exc})") from exc
+        if any(c.isspace() for c in key):
+            key = ""
         if not key or key in result or not valid_qty:
             raise SnapshotUnavailableError(f"invalid or duplicate broker position {key or '?'}")
         result[key] = position

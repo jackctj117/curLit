@@ -879,7 +879,7 @@ CLI (Claude Code 2.1.287), not assumed:
 - **Broker/account-read interlock (CL-oqos — development, not yet deployed).**
   An unknown broker snapshot is never treated as flat:
   - Cold start: if `get_positions()` fails or returns a malformed snapshot
-    (not a list, nonfinite/bool quantity, empty symbol, two rows for one
+    (not a list, nonfinite/bool quantity, empty/blank/non-string symbol, two rows for one
     canonical symbol such as `USD_CAD` + `USDCAD`) the reconciler raises
     `SnapshotUnavailableError` BEFORE confirming/rejecting any pending event
     entry or flattening an "orphan"; the engine halts entries with the
