@@ -325,25 +325,63 @@ class FeatureVersionRegistry:
 # =============================================================================
 
 
+def _payload_snapshot_ids(payload: dict[str, Any], strategy_id: str | None) -> list[str]:
+    """Snapshot ids referenced by one journal payload, in lookup order.
+
+    A strategy-routed intent carries ``snapshot_id`` at top level. A
+    portfolio-aggregated intent (CL-5bwc) carries a ``contributions`` list,
+    each entry with the contributing strategy's ``snapshot_ids``. With
+    ``strategy_id`` set, only that contributor's snapshots are returned.
+    """
+    ids: list[str] = []
+    top = payload.get("snapshot_id")
+    contributions = payload.get("contributions")
+    contribution_list = contributions if isinstance(contributions, list) else []
+    if top and (
+        strategy_id is None
+        # A single-contributor aggregate hoists that strategy's snapshot_id
+        # to top level; attribute it via the contributions list.
+        or any(
+            isinstance(c, dict) and c.get("strategy_id") == strategy_id for c in contribution_list
+        )
+        or not contribution_list
+    ):
+        ids.append(str(top))
+    for c in contribution_list:
+        if not isinstance(c, dict):
+            continue
+        if strategy_id is not None and c.get("strategy_id") != strategy_id:
+            continue
+        for snap_id in c.get("snapshot_ids") or []:
+            if snap_id and str(snap_id) not in ids:
+                ids.append(str(snap_id))
+    return ids
+
+
 def reconstruct_features(
     journal: TradeJournal,
     store: FeatureSnapshotStore,
     intent_id: str,
+    strategy_id: str | None = None,
 ) -> FeatureSnapshot | None:
     """Given an intent_id, find the FeatureSnapshot that produced it.
 
     Walks all journal events for the intent and looks for `snapshot_id` in
-    each payload (set by the strategy when it emits the entry signal).
+    each payload (set by the strategy when it emits the entry signal), and
+    — for a portfolio-aggregated intent (CL-5bwc) — in each contribution's
+    ``snapshot_ids``. ``strategy_id`` selects one contributor of an
+    aggregated intent; without it the first resolvable snapshot is returned
+    (use ``strategy_id`` when an aggregate has several contributors).
     Returns None if no snapshot reference is found.
     """
     events = journal.query_by_intent(intent_id)
     for ev in events:
-        snap_id = ev.payload.get("snapshot_id") if isinstance(ev.payload, dict) else None
-        if not snap_id:
+        if not isinstance(ev.payload, dict):
             continue
-        snap = store.fetch(snap_id)
-        if snap is not None:
-            return snap
+        for snap_id in _payload_snapshot_ids(ev.payload, strategy_id):
+            snap = store.fetch(snap_id)
+            if snap is not None:
+                return snap
     return None
 
 

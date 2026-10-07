@@ -90,6 +90,19 @@ _CORR_REGIME_EXPOSURE_NORMAL: float = 1.00
 # values fall back to rank 0 in the lookups below and never escalate.
 _URGENCY_RANK: dict[str, int] = {u.value: rank for rank, u in enumerate(Urgency)}
 
+# Slippage aggregation policy for a netted multi-strategy intent (CL-5bwc):
+# the TIGHTEST positive bound among this tick's contributing intents wins.
+# One aggregated order executes every contributor's share in a single fill,
+# so a fill beyond any contributor's tolerance violates that strategy's
+# execution constraint; a tight bound can only cause a REJECT (retried /
+# re-emitted next tick), whereas the loosest bound would silently override
+# a strategy's own risk limit. A bound <= 0 means "unbounded" at the broker
+# (PaperBroker/OANDA skip enforcement), so it never counts as "tightest".
+# Remembered (cross-tick) shares did not speak this tick and carry no bound.
+# Before CL-5bwc the aggregate silently got the OrderIntent default (2 bps)
+# whatever the strategies asked for.
+_SLIPPAGE_POLICY: str = "tightest_positive"
+
 
 # =============================================================================
 # Protocol for state persistence
@@ -388,6 +401,12 @@ class PortfolioCoordinator:
                 self._targets_seeded = True
             scaled = self._scale_intents(raw_intents)
             aggregated = self._aggregate_by_symbol(scaled)
+            # CL-5bwc: this tick's fresh per-strategy intents by canonical
+            # symbol, for attribution + slippage policy on the aggregate.
+            # Read-only side table — aggregation math is untouched.
+            fresh_by_symbol: dict[str, list[OrderIntent]] = defaultdict(list)
+            for scaled_intent in scaled:
+                fresh_by_symbol[canonical_symbol(scaled_intent.symbol)].append(scaled_intent)
 
             # Shared snapshot (CL-qsue): fetch each symbol's mid ONCE and one
             # Account per tick, then thread them through constraints AND the
@@ -446,11 +465,28 @@ class PortfolioCoordinator:
                     # only mutate here for the size-down case.
                     target = self._apply_blackout_size_down(route_symbol, target)
 
+                    attribution, slippage_bps = self._build_attribution(
+                        info,
+                        fresh_by_symbol.get(symbol, []),
+                    )
                     final = OrderIntent(
                         strategy_id="portfolio",
                         symbol=route_symbol,
                         target_position=target,
                         urgency=info["urgency"],
+                        max_slippage_bps=slippage_bps,
+                        metadata=attribution,
+                    )
+                    logger.info(
+                        "Aggregated intent %s %s: slippage=%sbps (policy=%s) contributions=%s",
+                        final.intent_id,
+                        route_symbol,
+                        slippage_bps,
+                        _SLIPPAGE_POLICY,
+                        [
+                            (c["strategy_id"], c["target_position"], c["source"])
+                            for c in attribution["contributions"]
+                        ],
                     )
 
                     if self.pre_trade_validator is not None:
@@ -665,6 +701,81 @@ class PortfolioCoordinator:
                 {sid: dict(t) for sid, t in self._strategy_targets.items()},
             )
 
+    @staticmethod
+    def _build_attribution(
+        info: dict[str, Any],
+        fresh: list[OrderIntent],
+    ) -> tuple[dict[str, Any], float]:
+        """Attribution metadata + slippage bound for an aggregated intent (CL-5bwc).
+
+        Returns ``(metadata, max_slippage_bps)``. ``metadata["contributions"]``
+        lists every strategy share netted into this symbol, in
+        ``strategy_contributions`` order: ``strategy_id``,
+        ``target_position`` (the share after scaling and portfolio
+        constraints, before any blackout size-down — which applies to the
+        symbol total only), ``source`` (``"intent"`` = spoke this tick,
+        ``"remembered"`` = cross-tick memory), the originating
+        ``intent_ids`` / ``snapshot_ids`` (CL-xpw9), the strategy's own
+        ``max_slippage_bps`` and its ``metadata``. The OMS merges intent
+        metadata into the INTENT_SUBMITTED journal payload, so the
+        attribution is journaled with the order and ``reconstruct_features``
+        can follow it. Single-contributor intents additionally keep that
+        strategy's own metadata at top level (snapshot_id etc.) so the
+        journal row looks exactly as it would had the strategy routed
+        directly.
+
+        Pure function of its inputs: it never changes the target or routing.
+        """
+        contribs: dict[str, float] = info["strategy_contributions"]
+        by_sid: dict[str, list[OrderIntent]] = defaultdict(list)
+        for intent in fresh:
+            by_sid[intent.strategy_id].append(intent)
+
+        contributions: list[dict[str, Any]] = []
+        for sid, share in contribs.items():
+            spoke = by_sid.get(sid, [])
+            sid_bounds = [i.max_slippage_bps for i in spoke]
+            contributions.append(
+                {
+                    "strategy_id": sid,
+                    "target_position": float(share),
+                    "source": "intent" if spoke else "remembered",
+                    "intent_ids": [i.intent_id for i in spoke],
+                    "snapshot_ids": [
+                        str(i.metadata["snapshot_id"])
+                        for i in spoke
+                        if i.metadata.get("snapshot_id")
+                    ],
+                    "max_slippage_bps": (min(sid_bounds) if sid_bounds else None),
+                    "metadata": [dict(i.metadata) for i in spoke],
+                }
+            )
+
+        all_bounds = [i.max_slippage_bps for i in fresh]
+        positive = [b for b in all_bounds if b is not None and b > 0]
+        if positive:
+            slippage = float(min(positive))
+        elif all_bounds:
+            # Every speaker explicitly asked for "unbounded" — honor it.
+            slippage = float(all_bounds[0] or 0.0)
+        else:
+            # Unreachable via process_intents (every aggregated symbol has a
+            # fresh speaker); keep the OrderIntent default, never loosen.
+            slippage = float(OrderIntent.max_slippage_bps)
+            logger.warning(
+                "Aggregated intent %s has no fresh contributor; using default slippage %s",
+                info.get("symbol"),
+                slippage,
+            )
+
+        metadata: dict[str, Any] = {}
+        if len(contributions) == 1 and len(fresh) == 1:
+            metadata.update(fresh[0].metadata)
+        metadata["contributions"] = contributions
+        metadata["slippage_policy"] = _SLIPPAGE_POLICY
+        assert len(contributions) == len(contribs), "every share must be attributed"
+        return metadata, slippage
+
     def _scale_intents(
         self,
         raw_intents: dict[str, list[OrderIntent]],
@@ -707,6 +818,11 @@ class PortfolioCoordinator:
                         target_position=intent.target_position * scale,
                         urgency=intent.urgency,
                         max_slippage_bps=intent.max_slippage_bps,
+                        # CL-5bwc: keep the strategy's identity + metadata
+                        # (feature snapshot ids, CL-xpw9) through scaling so
+                        # the aggregated intent can attribute each share.
+                        intent_id=intent.intent_id,
+                        metadata=dict(intent.metadata),
                     )
                 )
         return out

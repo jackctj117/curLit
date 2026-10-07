@@ -134,6 +134,12 @@ class Account:
     equity: float
     margin_used: float = 0.0
     margin_available: float = 0.0
+    #: Cumulative realized P&L and the current unrealized mark, in account
+    #: currency (CL-9ird), reported separately so an estimate (the mark) is
+    #: never presented as a realized result. None = this venue does not
+    #: report the split (absent, NOT zero).
+    realized_pnl: float | None = None
+    unrealized_pnl: float | None = None
 
 
 class Broker(ABC):
