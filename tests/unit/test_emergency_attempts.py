@@ -666,6 +666,33 @@ def test_cumulative_fill_is_sum_of_distinct_transactions(
     assert (attempt.status is AttemptStatus.FILLED) == (expected >= 999.0)
 
 
+def test_fill_exactly_at_tolerance_is_complete_and_below_is_not() -> None:
+    """CL-pksi: the tolerance boundary is inclusive, matching the documented
+    contract and the property test's oracle (requested 1000, tolerance 1.0)."""
+    at_tolerance = apply_evidence(
+        _attempt(),
+        DeriskEvidence(
+            source=EVIDENCE_FILL_EVENT,
+            client_order_id="i1",
+            fill_transaction_id="T1",
+            fill_qty=999.0,
+        ),
+        now=T0,
+    )
+    assert at_tolerance.status is AttemptStatus.FILLED
+    below = apply_evidence(
+        _attempt(),
+        DeriskEvidence(
+            source=EVIDENCE_FILL_EVENT,
+            client_order_id="i1",
+            fill_transaction_id="T1",
+            fill_qty=998.999,
+        ),
+        now=T0,
+    )
+    assert below.status is not AttemptStatus.FILLED
+
+
 def test_lookup_after_terminal_never_regresses_status() -> None:
     done = replace_status(_attempt(), AttemptStatus.FILLED)
     after = apply_evidence(
