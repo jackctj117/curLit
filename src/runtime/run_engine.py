@@ -103,8 +103,14 @@ def resolve_strategy_entries(
     before a single strategy is constructed. Disabled entries
     (``enabled: false``) are id-checked for collisions but not resolved, so
     an unbuilt strategy can be parked in the file."""
+    # An explicit `strategies:` with no value (YAML null) is a malformed
+    # config, not "no strategies" — refuse it rather than fall through to the
+    # default-strategy fallback (the pre-registry code also crashed on it).
+    # A config with no `strategies` key at all is passed in as [] by the
+    # caller and keeps its historical behavior.
     if entries is None:
-        return []
+        msg = "strategies: is present but empty (null) — list the strategies or remove the key"
+        raise StrategyConfigError(msg)
     if not isinstance(entries, list):
         msg = f"strategies: expected a list, got {type(entries).__name__}"
         raise StrategyConfigError(msg)

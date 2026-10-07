@@ -130,6 +130,7 @@ class TestFailLoud:
             ([{"config": {}}], "missing or empty"),
             (["event_driven"], "expected a mapping"),
             ({"id": "event_driven"}, "expected a list"),
+            (None, "present but empty"),  # bare `strategies:` in YAML
             ([{"id": "event_driven", "config": [1, 2]}], "must be a mapping"),
         ],
     )
@@ -148,6 +149,17 @@ class TestFailLoud:
             [{"id": "shadow_thing", "class": "src.strategies.x.Y", "enabled": False}]
         )
         assert resolved == []
+
+    def test_bare_strategies_key_does_not_fall_back_to_default(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        db = MagicMock(side_effect=AssertionError("DB touched before validation"))
+        monkeypatch.setattr(run_engine, "_build_db_engine", db)
+        config = yaml.safe_load("strategies:\n")
+        assert config == {"strategies": None}
+        with pytest.raises(StrategyConfigError, match="present but empty"):
+            run_engine.build_strategies(config, broker=None, oms=None)
+        db.assert_not_called()
 
     def test_build_fails_before_touching_the_db(self, monkeypatch: pytest.MonkeyPatch) -> None:
         db = MagicMock(side_effect=AssertionError("DB touched before validation"))
