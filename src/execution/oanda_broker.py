@@ -927,7 +927,7 @@ class OandaBroker(Broker):
         with exponential backoff, a clean server close reconnects, CANCELLED
         (shutdown) propagates, and a 4xx (bad creds/request) is PERMANENT.
         Non-fill transactions (HEARTBEAT, order create/cancel, funding, …) are
-        skipped; a fill carries ``orderID``, echoed ``clientExtensions.id``,
+        skipped; a fill carries ``orderID``, ``clientOrderID`` (our client id),
         ``units`` and ``price`` for per-order attribution.
 
         ``on_connect`` (CL-pksi catch-up) is awaited after EVERY successful
@@ -1041,7 +1041,12 @@ class OandaBroker(Broker):
     def _normalize_fill(self, msg: dict[str, Any]) -> dict[str, Any]:
         """One ORDER_FILL transaction -> the dict the OMS consumes (CL-vj74).
         Shared by the live stream and the ``sinceid`` replay (CL-pksi)."""
+        # OrderFillTransaction carries the filled order's client id as
+        # ``clientOrderID`` (OANDA v20 transaction definitions); the order's
+        # ``clientExtensions.id`` is accepted as a fallback. Without it a fill
+        # loses its intent attribution (and replay dedup keys on the intent).
         cext = msg.get("clientExtensions") or {}
+        client_id = msg.get("clientOrderID") or (cext.get("id") if isinstance(cext, dict) else None)
         try:
             units = float(msg.get("units", 0.0))
             price = float(msg.get("price", 0.0))
@@ -1051,7 +1056,7 @@ class OandaBroker(Broker):
             "type": "ORDER_FILL",
             "transaction_id": str(msg.get("id", "")),
             "order_id": str(msg.get("orderID", "")),
-            "client_order_id": cext.get("id") if isinstance(cext, dict) else None,
+            "client_order_id": str(client_id) if client_id else None,
             "instrument": self._from_oanda(str(msg.get("instrument", ""))),
             "units": units,
             "price": price,
