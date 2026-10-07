@@ -346,6 +346,7 @@ class TestStrategyDelegation:
             FakeBroker,
             confirming_provider,
             insert_event,
+            install_fresh_tick_converter,
             make_db,
         )
 
@@ -360,6 +361,8 @@ class TestStrategyDelegation:
             db_engine=db,
             notifier=recorder,  # type: ignore[arg-type]
         )
+        # CL-vfw7: timestamp-less test ticks need the fresh fake rate source.
+        install_fresh_tick_converter(strat)
         intents = asyncio.run(strat.generate_intents(CONFIRM_PRICES, FakeBroker()))
         assert len(intents) == 1
         assert len(recorder.confirmed) == 1

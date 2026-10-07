@@ -17,9 +17,12 @@ Consumer half of the current-events pipeline. Every poll it:
      injected :class:`src.events.event_notifier.EventNotifier`, which
      owns all alert formatting + ``notify_operator`` dispatch) and emits
      tightly-risked OrderIntents for the tradable affected instruments,
-     then marks the row TRADED. Sizing:
-     ``equity * event_risk_pct / stop_distance`` with the stop
-     ``event_stop_pct`` from entry.
+     then marks the row TRADED. Sizing (CL-vfw7):
+     ``equity * event_risk_pct / (stop_distance * rate)`` with the stop
+     ``event_stop_pct`` from entry and ``rate`` the fresh quote→account
+     conversion — stop_distance is QUOTE-currency price units, equity is
+     ACCOUNT currency. No fresh rate → the leg is skipped
+     (``conversion_unavailable``), never sized at an assumed 1.0.
   4. EXPIRED events with urgency >= ``expired_alert_min_urgency`` get a
      brief "expired unconfirmed" info alert (capped at one per run).
 
@@ -40,6 +43,7 @@ engine must never fail to boot because the sibling half hasn't landed.
 from __future__ import annotations
 
 import logging
+import math
 import time
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -60,6 +64,13 @@ from src.models.feature_versioning import (
     FeatureSnapshot,
     FeatureSnapshotStore,
     attach_snapshot_payload,
+)
+from src.risk.currency import (
+    AccountCurrencyConverter,
+    ConversionUnavailable,
+    quote_currency,
+    resolve_account_currency,
+    risk_sized_units,
 )
 from src.risk.liquidity_window import LiquidityProfile, spread_bps_from_tick
 from src.risk.sizing import PositionSizer
@@ -115,8 +126,19 @@ class EventDrivenStrategy:
         db_engine: Any = None,
         notifier: EventNotifier | None = None,
         liquidity_profile: LiquidityProfile | None = None,
+        currency_converter: AccountCurrencyConverter | None = None,
     ) -> None:
         self.config = config or EventDrivenConfig()
+        # CL-vfw7: quote→account conversion for sizing, concentration and
+        # P&L. Default: rates from the tick snapshot this strategy receives
+        # each generate_intents call (the engine's _last_prices copy), with
+        # the account currency resolved from env/default (logged). run_engine
+        # injects one bound to the engine's live tick dict instead.
+        self._tick_prices: dict[str, Any] = {}
+        self._converter = currency_converter or AccountCurrencyConverter(
+            price_source=lambda: self._tick_prices,
+            account_currency=resolve_account_currency(),
+        )
         self.data = data_provider
         self.state = state_store
         self.snapshot_store = snapshot_store
@@ -187,6 +209,8 @@ class EventDrivenStrategy:
             haven_max_pct=self.config.haven_max_pct,
             max_holding_hours=self.config.event_max_holding_hours,
             reconcile_grace_sec=self.config.position_reconcile_grace_sec,
+            account_currency=self._converter.account_currency,
+            convert=self._converter.rate,
         )
         # Theme-primary scoping (CL-9nvq): matched-theme → tradable
         # instrument-name sets, derived from the playbooks loaded above. When
@@ -305,6 +329,27 @@ class EventDrivenStrategy:
         # exits keep their own lifecycle (confirm_exits).
         self.book.open_positions = value
 
+    @property
+    def account_currency(self) -> str:
+        return self._converter.account_currency
+
+    def set_currency_converter(self, converter: AccountCurrencyConverter) -> None:
+        """Rebind the quote→account rate source (CL-vfw7; run_engine wires
+        one on the engine's live tick dict). The account currency must not
+        change — the persisted book is denominated in it."""
+        if converter.account_currency != self.book.account_currency:
+            raise ValueError(
+                f"converter account currency {converter.account_currency} != event "
+                f"book account currency {self.book.account_currency}"
+            )
+        self._converter = converter
+        self.book.set_converter(converter.rate)
+        logger.info(
+            "%s: account-currency converter wired (account currency %s)",
+            self.id,
+            converter.account_currency,
+        )
+
     @staticmethod
     def _norm_symbol(sym: str) -> str:
         """Compare-form for position matching — delegates to the shared
@@ -324,11 +369,13 @@ class EventDrivenStrategy:
         size: float,
         entry_price: float,
         equity: float,
+        now: datetime | None = None,
     ) -> float:
         """Concentration caps (CL-wbmw) — see
         :meth:`EventBook.concentration_capped_size` for the two-layer
-        (per-instrument + haven-cluster) semantics."""
-        return self.book.concentration_capped_size(symbol, size, entry_price, equity)
+        (per-instrument + haven-cluster) semantics. Account-currency
+        notionals; raises ConversionUnavailable (CL-vfw7)."""
+        return self.book.concentration_capped_size(symbol, size, entry_price, equity, now)
 
     # ------------------------------------------------------------------
     # Snapshots
@@ -531,7 +578,19 @@ class EventDrivenStrategy:
                             float(rec.current_price) if rec.current_price is not None else None
                         ),
                         "direction": int(pos.direction),
-                        "pnl": float(rec.pnl),
+                        # CL-vfw7: both denominations, never one unlabeled
+                        # "pnl" (the old field mixed ¥ and $ per pair).
+                        "quote_ccy": rec.quote_ccy,
+                        "pnl_quote": float(rec.pnl_quote),
+                        "pnl_account": (
+                            float(rec.pnl_account) if rec.pnl_account is not None else None
+                        ),
+                        "account_ccy": self.book.account_currency,
+                        "exit_conversion": (
+                            rec.exit_conversion.to_payload()
+                            if rec.exit_conversion is not None
+                            else None
+                        ),
                         "held_hours": float(rec.held_hours),
                         "book_realized_pnl": float(rec.book_realized_pnl),
                     }
@@ -624,6 +683,9 @@ class EventDrivenStrategy:
         intents: list[OrderIntent] = []
         entered: list[tuple[str, str, str, float, str]] = []
         skipped: list[tuple[str, str]] = []
+        # Default converter rates come from the same snapshot that prices
+        # the entries (CL-vfw7); generate_intents already set it.
+        self._tick_prices = prices
         event_id = row.get("id")
         headline = str(row.get("headline") or "")
 
@@ -708,6 +770,19 @@ class EventDrivenStrategy:
                 (str(aff.get("instrument") or ""), "event_book_loss_cap") for aff in tradables
             )
             return intents, entered, skipped
+        if self.book.has_unconverted_losses():
+            # CL-vfw7: a closed loss whose account-currency amount is
+            # unknown means the loss cap cannot be evaluated — fail closed.
+            logger.warning(
+                "Event entries blocked for event id=%s: %d closed trade(s) "
+                "have no account-currency conversion yet (loss cap unknown)",
+                event_id,
+                len(self.book.unconverted_closes),
+            )
+            skipped.extend(
+                (str(aff.get("instrument") or ""), "unconverted_realized_loss") for aff in tradables
+            )
+            return intents, entered, skipped
 
         for aff in tradables:
             instrument = str(aff.get("instrument") or "")
@@ -779,18 +854,79 @@ class EventDrivenStrategy:
                 entry_price = fallback
 
             stop_price = entry_price * (1 - direction * self.config.event_stop_pct)
+            # QUOTE-currency price units per unit of the instrument.
             stop_distance = abs(entry_price - stop_price)
-            size = equity * self.config.event_risk_pct / max(stop_distance, 1e-9) * direction
+            # CL-vfw7: convert the per-unit risk to ACCOUNT currency before
+            # dividing account equity by it. No fresh rate → SKIP (fail
+            # closed); never size on an assumed 1.0.
+            quote_ccy = quote_currency(symbol)
+            try:
+                conversion = self.book.conversion(quote_ccy, now)
+            except ConversionUnavailable as exc:
+                logger.warning(
+                    "Event entry %s skipped — %s->%s conversion unavailable (%s) (event id=%s)",
+                    symbol,
+                    quote_ccy,
+                    self.book.account_currency,
+                    exc,
+                    event_id,
+                )
+                skipped.append((symbol, "conversion_unavailable"))
+                continue
+            risk_budget = equity * self.config.event_risk_pct  # account ccy
+            risk_per_unit = stop_distance * conversion.rate  # account ccy / unit
+            if not (math.isfinite(risk_per_unit) and risk_per_unit > 0):
+                logger.warning(
+                    "Event entry %s skipped — degenerate stop distance %r (event id=%s)",
+                    symbol,
+                    stop_distance,
+                    event_id,
+                )
+                skipped.append((symbol, "invalid_stop"))
+                continue
+            # Account-currency loss at the stop == risk budget (the
+            # invariant the pre-CL-vfw7 code violated) — see risk_sized_units.
+            size = risk_sized_units(risk_budget, stop_distance, conversion.rate) * direction
+            logger.info(
+                "Event sizing %s: equity=%.2f %s risk=%.2f stop_dist=%.6f %s "
+                "rate=%.8f (%s @ %s) risk/unit=%.8f %s -> size=%.0f",
+                symbol,
+                equity,
+                self.book.account_currency,
+                risk_budget,
+                stop_distance,
+                quote_ccy,
+                conversion.rate,
+                conversion.source_pair,
+                conversion.observed_at.isoformat(),
+                risk_per_unit,
+                self.book.account_currency,
+                size,
+            )
 
             # Concentration caps (CL-wbmw): trim to fit the per-instrument
             # (and, for havens, cluster) headroom, or skip at 0 — see
             # EventBook.concentration_capped_size. Additive to the loss cap.
-            capped = self.book.concentration_capped_size(
-                symbol,
-                size,
-                entry_price,
-                equity,
-            )
+            # Notionals are account currency (CL-vfw7); an unconvertible
+            # counted leg makes the cap unevaluable → skip.
+            try:
+                capped = self.book.concentration_capped_size(
+                    symbol,
+                    size,
+                    entry_price,
+                    equity,
+                    now,
+                )
+            except ConversionUnavailable as exc:
+                logger.warning(
+                    "Event entry %s skipped — concentration cap needs a "
+                    "conversion that is unavailable (%s) (event id=%s)",
+                    symbol,
+                    exc,
+                    event_id,
+                )
+                skipped.append((symbol, "conversion_unavailable"))
+                continue
             if capped == 0.0:
                 skipped.append((symbol, "concentration_cap"))
                 continue
@@ -847,6 +983,8 @@ class EventDrivenStrategy:
                     direction=direction,
                     stop_price=stop_price,
                     headline=headline[:200],
+                    quote_ccy=quote_ccy,
+                    entry_conversion=conversion,
                 ),
                 broker_positions,
                 now,
@@ -874,6 +1012,9 @@ class EventDrivenStrategy:
                     "entry_price": float(entry_price),
                     "stop_price": float(stop_price),
                     "size": float(size),
+                    "quote_ccy": quote_ccy,
+                    "account_ccy": self.book.account_currency,
+                    "entry_conversion": conversion.to_payload(),
                     "reason": str(aff.get("reason") or ""),
                 }
             )
@@ -903,9 +1044,28 @@ class EventDrivenStrategy:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _get_equity(broker: Any) -> float | None:
+    def _get_equity(broker: Any, account_currency: str | None = None) -> float | None:
+        """Account equity, or None when unreadable. CL-vfw7: if the broker
+        account EXPOSES a currency that differs from the book's, equity is
+        not comparable to our converted amounts → None (entries skipped)."""
         try:
-            return float(broker.get_account().equity)
+            account = broker.get_account()
+            equity = float(account.equity)
+            reported = getattr(account, "currency", None)
+            if (
+                account_currency is not None
+                and isinstance(reported, str)
+                and reported.strip()
+                and reported.strip().upper() != account_currency
+            ):
+                logger.error(
+                    "broker account currency %s != configured account currency %s "
+                    "— refusing to size event entries (set CURLIT_ACCOUNT_CURRENCY)",
+                    reported,
+                    account_currency,
+                )
+                return None
+            return equity
         except Exception as exc:
             # Broad by design: broker hiccups must not break the tick, but
             # include the actual error for diagnosis (CL-gmr1).
@@ -941,6 +1101,8 @@ class EventDrivenStrategy:
         broker: Any,
     ) -> list[OrderIntent]:
         now = datetime.now(UTC)
+        # CL-vfw7: the default converter reads rates from THIS tick snapshot.
+        self._tick_prices = prices
         # Prune phantom positions from earlier rejected orders BEFORE the cap
         # check, so a rejected leg can't keep blocking real entries (CL-v9g4).
         # reconcile() hands back the broker snapshot it already fetched, and
@@ -961,7 +1123,10 @@ class EventDrivenStrategy:
             # (_ALIGNMENT_MISMATCH_STREAK_TO_FLAG=2) to flag, and promotion
             # closes the window inside one strategy tick.
             self.book.confirm_entries(broker_positions, now)
-            self.book.confirm_exits(broker_positions)
+            self.book.confirm_exits(broker_positions, now)
+        # CL-vfw7: book any close whose exit rate was unavailable earlier,
+        # now that a fresh rate may exist (labelled deferred).
+        self.book.resolve_unconverted(now)
         # The same snapshot feeds check_exits so a leg triggering THIS
         # tick captures trigger_broker_qty for residual/phantom
         # confirmation (CL-9dhg findings 1 + 2).
@@ -980,7 +1145,7 @@ class EventDrivenStrategy:
         # cache serves the same value the per-call read would have.
         poll_cache = self.confluence.build_poll_cache(rows, now)
 
-        equity = self._get_equity(broker) if rows else None
+        equity = self._get_equity(broker, self.book.account_currency) if rows else None
         # ENTRY half of CL-hqyj: record_entry captures the submit-time
         # broker baseline (entry_broker_qty) from a snapshot so
         # confirm_entries can measure OUR fill as a delta and stay co-held-

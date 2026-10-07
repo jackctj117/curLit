@@ -45,6 +45,27 @@ Everything is PAPER. No real money moves anywhere.
   - 50 bps risk per leg at a 1% stop; max **3** concurrent legs (CL: raised
     from 2 — slot starvation); 4 h hard time stop; 2% event-book loss
     freeze; per-instrument (0.55) + haven (0.60) concentration caps.
+- **Account-currency sizing and P&L (CL-vfw7)**: stop risk, concentration
+  notionals and realized P&L are converted from the pair's QUOTE currency
+  to the ACCOUNT currency (`CURLIT_ACCOUNT_CURRENCY`, default USD, logged at
+  boot) using a fresh (≤ 15 min) live-tick mid — direct pair or one cross
+  via USD (`src/risk/currency.py`). No fresh rate → the entry is SKIPPED
+  (`conversion_unavailable`); there is no fallback rate. Before this fix
+  every non-USD-quoted leg was mis-sized (a 2026-08-03 USD_JPY short was
+  318 units, ~150x too small) and **all pre-fix event P&L figures are
+  mixed-currency** — e.g. that leg's "+44.29" was ¥44.29 ≈ $0.28. The
+  event book state (`data/event_book_state.json`, now version 2) keeps the
+  old aggregate verbatim as `legacy_mixed_currency_pnl` and restarts
+  `realized_pnl` (account currency) at 0 on first load. Loss-cap budget
+  consumed = `-realized_pnl + max(0, -legacy_mixed_currency_pnl)`: legacy
+  losses are not forgiven, legacy gains are not credited. A close whose
+  exit rate is unavailable is held in `unconverted_closes` (quote amount
+  only) and blocks new entries while it is a loss, until a fresh rate
+  books it (labelled `conversion_deferred`). Exit P&L is still priced at
+  the trigger-time mid (`exit_price_basis: trigger_price_estimate`), not
+  the broker fill. Rollback note: pre-CL-vfw7 code reading a v2 file
+  would treat the account-currency `realized_pnl` as its aggregate and
+  ignore the legacy figure.
 - **Restart safety**: the reconciler consults multi-leg strategy books
   (CL-8s1e), so an engine restart no longer flattens open event legs. The
   phantom-position pruner (CL-v9g4) drops stale entries the broker doesn't
