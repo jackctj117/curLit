@@ -1064,3 +1064,85 @@ def test_early_partial_fill_cannot_complete_a_larger_actual_order() -> None:
         1000.0,
     )
     assert risk.unresolved_derisk_symbols() == ["EURUSD"]
+
+
+# --------------------------------------------------------------------------- #
+# Review round 4: the confirmation fence must survive every path
+# --------------------------------------------------------------------------- #
+
+
+def _restart(url: str, net: dict[str, float], stale: dict[str, float]) -> tuple[Any, Any]:
+    broker = VenueBroker(dict(net))
+    broker.stale_book = dict(stale)
+    risk = mk(broker, store=SqlEmergencyAttemptStore(create_engine(url)))
+    return broker, risk
+
+
+def _reconciler_close(risk: KillSwitchManager) -> SubmissionStatus:
+    return risk.oms.submit_intent_result(
+        OrderIntent(strategy_id="reconciler", symbol="EURUSD", target_position=0.0)
+    ).status
+
+
+def test_startup_lookup_fill_keeps_fence_until_feed_confirms(tmp_path: Path) -> None:
+    url = f"sqlite:///{tmp_path / 'r4a.db'}"
+    install_attempts(create_engine(url))
+    broker1 = VenueBroker({"EURUSD": 1000.0}, script=["lost_filled"])
+    mk(broker1, store=SqlEmergencyAttemptStore(create_engine(url))).check(DD)
+    assert broker1.net["EURUSD"] == 0.0  # it executed; the response was lost
+
+    broker2, risk2 = _restart(url, broker1.net, {"EURUSD": 1000.0})
+    order = broker1.orders[0]
+    broker2.lookups[str(order.client_order_id)] = lookup(order, OrderStatus.FILLED, 1000.0, "T1")
+    risk2.recover_emergency_attempts()
+    assert attempt_for(risk2, order.client_order_id).status is AttemptStatus.FILLED
+    assert _reconciler_close(risk2) is SubmissionStatus.BLOCKED
+    assert broker2.orders == []
+
+    broker2.stale_book = None
+    risk2.refresh_unresolved_derisk()
+    assert risk2.oms.fenced_symbols() == {}  # released only once the feed shows it
+    assert broker2.orders == []
+
+
+def test_other_action_cannot_override_confirmation_fence(tmp_path: Path) -> None:
+    url = f"sqlite:///{tmp_path / 'r4b.db'}"
+    install_attempts(create_engine(url))
+    broker1 = VenueBroker({"EURUSD": 1000.0}, script=["fill"])
+    mk(broker1, store=SqlEmergencyAttemptStore(create_engine(url))).check(VIX)
+    assert broker1.net["EURUSD"] == 500.0
+
+    broker2, risk2 = _restart(url, broker1.net, {"EURUSD": 1000.0})
+    risk2.recover_emergency_attempts()
+    for _ in range(2):
+        risk2.check(DD)  # drawdown flatten fires on the stale 1000
+    assert broker2.orders == []  # never sells 1000 into -500
+
+    broker2.stale_book = None  # feed shows the reduction: flatten may proceed
+    risk2.check(DD)
+    assert [(o.side, o.quantity) for o in broker2.orders] == [("sell", 500.0)]
+    assert broker2.net["EURUSD"] == 0.0
+
+
+def test_reset_daily_keeps_confirmation_state_durable(tmp_path: Path) -> None:
+    url = f"sqlite:///{tmp_path / 'r4c.db'}"
+    install_attempts(create_engine(url))
+    broker1 = VenueBroker({"EURUSD": 1000.0}, script=["fill"])
+    mk(broker1, store=SqlEmergencyAttemptStore(create_engine(url))).check(DD)
+
+    _, risk2 = _restart(url, broker1.net, {"EURUSD": 1000.0})
+    risk2.recover_emergency_attempts()
+    risk2.reset_daily(clear_causes=False)
+    risk2.reset_daily(clear_causes=True)
+
+    broker3, risk3 = _restart(url, broker1.net, {"EURUSD": 1000.0})
+    risk3.recover_emergency_attempts()
+    assert _reconciler_close(risk3) is SubmissionStatus.BLOCKED
+    assert broker3.orders == []
+
+    broker3.stale_book = None  # once confirmed, the episode may close
+    risk3.refresh_unresolved_derisk()
+    risk3.reset_daily(clear_causes=True)
+    _, risk4 = _restart(url, broker1.net, {})
+    risk4.recover_emergency_attempts()
+    assert risk4.derisk_fence_summary()["awaiting_position_confirmation"] == []
