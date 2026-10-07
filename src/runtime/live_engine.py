@@ -17,6 +17,7 @@ from src.risk.risk_context import RiskContextBuilder
 from src.runtime.protocols import (
     BrokerLike,
     CoordinatorLike,
+    FillCatchUpLike,
     FillHandlingOrderManager,
     FillStreamingBroker,
     KillSwitchManagerLike,
@@ -60,8 +61,12 @@ class LiveEngine:
         cold_start_reconciler: ReconcilerLike | None = None,
         kill_switch_manager: KillSwitchManagerLike | None = None,
         risk_context_builder: RiskContextBuilder | None = None,
+        fill_catch_up: FillCatchUpLike | None = None,
     ) -> None:
         self.strategies = strategies
+        # CL-pksi: durable checkpoint + /sinceid replay for the OANDA fill
+        # stream. None keeps the pre-catch-up behavior (live stream only).
+        self.fill_catch_up = fill_catch_up
         self.oms = oms
         self.broker = broker
         self.coordinator = coordinator
@@ -298,13 +303,34 @@ class LiveEngine:
             FillHandlingOrderManager,
         ):
             return
+        catch_up = self.fill_catch_up
+        if catch_up is None:
+            logger.warning(
+                "Transaction stream running WITHOUT durable catch-up — fills missed "
+                "while disconnected are seen only by the position poll"
+            )
+            while self.running:
+                try:
+                    async for fill in broker.stream_transactions():
+                        try:
+                            oms.on_fill(fill)
+                        except Exception:
+                            logger.exception("on_fill failed for %r", fill)
+                except Exception:
+                    logger.exception("Transaction stream error")
+                    await asyncio.sleep(5)
+            return
+
+        async def _replay() -> None:
+            # CL-pksi: sync broker HTTP + journal writes — off the event loop.
+            await asyncio.to_thread(catch_up.catch_up)
+
         while self.running:
             try:
-                async for fill in broker.stream_transactions():
-                    try:
-                        oms.on_fill(fill)
-                    except Exception:
-                        logger.exception("on_fill failed for %r", fill)
+                async for fill in broker.stream_transactions(on_connect=_replay):
+                    # handle_live journals the fill and advances the durable
+                    # checkpoint only after it is journaled (never raises).
+                    await asyncio.to_thread(catch_up.handle_live, fill)
             except Exception:
                 logger.exception("Transaction stream error")
                 await asyncio.sleep(5)
