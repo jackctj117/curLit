@@ -1012,3 +1012,55 @@ def test_failed_target_persistence_never_submits_on_a_later_tick() -> None:
     risk.check(VIX)
     assert [o.quantity for o in broker.orders] == [500.0]
     assert [t for _, _, t in store.load_open_episodes()] == [{"EURUSD": ("EURUSD", 500.0)}]
+
+
+def test_restart_blocks_reconciler_until_feed_shows_the_verified_fill(tmp_path: Path) -> None:
+    url = f"sqlite:///{tmp_path / 'recon.db'}"
+    install_attempts(create_engine(url))
+    broker1 = VenueBroker({"EURUSD": 1000.0}, script=["fill"])
+    mk(broker1, store=SqlEmergencyAttemptStore(create_engine(url))).check(DD)
+    broker2 = VenueBroker({"EURUSD": 0.0})
+    broker2.stale_book = {"EURUSD": 1000.0}  # feed still shows the pre-fill book
+    risk2 = mk(broker2, store=SqlEmergencyAttemptStore(create_engine(url)))
+    risk2.recover_emergency_attempts()
+    close = OrderIntent(strategy_id="reconciler", symbol="EURUSD", target_position=0.0)
+    assert risk2.oms.submit_intent_result(close).status is SubmissionStatus.BLOCKED
+    assert risk2.derisk_fence_summary()["awaiting_position_confirmation"] == ["EURUSD"]
+    assert broker2.orders == []
+
+    broker2.stale_book = None  # feed catches up
+    risk2.refresh_unresolved_derisk()
+    assert risk2.derisk_fence_summary()["awaiting_position_confirmation"] == []
+    again = OrderIntent(strategy_id="reconciler", symbol="EURUSD", target_position=0.0)
+    assert risk2.oms.submit_intent_result(again).status is SubmissionStatus.AT_TARGET
+    assert broker2.orders == []
+
+
+def test_early_partial_fill_cannot_complete_a_larger_actual_order() -> None:
+    class ShiftingBook(VenueBroker):
+        books: list[dict[str, float]] = []
+
+        def get_positions(self) -> list[Position]:
+            if self.books:
+                book = self.books.pop(0)
+                return [Position(s, q, 1.0) for s, q in book.items() if q]
+            return super().get_positions()
+
+    # Risk decision sees 1000; by submit time the OMS re-reads 2500.
+    broker = ShiftingBook({"EURUSD": 2500.0}, script=["working"])
+    broker.books = [{"EURUSD": 1000.0}, {"EURUSD": 2500.0}]
+    risk = mk(broker)
+
+    def early_partial(order: Order) -> None:
+        risk.oms.on_fill(fill_event(order, -1000.0, "T1"))
+
+    broker.on_place = early_partial
+    risk.check(DD)
+    attempt = attempt_for(risk, broker.orders[0].client_order_id)
+    assert broker.orders[0].quantity == 2500.0
+    assert (attempt.status, attempt.requested_qty, attempt.cumulative_fill_qty) == (
+        AttemptStatus.WORKING,
+        2500.0,
+        1000.0,
+    )
+    assert risk.unresolved_derisk_symbols() == ["EURUSD"]

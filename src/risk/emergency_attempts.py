@@ -191,6 +191,9 @@ class DeriskEvidence:
     filled_quantity: float | None = None
     #: OMS placement outcome (``submission_outcome`` only).
     submission: SubmissionResult | None = None
+    #: Absolute units of the order as the BROKER holds it (``order_lookup``):
+    #: authoritative over the pre-submission estimate.
+    order_qty: float | None = None
     detail: str = ""
 
 
@@ -262,6 +265,8 @@ def apply_evidence(
     requested = attempt.requested_qty
     if ev.submission is not None and ev.submission.requested_qty is not None:
         requested = float(ev.submission.requested_qty)
+    elif ev.order_qty is not None and ev.order_qty > 0:
+        requested = abs(float(ev.order_qty))
     order_id = ev.order_id or attempt.broker_order_id
     if ev.submission is not None and ev.submission.order_id and not attempt.broker_order_id:
         order_id = ev.submission.order_id
@@ -303,9 +308,17 @@ def apply_evidence(
             ):
                 status = AttemptStatus.FILLED  # a fill raced ahead of the response
         elif ev.source == EVIDENCE_FILL_EVENT:
-            status = (
-                AttemptStatus.FILLED if _complete(cumulative, requested) else AttemptStatus.WORKING
-            )
+            if attempt.status is AttemptStatus.SUBMITTING:
+                # The size actually sent is not known yet (the OMS re-reads
+                # the book and may send more than the decision estimate):
+                # record the fill, decide once the submission outcome lands.
+                status = AttemptStatus.SUBMITTING
+            else:
+                status = (
+                    AttemptStatus.FILLED
+                    if _complete(cumulative, requested)
+                    else AttemptStatus.WORKING
+                )
         elif ev.source == EVIDENCE_ORDER_LOOKUP:
             status = _from_lookup(attempt, ev, cumulative, requested)
     elif attempt.status is AttemptStatus.PARTIAL_TERMINAL and _complete(cumulative, requested):
