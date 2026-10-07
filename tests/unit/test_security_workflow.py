@@ -96,8 +96,8 @@ def test_secret_exception_cannot_allow_other_values_paths_or_rules() -> None:
     assert len(config["rules"]) == 1
     rule = config["rules"][0]
     assert rule["id"] == "generic-api-key"
-    assert len(rule["allowlists"]) == 1
-    allow = rule["allowlists"][0]
+    assert len(rule["allowlists"]) == 2
+    allow, comment_allow = rule["allowlists"]
     assert allow["condition"] == "AND"
     assert allow["regexTarget"] == "secret"
     assert allow["regexes"] == ["^PLACEHOLDER_ECB_Q3_YES$"]
@@ -107,6 +107,23 @@ def test_secret_exception_cannot_allow_other_values_paths_or_rules() -> None:
     assert re.search(pattern, "configs/polymarket_markets.yaml")
     assert not re.search(pattern, "configs/credentials.yaml")
     assert not re.search(pattern, "configs/polymarket_markets.yaml.bak")
+    # CL-esh6: one exact historical comment line naming withheld env variables.
+    assert comment_allow["condition"] == "AND"
+    assert comment_allow["regexTarget"] == "line"
+    assert comment_allow["regexes"] == [
+        "^#: passwords, Telegram/Moonshot tokens, WEB_API_SECRET, all loaded from$"
+    ]
+    assert "commits" not in comment_allow
+    assert "stopwords" not in comment_allow
+    comment_pattern, = comment_allow["paths"]
+    assert re.search(comment_pattern, "src/research/llm/claude_code.py")
+    assert not re.search(comment_pattern, "src/research/llm/claude_code.py.bak")
+    assert not re.search(comment_pattern, "tests/research/llm/claude_code.py")
+    assert not re.search(comment_pattern, "src/research/llm/client.py")
+    line_regex, = comment_allow["regexes"]
+    assert re.search(line_regex, "#: passwords, Telegram/Moonshot tokens, WEB_API_SECRET, all loaded from")
+    assert not re.search(line_regex, "WEB_API_SECRET=abc123")
+    assert not re.search(line_regex, "#: passwords, Telegram/Moonshot tokens, WEB_API_SECRET, all loaded from .env")
 
 
 def test_private_root_exclusion_preserves_all_third_party_audit_inputs(
