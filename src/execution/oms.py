@@ -98,6 +98,9 @@ class SubmissionResult:
     #: when nothing was sent). Lets the risk layer compare cumulative fills
     #: against what was requested instead of trusting a status label.
     requested_qty: float | None = None
+    #: CL-pksi: absolute units the broker REPORTED as executed by a synchronous
+    #: fill (None = not reported). Never inferred from the requested size.
+    filled_qty: float | None = None
 
 
 class OrderManager:
@@ -168,6 +171,10 @@ class OrderManager:
         # the emergency intent being submitted under the fence (None once its
         # outcome is known to be unresolved — then nobody is exempt).
         self._symbol_fences: dict[str, tuple[str, str | None]] = {}
+        # CL-pksi: account-wide submission block (reason) — set when the
+        # emergency-attempt record could not be recovered, so unknown
+        # outstanding emergency orders cannot be duplicated by ANY writer.
+        self._submission_block: str | None = None
 
     def submit_intent(
         self,
@@ -246,6 +253,15 @@ class OrderManager:
             # submit that queued behind an emergency order sees the fence that
             # order set before it was placed (a pre-reservation check would be
             # stale by the time the reservation is granted).
+            if self._submission_block is not None:
+                logger.critical(
+                    "OMS: ALL submissions blocked (%s) — refusing intent %s (%s %s)",
+                    self._submission_block,
+                    intent.intent_id,
+                    intent.strategy_id,
+                    intent.symbol,
+                )
+                return SubmissionResult(intent.intent_id, SubmissionStatus.BLOCKED)
             fence = self._symbol_fences.get(canonical_symbol(intent.symbol))
             if fence is not None and fence[1] != intent.intent_id:
                 logger.critical(
@@ -556,9 +572,16 @@ class OrderManager:
                         placed.status == OrderStatus.FILLED
                         and qty == original_qty
                         and placed.quantity == original_qty
+                        # CL-pksi: a short (or unreported) executed quantity
+                        # is not the target, whatever the status says.
+                        and placed.filled_quantity is not None
+                        and abs(placed.filled_quantity - qty) < self._min_trade_size(intent.symbol)
                     ),
                     order_id=placed.order_id or None,
                     requested_qty=qty,
+                    filled_qty=(
+                        placed.filled_quantity if placed.status == OrderStatus.FILLED else None
+                    ),
                 )
             except Exception as exc:
                 # Emergency retries must not turn an ambiguous acceptance into
@@ -729,6 +752,26 @@ class OrderManager:
         with self._lock:
             if self._symbol_fences.pop(csym, None) is not None:
                 logger.warning("OMS: fence on %s released", csym)
+
+    def block_all_submissions(self, reason: str) -> None:
+        """Refuse EVERY submit, reducing or not (CL-pksi): outstanding
+        emergency orders are unknown, so no symbol can be sized safely."""
+        assert reason, "a block needs a reason"
+        with self._lock:
+            if self._submission_block != reason:
+                logger.critical("OMS: blocking ALL submissions — %s", reason)
+            self._submission_block = reason
+
+    def unblock_all_submissions(self) -> None:
+        """Lift :meth:`block_all_submissions` (CL-pksi)."""
+        with self._lock:
+            if self._submission_block is not None:
+                logger.warning("OMS: account-wide submission block lifted")
+            self._submission_block = None
+
+    def submission_block(self) -> str | None:
+        with self._lock:
+            return self._submission_block
 
     def fenced_symbols(self) -> dict[str, str]:
         """Snapshot of fenced canonical symbols -> reason (CL-pksi)."""

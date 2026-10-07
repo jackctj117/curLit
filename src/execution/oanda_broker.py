@@ -382,6 +382,18 @@ class OandaBroker(Broker):
             txn = data["orderFillTransaction"]
             order.order_id = str(txn.get("id", ""))
             order.status = OrderStatus.FILLED
+            # CL-pksi: the executed units come from the fill transaction, not
+            # the request; unreadable -> None (amount unknown, never assumed).
+            try:
+                order.filled_quantity = abs(float(txn["units"]))
+                order.fill_transaction_id = order.order_id or None
+            except (KeyError, TypeError, ValueError):
+                order.filled_quantity = None
+                logger.warning(
+                    "OANDA fill %s for %s has no readable units — fill amount unknown",
+                    order.order_id,
+                    order.symbol,
+                )
             return order
         if cancel is not None:
             # Created but immediately cancelled (FOK couldn't fill).

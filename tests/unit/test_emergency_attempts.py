@@ -37,7 +37,6 @@ from src.execution.oanda_broker import OandaBroker
 from src.execution.oms import OrderIntent, OrderManager, SubmissionStatus
 from src.risk.emergency_attempts import (
     EVIDENCE_FILL_EVENT,
-    NOT_FOUND_GRACE_SEC,
     AttemptStatus,
     DeriskEvidence,
     EmergencyAttempt,
@@ -74,7 +73,8 @@ class Clock:
 class VenueBroker:
     """Scripted broker. ``script`` drives successive place_order calls:
 
-    fill          FILLED synchronously, book updated
+    fill          FILLED synchronously, book updated, executed qty reported
+    short_fill    FILLED status but only 40% executed (and reported)
     reject        REJECTED synchronously, book untouched
     working       PENDING (acknowledged, not filled)
     lost_filled   order FILLED at the venue but the response is lost
@@ -111,6 +111,12 @@ class VenueBroker:
             self.net[order.symbol] = self.net.get(order.symbol, 0.0) + signed
             order.status = OrderStatus.FILLED
             order.order_id = f"F{len(self.orders)}"
+            order.filled_quantity = order.quantity
+        elif mode == "short_fill":  # FILLED status, but only 40% executed
+            self.net[order.symbol] = self.net.get(order.symbol, 0.0) + 0.4 * signed
+            order.status = OrderStatus.FILLED
+            order.order_id = f"F{len(self.orders)}"
+            order.filled_quantity = 0.4 * order.quantity
         elif mode == "reject":
             order.status = OrderStatus.REJECTED
             order.reject_reason = "INSUFFICIENT_LIQUIDITY"
@@ -390,21 +396,53 @@ def test_lookup_verified_zero_fill_cancel_permits_one_retry() -> None:
     assert broker.net["EURUSD"] == 0.0
 
 
-def test_not_found_is_trusted_only_after_the_grace_window() -> None:
+def test_broker_not_found_never_resolves_and_needs_operator_release() -> None:
     clock = Clock()
     broker = VenueBroker({"EURUSD": 1000.0}, script=["lost_unfilled"])
     risk = mk(broker, clock=clock)
     risk.check(DD)
     cid = str(broker.orders[0].client_order_id)
-    clock.advance(NOT_FOUND_GRACE_SEC - 1)
-    assert risk.refresh_unresolved_derisk() == 1
-    risk.check(DD)
+    # OANDA also says "no such order" for an executed order that aged out.
+    for _ in range(3):
+        clock.advance(3600)
+        assert risk.refresh_unresolved_derisk() == 1
+        risk.check(DD)
     assert len(broker.orders) == 1
-    clock.advance(2)
-    assert risk.refresh_unresolved_derisk() == 0
-    assert attempt_for(risk, cid).status is AttemptStatus.NOT_FOUND
+    assert attempt_for(risk, cid).status is AttemptStatus.UNKNOWN
+    risk.release_derisk_fence("EURUSD", changed_by="jack", reason="broker history shows no fill")
     risk.check(DD)
     assert len(broker.orders) == 2
+
+
+def test_short_synchronous_fill_is_partial_not_complete() -> None:
+    broker = VenueBroker({"EURUSD": 1000.0}, script=["short_fill"])
+    risk = mk(broker)
+    risk.check(DD)
+    attempt = attempt_for(risk, broker.orders[0].client_order_id)
+    assert (attempt.status, attempt.cumulative_fill_qty) == (AttemptStatus.PARTIAL_TERMINAL, 400.0)
+    assert broker.net["EURUSD"] == 600.0
+    for _ in range(2):
+        risk.check(DD)
+    assert len(broker.orders) == 1  # fenced: neither "done" nor blindly resent
+    assert "drawdown_limit" not in risk._triggered_today
+    assert risk.unresolved_derisk_symbols() == ["EURUSD"]
+
+
+def test_unreported_synchronous_fill_amount_stays_fenced() -> None:
+    broker = VenueBroker({"EURUSD": 1000.0}, script=["fill"])
+    broker.on_place = None
+    risk = mk(broker)
+    original = broker.place_order
+
+    def no_amount(order: Order) -> Order:
+        placed = original(order)
+        placed.filled_quantity = None
+        return placed
+
+    broker.place_order = no_amount  # type: ignore[method-assign]
+    risk.check(DD)
+    assert attempt_for(risk, broker.orders[0].client_order_id).status is AttemptStatus.UNKNOWN
+    assert risk.unresolved_derisk_symbols() == ["EURUSD"]
 
 
 # --------------------------------------------------------------------------- #
@@ -458,7 +496,7 @@ def test_crash_restart_refences_and_resolves_from_broker_evidence(tmp_path: Path
     broker2 = VenueBroker(dict(broker1.net))  # EURUSD really closed; USDCAD not
     eur_order = broker1.orders[0]
     broker2.lookups[eur] = lookup(eur_order, OrderStatus.FILLED, 1000.0, "T5")
-    clock.advance(10)  # USDCAD "not found" is still inside the grace window
+    clock.advance(3600)  # USDCAD: "no such order" — never proof of zero fill
     risk2 = mk(broker2, store=SqlEmergencyAttemptStore(create_engine(url)), clock=clock)
     recovered = risk2.recover_emergency_attempts()
     assert sorted(a.client_order_id for a in recovered) == sorted([eur, cad])
@@ -474,9 +512,11 @@ def test_crash_restart_refences_and_resolves_from_broker_evidence(tmp_path: Path
     )
     assert blocked.status is SubmissionStatus.BLOCKED
 
-    clock.advance(NOT_FOUND_GRACE_SEC)
-    assert risk2.refresh_unresolved_derisk() == 0
-    assert rows(engine)[cad][1] == "NOT_FOUND"
+    assert risk2.refresh_unresolved_derisk() == 1  # still not found: still fenced
+    risk2.check(DD)
+    assert broker2.orders == []
+    risk2.release_derisk_fence("USDCAD", changed_by="jack", reason="no fill in broker history")
+    assert rows(engine)[cad][1] == "OPERATOR_RELEASED"
     risk2.check(DD)
     assert [(o.symbol, o.side, o.quantity) for o in broker2.orders] == [("USDCAD", "buy", 2000.0)]
     assert broker2.net == {"EURUSD": 0.0, "USDCAD": 0.0}
@@ -838,3 +878,60 @@ def test_health_tick_resolves_fences_from_broker_lookups() -> None:
     assert risk.unresolved_derisk_symbols() == []
     assert broker.lookup_calls == [order.client_order_id]
     assert len(broker.orders) == 1
+
+
+def test_failed_recovery_blocks_every_writer_until_a_retry_succeeds(tmp_path: Path) -> None:
+    engine = create_engine(f"sqlite:///{tmp_path / 'late.db'}")  # table not yet there
+    broker = VenueBroker({"EURUSD": 1000.0})
+    risk = mk(broker, store=SqlEmergencyAttemptStore(engine))
+    assert risk.recover_emergency_attempts() == []
+    for writer in ("reconciler", "rate_diff"):
+        out = risk.oms.submit_intent_result(
+            OrderIntent(strategy_id=writer, symbol="EURUSD", target_position=0.0)
+        )
+        assert out.status is SubmissionStatus.BLOCKED
+    risk.check(DD)
+    assert broker.orders == []
+    assert "external:emergency_attempts_unavailable" in risk.active_halt_causes()
+
+    install_attempts(engine)  # store becomes readable
+    assert risk.refresh_unresolved_derisk() == 0
+    risk.check(DD)
+    assert len(broker.orders) == 1
+    assert broker.net["EURUSD"] == 0.0
+
+
+def test_restart_does_not_reduce_a_completed_leg_again(tmp_path: Path) -> None:
+    url = f"sqlite:///{tmp_path / 'episode.db'}"
+    install_attempts(create_engine(url))
+    broker1 = VenueBroker({"EURUSD": 1000.0, "USDCAD": -2000.0}, script=["fill", "working"])
+    mk(broker1, store=SqlEmergencyAttemptStore(create_engine(url))).check(VIX)
+    assert broker1.net == {"EURUSD": 500.0, "USDCAD": -2000.0}  # EURUSD leg done
+
+    broker2 = VenueBroker(dict(broker1.net))
+    broker2.lookups[str(broker1.orders[1].client_order_id)] = lookup(
+        broker1.orders[1], OrderStatus.CANCELLED, 0.0, None
+    )
+    risk2 = mk(broker2, store=SqlEmergencyAttemptStore(create_engine(url)))
+    risk2.recover_emergency_attempts()
+    risk2.check(VIX)
+    # USDCAD retried toward its ORIGINAL -1000; EURUSD (already 500) untouched.
+    assert [(o.symbol, o.side, o.quantity) for o in broker2.orders] == [("USDCAD", "buy", 1000.0)]
+    assert broker2.net == {"EURUSD": 500.0, "USDCAD": -1000.0}
+    assert "vix_spike" in risk2._triggered_today
+
+
+def test_oanda_sync_fill_reports_executed_units() -> None:
+    b = _oanda({})
+    b._post_following_307 = lambda url, body: SimpleNamespace(  # type: ignore[method-assign]
+        json=lambda: {"orderFillTransaction": {"id": "2", "units": "-400"}}
+    )
+    b._compute_price_bound = lambda order: None  # type: ignore[method-assign]
+    out = b.place_order(
+        Order(symbol="EURUSD", side="sell", quantity=1000, order_type=OrderType.MARKET)
+    )
+    assert (out.status, out.filled_quantity, out.fill_transaction_id) == (
+        OrderStatus.FILLED,
+        400.0,
+        "2",
+    )
