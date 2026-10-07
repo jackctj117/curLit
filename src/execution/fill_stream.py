@@ -81,7 +81,13 @@ class TransactionHistorySource(Protocol):
 class FillProcessor(Protocol):
     """OMS surface the catch-up needs (implemented by OrderManager)."""
 
-    def process_fill(self, fill: dict[str, Any], *, check_journal: bool = False) -> Any: ...
+    def process_fill(
+        self,
+        fill: dict[str, Any],
+        *,
+        check_journal: bool = False,
+        defer_on_lookup_failure: bool = False,
+    ) -> Any: ...
 
 
 class TransactionCheckpointStore(Protocol):
@@ -284,23 +290,18 @@ class FillStreamCatchUp:
         with self._lock:
             fid = _txn_id(fill)
             try:
-                try:
-                    # Durable dedup on the live path too: a replay can evict a
-                    # newer fill id from the OMS's bounded in-memory set (a
-                    # sync fill recorded before a long replay), so its buffered
-                    # live copy must be checked against the journal. The OMS
-                    # only queries the journal when the id is not remembered.
-                    outcome = self.oms.process_fill(fill, check_journal=True)
-                except Exception:
-                    # Journal unreadable: still process the fill (never drop a
-                    # live fill), but nothing after it may be checkpointed.
-                    logger.exception(
-                        "journal lookup for live fill %s failed — processing it "
-                        "without durable dedup; checkpoint frozen",
-                        fid or "?",
-                    )
-                    self._frozen = True
-                    outcome = self.oms.process_fill(fill)
+                # Durable dedup on the live path too: a replay can evict a
+                # newer fill id from the OMS's bounded in-memory set (a sync
+                # fill recorded before a long replay), so its buffered live
+                # copy must be checked against the journal. The OMS only
+                # queries the journal when the id is not remembered. If that
+                # lookup fails the journal state is UNKNOWN: the OMS never
+                # appends it (no possible duplicate row), returns durable=False
+                # (checkpoint frozen below) and the next replay — which checks
+                # the journal first — journals it exactly once if missing.
+                outcome = self.oms.process_fill(
+                    fill, check_journal=True, defer_on_lookup_failure=True
+                )
             except Exception:
                 self._frozen = True
                 logger.exception("stream fill %s handling failed — checkpoint frozen", fid or "?")

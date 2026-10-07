@@ -216,7 +216,12 @@ def _complete(cumulative: float, requested: float) -> bool:
     # Inclusive boundary: a fill exactly FILL_TOLERANCE_UNITS short is complete
     # (the tolerance exists for broker unit rounding).  The epsilon guards the
     # float comparison; it must widen the band, never narrow it (CL-pksi).
-    return requested > 0 and cumulative >= requested - FILL_TOLERANCE_UNITS - 1e-9
+    # Completion also requires SOME execution: with a tolerance of one unit, a
+    # one-unit order acknowledged as working would otherwise count as FILLED
+    # with nothing executed.
+    return (
+        requested > 0 and cumulative > 0 and cumulative >= requested - FILL_TOLERANCE_UNITS - 1e-9
+    )
 
 
 def _from_submission(
@@ -249,8 +254,9 @@ def apply_evidence(
     * Fills accumulate per transaction id; a repeated id changes nothing.
     * A resolved attempt never changes status again (late fills are still
       recorded for audit). Operator release is a separate, explicit path.
-    * Complete = cumulative fill within :data:`FILL_TOLERANCE_UNITS` of the
-      requested size. A fill short of that keeps the attempt WORKING.
+    * Complete = a NON-ZERO cumulative fill within :data:`FILL_TOLERANCE_UNITS`
+      of the requested size (boundary inclusive). A fill short of that keeps
+      the attempt WORKING; zero executed is never complete.
     * A terminal broker state (cancelled / rejected / filled-short) with a
       partial cumulative fill is PARTIAL_TERMINAL (still fenced).
     * Cancelled/rejected is a retryable zero-fill outcome ONLY when the
