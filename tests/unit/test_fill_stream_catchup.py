@@ -526,6 +526,141 @@ class TestReviewRound3:
         assert journal.fill_ids() == ["101"]
 
 
+class _FlakyRewindStore(InMemoryTransactionCheckpointStore):
+    """Checkpoint store whose rewind fails the first ``fail_rewinds`` times."""
+
+    def __init__(self, fail_rewinds: int = 0) -> None:
+        super().__init__()
+        self.fail_rewinds = fail_rewinds
+        self.history: list[int] = []
+
+    def advance(self, account_id: str, transaction_id: int) -> None:
+        super().advance(account_id, transaction_id)
+        self.history.append(self._rows[account_id])
+
+    def rewind(self, account_id: str, transaction_id: int) -> None:
+        if self.fail_rewinds > 0:
+            self.fail_rewinds -= 1
+            raise RuntimeError("db down")
+        super().rewind(account_id, transaction_id)
+        self.history.append(self._rows[account_id])
+
+
+def _broken(_iid):  # noqa: ANN001, ANN202
+    raise RuntimeError("journal down")
+
+
+class TestReviewIntegR3:
+    """Integration review r3: a deferred fill must never be stranded behind
+    the checkpoint (seeding + restart), nor journaled twice."""
+
+    def _seeded_deferral(self):  # noqa: ANN202
+        acct = _Account([_txn(101)])
+        acct.visible_upto = 101  # fill 101 exists AND is buffered on the stream
+        broker = _broker(acct)
+        journal = _Journal()
+        oms = OrderManager(broker, journal=journal)  # type: ignore[arg-type]
+        store = _FlakyRewindStore()
+        cu = FillStreamCatchUp(broker, oms, store, ACC)
+        assert cu.catch_up() == 0  # first connect: seeds at lastTransactionID 101
+        assert store.load(ACC) == 101
+        real = journal.query_by_intent
+        journal.query_by_intent = _broken
+        cu.handle_live(broker._normalize_fill(_txn(101)))  # buffered fill, deferred
+        assert journal.fill_ids() == []
+        # The durable boundary now sits below the deferred fill, so neither a
+        # reconnect nor a restart can skip it.
+        assert store.load(ACC) == 100
+        journal.query_by_intent = real  # journal recovers
+        return acct, broker, journal, oms, store, cu
+
+    def test_seeded_buffered_deferred_fill_is_journaled_on_reconnect(self):
+        _acct, _b, journal, _oms, store, cu = self._seeded_deferral()
+        assert store.load(ACC) == 100  # durable rewind below the deferred fill
+        assert cu.catch_up() == 1  # reconnect
+        assert journal.fill_ids() == ["101"]
+        assert store.load(ACC) == 101 and not cu.frozen
+        assert cu.catch_up() == 0  # and again: still exactly one row
+        assert journal.fill_ids() == ["101"]
+
+    def test_seeded_deferred_fill_survives_process_restart(self):
+        _acct, broker, journal, _oms, store, _cu = self._seeded_deferral()
+        # Restart: the in-memory deferred map is gone; only the store remains.
+        oms2 = OrderManager(broker, journal=journal)  # type: ignore[arg-type]
+        cu2 = FillStreamCatchUp(broker, oms2, store, ACC)
+        assert oms2.deferred_fills() == []
+        assert cu2.catch_up() == 1  # replay re-fetches 101 from the rewound cursor
+        assert journal.fill_ids() == ["101"]
+        assert store.load(ACC) == 101
+
+    def test_rewind_retried_until_db_returns_and_checkpoint_never_advances_first(self):
+        acct = _Account([_txn(101), _txn(102), _txn(103)])
+        broker = _broker(acct)
+        journal = _Journal()
+        oms = OrderManager(broker, journal=journal)  # type: ignore[arg-type]
+        store = _FlakyRewindStore(fail_rewinds=2)
+        InMemoryTransactionCheckpointStore.advance(store, ACC, 102)
+        cu = FillStreamCatchUp(broker, oms, store, ACC)
+        cu._frozen = False
+        real = journal.query_by_intent
+        journal.query_by_intent = _broken
+        cu.handle_live(broker._normalize_fill(_txn(101)))  # deferred; rewind fails
+        journal.query_by_intent = real
+        assert store.load(ACC) == 102 and cu._rewind_to == 100
+        cu._frozen = False  # even unfrozen, an owed rewind blocks every advance
+        cu.handle_live(broker._normalize_fill(_txn(103)))  # rewind fails again
+        assert store.load(ACC) == 102  # did NOT advance to 103
+        assert cu._rewind_to == 100
+        acct.visible_upto = 103
+        assert cu.catch_up() >= 1  # rewind succeeds first, then drain + replay
+        assert cu._rewind_to is None
+        assert 100 in store.history  # the rewind landed before any advance
+        assert store.history.index(100) < len(store.history) - 1
+        assert all(h <= 102 for h in store.history[: store.history.index(100)])
+        assert sorted(journal.fill_ids()) == ["101", "102", "103"]
+        assert journal.fill_ids().count("101") == 1
+        assert store.load(ACC) == 103
+
+    def test_deferred_fill_redelivered_live_then_replayed_is_one_row(self):
+        acct, broker, journal, _oms, store, cu = self._seeded_deferral()
+        cu.handle_live(broker._normalize_fill(_txn(101)))  # redelivery, journal OK now
+        cu.handle_live(broker._normalize_fill(_txn(101)))
+        assert cu.catch_up() == 0  # nothing left to append
+        assert journal.fill_ids() == ["101"]
+
+    def test_checkpoint_never_advances_past_a_deferred_fill(self):
+        acct = _Account([_txn(101), _txn(102)])
+        broker = _broker(acct)
+        journal = _Journal()
+        oms = OrderManager(broker, journal=journal)  # type: ignore[arg-type]
+        store = _FlakyRewindStore()
+        InMemoryTransactionCheckpointStore.advance(store, ACC, 100)
+        cu = FillStreamCatchUp(broker, oms, store, ACC)
+        journal.query_by_intent = _broken
+        cu.handle_live(broker._normalize_fill(_txn(101)))  # deferred
+        cu._advance(102)  # any advance path is capped by the deferred fill
+        assert store.load(ACC) == 100
+
+    def test_sql_rewind_is_the_only_backwards_move(self):
+        eng = create_engine("sqlite://")
+        sql = Path("migrations/028_oanda_stream_checkpoint.sql").read_text()
+        body = "\n".join(ln for ln in sql.splitlines() if not ln.strip().startswith("--"))
+        with eng.begin() as conn:
+            for stmt in (x.strip() for x in body.split(";")):
+                if stmt:
+                    conn.execute(text(stmt))
+        st = SqlTransactionCheckpointStore(eng)
+        st.rewind(ACC, 50)  # creates the row when absent
+        assert st.load(ACC) == 50
+        st.advance(ACC, 80)
+        st.advance(ACC, 60)  # advance never moves back
+        assert st.load(ACC) == 80
+        st.rewind(ACC, 90)  # rewind never moves forward
+        assert st.load(ACC) == 80
+        st.rewind(ACC, 70)
+        assert st.load(ACC) == 70
+
+
 class TestSqlCheckpointStore:
     def test_migration_028_and_monotonic_upsert_on_sqlite(self):
         eng = create_engine("sqlite://")

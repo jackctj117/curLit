@@ -115,6 +115,10 @@ class FillOutcome:
     #: The fill's ORDER_FILLED row is known to be journaled (or there is no
     #: journal): a durable transaction checkpoint may advance past it.
     durable: bool
+    #: The fill's journal state is UNKNOWN and its ORDER_FILLED append was
+    #: deferred to a journal-checked replay (integration review r3): the
+    #: durable checkpoint must be rewound below it.
+    deferred: bool = False
 
 
 class OrderManager:
@@ -185,7 +189,9 @@ class OrderManager:
         # Fills whose journal state was UNKNOWN when they arrived live (lookup
         # failed): claimed and fed to listeners, never appended blind; the
         # next journal-checked replay appends them only if no row exists.
-        self._deferred_fills: dict[str, OrderIntent | None] = {}
+        # Value: (intent, the fill itself) — the fill is kept so a replay can
+        # journal it even when the venue page no longer contains it.
+        self._deferred_fills: dict[str, tuple[OrderIntent | None, dict[str, Any]]] = {}
         # Fill ids claimed by a delivery whose journal append is in progress.
         self._fills_journaling: set[str] = set()
         # CL-80tv: per-canonical-symbol change counter, bumped (under _lock)
@@ -957,7 +963,7 @@ class OrderManager:
                 if fill_id in self._unjournaled_fills:
                     intent = self._unjournaled_fills.pop(fill_id)
                 else:
-                    intent = self._deferred_fills.pop(fill_id)
+                    intent = self._deferred_fills.pop(fill_id)[0]
             else:
                 intent = self._pending_intents.pop(str(client_id), None) if client_id else None
                 if client_id:
@@ -1054,9 +1060,11 @@ class OrderManager:
             exc_info=True,
         )
         if deferred:
-            return FillOutcome(newly_processed=False, durable=False)
+            return FillOutcome(newly_processed=False, durable=False, deferred=True)
         with self._lock:
-            if fill_id in self._deferred_fills or fill_id in self._seen_fills:
+            if fill_id in self._deferred_fills:
+                return FillOutcome(newly_processed=False, durable=False, deferred=True)
+            if fill_id in self._seen_fills:
                 return FillOutcome(newly_processed=False, durable=False)
             intent = self._pending_intents.pop(str(client_id), None) if client_id else None
             if client_id:
@@ -1065,9 +1073,25 @@ class OrderManager:
                 str(fill.get("instrument") or (intent.symbol if intent else ""))
             )
             if len(self._deferred_fills) < _SEEN_FILLS_CAP:
-                self._deferred_fills[fill_id] = intent
+                self._deferred_fills[fill_id] = (intent, dict(fill))
+            else:
+                # Never silent: the caller's durable checkpoint rewind still
+                # makes the next replay re-fetch (and journal) this fill.
+                logger.critical(
+                    "deferred-fill map full (%d) — fill %s relies on the durable "
+                    "checkpoint rewind for its replay",
+                    _SEEN_FILLS_CAP,
+                    fill_id,
+                )
         self._deliver_fill_listeners(fill, fill_id)
-        return FillOutcome(newly_processed=True, durable=False)
+        return FillOutcome(newly_processed=True, durable=False, deferred=True)
+
+    def deferred_fills(self) -> list[dict[str, Any]]:
+        """Copies of the fills whose ORDER_FILLED append is deferred
+        (integration review r3): a replay drains these independently of the
+        venue page, through ``process_fill(check_journal=True)``."""
+        with self._lock:
+            return [dict(f) for _, f in self._deferred_fills.values()]
 
     def _fill_already_journaled(self, fill_id: str, client_id: Any) -> bool:
         """True when an ORDER_FILLED row for venue fill ``fill_id`` is already

@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -36,6 +37,10 @@ if TYPE_CHECKING:
     from src.events.niche_scoring import NicheIdea
 
 logger = logging.getLogger(__name__)
+
+#: A bare SQL identifier: the only shape accepted for the caller-supplied
+#: table alias spliced into the eligibility predicate (integration review r3).
+_SQL_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 #: The exact status values that make a NicheIdea research-eligible
 #: (``NicheIdea.research_eligible``). Repeated here as SQL literals so the
@@ -170,7 +175,13 @@ def executable_research_predicate(
     flag additionally pins the discovery/evidence/liquidity statuses and the
     red-team flag pins a ``supported`` review. Both off: no clause at all, so
     the candidate set is exactly the pre-CL-7kuu one.
+
+    ``idea_alias`` is spliced into the SQL, so it must be a bare identifier
+    (``ValueError`` otherwise); both production callers pass ``"ti"``.
     """
+    if not _SQL_IDENTIFIER.fullmatch(idea_alias):
+        msg = f"idea_alias must be a bare SQL identifier, got {idea_alias!r}"
+        raise ValueError(msg)
     if not (require_niche or require_red_team):
         return []
     conds = [
@@ -186,7 +197,9 @@ def executable_research_predicate(
     if require_red_team:
         conds.append(f"rs.review_status = '{REVIEW_OK}'")
     return [
-        # Conditions are module constants, never caller input.
+        # Trust boundary: the status values are module constants; the only
+        # caller-supplied fragment is idea_alias, validated above as a bare
+        # SQL identifier (^[A-Za-z_][A-Za-z0-9_]*$). Nothing else is spliced.
         "EXISTS (SELECT 1 FROM idea_research_status rs WHERE " + " AND ".join(conds) + ")",  # nosec B608
     ]
 
