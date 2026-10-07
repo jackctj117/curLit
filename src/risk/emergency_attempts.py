@@ -7,7 +7,7 @@ resolved it, and a restart forgot it. This module supplies the missing parts:
 
 * :class:`EmergencyAttempt` — one emergency order attempt, persisted BEFORE the
   broker call (``SUBMITTING``) and updated on every status change
-  (migration 025, ``fx_emergency_attempts``).
+  (migration 027, ``fx_emergency_attempts``).
 * :class:`DeriskEvidence` — the ONLY input that can move an attempt out of an
   unresolved state: a streamed fill for the attempt's client id, a broker
   order lookup, or the OMS's own placement outcome. A position snapshot is not
@@ -118,7 +118,7 @@ def _as_dt(value: Any) -> datetime:
 
 @dataclass(frozen=True)
 class EmergencyAttempt:
-    """One kill-switch emergency order attempt (one row of migration 025)."""
+    """One kill-switch emergency order attempt (one row of migration 027)."""
 
     intent_id: str
     client_order_id: str
@@ -506,7 +506,7 @@ _COLUMNS = (
 
 
 class SqlEmergencyAttemptStore:
-    """``fx_emergency_attempts`` (migration 025) over SQLAlchemy (CL-pksi).
+    """``fx_emergency_attempts`` (migration 027) over SQLAlchemy (CL-pksi).
 
     Portable across Postgres (production) and sqlite (unit tests). Every
     transaction here is SQL only — no broker/network call ever runs inside it.

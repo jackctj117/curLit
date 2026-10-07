@@ -94,13 +94,13 @@ Everything is PAPER. No real money moves anywhere.
   peak equity; a corrupt file refuses boot — repair or remove it
   deliberately).
 - **Emergency-order fences, persistence and recovery (CL-o9sq / CL-pksi —
-  NOT YET DEPLOYED; needs migration 025 applied BEFORE the engine restarts on
+  NOT YET DEPLOYED; needs migration 027 applied BEFORE the engine restarts on
   this code).** Kill switches count a flatten/reduce leg complete only on a
   verified outcome (the OMS returns a typed `SubmissionResult`), keep a FIXED
   per-leg target across retries, and never resend a close whose outcome is
   unknown:
   - **Persistence.** Every emergency order is written to
-    `fx_emergency_attempts` (migration 025) as `SUBMITTING` *before* the
+    `fx_emergency_attempts` (migration 027) as `SUBMITTING` *before* the
     broker call, keyed by the intent id that is also the OANDA client id
     (`clientExtensions.id`), with the original position and the fixed target.
     Every status change is written back. If the row cannot be written the
@@ -133,7 +133,10 @@ Everything is PAPER. No real money moves anywhere.
     close is verified filled — by a sync fill, a streamed fill or a lookup,
     in-process or during recovery — stays fenced for every writer (cold-start
     reconciler and the other kill-switch action included) until the position
-    feed shows it (`derisk_fences.awaiting_position_confirmation`); its
+    feed shows it (`derisk_fences.awaiting_position_confirmation`). Only a
+    snapshot that passes the reconciler's CL-oqos validation counts: an empty
+    `{}`/non-list response, a duplicate leg or a non-finite quantity keeps
+    every confirmation fence (logged) instead of reading as flat. Its
     episode stays OPEN across the daily re-arm until then, so a lagging feed
     cannot trigger a second close even across repeated restarts. It then
     re-loads every
@@ -142,7 +145,10 @@ Everything is PAPER. No real money moves anywhere.
     A restart never resolves anything. If the tables are unreadable, EVERY OMS
     submission is blocked (any writer could duplicate an unknown order) and
     entries halt (`external:emergency_attempts_unavailable`); the health tick
-    retries recovery and lifts the block once it succeeds.
+    retries recovery and lifts the block once it succeeds. The tick runs this
+    recovery, the order lookups and the confirmation check BEFORE the account
+    read, so a failing account read (which still counts toward
+    `account_snapshot_unavailable`) never stops emergency recovery.
   - **Operator.** `/api/system` → `derisk_fences` (`count`, `symbols`, and per
     attempt status / client id / cumulative fill). `/api/system/resume` returns
     **409** while any attempt is unresolved (auto-resume can never lift

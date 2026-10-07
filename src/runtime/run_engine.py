@@ -648,7 +648,7 @@ def build_kill_switch_manager(
             oms,
             config=asdict(load_active_profile().kill_switches),
             data_provider=data_provider,
-            # CL-pksi: emergency order attempts are durable (migration 025)
+            # CL-pksi: emergency order attempts are durable (migration 027)
             # so a restart re-fences them instead of forgetting them. Without
             # an engine the store stays process-local (out-of-lane callers).
             attempt_store=SqlEmergencyAttemptStore(engine) if engine is not None else None,
