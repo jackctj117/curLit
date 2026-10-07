@@ -187,6 +187,8 @@ class PaperBroker(Broker):
                 self._account_currency,
             )
         order.status = OrderStatus.FILLED
+        # CL-pksi: report the executed quantity (the simulator fills fully).
+        order.filled_quantity = float(order.quantity)
         self._trade_log.append(
             {
                 "ts": datetime.now(UTC),

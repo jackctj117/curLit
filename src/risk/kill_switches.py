@@ -69,6 +69,7 @@ import logging
 import math
 import os
 import threading
+import uuid
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
@@ -469,6 +470,11 @@ class KillSwitchManager:
         )
         self._attempts: dict[str, EmergencyAttempt] = {}
         self._attempt_lock = threading.RLock()
+        # action -> durable episode id holding its FIXED targets (CL-pksi).
+        self._episodes: dict[str, str] = {}
+        # True while startup recovery could not read the attempt store: every
+        # OMS submission stays blocked until a retry succeeds.
+        self._recovery_failed = False
         # Canonical symbols already sent an emergency order during the current
         # check() — the bound on retries: at most ONE per symbol per tick.
         self._tick_submitted: set[str] = set()
@@ -897,12 +903,39 @@ class KillSwitchManager:
             key = canonical_symbol(symbol)
             net_qty[key] = net_qty.get(key, 0.0) + float(qty)
             route_symbol.setdefault(key, str(symbol))
+        if self._recovery_failed:
+            # CL-pksi: outstanding emergency orders from before the restart are
+            # unknown; any close could duplicate one. Halted only (re-fires).
+            logger.critical(
+                "%s: emergency-attempt recovery has not succeeded — no orders; halting only",
+                strategy_id,
+            )
+            return None
         targets = self._derisk_targets.setdefault(strategy_id, {})
+        before = dict(targets)
         for key in sorted(net_qty):
             qty = net_qty[key]
             if abs(qty) < _MIN_ACTIONABLE_QTY:
                 continue
             targets.setdefault(key, (route_symbol[key], qty * target_fraction))
+        if targets != before or strategy_id not in self._episodes:
+            # CL-pksi: the FIXED targets are durable before any order, so a
+            # restart never re-derives a completed leg's target from its
+            # smaller post-fill position (which would reduce it again).
+            episode_id = self._episodes.setdefault(strategy_id, str(uuid.uuid4()))
+            try:
+                logger.warning(
+                    "%s: persisting episode %s fixed targets %s", strategy_id, episode_id, targets
+                )
+                self.attempt_store.save_episode(episode_id, strategy_id, targets, self._clock())
+            except Exception:
+                logger.critical(
+                    "%s: fixed targets could NOT be persisted — no orders (fail closed)",
+                    strategy_id,
+                    exc_info=True,
+                )
+                self.record_external_halt(EMERGENCY_STORE_UNAVAILABLE_CAUSE)
+                return None
         submitted = 0
         actionable = len(targets)
         for key, (symbol, target) in targets.items():
@@ -1286,6 +1319,11 @@ class KillSwitchManager:
         Broker calls run with NO lock held and outside any DB transaction.
         Returns how many attempts remain unresolved.
         """
+        if self._recovery_failed:
+            logger.warning("emergency-attempt recovery previously failed — retrying")
+            self.recover_emergency_attempts()
+            if self._recovery_failed:
+                return -1
         with self._attempt_lock:
             pending = [a for a in self._attempts.values() if a.unresolved]
         by_client = getattr(self.broker, "get_order_by_client_id", None)
@@ -1358,19 +1396,43 @@ class KillSwitchManager:
 
         A restart is never a resolution: an attempt leaves the unresolved set
         only through broker evidence or an operator release. An unreadable
-        store halts entries (``emergency_attempts_unavailable``) and raises
-        nothing, so the engine stays observable.
+        store BLOCKS EVERY OMS SUBMISSION (an unknown outstanding order could
+        be duplicated by any writer) and halts entries
+        (``emergency_attempts_unavailable``); the health tick retries the
+        recovery and lifts the block once it succeeds. Raises nothing, so the
+        engine stays observable. Also restores every OPEN episode's FIXED
+        targets, so completed legs are not reduced again.
         """
         try:
+            episodes = self.attempt_store.load_open_episodes()
             loaded = self.attempt_store.load_unresolved()
         except Exception:
             logger.critical(
-                "emergency attempt store unreadable at startup — unresolved emergency "
-                "orders cannot be ruled out; halting entries",
+                "emergency attempt store unreadable — unresolved emergency orders cannot "
+                "be ruled out; blocking ALL submissions and halting entries",
                 exc_info=True,
             )
+            self._recovery_failed = True
+            block = getattr(self.oms, "block_all_submissions", None)
+            if callable(block):
+                block("emergency-attempt recovery failed: outstanding orders unknown")
             self.record_external_halt(EMERGENCY_STORE_UNAVAILABLE_CAUSE)
             return []
+        if self._recovery_failed:
+            logger.warning("emergency-attempt recovery succeeded after earlier failure")
+            self._recovery_failed = False
+            unblock = getattr(self.oms, "unblock_all_submissions", None)
+            if callable(unblock):
+                unblock()
+        with self._attempt_lock:
+            for episode_id, action, targets in episodes:
+                logger.warning(
+                    "startup: restoring episode %s %s fixed targets %s", episode_id, action, targets
+                )
+                self._episodes[action] = episode_id
+                restored = self._derisk_targets.setdefault(action, {})
+                for key, value in targets.items():
+                    restored.setdefault(key, value)
         logger.warning("startup: %d unresolved emergency attempt(s) loaded", len(loaded))
         with self._attempt_lock:
             for attempt in loaded:
@@ -1497,6 +1559,8 @@ class KillSwitchManager:
         with self._attempt_lock:
             unresolved = {a.action for a in self._attempts.values() if a.unresolved}
             pending_symbols = sorted({a.symbol for a in self._attempts.values() if a.unresolved})
+            dropped = [a for a in self._episodes if a not in unresolved]
+            closing = [self._episodes.pop(a) for a in dropped]
             self._derisk_targets = {
                 action: targets
                 for action, targets in self._derisk_targets.items()
@@ -1505,6 +1569,15 @@ class KillSwitchManager:
             self._derisk_results = {
                 key: result for key, result in self._derisk_results.items() if key[0] in unresolved
             }
+        if closing:
+            try:
+                self.attempt_store.close_episodes(closing, self._clock())
+            except Exception:
+                # A restart would restore these targets (fewer orders, never
+                # more); loud so the operator can close them by hand.
+                logger.critical(
+                    "emergency episodes %s could not be closed in the store", closing, exc_info=True
+                )
         if clear_causes:
             with self._cause_lock:
                 if self._active_halt_causes:

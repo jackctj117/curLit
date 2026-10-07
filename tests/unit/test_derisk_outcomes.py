@@ -27,6 +27,10 @@ class BrokerFixture:
         )
         if order.status == OrderStatus.FILLED:
             self.net[order.symbol] += order.quantity * (1 if order.side == "buy" else -1)
+            # CL-pksi: real adapters report the executed quantity of a sync
+            # fill (OANDA orderFillTransaction.units, PaperBroker); the OMS
+            # no longer treats an unreported amount as reaching the target.
+            order.filled_quantity = order.quantity
         elif order.status == OrderStatus.REJECTED:
             order.reject_reason = "PRICE_BOUND_EXCEEDED"
         return order

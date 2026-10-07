@@ -116,16 +116,25 @@ Everything is PAPER. No real money moves anywhere.
     or an order lookup (`GET /v3/accounts/{id}/orders/@<clientID>` plus the
     filling transaction, every health tick and at startup). A flat position
     snapshot never clears a fence. Fills are summed per venue transaction id
-    (duplicates count once, also across restarts). A verified zero-fill
-    rejection/cancel, or "no such order" from OANDA ≥ 120 s after the attempt
-    was recorded, allows ONE retry per symbol per tick against the ORIGINAL
-    target. A partial fill followed by a cancel is `PARTIAL_TERMINAL`: the
-    cumulative fill is recorded, nothing is resent, the fence stays.
-  - **Restart.** Startup re-loads every unresolved attempt, re-fences it
-    (before the cold-start reconciler can submit), restores its original
-    target, records `external:unresolved_emergency_orders`, then asks OANDA.
-    A restart never resolves anything; an unreadable table halts entries
-    (`external:emergency_attempts_unavailable`).
+    (duplicates count once, also across restarts); a synchronous fill counts
+    only the units OANDA reports in `orderFillTransaction`. A verified
+    zero-fill rejection/cancel allows ONE retry per symbol per tick against
+    the ORIGINAL target. A partial fill (streamed, or a short synchronous
+    fill) followed by a terminal state is `PARTIAL_TERMINAL`: the cumulative
+    fill is recorded, nothing is resent, the fence stays. OANDA "no such
+    order" (HTTP 404) never resolves an attempt — OANDA also returns it for
+    executed orders that aged out — so such an attempt waits for a fill or an
+    operator release.
+  - **Restart.** Each action's FIXED per-leg targets are persisted before its
+    first order (`fx_emergency_episodes`, OPEN until the daily re-arm /
+    operator resume drops them), so a restart never reduces an already
+    completed leg again. Startup restores open episodes, re-loads every
+    unresolved attempt, re-fences it (before the cold-start reconciler can
+    submit), records `external:unresolved_emergency_orders`, then asks OANDA.
+    A restart never resolves anything. If the tables are unreadable, EVERY OMS
+    submission is blocked (any writer could duplicate an unknown order) and
+    entries halt (`external:emergency_attempts_unavailable`); the health tick
+    retries recovery and lifts the block once it succeeds.
   - **Operator.** `/api/system` → `derisk_fences` (`count`, `symbols`, and per
     attempt status / client id / cumulative fill). `/api/system/resume` returns
     **409** while any attempt is unresolved (auto-resume can never lift
@@ -136,10 +145,9 @@ Everything is PAPER. No real money moves anywhere.
     `OPERATOR_RELEASED`), then resume. Inspect rows with
     `SELECT * FROM fx_emergency_attempts WHERE status IN
     ('SUBMITTING','WORKING','UNKNOWN','PARTIAL_TERMINAL');`.
-  - Limits: resolved (non-fenced) targets are still process-local, so a
-    restart after a verified rejection recomputes that leg's target from the
-    current book; the paper broker has no order lookup (its orders resolve
-    synchronously).
+  - Limits: an emergency order whose request never reached OANDA (404 on
+    lookup) needs an operator release before the leg is retried; the paper
+    broker has no order lookup (its orders resolve synchronously).
 - **Sporadic practice 401s (CL-wrsa)**: OANDA practice intermittently
   returns `401 Unauthorized` on `GET accounts/<id>/summary` / `/positions`
   (and on price-stream connects). Observed 2026-07-21..10-01: 15 of 16 REST

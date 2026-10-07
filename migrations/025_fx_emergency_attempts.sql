@@ -26,7 +26,7 @@ CREATE TABLE IF NOT EXISTS fx_emergency_attempts (
     requested_qty        DOUBLE PRECISION NOT NULL CHECK (requested_qty >= 0),
     status               TEXT NOT NULL CHECK (status IN
                              ('SUBMITTING','WORKING','UNKNOWN','PARTIAL_TERMINAL',
-                              'FILLED','REJECTED','CANCELLED','NOT_FOUND',
+                              'FILLED','REJECTED','CANCELLED',
                               'NOT_SUBMITTED','OPERATOR_RELEASED')),
     broker_order_id      TEXT,
     cumulative_fill_qty  DOUBLE PRECISION NOT NULL DEFAULT 0 CHECK (cumulative_fill_qty >= 0),
@@ -38,3 +38,22 @@ CREATE TABLE IF NOT EXISTS fx_emergency_attempts (
 -- Startup recovery and every health tick read the unresolved rows.
 CREATE INDEX IF NOT EXISTS fx_emergency_attempts_status_idx
     ON fx_emergency_attempts (status, symbol);
+
+-- The FIXED per-leg targets of each active kill-switch action (flatten_all /
+-- reduce_50pct), written before any of its orders. A restart restores them so
+-- a leg that already completed its reduction is never reduced again from the
+-- smaller post-fill position. targets is a JSON object (TEXT for
+-- portability): canonical symbol -> [route symbol, target position]. An
+-- episode is CLOSED when the daily re-arm / operator resume drops the action
+-- and no attempt of it is unresolved.
+CREATE TABLE IF NOT EXISTS fx_emergency_episodes (
+    episode_id   TEXT PRIMARY KEY,
+    action       TEXT NOT NULL,
+    targets      TEXT NOT NULL,
+    status       TEXT NOT NULL CHECK (status IN ('OPEN','CLOSED')),
+    created_at   TIMESTAMPTZ NOT NULL,
+    updated_at   TIMESTAMPTZ NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS fx_emergency_episodes_status_idx
+    ON fx_emergency_episodes (status, action);

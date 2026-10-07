@@ -60,8 +60,6 @@ class AttemptStatus(StrEnum):
     REJECTED = "REJECTED"
     #: Broker cancelled it; verified zero fill.
     CANCELLED = "CANCELLED"
-    #: Broker confirms no order with this client id exists (after a grace).
-    NOT_FOUND = "NOT_FOUND"
     #: The OMS decided not to send anything (already at target, dust,
     #: blocked as non-reducing). No broker order exists.
     NOT_SUBMITTED = "NOT_SUBMITTED"
@@ -86,7 +84,6 @@ RETRYABLE_STATUSES: frozenset[AttemptStatus] = frozenset(
     {
         AttemptStatus.REJECTED,
         AttemptStatus.CANCELLED,
-        AttemptStatus.NOT_FOUND,
         AttemptStatus.NOT_SUBMITTED,
     }
 )
@@ -97,12 +94,10 @@ RETRYABLE_STATUSES: frozenset[AttemptStatus] = frozenset(
 #: requested size is the whole order.
 FILL_TOLERANCE_UNITS: float = 1.0
 
-#: How long after the attempt was created a broker "no such order" answer
-#: is trusted as proof that nothing was created. OANDA creates the order
-#: synchronously inside the POST, which the adapter bounds at 10 s per hop and
-#: 3 redirect hops (30 s); 120 s is 4x that, so an order still being created
-#: cannot be mistaken for one that never existed.
-NOT_FOUND_GRACE_SEC: float = 120.0
+# A broker "no such order" answer is recorded but NEVER resolves an attempt:
+# OANDA also returns NO_SUCH_ORDER for an order that executed and aged out of
+# its recent-order list, so a 404 cannot prove zero execution. Such an attempt
+# stays fenced until a fill is seen or an operator reconciles it.
 
 EVIDENCE_FILL_EVENT = "fill_event"
 EVIDENCE_ORDER_LOOKUP = "order_lookup"
@@ -184,7 +179,8 @@ class DeriskEvidence:
     order_id: str | None = None
     #: Broker order state from a lookup (``order_lookup`` only).
     order_state: OrderStatus | None = None
-    #: The broker confirmed no such order exists (``order_lookup`` only).
+    #: The broker answered "no such order" (``order_lookup`` only). Recorded
+    #: as evidence but never a resolution: it cannot prove zero execution.
     not_found: bool = False
     #: A venue fill transaction and its absolute units.
     fill_transaction_id: str | None = None
@@ -237,7 +233,6 @@ def apply_evidence(
     ev: DeriskEvidence,
     *,
     now: datetime | None = None,
-    not_found_grace_sec: float = NOT_FOUND_GRACE_SEC,
 ) -> EmergencyAttempt:
     """Pure transition: the attempt after ``ev`` (CL-pksi).
 
@@ -252,8 +247,8 @@ def apply_evidence(
       partial cumulative fill is PARTIAL_TERMINAL (still fenced).
     * Cancelled/rejected is a retryable zero-fill outcome ONLY when the
       broker reported zero filled quantity and no fill was ever seen.
-    * "No such order" is trusted only after ``not_found_grace_sec`` since the
-      attempt was created, and never when a fill was seen.
+    * "No such order" never resolves anything (it cannot prove zero
+      execution); a synchronous fill counts only its REPORTED quantity.
     """
     when = now or _now()
     fills = _record_fill(attempt.fills, ev)
@@ -273,20 +268,34 @@ def apply_evidence(
     if attempt.unresolved and attempt.status is not AttemptStatus.PARTIAL_TERMINAL:
         if ev.source == EVIDENCE_SUBMISSION and ev.submission is not None:
             status = _from_submission(attempt, ev.submission, cumulative)
-            if status is AttemptStatus.FILLED and ev.submission.order_id:
-                # Synchronous fill: the placement response IS the fill txn.
-                fills = _record_fill(
-                    fills,
-                    DeriskEvidence(
-                        source=ev.source,
-                        fill_transaction_id=ev.submission.order_id,
-                        fill_qty=requested,
-                    ),
-                )
+            if status is AttemptStatus.FILLED:
+                # Synchronous fill: count ONLY the quantity the venue reported,
+                # never the requested size. Unknown amount -> UNKNOWN, left for
+                # an order lookup or a streamed fill to verify.
+                filled = ev.submission.filled_qty
+                if filled is None and ev.submission.target_reached:
+                    # OMS contract: target_reached is only True once the venue
+                    # REPORTED the full executed quantity (OrderManager checks
+                    # placed.filled_quantity), so it is evidence of the amount.
+                    filled = requested
+                if filled is not None and ev.submission.order_id:
+                    fills = _record_fill(
+                        fills,
+                        DeriskEvidence(
+                            source=ev.source,
+                            fill_transaction_id=ev.submission.order_id,
+                            fill_qty=filled,
+                        ),
+                    )
+                elif filled is not None:
+                    reported = max(reported, abs(float(filled)))
                 cumulative = max(float(sum(fills.values())), reported)
-            if status is AttemptStatus.FILLED and not _complete(cumulative, requested):
-                # A sync FILLED with a short fill amount is not "done".
-                status = AttemptStatus.PARTIAL_TERMINAL if cumulative > 0 else AttemptStatus.FILLED
+                if _complete(cumulative, requested):
+                    status = AttemptStatus.FILLED
+                elif filled is None and cumulative == 0:
+                    status = AttemptStatus.UNKNOWN
+                else:
+                    status = AttemptStatus.PARTIAL_TERMINAL
             if status in (AttemptStatus.WORKING, AttemptStatus.UNKNOWN) and _complete(
                 cumulative, requested
             ):
@@ -296,7 +305,7 @@ def apply_evidence(
                 AttemptStatus.FILLED if _complete(cumulative, requested) else AttemptStatus.WORKING
             )
         elif ev.source == EVIDENCE_ORDER_LOOKUP:
-            status = _from_lookup(attempt, ev, cumulative, requested, when, not_found_grace_sec)
+            status = _from_lookup(attempt, ev, cumulative, requested)
     elif attempt.status is AttemptStatus.PARTIAL_TERMINAL and _complete(cumulative, requested):
         # A delayed fill completed what looked partial: now verifiably done.
         status = AttemptStatus.FILLED
@@ -330,8 +339,6 @@ def _from_lookup(
     ev: DeriskEvidence,
     cumulative: float,
     requested: float,
-    when: datetime,
-    grace: float,
 ) -> AttemptStatus:
     if ev.not_found:
         if cumulative > 0:
@@ -341,16 +348,10 @@ def _from_lookup(
                 cumulative,
             )
             return AttemptStatus.UNKNOWN
-        # Anchored on creation: the row is written immediately before the one
-        # POST, and later lookups refresh updated_at, which must not reset it.
-        age = (when - attempt.created_at).total_seconds()
-        if age >= grace:
-            return AttemptStatus.NOT_FOUND
-        logger.info(
-            "emergency attempt %s: not found yet but only %.0fs old (< %.0fs grace) — kept",
+        logger.critical(
+            "emergency attempt %s: broker reports no such order — NOT proof of zero "
+            "execution (may have aged out); fence kept for fill evidence or operator",
             attempt.client_order_id,
-            age,
-            grace,
         )
         return attempt.status
     state = ev.order_state
@@ -386,6 +387,36 @@ class EmergencyAttemptStore(Protocol):
 
     def load_unresolved(self) -> list[EmergencyAttempt]: ...
 
+    def save_episode(
+        self, episode_id: str, action: str, targets: EpisodeTargets, now: datetime
+    ) -> None: ...
+
+    def close_episodes(self, episode_ids: list[str], now: datetime) -> None: ...
+
+    def load_open_episodes(self) -> list[tuple[str, str, EpisodeTargets]]: ...
+
+
+#: canonical symbol -> (route symbol, FIXED target position) for one action.
+EpisodeTargets = dict[str, tuple[str, float]]
+
+
+def _targets_json(targets: EpisodeTargets) -> str:
+    return json.dumps({k: [r, float(t)] for k, (r, t) in targets.items()}, sort_keys=True)
+
+
+def _targets_from_json(episode_id: str, raw: Any) -> EpisodeTargets:
+    doc = json.loads(raw or "{}")
+    if not isinstance(doc, dict):
+        msg = f"emergency episode {episode_id}: targets is not an object"
+        raise ValueError(msg)
+    out: EpisodeTargets = {}
+    for key, value in doc.items():
+        if not isinstance(value, list) or len(value) != 2:
+            msg = f"emergency episode {episode_id}: bad target for {key!r}"
+            raise ValueError(msg)
+        out[str(key)] = (str(value[0]), float(value[1]))
+    return out
+
 
 class InMemoryEmergencyAttemptStore:
     """Process-local store: tests and engines constructed without a DB.
@@ -397,6 +428,7 @@ class InMemoryEmergencyAttemptStore:
 
     def __init__(self) -> None:
         self._rows: dict[str, EmergencyAttempt] = {}
+        self._episodes: dict[str, tuple[str, EpisodeTargets, bool]] = {}
         self._lock = threading.Lock()
 
     def insert(self, attempt: EmergencyAttempt) -> None:
@@ -418,6 +450,27 @@ class InMemoryEmergencyAttemptStore:
             return sorted(
                 (a for a in self._rows.values() if a.unresolved), key=lambda a: a.created_at
             )
+
+    def save_episode(
+        self, episode_id: str, action: str, targets: EpisodeTargets, now: datetime
+    ) -> None:
+        with self._lock:
+            self._episodes[episode_id] = (action, dict(targets), True)
+
+    def close_episodes(self, episode_ids: list[str], now: datetime) -> None:
+        with self._lock:
+            for eid in episode_ids:
+                if eid in self._episodes:
+                    action, targets, _ = self._episodes[eid]
+                    self._episodes[eid] = (action, targets, False)
+
+    def load_open_episodes(self) -> list[tuple[str, str, EpisodeTargets]]:
+        with self._lock:
+            return [
+                (eid, action, dict(targets))
+                for eid, (action, targets, is_open) in self._episodes.items()
+                if is_open
+            ]
 
 
 _COLUMNS = (
@@ -513,6 +566,59 @@ class SqlEmergencyAttemptStore:
                 {f"s{i}": v for i, v in enumerate(wanted)},
             ).all()
         return [self._row(r) for r in rows]
+
+    def save_episode(
+        self, episode_id: str, action: str, targets: EpisodeTargets, now: datetime
+    ) -> None:
+        """Upsert one OPEN episode's fixed targets (SQL only, no network)."""
+        logger.info("emergency episodes: persisting %s %s targets %s", episode_id, action, targets)
+        params = {
+            "id": episode_id,
+            "action": action,
+            "targets": _targets_json(targets),
+            "now": now,
+        }
+        with self.engine.begin() as conn:
+            updated = conn.execute(
+                text(
+                    "UPDATE fx_emergency_episodes SET targets = :targets, status = 'OPEN', "
+                    "updated_at = :now WHERE episode_id = :id"
+                ),
+                params,
+            ).rowcount
+            if updated == 0:
+                conn.execute(
+                    text(
+                        "INSERT INTO fx_emergency_episodes "
+                        "(episode_id, action, targets, status, created_at, updated_at) "
+                        "VALUES (:id, :action, :targets, 'OPEN', :now, :now)"
+                    ),
+                    params,
+                )
+
+    def close_episodes(self, episode_ids: list[str], now: datetime) -> None:
+        if not episode_ids:
+            return
+        logger.info("emergency episodes: closing %s", episode_ids)
+        with self.engine.begin() as conn:
+            for eid in episode_ids:
+                conn.execute(
+                    text(
+                        "UPDATE fx_emergency_episodes SET status = 'CLOSED', updated_at = :now "
+                        "WHERE episode_id = :id"
+                    ),
+                    {"id": eid, "now": now},
+                )
+
+    def load_open_episodes(self) -> list[tuple[str, str, EpisodeTargets]]:
+        with self.engine.connect() as conn:
+            found = conn.execute(
+                text(
+                    "SELECT episode_id, action, targets FROM fx_emergency_episodes "
+                    "WHERE status = 'OPEN' ORDER BY created_at"
+                )
+            ).all()
+        return [(str(r[0]), str(r[1]), _targets_from_json(str(r[0]), r[2])) for r in found]
 
     @staticmethod
     def _row(r: Any) -> EmergencyAttempt:
