@@ -28,6 +28,7 @@ from src.portfolio.reconciler import PositionReconciler, SnapshotUnavailableErro
 from src.risk.kill_switches import KillSwitchManager
 from src.runtime.live_engine import LiveEngine
 from src.strategies.event_book import EventBook, EventPosition
+from src.strategies.event_driven import EventDrivenStrategy
 
 pytestmark = pytest.mark.unit
 
@@ -161,19 +162,50 @@ def test_engine_alignment_unavailable_keeps_mismatch_unknown_and_visible() -> No
 # ------------------------------------------------- event book per-tick path
 
 
-@pytest.mark.parametrize("qty", [float("nan"), float("inf"), True])
-def test_event_book_tick_never_rejects_pending_on_unreadable_qty(tmp_path: Path, qty: Any) -> None:
+@pytest.mark.parametrize("snapshot", _MALFORMED)
+def test_event_book_tick_malformed_snapshot_confirms_and_prunes_nothing(
+    tmp_path: Path, snapshot: Any
+) -> None:
+    # Codex r1: {} read as flat (reject), empty symbol (reject) and duplicate
+    # dialect rows (promote at double size) all reached confirm_entries.
     book = _book(tmp_path, grace=60)
-    submitted = datetime.now(UTC) - timedelta(hours=1)
-    _pending(book, submitted)
+    _pending(book, datetime.now(UTC) - timedelta(hours=1))
     broker = Mock()
-    broker.get_positions.return_value = [Position("USD_CAD", qty, 1.36)]
+    broker.get_positions.return_value = snapshot
     now = datetime.now(UTC)
-    snapshot = book.reconcile(broker, now)  # EventDrivenStrategy.generate_intents order
-    assert snapshot is not None
-    book.confirm_entries(snapshot, now)
+    # EventDrivenStrategy.generate_intents: confirm only on a non-None snapshot.
+    assert book.reconcile(broker, now) is None
     assert "USD_CAD" in book.pending_entries
     assert "USD_CAD" not in book.open_positions
+
+
+@pytest.mark.parametrize("qty", [float("nan"), float("inf"), True])
+def test_confirm_entries_never_rejects_on_unreadable_qty(tmp_path: Path, qty: Any) -> None:
+    # Defense in depth for a caller handing confirm_entries a raw snapshot.
+    book = _book(tmp_path, grace=60)
+    _pending(book, datetime.now(UTC) - timedelta(hours=1))
+    book.confirm_entries([Position("USD_CAD", qty, 1.36)], datetime.now(UTC))
+    assert "USD_CAD" in book.pending_entries
+    assert "USD_CAD" not in book.open_positions
+
+
+@pytest.mark.parametrize("snapshot", _MALFORMED)
+def test_entry_baseline_from_malformed_snapshot_is_none(snapshot: Any) -> None:
+    broker = Mock()
+    broker.get_positions.return_value = snapshot
+    assert EventDrivenStrategy._fetch_entry_baseline(broker) is None
+
+
+def test_event_book_valid_snapshot_still_confirms(tmp_path: Path) -> None:
+    book = _book(tmp_path, grace=60)
+    _pending(book, datetime.now(UTC) - timedelta(seconds=5))
+    broker = Mock()
+    broker.get_positions.return_value = [Position("USD_CAD", -500.0, 1.36)]
+    now = datetime.now(UTC)
+    snapshot = book.reconcile(broker, now)
+    assert snapshot is not None
+    book.confirm_entries(snapshot, now)
+    assert book.open_positions["USD_CAD"].quantity == -500.0
 
 
 def test_event_book_tick_unreadable_broker_confirms_nothing(tmp_path: Path) -> None:

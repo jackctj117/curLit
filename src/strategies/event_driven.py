@@ -1094,7 +1094,7 @@ class EventDrivenStrategy:
         if not hasattr(broker, "get_positions"):
             return None
         try:
-            return list(broker.get_positions())
+            raw = broker.get_positions()
         except Exception:
             logger.debug(
                 "event_driven: broker positions unavailable for entry "
@@ -1102,6 +1102,10 @@ class EventDrivenStrategy:
                 exc_info=True,
             )
             return None
+        # CL-oqos: a malformed snapshot is no baseline (baseline-None path),
+        # never a fabricated one ({} → flat → a co-holder's leg later
+        # "confirmed" as our fill).
+        return EventBook.validated_snapshot(raw)
 
     async def generate_intents(
         self,

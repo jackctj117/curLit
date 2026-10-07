@@ -889,8 +889,10 @@ CLI (Claude Code 2.1.287), not assumed:
     real fill as an orphan.
   - Periodic alignment (300 s) treats the same failures as UNKNOWN (no
     mismatch streak, no `reconciliation_failure` trip); the event book's
-    per-tick confirmation never promotes or rejects a pending leg against an
-    unreadable quantity.
+    per-tick reconcile applies the same whole-snapshot validation, so it
+    never prunes, promotes or rejects a pending leg against a malformed
+    snapshot, and a malformed snapshot is never used as a submit-time
+    entry baseline.
   - Health tick (60 s): three consecutive `get_account()` failures (or
     nonfinite equity) record the sticky cause
     `external:account_snapshot_unavailable` and halt entries; every further
