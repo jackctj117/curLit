@@ -178,3 +178,23 @@ def test_shadow_memory_carries_edges_across_events(tmp_path: Path) -> None:
         events[1]["hop_graph"]["metrics"]["tool_calls"]
         < events[0]["hop_graph"]["metrics"]["tool_calls"]
     )
+
+
+def test_failed_traversal_call_makes_usage_unknown() -> None:
+    from src.events.hop_graph_shadow import run_hopgraph_arm
+
+    class FailSecond(FakeTraversal):
+        def complete(self, **kwargs: Any) -> Any:
+            if self.calls:
+                raise TimeoutError
+            return super().complete(**kwargs)
+
+    arm = run_hopgraph_arm(
+        CapturedInput.capture(capture_payload()),
+        traversal_client=FailSecond(world_edges()),
+        entailment_client=world_entailment(),
+    )
+    assert arm["discovery_status"] == "partial"
+    assert arm["metrics"]["traversal_calls"] == 2
+    assert arm["cost"]["input_tokens"] is None and arm["cost"]["output_tokens"] is None
+    assert arm["graph"]["outcome"]["input_tokens"] is None

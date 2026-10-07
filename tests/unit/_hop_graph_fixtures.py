@@ -191,7 +191,11 @@ class FakeEntailment:
         claim = re.search(r"CLAIM: (.*)\n", user)
         passage = re.search(r"<<<(.*)>>>", user, re.S)
         assert claim and passage
-        answer, needle = self.answers.get(claim.group(1), ("unclear", ""))
+        # Keys are matched as substrings of the structured entailment claim.
+        answer, needle = next(
+            ((a, n) for key, (a, n) in self.answers.items() if key in claim.group(1)),
+            ("unclear", ""),
+        )
         if needle not in passage.group(1):
             answer = "unclear"
         with self._lock:
