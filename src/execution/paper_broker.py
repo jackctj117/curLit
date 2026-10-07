@@ -1,12 +1,28 @@
-"""Paper broker — simulated execution with cost model, full P&L tracking."""
+"""Paper broker — simulated execution with cost model, full P&L tracking.
+
+Equity is MARKED TO MARKET (CL-9ird): ``get_account().equity`` is cash
+(initial capital + realized P&L - costs) plus the unrealized P&L of every
+open position, marked at the latest ``set_price`` quote — the same quote
+book ``place_order`` / ``get_price`` / ``stream_prices`` use, so there is
+one authoritative price source. Before this, reported equity moved only on
+realized deltas, so the drawdown / daily-loss kill switches could not see
+an open position's losses on the paper venue.
+
+A mark that cannot be computed honestly (no price, a non-finite price, or
+a P&L currency that is not the account currency) makes ``get_account``
+RAISE ``AccountMarkUnavailableError`` — never a silent zero. The live-engine
+health tick already counts account-read failures and halts after three
+(fail closed), the same path a broker outage takes.
+"""
 
 import asyncio
 import logging
+import math
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import Any
 
-from .broker import Account, Broker, Order, OrderStatus, Position
+from .broker import Account, Broker, Order, OrderStatus, Position, currency_pair
 
 logger = logging.getLogger(__name__)
 
@@ -14,17 +30,39 @@ logger = logging.getLogger(__name__)
 #: points (CL-8lv6): a deterministic ±0.5 bp synthetic book.
 STREAM_HALF_SPREAD_BPS = 0.5
 
+#: Home currency of the simulated paper account. USD matches the OANDA
+#: practice account the paper venue stands in for.
+DEFAULT_ACCOUNT_CURRENCY = "USD"
+
+
+class AccountMarkUnavailableError(RuntimeError):
+    """An open position cannot be marked in account currency (CL-9ird).
+
+    Raised by ``PaperBroker.get_account`` instead of reporting an equity
+    that silently omits the position: excluding an unmarkable position is
+    the same as marking its P&L at zero, which hides losses from the
+    drawdown / daily-loss kill switches.
+    """
+
 
 class PaperBroker(Broker):
     def __init__(
         self,
         initial_capital: float = 100_000.0,
         stream_interval_sec: float = 1.0,
+        account_currency: str = DEFAULT_ACCOUNT_CURRENCY,
     ) -> None:
+        assert len(account_currency) == 3 and account_currency.isalpha(), (
+            f"account_currency must be an ISO-4217 code, got {account_currency!r}"
+        )
         self._capital = initial_capital
         self._stream_interval_sec = stream_interval_sec
-        self._equity = initial_capital
-        self._peak_equity = initial_capital
+        self._account_currency = account_currency.upper()
+        # Cash = initial capital + realized P&L - costs (CL-9ird). Equity is
+        # cash + the unrealized mark, computed on read — never stored, so it
+        # cannot drift from the open book.
+        self._cash = initial_capital
+        self._realized_pnl = 0.0
         self._positions: dict[str, Position] = {}
         self._trade_log: list[dict[str, Any]] = []
         self._prices: dict[str, tuple[float, float]] = {}
@@ -123,7 +161,11 @@ class PaperBroker(Broker):
             avg_price=avg_price,
             realized_pnl=realized,
         )
-        self._equity += realized_delta - cost
+        # NOTE: realized_delta and cost are in the pair's QUOTE currency and
+        # are booked to cash unconverted — pre-existing behavior, correct only
+        # for account-currency-quoted pairs; conversion is CL-vfw7's scope.
+        self._cash += realized_delta - cost
+        self._realized_pnl += realized_delta
         order.status = OrderStatus.FILLED
         self._trade_log.append(
             {
@@ -147,11 +189,91 @@ class PaperBroker(Broker):
         return list(self._positions.values())
 
     def get_account(self) -> Account:
+        """Account snapshot with equity MARKED TO MARKET (CL-9ird).
+
+        ``equity = cash + unrealized``. ``realized_pnl`` and
+        ``unrealized_pnl`` are reported separately so the mark (an
+        estimate) is never presented as a realized result. Raises
+        ``AccountMarkUnavailableError`` when any open position cannot be
+        marked — equity is then UNKNOWN, not "cash only".
+        """
+        unrealized = self._unrealized_pnl()
+        equity = self._cash + unrealized
+        assert math.isfinite(equity), f"non-finite paper equity {equity}"
+        logger.debug(
+            "PaperBroker account: cash=%.2f realized=%.2f unrealized=%.2f equity=%.2f %s",
+            self._cash,
+            self._realized_pnl,
+            unrealized,
+            equity,
+            self._account_currency,
+        )
         return Account(
             balance=self._capital,
-            equity=self._equity,
+            equity=equity,
             margin_used=abs(sum(p.quantity * p.avg_price for p in self._positions.values())) * 0.02,
+            realized_pnl=self._realized_pnl,
+            unrealized_pnl=unrealized,
         )
+
+    def _unrealized_pnl(self) -> float:
+        """Open-position marks summed in ACCOUNT currency; raises if unknown.
+
+        Each open position is marked at the EXIT side of its latest
+        ``set_price`` quote (bid for a long, ask for a short) — what closing
+        it now would realize, the convention OANDA uses for unrealizedPL.
+        Flat positions (qty 0, retained for their realized history) carry
+        no exposure and need no price.
+        """
+        total = 0.0
+        for pos in self._positions.values():
+            if pos.quantity == 0.0:
+                continue
+            quote = self._prices.get(pos.symbol)
+            if quote is None:
+                msg = (
+                    f"cannot mark open position {pos.symbol} x{pos.quantity}: "
+                    f"no price available — equity UNKNOWN"
+                )
+                logger.error("PaperBroker: %s", msg)
+                raise AccountMarkUnavailableError(msg)
+            bid, ask = quote
+            mark = bid if pos.quantity > 0 else ask
+            if not math.isfinite(mark) or mark <= 0.0:
+                msg = (
+                    f"cannot mark open position {pos.symbol} x{pos.quantity}: "
+                    f"invalid exit-side price {mark!r} — equity UNKNOWN"
+                )
+                logger.error("PaperBroker: %s", msg)
+                raise AccountMarkUnavailableError(msg)
+            # A pair position's P&L is denominated in its QUOTE currency.
+            pair = currency_pair(pos.symbol)
+            if pair is None or pair[1] != self._account_currency:
+                # TODO(CL-vfw7): convert quote-currency P&L to the account
+                # currency via the shared AccountCurrencyConverter
+                # (src/risk/currency.py) once it lands. Until then the mark is
+                # UNKNOWN: adding JPY (or index points) to a USD equity is
+                # wrong by orders of magnitude, and dropping it hides losses.
+                ccy = pair[1] if pair is not None else "unknown"
+                msg = (
+                    f"cannot mark open position {pos.symbol} x{pos.quantity}: "
+                    f"P&L currency {ccy} is not the account currency "
+                    f"{self._account_currency} and no converter is wired "
+                    f"(CL-vfw7) — equity UNKNOWN"
+                )
+                logger.error("PaperBroker: %s", msg)
+                raise AccountMarkUnavailableError(msg)
+            pnl = pos.quantity * (mark - pos.avg_price)
+            logger.debug(
+                "PaperBroker mark %s qty=%.4f avg=%.6f mark=%.6f unrealized=%.2f",
+                pos.symbol,
+                pos.quantity,
+                pos.avg_price,
+                mark,
+                pnl,
+            )
+            total += pnl
+        return total
 
     def get_price(self, symbol: str) -> tuple[float, float]:
         """Bid/ask for a configured symbol. RAISES on unknown symbols
@@ -210,4 +332,11 @@ class PaperBroker(Broker):
 
     @property
     def equity(self) -> float:
-        return self._equity
+        """Marked equity (CL-9ird) — same value and failure mode as
+        ``get_account().equity``."""
+        return self.get_account().equity
+
+    @property
+    def cash(self) -> float:
+        """Initial capital + realized P&L - costs (no unrealized mark)."""
+        return self._cash
