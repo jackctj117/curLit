@@ -139,6 +139,8 @@ class EmergencyAttempt:
     #: cumulative fill is their max, never their sum.
     reported_fill_qty: float = 0.0
     last_evidence: dict[str, Any] = field(default_factory=dict)
+    #: The kill-switch action episode whose FIXED targets this attempt serves.
+    episode_id: str | None = None
 
     def __post_init__(self) -> None:
         assert self.intent_id and self.client_order_id, "attempt identity required"
@@ -387,6 +389,8 @@ class EmergencyAttemptStore(Protocol):
 
     def load_unresolved(self) -> list[EmergencyAttempt]: ...
 
+    def load_for_episodes(self, episode_ids: list[str]) -> list[EmergencyAttempt]: ...
+
     def save_episode(
         self, episode_id: str, action: str, targets: EpisodeTargets, now: datetime
     ) -> None: ...
@@ -451,6 +455,14 @@ class InMemoryEmergencyAttemptStore:
                 (a for a in self._rows.values() if a.unresolved), key=lambda a: a.created_at
             )
 
+    def load_for_episodes(self, episode_ids: list[str]) -> list[EmergencyAttempt]:
+        wanted = set(episode_ids)
+        with self._lock:
+            return sorted(
+                (a for a in self._rows.values() if a.episode_id in wanted),
+                key=lambda a: a.created_at,
+            )
+
     def save_episode(
         self, episode_id: str, action: str, targets: EpisodeTargets, now: datetime
     ) -> None:
@@ -476,7 +488,7 @@ class InMemoryEmergencyAttemptStore:
 _COLUMNS = (
     "intent_id, client_order_id, action, symbol, route_symbol, original_qty, target, "
     "requested_qty, status, broker_order_id, cumulative_fill_qty, last_evidence, "
-    "created_at, updated_at"
+    "created_at, updated_at, episode_id"
 )
 
 
@@ -510,6 +522,7 @@ class SqlEmergencyAttemptStore:
             "last_evidence": attempt.evidence_json(),
             "created_at": attempt.created_at,
             "updated_at": attempt.updated_at,
+            "episode_id": attempt.episode_id,
         }
 
     def insert(self, attempt: EmergencyAttempt) -> None:
@@ -526,7 +539,8 @@ class SqlEmergencyAttemptStore:
                     f"INSERT INTO fx_emergency_attempts ({_COLUMNS}) VALUES "
                     "(:intent_id, :client_order_id, :action, :symbol, :route_symbol, "
                     ":original_qty, :target, :requested_qty, :status, :broker_order_id, "
-                    ":cumulative_fill_qty, :last_evidence, :created_at, :updated_at)"
+                    ":cumulative_fill_qty, :last_evidence, :created_at, :updated_at, "
+                    ":episode_id)"
                 ),
                 self._params(attempt),
             )
@@ -564,6 +578,20 @@ class SqlEmergencyAttemptStore:
                     f"WHERE status IN ({placeholders}) ORDER BY created_at"
                 ),
                 {f"s{i}": v for i, v in enumerate(wanted)},
+            ).all()
+        return [self._row(r) for r in rows]
+
+    def load_for_episodes(self, episode_ids: list[str]) -> list[EmergencyAttempt]:
+        if not episode_ids:
+            return []
+        placeholders = ", ".join(f":e{i}" for i in range(len(episode_ids)))
+        with self.engine.connect() as conn:
+            rows = conn.execute(
+                text(
+                    f"SELECT {_COLUMNS} FROM fx_emergency_attempts "
+                    f"WHERE episode_id IN ({placeholders}) ORDER BY created_at"
+                ),
+                {f"e{i}": v for i, v in enumerate(episode_ids)},
             ).all()
         return [self._row(r) for r in rows]
 
@@ -649,6 +677,7 @@ class SqlEmergencyAttemptStore:
             last_evidence=dict(doc.get("last") or {}),
             created_at=_as_dt(r[12]),
             updated_at=_as_dt(r[13]),
+            episode_id=str(r[14]) if r[14] else None,
         )
         if abs(attempt.cumulative_fill_qty - float(r[10])) > 1e-6:
             msg = (

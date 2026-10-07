@@ -911,18 +911,20 @@ class KillSwitchManager:
                 strategy_id,
             )
             return None
-        targets = self._derisk_targets.setdefault(strategy_id, {})
-        before = dict(targets)
+        current = self._derisk_targets.get(strategy_id, {})
+        targets = dict(current)
         for key in sorted(net_qty):
             qty = net_qty[key]
             if abs(qty) < _MIN_ACTIONABLE_QTY:
                 continue
             targets.setdefault(key, (route_symbol[key], qty * target_fraction))
-        if targets != before or strategy_id not in self._episodes:
+        if targets != current or strategy_id not in self._episodes:
             # CL-pksi: the FIXED targets are durable before any order, so a
             # restart never re-derives a completed leg's target from its
-            # smaller post-fill position (which would reduce it again).
-            episode_id = self._episodes.setdefault(strategy_id, str(uuid.uuid4()))
+            # smaller post-fill position (which would reduce it again). The
+            # in-memory targets/episode are committed ONLY after the write
+            # succeeds, so a failed write is retried (and blocks) next tick.
+            episode_id = self._episodes.get(strategy_id) or str(uuid.uuid4())
             try:
                 logger.warning(
                     "%s: persisting episode %s fixed targets %s", strategy_id, episode_id, targets
@@ -936,6 +938,8 @@ class KillSwitchManager:
                 )
                 self.record_external_halt(EMERGENCY_STORE_UNAVAILABLE_CAUSE)
                 return None
+            self._episodes[strategy_id] = episode_id
+        self._derisk_targets[strategy_id] = targets
         submitted = 0
         actionable = len(targets)
         for key, (symbol, target) in targets.items():
@@ -1136,6 +1140,7 @@ class KillSwitchManager:
             status=AttemptStatus.SUBMITTING,
             created_at=now,
             updated_at=now,
+            episode_id=self._episodes.get(intent.strategy_id),
         )
         try:
             logger.warning(
@@ -1406,6 +1411,10 @@ class KillSwitchManager:
         try:
             episodes = self.attempt_store.load_open_episodes()
             loaded = self.attempt_store.load_unresolved()
+            # Every attempt of an OPEN episode, completed ones included: a
+            # verified fill must keep protecting its leg after a restart when
+            # the position feed still shows the pre-fill quantity.
+            history = self.attempt_store.load_for_episodes([e[0] for e in episodes])
         except Exception:
             logger.critical(
                 "emergency attempt store unreadable — unresolved emergency orders cannot "
@@ -1418,12 +1427,6 @@ class KillSwitchManager:
                 block("emergency-attempt recovery failed: outstanding orders unknown")
             self.record_external_halt(EMERGENCY_STORE_UNAVAILABLE_CAUSE)
             return []
-        if self._recovery_failed:
-            logger.warning("emergency-attempt recovery succeeded after earlier failure")
-            self._recovery_failed = False
-            unblock = getattr(self.oms, "unblock_all_submissions", None)
-            if callable(unblock):
-                unblock()
         with self._attempt_lock:
             for episode_id, action, targets in episodes:
                 logger.warning(
@@ -1450,6 +1453,31 @@ class KillSwitchManager:
                     attempt.client_order_id,
                 )
                 self._sync_fence(attempt.symbol, attempt.route_symbol)
+            for attempt in sorted(history, key=lambda a: a.created_at):
+                # The latest attempt per leg decides its retry/complete outcome.
+                self._attempts.setdefault(attempt.intent_id, attempt)
+                leg = (attempt.action, attempt.symbol)
+                if attempt.status is AttemptStatus.FILLED:
+                    self._derisk_results[leg] = SubmissionResult(
+                        attempt.intent_id,
+                        SubmissionStatus.FILLED,
+                        target_reached=True,
+                        order_id=attempt.broker_order_id,
+                        requested_qty=attempt.requested_qty,
+                    )
+                elif attempt.status in RETRYABLE_STATUSES:
+                    self._derisk_results[leg] = SubmissionResult(
+                        attempt.intent_id, SubmissionStatus.REJECTED
+                    )
+                else:
+                    self._derisk_results.pop(leg, None)
+        if self._recovery_failed:
+            # Only now — every recovered fence is installed — may writers run.
+            logger.warning("emergency-attempt recovery succeeded after earlier failure")
+            self._recovery_failed = False
+            unblock = getattr(self.oms, "unblock_all_submissions", None)
+            if callable(unblock):
+                unblock()
         remaining = self.refresh_unresolved_derisk()
         logger.warning(
             "startup emergency recovery: %d loaded, %d still unresolved", len(loaded), remaining
