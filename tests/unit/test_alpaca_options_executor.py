@@ -20,6 +20,11 @@ from src.execution.alpaca_options_executor import (
     execute_pending_options,
     fetch_executable_ideas,
 )
+from tests.unit._research_status_fixture import (
+    eligible_status,
+    install_research_status,
+    record_status,
+)
 from tests.unit._trading_halt_fixture import install_trading_halt
 
 # Midday ET — outside the open-spread entry-delay window, so the delay
@@ -93,6 +98,8 @@ def engine(tmp_path):  # type: ignore[no-untyped-def]
                 conn.execute(text(stmt))
     # CL-0deu.2: real halt schema, explicitly resumed (entries allowed).
     install_trading_halt(eng)
+    # CL-7kuu: the policy flags select on recorded research status.
+    install_research_status(eng)
     return eng
 
 
@@ -106,6 +113,7 @@ def _seed(
     notes="[niche 3hop asym0.6] torque | survived red-team; top risk: x",
     pref="~5% OTM, 4 weeks",
     time_stop=None,
+    research="eligible",
     urgency=None,
 ):
     with engine.begin() as conn:
@@ -134,6 +142,13 @@ def _seed(
                 "g": gid,
             },
         )
+    # CL-7kuu: a niche idea's eligibility is its write-once status row, not its
+    # notes. Default = a validated row (what the niche ledger path writes);
+    # None = no row; or an explicit ResearchStatus.
+    if research == "eligible":
+        record_status(engine, idea_id)
+    elif research is not None:
+        record_status(engine, idea_id, research)
 
 
 def _price(_t: str) -> float:
@@ -148,8 +163,15 @@ def _price(_t: str) -> float:
 def test_filter_requires_niche_red_team_and_confidence(engine):
     _seed(engine, "ok")  # niche + red-team + conf 0.6
     _seed(engine, "lowconf", conf=0.4)
-    _seed(engine, "notniche", notes="plain idea | survived red-team")
-    _seed(engine, "nocritic", notes="[niche 3hop] torque")  # no red-team
+    # CL-7kuu: eligibility is the status row. The note text is kept from the
+    # legacy fixtures but no longer decides anything.
+    _seed(engine, "notniche", notes="plain idea | survived red-team", research=None)
+    _seed(
+        engine,
+        "nocritic",
+        notes="[niche 3hop] torque",
+        research=eligible_status(review_status="not_requested", research_eligible=False),
+    )
     _seed(engine, "stock", action="long")  # not an option
     got = {i["idea_id"] for i in fetch_executable_ideas(engine, OptionsExecConfig())}
     assert got == {"ok"}
@@ -711,3 +733,217 @@ def test_client_without_quote_support_still_buys(engine):
             ).scalar_one()
             is None
         )
+
+
+# --------------------------------------------------------------------------- #
+# CL-7kuu: eligibility is a write-once research-status row, not note text
+# --------------------------------------------------------------------------- #
+
+_FLAGS_ON = OptionsExecConfig(require_niche=True, require_red_team=True)
+_FLAGS_OFF = OptionsExecConfig(require_niche=False, require_red_team=False)
+
+
+def _prefix_fetch(engine, cfg):
+    """Independent oracle: the candidate query verbatim as of 5d44d14
+    (pre-CL-7kuu), including its note-substring policy filter."""
+    where = [
+        "ti.action IN ('buy_calls','buy_puts')",
+        "ti.confidence >= :min_conf",
+        "ti.status = 'pending'",
+        "NOT EXISTS (SELECT 1 FROM alpaca_option_orders a WHERE a.idea_id = ti.idea_id)",
+    ]
+    if cfg.require_niche:
+        where.append("lower(ti.notes) LIKE '%niche%'")
+    if cfg.require_red_team:
+        where.append("lower(ti.notes) LIKE '%red-team%'")
+    sql = (
+        "SELECT ti.idea_id, ti.ticker, ti.action, ti.confidence, ti.preferred_instrument, "
+        "ti.notes, ti.created_at, ti.time_stop_days, g.assessment AS event_assessment "
+        "FROM trade_ideas ti LEFT JOIN geo_events g ON g.id = ti.geo_event_id WHERE "
+        + " AND ".join(where)
+        + " ORDER BY ti.confidence DESC, ti.created_at DESC"
+    )
+    with engine.connect() as conn:
+        rows = [dict(r._mapping) for r in conn.execute(text(sql), {"min_conf": cfg.min_confidence})]
+    for row in rows:
+        row.pop("event_assessment", None)
+    return rows
+
+
+def _seed_mixed(engine):
+    """A population that separates every policy dimension."""
+    _seed(engine, "valid_words", conf=0.9)  # status row + legacy words
+    _seed(engine, "words_no_row", conf=0.85, research=None)
+    _seed(engine, "valid_plain", conf=0.8, notes="plain thesis, no markers")
+    _seed(
+        engine,
+        "row_unreviewed",
+        conf=0.75,
+        research=eligible_status(review_status="review_unavailable", research_eligible=False),
+    )
+    _seed(
+        engine,
+        "row_thin",
+        conf=0.7,
+        research=eligible_status(liquidity_status="unknown", research_eligible=False),
+    )
+    _seed(engine, "plain_no_row", conf=0.7, notes="impact idea", research=None)
+    _seed(engine, "lowconf", conf=0.3)
+    _seed(engine, "not_option", action="long", conf=0.95)
+    _seed(engine, "expired", conf=0.65)
+    _seed(engine, "ordered", conf=0.6)
+    _seed(engine, "null_notes", conf=0.6, notes=None, research=None)
+    with engine.begin() as conn:
+        conn.execute(text("UPDATE trade_ideas SET status='expired' WHERE idea_id='expired'"))
+        conn.execute(
+            text(
+                "INSERT INTO alpaca_option_orders (idea_id, status, submitted_at) "
+                "VALUES ('ordered', 'submitted', '2026-07-21')"
+            )
+        )
+
+
+def test_notes_words_without_status_row_are_not_executable(engine):
+    _seed(engine, "forged", research=None)  # default notes carry both words
+    assert fetch_executable_ideas(engine, _FLAGS_ON) == []
+    assert fetch_executable_ideas(engine, OptionsExecConfig(require_red_team=False)) == []
+    assert fetch_executable_ideas(engine, OptionsExecConfig(require_niche=False)) == []
+    # Non-vacuity: the pre-fix filter WOULD have bought it.
+    assert [r["idea_id"] for r in _prefix_fetch(engine, _FLAGS_ON)] == ["forged"]
+
+
+def test_validated_status_without_words_is_executable(engine):
+    _seed(engine, "validated", notes="ordinary thesis text")
+    got = [r["idea_id"] for r in fetch_executable_ideas(engine, _FLAGS_ON)]
+    assert got == ["validated"]
+    assert _prefix_fetch(engine, _FLAGS_ON) == []  # the old filter missed it
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"discovery_status": "unavailable"},
+        {"evidence_status": "insufficient_evidence"},
+        {"review_status": "contradicted"},
+        {"liquidity_status": "insufficient"},
+    ],
+)
+def test_ineligible_status_row_is_not_executable(engine, override):
+    _seed(engine, "bad", research=eligible_status(research_eligible=False, **override))
+    assert fetch_executable_ideas(engine, _FLAGS_ON) == []
+
+
+def test_red_team_flag_alone_requires_supported_review(engine):
+    _seed(engine, "ok")
+    _seed(
+        engine,
+        "unreviewed",
+        research=eligible_status(review_status="not_requested", research_eligible=False),
+    )
+    cfg = OptionsExecConfig(require_niche=False, require_red_team=True)
+    assert {r["idea_id"] for r in fetch_executable_ideas(engine, cfg)} == {"ok"}
+
+
+def test_flags_off_candidate_set_identical_to_pre_fix(engine):
+    """Differential: with both policy flags off (today's live .env), the
+    candidate list — membership AND order — equals the pre-fix query's."""
+    _seed_mixed(engine)
+    for legacy in (False, True):
+        cfg = OptionsExecConfig(
+            require_niche=False, require_red_team=False, legacy_note_match=legacy
+        )
+        got = fetch_executable_ideas(engine, cfg)
+        want = _prefix_fetch(engine, cfg)
+        assert got == want
+        assert {r["idea_id"] for r in got} == {
+            "valid_words",
+            "words_no_row",
+            "valid_plain",
+            "row_unreviewed",
+            "row_thin",
+            "plain_no_row",
+            "null_notes",
+        }
+
+
+def test_flags_off_issue_byte_identical_sql(engine):
+    from sqlalchemy import event
+
+    seen: list[str] = []
+
+    def _capture(_conn, _cursor, statement, *_a):
+        seen.append(statement)
+
+    event.listen(engine, "before_cursor_execute", _capture)
+    try:
+        fetch_executable_ideas(engine, _FLAGS_OFF)
+        new_sql = seen[-1]
+        _prefix_fetch(engine, _FLAGS_OFF)
+        old_sql = seen[-1]
+    finally:
+        event.remove(engine, "before_cursor_execute", _capture)
+    assert new_sql == old_sql
+
+
+def test_flags_on_selects_only_validated_rows(engine):
+    _seed_mixed(engine)
+    got = [r["idea_id"] for r in fetch_executable_ideas(engine, _FLAGS_ON)]
+    assert got == ["valid_words", "valid_plain"]
+
+
+def test_legacy_shim_matches_pre_fix_only_when_enabled(engine, caplog):
+    _seed_mixed(engine)
+    shim = OptionsExecConfig(legacy_note_match=True)
+    with caplog.at_level("WARNING"):
+        got = fetch_executable_ideas(engine, shim)
+    assert got == _prefix_fetch(engine, shim)
+    # Legacy semantics: every idea whose notes carry both words, status or not.
+    assert {r["idea_id"] for r in got} == {
+        "valid_words",
+        "words_no_row",
+        "row_unreviewed",
+        "row_thin",
+    }
+    assert "ALPACA_LEGACY_NOTE_MATCH" in caplog.text
+    caplog.clear()
+    with caplog.at_level("WARNING"):
+        strict = [r["idea_id"] for r in fetch_executable_ideas(engine, OptionsExecConfig())]
+    assert strict == ["valid_words", "valid_plain"]
+    assert "ALPACA_LEGACY_NOTE_MATCH" not in caplog.text
+
+
+def test_legacy_shim_must_be_a_real_boolean():
+    with pytest.raises(ValueError, match="legacy_note_match"):
+        OptionsExecConfig(legacy_note_match="1")  # type: ignore[arg-type]
+
+
+def test_executor_cycle_never_writes_research_status(engine):
+    """The executor only READS idea_research_status: no statement it issues
+    during a full buying cycle writes that table, and the row is unchanged."""
+    from sqlalchemy import event
+
+    _seed(engine, "ok")
+    with engine.connect() as c:
+        before = [tuple(r) for r in c.execute(text("SELECT * FROM idea_research_status"))]
+    statements: list[str] = []
+
+    def _capture(_conn, _cursor, statement, *_a):
+        statements.append(statement)
+
+    event.listen(engine, "before_cursor_execute", _capture)
+    try:
+        client = _FakeClient(ask=2.0)
+        counts = execute_pending_options(engine, client, _price, now=NOW, technicals_fn=_no_tech)
+    finally:
+        event.remove(engine, "before_cursor_execute", _capture)
+    assert counts["submitted"] == 1
+    touching = [s for s in statements if "idea_research_status" in s]
+    assert touching, "the eligibility query must consult the status table"
+    for stmt in touching:
+        flat = " ".join(stmt.split()).upper()
+        assert flat.startswith("SELECT"), stmt
+        for verb in ("INSERT ", "UPDATE ", "DELETE ", "REPLACE "):
+            assert verb not in flat, stmt
+    with engine.connect() as c:
+        after = [tuple(r) for r in c.execute(text("SELECT * FROM idea_research_status"))]
+    assert after == before

@@ -3,8 +3,10 @@
 Reads the desk's surfaced advisory options ideas and places PAPER option orders
 on Alpaca, per the operator's chosen policy:
 
-  * only NICHE ideas that SURVIVED the red-team critic (notes carry the
-    "[niche …]" marker and a "red-team" note), confidence >= min_confidence;
+  * only NICHE ideas that SURVIVED the red-team critic — a recorded,
+    research-eligible ``idea_research_status`` row with a ``supported``
+    review (CL-7kuu; note text is never consulted unless the explicit
+    ALPACA_LEGACY_NOTE_MATCH shim is on), confidence >= min_confidence;
   * 1 contract per idea, but SKIP if the estimated premium (ask*100*qty)
     exceeds ``max_premium_usd``;
   * a hard daily cap on new option orders.
@@ -29,6 +31,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import text
 
 from src.events.prices import parse_ts
+from src.events.research_status import eligibility_clauses
 from src.execution.alpaca_exposure import (
     ExposureUnavailableError,
     option_underlying,
@@ -140,6 +143,12 @@ class OptionsExecConfig:
     max_entry_spread_pct: float = 0.35
     require_niche: bool = True
     require_red_team: bool = True
+    #: CL-7kuu transition shim (ALPACA_LEGACY_NOTE_MATCH=1, default OFF). With
+    #: the require_* flags on, eligibility is a recorded research-eligible
+    #: ``idea_research_status`` row, never note text. Setting this restores the
+    #: old ``notes LIKE '%niche%' / '%red-team%'`` filter and logs a WARNING
+    #: every cycle. It has no effect when both require_* flags are off.
+    legacy_note_match: bool = False
     selection: ContractSelectionConfig = ContractSelectionConfig()
     #: No entries in the first N minutes of the regular session — option
     #: spreads are widest right after the 9:30 ET open (day-one lesson:
@@ -228,10 +237,16 @@ def fetch_executable_ideas(
         "ti.status = 'pending'",
         "NOT EXISTS (SELECT 1 FROM alpaca_option_orders a WHERE a.idea_id = ti.idea_id)",
     ]
-    if cfg.require_niche:
-        where.append("lower(ti.notes) LIKE '%niche%'")
-    if cfg.require_red_team:
-        where.append("lower(ti.notes) LIKE '%red-team%'")
+    # CL-7kuu: policy flags select on the write-once research-status row
+    # (read-only here), not note substrings. Both flags off adds nothing.
+    where += eligibility_clauses(
+        require_niche=cfg.require_niche,
+        require_red_team=cfg.require_red_team,
+        legacy_note_match=cfg.legacy_note_match,
+        notes_column="ti.notes",
+        idea_alias="ti",
+        book="alpaca options",
+    )
     # CL-u59z: where contains only literals above; min_conf is a bind parameter.
     sql = (
         "SELECT ti.idea_id, ti.ticker, ti.action, ti.confidence, ti.preferred_instrument, "  # nosec B608

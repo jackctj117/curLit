@@ -41,6 +41,7 @@ from src.events.niche_scoring import (
 )
 from src.events.playbooks import Playbook
 from src.events.research_evidence import EVIDENCE_INSTRUCTIONS, DiscoveryOutcome
+from src.events.research_status import ResearchStatus, research_key, status_from_niche_idea
 from src.monitoring.logging_setup import LogContext
 from src.research.llm import Message
 from src.research.llm.client import LLMClient
@@ -629,12 +630,20 @@ class NicheAgent:
         assessment: dict[str, Any],
         niche_ideas: list[NicheIdea],
         max_total: int = 8,
+        research_sink: dict[tuple[str, str], ResearchStatus] | None = None,
+        invocation_id: str | None = None,
     ) -> int:
         """Merge surviving niche ideas into an assessment's
         ``trade_ideas`` (tagged niche=true), deduped on (ticker, action)
         against the ideas already there — an obvious idea already present
         is not duplicated by a niche echo of it. Returns how many were
-        added. Mutates ``assessment`` in place."""
+        added. Mutates ``assessment`` in place.
+
+        CL-7kuu: when ``research_sink`` is given, every idea actually added
+        also gets a write-once :class:`ResearchStatus` snapshot keyed by the
+        ledger's (ticker, action) normalization. The idea ledger persists it
+        with the trade_ideas row; the executors select on it. Only this
+        in-process path creates one — nothing parsed from assessment JSON can."""
         existing = assessment.setdefault("trade_ideas", [])
         if not isinstance(existing, list):
             existing = []
@@ -662,4 +671,8 @@ class NicheAgent:
             existing.append(idea.to_trade_idea())
             seen.add(key)
             added += 1
+            if research_sink is not None:
+                research_sink[research_key(idea.ticker, idea.action)] = status_from_niche_idea(
+                    idea, invocation_id
+                )
         return added

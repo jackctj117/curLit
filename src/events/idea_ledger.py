@@ -38,6 +38,7 @@ from sqlalchemy import bindparam, text
 
 from src.events.instrument_selector import decision_for_idea
 from src.events.prices import parse_ts
+from src.events.research_status import ResearchStatus, insert_research_status, research_key
 from src.events.trade_card import build_trade_card
 from src.events.trade_idea import TradeIdea
 
@@ -200,29 +201,62 @@ def persist_ideas(
     assessment: Mapping[str, Any],
     prices: Mapping[str, Mapping[str, Any]] | None = None,
     now: datetime | None = None,
+    research_status: Mapping[tuple[str, str], ResearchStatus] | None = None,
 ) -> int:
     """Upsert one assessment's ``trade_ideas`` rows; returns how many
     rows were actually INSERTED (conflicts dedup silently to 0-cost
     no-ops). ``prices`` (from :func:`src.events.prices.get_prices`)
     supplies ``price_at_signal`` where available. DB errors propagate —
-    the pipeline wraps this fail-soft, tests want the loud version."""
+    the pipeline wraps this fail-soft, tests want the loud version.
+
+    CL-7kuu: ``research_status`` is the niche merge's in-process snapshot
+    map (:meth:`NicheAgent.merge_into_assessment` ``research_sink``). A
+    status row is written in the SAME transaction as its idea, and only
+    when (a) this call freshly inserted the idea, (b) the idea is a niche
+    idea, and (c) the merge supplied a snapshot for its (ticker, action).
+    Nothing in the assessment dict itself (``niche``/``research`` keys,
+    notes text) can create a status row."""
     ideas = assessment.get("trade_ideas")
     if not isinstance(ideas, list) or not ideas:
         return 0
     now = now or datetime.now(UTC)
-    params = [
-        p
-        for idea in ideas
-        if isinstance(idea, dict)
-        and (p := _row_params(geo_event_id, idea, prices, now)) is not None
-    ]
-    if not params:
+    rows: list[tuple[dict[str, Any], bool]] = []
+    for idea in ideas:
+        if not isinstance(idea, dict):
+            continue
+        p = _row_params(geo_event_id, idea, prices, now)
+        if p is not None:
+            rows.append((p, TradeIdea.from_dict(idea).niche))
+    if not rows:
         return 0
+    statuses = research_status or {}
     inserted = 0
+    recorded = 0
     with engine.begin() as conn:
-        for p in params:  # per-row so rowcount attributes cleanly
+        for p, is_niche in rows:  # per-row so rowcount attributes cleanly
             result = conn.execute(_INSERT_SQL, p)
-            inserted += max(0, result.rowcount or 0)
+            fresh = max(0, result.rowcount or 0)
+            inserted += fresh
+            status = statuses.get(research_key(p["ticker"], p["action"]))
+            if status is None:
+                continue
+            if not (fresh and is_niche):
+                logger.warning(
+                    "idea ledger: research status for %s not recorded (fresh=%s niche=%s); "
+                    "an existing or non-niche idea never gains execution status",
+                    p["idea_id"],
+                    bool(fresh),
+                    is_niche,
+                )
+                continue
+            if insert_research_status(conn, p["idea_id"], status, now=now):
+                recorded += 1
+    if recorded:
+        logger.info(
+            "idea ledger: recorded research status for %d niche idea(s) of event %s",
+            recorded,
+            geo_event_id,
+        )
     return inserted
 
 

@@ -1095,9 +1095,16 @@ class TestPipelineIdeaWiring:
             return {"TSM": {"price": 172.4, "change_pct": -1.8}}
 
         def fake_persist(
-            engine: Any, eid: int, assessment: Any, prices: Any = None, now: Any = None
+            engine: Any,
+            eid: int,
+            assessment: Any,
+            prices: Any = None,
+            now: Any = None,
+            research_status: Any = None,
         ) -> int:
             calls["persist"].append((eid, prices))
+            # CL-7kuu: a non-niche cycle hands the ledger no research status.
+            calls.setdefault("research_status", []).append(research_status)
             return 1
 
         def fake_expire(engine: Any, now: Any = None) -> int:
@@ -1136,6 +1143,7 @@ class TestPipelineIdeaWiring:
         assert calls["persist"] == [
             (7, {"TSM": {"price": 172.4, "change_pct": -1.8}}),
         ]
+        assert calls["research_status"] == [{}]
         assert calls["expire"] == 1  # stale sweep runs every cycle
         assert calls["sent"][0]["prices"] == {
             "TSM": {"price": 172.4, "change_pct": -1.8},

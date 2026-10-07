@@ -38,6 +38,7 @@ from src.events.playbooks import (
     all_tradable_instruments,
     load_playbooks,
 )
+from src.events.research_status import ResearchStatus
 from src.events.trade_idea import BULLISH_ACTIONS, TradeIdea
 from src.events.triage import EventTriage
 from src.events.x_ingest import source_credibility_note
@@ -291,6 +292,9 @@ class AssessmentResult:
     theme: str | None
     status: str  # ASSESSED | DISMISSED
     assessment: dict[str, Any]
+    #: CL-7kuu: (ticker, action) -> write-once ResearchStatus snapshots the
+    #: niche merge attached to ideas it added; the idea ledger persists them.
+    niche_research_status: dict[tuple[str, str], ResearchStatus] = field(default_factory=dict)
 
     def summary_line(self) -> str:
         if self.status != "ASSESSED":

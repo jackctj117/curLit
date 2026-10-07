@@ -54,6 +54,7 @@ from src.execution.alpaca_options_executor import (
 )
 from src.execution.alpaca_options_exit import manage_option_exits
 from src.strategies.event_driven import EventDrivenConfig, EventDrivenStrategy
+from tests.unit._research_status_fixture import install_research_status, record_status
 from tests.unit._trading_halt_fixture import install_trading_halt
 
 # --------------------------------------------------------------------------- #
@@ -560,6 +561,8 @@ def options_engine(tmp_path: Path) -> Engine:
         _apply_migration(engine, migration)
     # CL-0deu.2: real halt schema, explicitly resumed (entries allowed).
     install_trading_halt(engine)
+    # CL-7kuu: real research-status schema (policy flags select on it).
+    install_research_status(engine)
     return engine
 
 
@@ -572,7 +575,9 @@ def _seed_event_and_idea(
     time_stop_days: int = 21,
 ) -> int:
     """A TRADED geo_event plus the pending niche/red-team buy_calls idea it
-    produced — the shape the executor's policy filter demands."""
+    produced — the shape the executor's policy filter demands: since CL-7kuu
+    that is the write-once research-status row the niche ledger path records
+    (the legacy note markers are kept but no longer decide eligibility)."""
     with engine.begin() as conn:
         conn.execute(
             text(
@@ -606,6 +611,7 @@ def _seed_event_and_idea(
                 ),
             },
         )
+    record_status(engine, idea_id)
     return event_id
 
 

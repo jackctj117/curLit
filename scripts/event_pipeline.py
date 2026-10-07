@@ -298,7 +298,15 @@ def _niche_step(engine: object, results: list, min_urgency: int) -> int:
             persist_niche_audit(engine, invocation_id, r.event_id, snapshot, report_data)
             enriched = copy.deepcopy(snapshot["assessment"])
             enriched["niche_research"] = {**report_data, "invocation_id": invocation_id}
-            added = agent.merge_into_assessment(enriched, report.eligible)
+            # CL-7kuu: in-process research-status snapshots for the ideas the
+            # merge actually added; the ledger writes them with the idea rows.
+            research_sink: dict[Any, Any] = {}
+            added = agent.merge_into_assessment(
+                enriched,
+                report.eligible,
+                research_sink=research_sink,
+                invocation_id=invocation_id,
+            )
             # Persist even empty/failed outcomes; absence is not approval.
             with engine.begin() as conn:  # type: ignore[attr-defined]
                 written = conn.execute(
@@ -320,6 +328,7 @@ def _niche_step(engine: object, results: list, min_urgency: int) -> int:
                     )
                     continue
             r.assessment = enriched  # Only committed ideas may reach the later ledger step.
+            r.niche_research_status = research_sink
             surfaced += added
         except Exception:
             logger.exception(
@@ -375,6 +384,7 @@ def _enrich_and_persist(engine: object, results: list) -> tuple[dict, dict]:
                 r.event_id,
                 r.assessment,
                 prices=prices,
+                research_status=getattr(r, "niche_research_status", None),
             )
         expired = expire_stale(engine)
         logger.info(
