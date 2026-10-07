@@ -819,20 +819,27 @@ class HopGraphTraversal:
         if self.memory is not None:
             # Vetoes load first and are never cleared by a later failure: a
             # sourced-memory failure degrades to "no reuse", not "no vetoes".
+            # Without vetoes, cached edges cannot be checked, so no reuse either.
+            vetoes_loaded = False
             try:
                 forbidden = set(self.memory.load_contradicted(as_of))
+                vetoes_loaded = True
             except Exception as exc:
-                logger.warning("hop-graph contradiction memory unavailable: %s", type(exc).__name__)
-            try:
-                remembered = [
-                    e
-                    for e in self.memory.load_sourced(theme, as_of)
-                    if e.is_sourced(as_of) and e.key not in forbidden
-                ]
-            except Exception as exc:
-                # Memory is an optimization; an outage must not invent edges.
-                logger.warning("hop-graph sourced memory unavailable: %s", type(exc).__name__)
-                remembered = []
+                logger.warning(
+                    "hop-graph contradiction memory unavailable; no edge reuse: %s",
+                    type(exc).__name__,
+                )
+            if vetoes_loaded:
+                try:
+                    remembered = [
+                        e
+                        for e in self.memory.load_sourced(theme, as_of)
+                        if e.is_sourced(as_of) and e.key not in forbidden
+                    ]
+                except Exception as exc:
+                    # Memory is an optimization; an outage must not invent edges.
+                    logger.warning("hop-graph sourced memory unavailable: %s", type(exc).__name__)
+                    remembered = []
         logger.info(
             "hop-graph: event=%s theme=%s seeds=%d remembered=%d forbidden=%d",
             event_row.get("id"),
