@@ -661,6 +661,103 @@ class TestReviewIntegR3:
         assert st.load(ACC) == 70
 
 
+class _PlacingBroker:
+    """OMS-side broker: place_order can run a callback (the streamed copy of
+    the fill arriving first) before returning the synchronous FILLED response
+    whose order_id is the fill transaction id."""
+
+    def __init__(self, fill_txn: str) -> None:
+        self.fill_txn = fill_txn
+        self.before_return: Any = None
+
+    def get_positions(self) -> list[Any]:
+        return []
+
+    def place_order(self, order: Any) -> Any:
+        from src.execution.broker import OrderStatus
+
+        if self.before_return is not None:
+            self.before_return(order)
+        order.status = OrderStatus.FILLED
+        order.order_id = self.fill_txn
+        order.filled_quantity = order.quantity
+        return order
+
+
+class TestReviewIntegR4:
+    """Integration review r4: a fill deferred on the stream and then journaled
+    by its synchronous placement response must not block the checkpoint."""
+
+    def _wire(self):  # noqa: ANN202
+        from src.execution.oms import OrderIntent
+
+        intent = OrderIntent(
+            strategy_id="s", symbol="EURUSD", target_position=1000.0, intent_id="intent-101"
+        )
+        acct = _Account([_txn(101, client="intent-101"), _txn(102)])
+        acct.visible_upto = 100
+        source = _broker(acct)
+        journal = _Journal()
+        placing = _PlacingBroker("101")
+        oms = OrderManager(placing, journal=journal)  # type: ignore[arg-type]
+        store = _CheckedStore(journal, acct)
+        InMemoryTransactionCheckpointStore.advance(store, ACC, 100)
+        store.floor = 100
+        cu = FillStreamCatchUp(source, oms, store, ACC)
+        assert cu.catch_up() == 0 and not cu.frozen
+        return intent, acct, source, journal, placing, oms, store, cu
+
+    def test_stream_copy_deferred_then_sync_response_journals_it(self):
+        intent, acct, source, journal, placing, oms, store, cu = self._wire()
+        real = journal.query_by_intent
+        journal.query_by_intent = _broken  # lookups fail; appends still work
+
+        def stream_first(_order):  # noqa: ANN001, ANN202
+            cu.handle_live(source._normalize_fill(_txn(101, client="intent-101")))
+            assert [f["transaction_id"] for f in oms.deferred_fills()] == ["101"]
+
+        placing.before_return = stream_first
+        res = oms.submit_intent_result(intent)
+        assert res.order_id == "101"
+        journal.query_by_intent = real
+        assert journal.fill_ids() == ["101"]  # written by the placement response
+        assert oms.deferred_fills() == []  # deferral reconciled
+        acct.visible_upto = 101
+        cu.catch_up()
+        assert store.load(ACC) == 101
+        cu.catch_up()
+        acct.visible_upto = 102
+        cu.catch_up()  # journals 102 and moves past it
+        assert journal.fill_ids() == ["101", "102"]
+        assert journal.fill_ids().count("101") == 1
+        assert oms.deferred_fills() == []
+        assert store.load(ACC) == 102
+        assert cu._rewind_to is None and not cu.frozen
+
+    def test_drain_reconciles_a_deferred_fill_already_seen(self):
+        """(b): if a deferral survives into a drain while the fill is already
+        journaled and remembered, the durable verdict clears it."""
+        intent, acct, source, journal, placing, oms, store, cu = self._wire()
+        oms.on_fill(source._normalize_fill(_txn(101, client="intent-101")))  # journaled
+        with oms._lock:  # a stale deferral left by an earlier path
+            oms._deferred_fills["101"] = (None, source._normalize_fill(_txn(101)))
+        acct.visible_upto = 102
+        cu.catch_up()
+        assert oms.deferred_fills() == []
+        assert store.load(ACC) == 102
+        assert journal.fill_ids() == ["101", "102"]
+
+    def test_sync_response_first_then_stream_copy_is_one_row_no_deferral(self):
+        intent, acct, source, journal, placing, oms, store, cu = self._wire()
+        res = oms.submit_intent_result(intent)  # sync FILLED, journaled
+        assert res.order_id == "101"
+        journal.query_by_intent = _broken  # even with lookups failing...
+        cu.handle_live(source._normalize_fill(_txn(101, client="intent-101")))
+        assert oms.deferred_fills() == []  # ...the remembered fill is not deferred
+        assert journal.fill_ids() == ["101"]
+        assert cu._rewind_to is None
+
+
 class TestSqlCheckpointStore:
     def test_migration_028_and_monotonic_upsert_on_sqlite(self):
         eng = create_engine("sqlite://")
