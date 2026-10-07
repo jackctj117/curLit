@@ -472,6 +472,12 @@ class KillSwitchManager:
         self._attempt_lock = threading.RLock()
         # action -> durable episode id holding its FIXED targets (CL-pksi).
         self._episodes: dict[str, str] = {}
+        # Restart only: legs whose emergency close is VERIFIED filled but the
+        # position feed has not yet shown it. Fenced for EVERY writer (the
+        # cold-start reconciler included) until a snapshot agrees with the
+        # target, so a lagging book cannot trigger a second close.
+        # canonical symbol -> (route symbol, target).
+        self._confirm_pending: dict[str, tuple[str, float]] = {}
         # True while startup recovery could not read the attempt store: every
         # OMS submission stays blocked until a retry succeeds.
         self._recovery_failed = False
@@ -911,6 +917,7 @@ class KillSwitchManager:
                 strategy_id,
             )
             return None
+        self._confirm_positions(net_qty)
         current = self._derisk_targets.get(strategy_id, {})
         targets = dict(current)
         for key in sorted(net_qty):
@@ -1079,6 +1086,7 @@ class KillSwitchManager:
                 "count": len({a.symbol for a in pending}),
                 "symbols": sorted({a.symbol for a in pending}),
                 "durable": bool(getattr(self.attempt_store, "durable", False)),
+                "awaiting_position_confirmation": sorted(self._confirm_pending),
                 "attempts": [
                     {
                         "symbol": a.symbol,
@@ -1106,8 +1114,8 @@ class KillSwitchManager:
     def _sync_fence(self, key: str, route_symbol: str) -> None:
         """Mirror this symbol's unresolved attempts onto the OMS fence."""
         pending = self._unresolved_for(key)
+        fence = getattr(self.oms, "fence_symbol", None)
         if pending:
-            fence = getattr(self.oms, "fence_symbol", None)
             if callable(fence):
                 fence(
                     route_symbol,
@@ -1116,10 +1124,51 @@ class KillSwitchManager:
                 )
             self._note_unresolved_halt()
             return
+        if key in self._confirm_pending:
+            if callable(fence):
+                fence(
+                    route_symbol,
+                    "verified emergency fill not yet visible in the position feed",
+                )
+            return
         release = getattr(self.oms, "release_symbol_fence", None)
         if callable(release):
             release(route_symbol)
         logger.info("no unresolved emergency order on %s — OMS fence released", key)
+
+    def _confirm_positions(self, net_qty: dict[str, float]) -> None:
+        """Release restart confirmation fences whose leg the position feed now
+        shows at (or beyond, same side) its target. Only for legs whose fill
+        is already VERIFIED by broker evidence — this never resolves an order.
+        """
+        with self._attempt_lock:
+            for key, (route, target) in list(self._confirm_pending.items()):
+                qty = net_qty.get(key, 0.0)
+                if abs(qty - target) < 1.0 or (abs(qty) < abs(target) and qty * target >= 0):
+                    logger.warning(
+                        "position feed confirms verified emergency fill on %s (%.4f, target "
+                        "%.4f) — confirmation fence released",
+                        key,
+                        qty,
+                        target,
+                    )
+                    del self._confirm_pending[key]
+                    self._sync_fence(key, route)
+
+    def _confirm_from_broker(self) -> None:
+        if not self._confirm_pending:
+            return
+        try:
+            positions = self.broker.get_positions()
+            net: dict[str, float] = {}
+            for pos in positions:
+                net[canonical_symbol(pos.symbol)] = net.get(
+                    canonical_symbol(pos.symbol), 0.0
+                ) + float(pos.quantity)
+        except Exception:
+            logger.warning("position confirmation read failed — fences kept", exc_info=True)
+            return
+        self._confirm_positions(net)
 
     def _begin_attempt(
         self, intent: OrderIntent, key: str, symbol: str, qty: float, target: float
@@ -1336,6 +1385,7 @@ class KillSwitchManager:
             evidence = self._lookup_evidence(attempt, by_client)
             if evidence is not None:
                 self.resolve_derisk(attempt.symbol, evidence)
+        self._confirm_from_broker()
         with self._attempt_lock:
             return sum(1 for a in self._attempts.values() if a.unresolved)
 
@@ -1392,6 +1442,7 @@ class KillSwitchManager:
             fill_transaction_id=order.fill_transaction_id,
             fill_qty=order.filled_quantity if order.fill_transaction_id is not None else None,
             filled_quantity=order.filled_quantity,
+            order_qty=order.quantity if order.quantity > 0 else None,
         )
 
     def recover_emergency_attempts(self) -> list[EmergencyAttempt]:
@@ -1471,6 +1522,12 @@ class KillSwitchManager:
                     )
                 else:
                     self._derisk_results.pop(leg, None)
+                if attempt.status is AttemptStatus.FILLED:
+                    self._confirm_pending[attempt.symbol] = (attempt.route_symbol, attempt.target)
+                else:
+                    self._confirm_pending.pop(attempt.symbol, None)
+            for key, (route, _target) in self._confirm_pending.items():
+                self._sync_fence(key, route)
         if self._recovery_failed:
             # Only now — every recovered fence is installed — may writers run.
             logger.warning("emergency-attempt recovery succeeded after earlier failure")
@@ -1479,6 +1536,7 @@ class KillSwitchManager:
             if callable(unblock):
                 unblock()
         remaining = self.refresh_unresolved_derisk()
+        self._confirm_from_broker()
         logger.warning(
             "startup emergency recovery: %d loaded, %d still unresolved", len(loaded), remaining
         )
