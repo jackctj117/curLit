@@ -60,7 +60,7 @@ def test_scanners_keep_errors_and_findings_blocking(security_workflow: dict[str,
     bandit_steps = jobs["bandit"]["steps"]
     commands = "\n".join(step.get("run", "") for step in bandit_steps)
     assert "-r src/ -ll -f json" in commands
-    assert '--ignore-nosec' not in commands  # Narrow reviewed nosec comments remain possible.
+    assert "--ignore-nosec" not in commands  # Narrow reviewed nosec comments remain possible.
     assert 'sys.exit(bool(report["errors"]))' in commands
     assert bandit_steps[-1]["if"] == "always()"
     audit = "\n".join(step.get("run", "") for step in jobs["dependencies"]["steps"])
@@ -103,7 +103,7 @@ def test_secret_exception_cannot_allow_other_values_paths_or_rules() -> None:
     assert allow["regexes"] == ["^PLACEHOLDER_ECB_Q3_YES$"]
     assert "commits" not in allow
     assert "stopwords" not in allow
-    pattern, = allow["paths"]
+    (pattern,) = allow["paths"]
     assert re.search(pattern, "configs/polymarket_markets.yaml")
     assert not re.search(pattern, "configs/credentials.yaml")
     assert not re.search(pattern, "configs/polymarket_markets.yaml.bak")
@@ -115,15 +115,19 @@ def test_secret_exception_cannot_allow_other_values_paths_or_rules() -> None:
     ]
     assert "commits" not in comment_allow
     assert "stopwords" not in comment_allow
-    comment_pattern, = comment_allow["paths"]
+    (comment_pattern,) = comment_allow["paths"]
     assert re.search(comment_pattern, "src/research/llm/claude_code.py")
     assert not re.search(comment_pattern, "src/research/llm/claude_code.py.bak")
     assert not re.search(comment_pattern, "tests/research/llm/claude_code.py")
     assert not re.search(comment_pattern, "src/research/llm/client.py")
-    line_regex, = comment_allow["regexes"]
-    assert re.search(line_regex, "#: passwords, Telegram/Moonshot tokens, WEB_API_SECRET, all loaded from")
+    (line_regex,) = comment_allow["regexes"]
+    assert re.search(
+        line_regex, "#: passwords, Telegram/Moonshot tokens, WEB_API_SECRET, all loaded from"
+    )
     assert not re.search(line_regex, "WEB_API_SECRET=abc123")
-    assert not re.search(line_regex, "#: passwords, Telegram/Moonshot tokens, WEB_API_SECRET, all loaded from .env")
+    assert not re.search(
+        line_regex, "#: passwords, Telegram/Moonshot tokens, WEB_API_SECRET, all loaded from .env"
+    )
 
 
 def test_private_root_exclusion_preserves_all_third_party_audit_inputs(
@@ -140,7 +144,9 @@ def test_private_root_exclusion_preserves_all_third_party_audit_inputs(
 
 @pytest.mark.parametrize("has_parse_error", [False, True])
 def test_actual_summary_rejects_incomplete_bandit_scans(
-    security_workflow: dict[str, Any], tmp_path: Path, has_parse_error: bool,
+    security_workflow: dict[str, Any],
+    tmp_path: Path,
+    has_parse_error: bool,
 ) -> None:
     """Execute the shipped report check against independent complete/partial reports."""
     report = {
