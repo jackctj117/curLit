@@ -39,7 +39,8 @@ EDGE_TTL = timedelta(days=MAX_SOURCE_AGE_DAYS)
 
 _SELECT = """
 SELECT src_id, src_kind, src_ticker, src_label, dst_id, dst_kind, dst_ticker, dst_label,
-       relation, status, claim, source_hash, passage, passage_locator, source_record
+       relation, status, claim, source_hash, passage, passage_locator, source_record,
+       evidence_bundle
 FROM niche_edges
 WHERE status = :status AND as_of <= :as_of AND expires_at > :as_of
 """
@@ -48,16 +49,17 @@ _UPSERT = """
 INSERT INTO niche_edges (
     src_id, src_kind, src_ticker, src_label, dst_id, dst_kind, dst_ticker, dst_label,
     relation, status, claim, source_hash, passage, passage_locator, source_record,
-    event_theme, as_of, expires_at, recorded_at
+    evidence_bundle, event_theme, as_of, expires_at, recorded_at
 ) VALUES (
     :src_id, :src_kind, :src_ticker, :src_label, :dst_id, :dst_kind, :dst_ticker, :dst_label,
     :relation, :status, :claim, :source_hash, :passage, :passage_locator, :source_record,
-    :event_theme, :as_of, :expires_at, :recorded_at
+    :evidence_bundle, :event_theme, :as_of, :expires_at, :recorded_at
 )
 ON CONFLICT (src_id, dst_id, relation, event_theme) DO UPDATE SET
     status = excluded.status, claim = excluded.claim, source_hash = excluded.source_hash,
     passage = excluded.passage, passage_locator = excluded.passage_locator,
-    source_record = excluded.source_record, as_of = excluded.as_of,
+    source_record = excluded.source_record, evidence_bundle = excluded.evidence_bundle,
+    as_of = excluded.as_of,
     expires_at = excluded.expires_at, recorded_at = excluded.recorded_at
 """
 
@@ -73,6 +75,46 @@ def _node(node_id: str, kind: str, ticker: str | None, label: str) -> Node:
     if id_kind != kind:
         raise ValueError("niche_edges node id/kind mismatch")
     return Node(kind, key, ticker or None, label)
+
+
+def _claims(raw: object) -> list[RelationshipClaim]:
+    if not isinstance(raw, list):
+        raise ValueError("niche_edges evidence bundle is malformed")
+    keys = ("kind", "role", "statement", "source_id", "passage")
+    out = []
+    for item in raw:
+        if not isinstance(item, dict) or any(not isinstance(item.get(k), str) for k in keys):
+            raise ValueError("niche_edges evidence bundle claim is malformed")
+        out.append(RelationshipClaim(**{k: item[k] for k in keys}))
+    return out
+
+
+def _bundle(
+    raw: str,
+) -> tuple[list[RelationshipClaim], list[RelationshipClaim], list[SourceDocument]]:
+    """Every supporting AND limiting claim with its source (hash-verified)."""
+    data = json.loads(raw)
+    if not isinstance(data, dict) or not isinstance(data.get("sources"), list):
+        raise ValueError("niche_edges evidence bundle is malformed")
+    sources = [SourceDocument.from_dict(d) for d in data["sources"]]  # re-hashes each
+    evidence, contrary = _claims(data.get("evidence")), _claims(data.get("disconfirming"))
+    by_id = {d.source_id: d for d in sources}
+    for claim in evidence + contrary:
+        doc = by_id.get(claim.source_id)
+        if doc is None or not claim.passage or claim.passage not in doc.text:
+            raise ValueError("niche_edges bundle claim does not match a stored source")
+    return evidence, contrary, sources
+
+
+def _bundle_json(edge: Edge) -> str:
+    return json.dumps(
+        {
+            "evidence": [vars(c) for c in edge.evidence],
+            "disconfirming": [vars(c) for c in edge.disconfirming],
+            "sources": [d.to_dict() for d in edge.sources],
+        },
+        sort_keys=True,
+    )
 
 
 class NicheEdgeMemory:
@@ -104,9 +146,11 @@ class NicheEdgeMemory:
                     "hop-graph memory: stale/unusable source for %s; skipped", row["dst_id"]
                 )
                 continue
-            claim = RelationshipClaim(
-                "documented_fact", "relationship", row["claim"], doc.source_id, row["passage"]
-            )
+            evidence, contrary, sources = _bundle(row["evidence_bundle"])
+            if not any(
+                c.source_id == doc.source_id and c.passage == row["passage"] for c in evidence
+            ):
+                raise ValueError("niche_edges primary proof missing from its evidence bundle")
             edges.append(
                 Edge(
                     src=_node(row["src_id"], row["src_kind"], row["src_ticker"], row["src_label"]),
@@ -116,8 +160,9 @@ class NicheEdgeMemory:
                     where_to_look=WhereToLook(doc.symbol, "", ()),
                     hop=1,
                     status="sourced",
-                    evidence=[claim],
-                    sources=[doc],
+                    evidence=evidence,
+                    sources=sources,
+                    disconfirming=contrary,
                     origin="memory",
                     note="remembered",
                 )
@@ -165,6 +210,7 @@ class NicheEdgeMemory:
                     "passage": proof.passage,
                     "passage_locator": doc.locator,
                     "source_record": json.dumps(doc.to_dict(), sort_keys=True),
+                    "evidence_bundle": _bundle_json(edge),
                     "event_theme": theme,
                     "as_of": iso(as_of),
                     "expires_at": iso(as_of + EDGE_TTL),

@@ -94,6 +94,10 @@ def test_shadow_script_runs_end_to_end_and_writes_report(tmp_path: Path) -> None
     assert metrics["hop_depth_eligible"] == {"2": 1}
     assert metrics["traversal_calls"] == 3  # one per hop; hop 3 frontier = ACME
     assert metrics["tool_calls"] > 0 and metrics["entailment_calls"] > 0
+    # Every fake reply reports 10 input / 5 output tokens: traversal + entailment.
+    calls = metrics["traversal_calls"] + metrics["entailment_calls"]
+    assert hop["cost"]["input_tokens"] == 10 * calls
+    assert hop["cost"]["output_tokens"] == 5 * calls
     assert hop["cost"]["usd_cost"] is None  # subscription: unknown, never $0
     assert hop["cost"]["cost_provenance"] == ["subscription_unmetered"]
     eligible = [c for c in hop["candidates"] if c["research"]["eligible"]]

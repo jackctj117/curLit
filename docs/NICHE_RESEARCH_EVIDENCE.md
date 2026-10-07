@@ -355,20 +355,32 @@ candidate therefore carries only claims sourced from its own filings. That
 includes the edge into it when the edge is disclosed there, which is the
 customer-concentration case. Upstream hops sourced from other companies'
 filings remain in the rationale and the path record, where the hop-graph
-verifier enforced them. If the only relationship evidence sits in the near
-node's filing, the unchanged gate marks the candidate
-`insufficient_evidence`. The gate was not relaxed to accept it.
+verifier enforced them. Upstream limiting disclosures (hedges, expiries,
+immaterial shares) are appended to the rationale as `LIMITING DISCLOSURES`,
+so the critic sees them even though they are not candidate claims. If the
+only relationship evidence sits in the near node's filing, the unchanged gate
+marks the candidate `insufficient_evidence`. The gate was not relaxed to
+accept it.
 
 **Memory** (`src/events/hop_graph_memory.py`, migration
 `025_niche_edges.sql`, additive). Sourced and contradicted edges are stored
-with the source hash, exact passage, locator, full source record, theme,
-`as_of` and `expires_at = as_of + 730 days`, the same two-filing-cycle
-policy as documents. Before traversal:
+with the primary source hash, exact passage, locator and source record, plus
+an evidence bundle holding every supporting and limiting claim and its
+source (both endpoints' filings). Each row also has the theme, `as_of` and
+`expires_at = as_of + 730 days`, the same two-filing-cycle policy as
+documents. Before traversal:
 - Non-expired sourced edges for the theme, recorded at or before the cutoff,
-  pre-seed the graph. Each is re-verified against its stored hash and
-  passage and must still be usable at the cutoff.
-- Non-expired contradicted edges from any theme are dropped whenever they
-  are re-proposed, and are listed to the model as `do_not_propose`.
+  pre-seed the graph. Every bundled source is re-hashed and every claim
+  passage re-checked; each edge must still be usable at the cutoff. Reuse
+  respects the per-node edge cap.
+- Non-expired contradicted edges from any theme veto both re-proposals and
+  remembered sourced edges with the same key. They are listed to the model as
+  `do_not_propose`.
+
+Every frontier node is still sent to the traversal model, because directions
+and terminal facts are specific to the event and are never stored. Memory
+therefore saves retrieval and entailment work on known edges, not traversal
+calls.
 
 Unverifiable edges carry no evidence and are not stored. A memory outage or
 corrupt row means "no memory", never evidence. The memory never supplies a

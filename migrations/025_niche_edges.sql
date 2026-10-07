@@ -10,7 +10,10 @@
 -- annual filing cycles as research_evidence.MAX_SOURCE_AGE_DAYS.
 -- source_record is the JSON SourceDocument (TEXT so the sqlite test shim
 -- needs only TIMESTAMPTZ -> TEXT); its SHA-256 identity must equal
--- source_hash, which the loader re-verifies before reuse.
+-- source_hash, which the loader re-verifies before reuse. evidence_bundle is
+-- the JSON of EVERY supporting and limiting claim plus their source records
+-- (both endpoints' filings), each re-hashed on load, so reuse never drops the
+-- candidate's own proof or a disconfirming disclosure.
 CREATE TABLE IF NOT EXISTS niche_edges (
     src_id          TEXT NOT NULL,
     src_kind        TEXT NOT NULL,
@@ -29,6 +32,7 @@ CREATE TABLE IF NOT EXISTS niche_edges (
     passage         TEXT NOT NULL,
     passage_locator TEXT NOT NULL,
     source_record   TEXT NOT NULL,
+    evidence_bundle TEXT NOT NULL,
     event_theme     TEXT NOT NULL,
     as_of           TIMESTAMPTZ NOT NULL,
     expires_at      TIMESTAMPTZ NOT NULL,
