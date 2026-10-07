@@ -883,8 +883,15 @@ class EventBook:
             if prev is None:
                 continue  # one unreadable row poisons the symbol's net
             try:
-                qty = float(p.quantity)
+                raw_qty = p.quantity
+                qty = float(raw_qty)
             except (AttributeError, TypeError, ValueError):
+                net[sym] = None
+                continue
+            if isinstance(raw_qty, bool) or not math.isfinite(qty):
+                # CL-oqos: NaN/inf compares False against every threshold, so
+                # confirm_entries would REJECT a possibly-filled leg after
+                # grace as if the broker were flat. Unknown, not flat.
                 net[sym] = None
                 continue
             net[sym] = prev + qty

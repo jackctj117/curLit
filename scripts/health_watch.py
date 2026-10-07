@@ -63,11 +63,9 @@ def _fleet_status_output() -> str | None:
         return None
 
 
-def _engine_halt_state() -> bool | None:
-    """The engine's OMS halt flag via GET /api/system, or None when the
-    state is UNKNOWN (no secret configured, API unreachable, or OMS not
-    wired). None is NOT 'not halted' — the decision layer holds last state
-    and never pages on unknown."""
+def _engine_system_status() -> dict | None:
+    """GET /api/system JSON, or None when no secret is configured or the API
+    is unreachable."""
     import httpx  # noqa: PLC0415
 
     secret = os.environ.get("WEB_API_SECRET", "")
@@ -83,12 +81,20 @@ def _engine_halt_state() -> bool | None:
         )
         resp.raise_for_status()
         data = resp.json()
-        if not data.get("oms_wired"):
-            return None  # engine up but OMS not wired → unknown, not "clear"
-        return bool(data.get("oms_halted"))
+        return data if isinstance(data, dict) else None
     except Exception:
         logger.debug("health watch: engine /api/system unreachable", exc_info=True)
         return None
+
+
+def _engine_halt_state(data: dict | None) -> bool | None:
+    """The engine's OMS halt flag from /api/system, or None when the
+    state is UNKNOWN (no secret configured, API unreachable, or OMS not
+    wired). None is NOT 'not halted' — the decision layer holds last state
+    and never pages on unknown."""
+    if data is None or not data.get("oms_wired"):
+        return None  # engine up but OMS not wired → unknown, not "clear"
+    return bool(data.get("oms_halted"))
 
 
 def _recent_halt_reason() -> str | None:
@@ -148,6 +154,7 @@ def run_once(
         DEFAULT_X_STALE_HOURS,
         decide_fleet_alerts,
         decide_halt_alert,
+        describe_halt_causes,
         decide_x_staleness_alert,
         parse_status,
         parse_unknown,
@@ -234,11 +241,13 @@ def run_once(
     # can halt trading — a bug OR a legit VIX/drawdown/desync trip — and
     # nothing surfaced it before now. Page on the not-halted → halted
     # transition, enriched with the triggering switch.
-    halted = _engine_halt_state()
+    system = _engine_system_status()
+    halted = _engine_halt_state(system)
     hmsg, is_halted = decide_halt_alert(
         halted,
         bool(state.get("engine_halted")),
-        _recent_halt_reason() if halted else None,
+        # CL-oqos: the engine's own halt causes first; log scrape fallback.
+        (describe_halt_causes(system) or _recent_halt_reason()) if halted else None,
         now,
     )
     if hmsg:

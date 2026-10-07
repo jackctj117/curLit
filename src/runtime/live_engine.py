@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 from src.execution.oms import OrderIntent
 from src.monitoring.logging_setup import LogContext
 from src.monitoring.metrics import HeartbeatTracker, start_metrics_server
+from src.portfolio.reconciler import SnapshotUnavailableError
 from src.risk.risk_context import RiskContextBuilder
 from src.runtime.protocols import (
     BrokerLike,
@@ -78,6 +79,9 @@ class LiveEngine:
         self._position_mismatch: bool | None = None
         self._alignment_mismatch_streak = 0
         self._account_read_failures = 0
+        # CL-oqos: last broker-vs-internal reconciliation outcome (cold start
+        # or periodic alignment) for /api/system — None until the first run.
+        self._last_reconciliation: dict[str, Any] | None = None
         # CL-i4tx: RiskContextBuilder assembles the REAL kill-switch context
         # each health tick (daily PnL, portfolio DD, VIX/CVIX, price age,
         # position mismatch) — before this only {"equity"} was passed and
@@ -161,12 +165,25 @@ class LiveEngine:
                     len(self._last_reconciliation_report.entries),
                     self._last_reconciliation_report.has_mismatches,
                 )
-                if self._last_reconciliation_report.has_mismatches:
+                mismatched = bool(self._last_reconciliation_report.has_mismatches)
+                self._note_reconciliation("cold_start", "mismatch" if mismatched else "ok")
+                if mismatched:
                     logger.error(
                         "Cold-start account mismatch: new entries blocked until operator reconciliation"
                     )
                     self._startup_halt("cold_start_reconciliation_mismatch")
-            except Exception:
+            except SnapshotUnavailableError as exc:
+                # CL-oqos: broker snapshot UNKNOWN — the reconciler raised
+                # before confirming/rejecting any pending entry or applying
+                # any orphan policy. Distinct cause so the reason is visible.
+                self._note_reconciliation("cold_start", "unavailable", exc.reason, at=exc.at)
+                self._startup_halt("cold_start_snapshot_unavailable")
+                logger.exception(
+                    "Cold-start broker snapshot unavailable — entries blocked; "
+                    "monitoring/recovery continue"
+                )
+            except Exception as exc:
+                self._note_reconciliation("cold_start", "failed", type(exc).__name__)
                 self._startup_halt("cold_start_reconciliation_failed")
                 logger.exception(
                     "Cold-start reconciliation failed — entries blocked; monitoring/recovery continue"
@@ -230,6 +247,7 @@ class LiveEngine:
                 self.oms,
                 self.strategies,
                 kill_switch_manager=self.kill_switch_manager,
+                safety_status=self.safety_status,
             )
         except TypeError:
             set_runtime(self.broker, self.oms, self.strategies)
@@ -395,8 +413,9 @@ class LiveEngine:
                 report = await asyncio.to_thread(
                     self.cold_start_reconciler.check_alignment,
                 )
-            except Exception:
+            except Exception as exc:
                 logger.exception("Alignment check error")
+                self._note_reconciliation("alignment", "failed", type(exc).__name__)
                 continue
             self._record_alignment_report(report)
 
@@ -407,7 +426,9 @@ class LiveEngine:
         alignment is UNKNOWN, not mismatched.
         """
         if report is None:
+            self._note_reconciliation("alignment", "unavailable", "broker snapshot unavailable")
             return
+        self._note_reconciliation("alignment", "mismatch" if report.has_mismatches else "ok")
         if report.has_mismatches:
             self._alignment_mismatch_streak += 1
             mismatched = [e.to_dict() for e in report.entries if e.status.value != "matched"]
@@ -423,6 +444,37 @@ class LiveEngine:
         self._position_mismatch = (
             self._alignment_mismatch_streak >= _ALIGNMENT_MISMATCH_STREAK_TO_FLAG
         )
+
+    def _note_reconciliation(
+        self,
+        source: str,
+        status: str,
+        reason: str | None = None,
+        *,
+        at: datetime | None = None,
+    ) -> None:
+        """Record the latest reconciliation outcome for /api/system (CL-oqos)."""
+        self._last_reconciliation = {
+            "source": source,
+            "status": status,
+            "reason": reason,
+            "at": (at or datetime.now(UTC)).isoformat(),
+        }
+
+    def safety_status(self) -> dict[str, Any]:
+        """Why entries may be blocked (CL-oqos) — additive /api/system fields.
+
+        ``account_read_failures`` is the consecutive health-tick account-read
+        failure count (three records the sticky external halt
+        ``account_snapshot_unavailable``; a successful read resets the count
+        but never lifts the halt — only ``/api/system/resume`` does).
+        """
+        return {
+            "account_read_failures": self._account_read_failures,
+            "last_reconciliation": (
+                dict(self._last_reconciliation) if self._last_reconciliation else None
+            ),
+        }
 
     def _current_position_mismatch(self) -> bool | None:
         """Supplier for RiskContextBuilder — see _record_alignment_report."""

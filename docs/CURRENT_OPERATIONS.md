@@ -876,6 +876,39 @@ CLI (Claude Code 2.1.287), not assumed:
     and EMERGENCY_FLATTEN. While `ALPACA_LEDGER_CLOSE_ONLY` is set the
     Alpaca daemons open no entries at all and acknowledge any halt at the
     top of each ledger cycle.
+- **Broker/account-read interlock (CL-oqos — development, not yet deployed).**
+  An unknown broker snapshot is never treated as flat:
+  - Cold start: if `get_positions()` fails or returns a malformed snapshot
+    (not a list, nonfinite/bool quantity, empty symbol, two rows for one
+    canonical symbol such as `USD_CAD` + `USDCAD`) the reconciler raises
+    `SnapshotUnavailableError` BEFORE confirming/rejecting any pending event
+    entry or flattening an "orphan"; the engine halts entries with the
+    sticky cause `external:cold_start_snapshot_unavailable`. A book that
+    fails to confirm its pending entries aborts the reconcile the same way
+    (`external:cold_start_reconciliation_failed`) instead of flattening a
+    real fill as an orphan.
+  - Periodic alignment (300 s) treats the same failures as UNKNOWN (no
+    mismatch streak, no `reconciliation_failure` trip); the event book's
+    per-tick confirmation never promotes or rejects a pending leg against an
+    unreadable quantity.
+  - Health tick (60 s): three consecutive `get_account()` failures (or
+    nonfinite equity) record the sticky cause
+    `external:account_snapshot_unavailable` and halt entries; every further
+    failed tick re-applies it. A successful read resets the counter but
+    does NOT lift the halt — auto-resume never clears `external:*`
+    causes; only `POST /api/system/resume` does (CL-d7ex). Resuming while
+    reads still fail re-halts on the next tick.
+  - Where to see why: `GET /api/system` now also returns `halt_causes`
+    (active kill-switch + `external:*` causes), `account_read_failures`
+    (consecutive count) and `last_reconciliation`
+    (`{source: cold_start|alignment, status: ok|mismatch|unavailable|failed,
+    reason, at}`); each is `null` when unwired. Existing fields are
+    unchanged. The fleet watchdog's ENGINE HALTED page quotes these causes
+    when present, falling back to the engine-log kill-switch scrape.
+  - Restart rule: a restart does not fix an account-read outage — the cold
+    start re-halts if the snapshot is still unavailable. Verify reads
+    recovered (`account_read_failures: 0`, `last_reconciliation.status: ok`)
+    before an attributed resume.
 - OANDA practice dashboard: fxTrade Practice login shows positions/history.
 - Alpaca paper dashboard: app.alpaca.markets (paper) shows option positions.
 - Telegram: digests (grounded trade cards, niche 🎯 tags, red-team bear

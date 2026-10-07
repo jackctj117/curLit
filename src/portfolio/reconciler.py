@@ -166,6 +166,47 @@ class StrategyStateLike(Protocol):
     def get_current_position(self, strategy_id: str) -> dict[str, Any] | None: ...
 
 
+class SnapshotUnavailableError(RuntimeError):
+    """CL-oqos: the broker position snapshot is UNKNOWN — never "flat".
+
+    Raised by :meth:`PositionReconciler.reconcile` (before any book, policy
+    or journal action) when ``broker.get_positions()`` fails or returns a
+    malformed snapshot. Carries a short ``reason`` and the UTC ``at``
+    timestamp so the engine can surface WHY entries are blocked
+    (``/api/system`` ``last_reconciliation``). Subclasses ``RuntimeError``
+    so pre-existing ``except RuntimeError`` callers keep catching it.
+    """
+
+    def __init__(self, reason: str, *, at: datetime | None = None) -> None:
+        self.reason = reason
+        self.at = at or datetime.now(UTC)
+        super().__init__(f"Reconciliation snapshot unavailable: {reason}")
+
+
+def validate_broker_snapshot(positions: Any) -> dict[str, Position]:
+    """Canonical-keyed broker snapshot, or :class:`SnapshotUnavailableError` (CL-oqos).
+
+    A snapshot is usable only if it is a complete list whose rows each have
+    a non-empty canonical symbol, a finite non-bool quantity, and no
+    canonical-symbol duplicates (CL-n5xk: ``USD_CAD`` and ``USDCAD`` are the
+    same leg — two rows for it means the snapshot cannot be trusted).
+    """
+    if not isinstance(positions, list):
+        raise SnapshotUnavailableError(f"positions is {type(positions).__name__}, not a list")
+    result: dict[str, Position] = {}
+    for position in positions:
+        try:
+            key = canonical_symbol(position.symbol)
+            qty = position.quantity
+            valid_qty = not isinstance(qty, bool) and math.isfinite(qty)
+        except Exception as exc:
+            raise SnapshotUnavailableError(f"unreadable position row ({exc})") from exc
+        if not key or key in result or not valid_qty:
+            raise SnapshotUnavailableError(f"invalid or duplicate broker position {key or '?'}")
+        result[key] = position
+    return result
+
+
 class PositionReconciler:
     """Reconciles broker positions vs internal strategy state at engine startup.
 
@@ -257,8 +298,14 @@ class PositionReconciler:
         # OANDA-underscore form (USD_CAD) while internal keys are compact
         # (USDCAD) — keyed raw they never match, so a real position looks like
         # an orphan on BOTH sides and gets flattened. The OMS already fixed
-        # this (CL-qqra); the reconciler had not.
-        broker_positions = {canonical_symbol(p.symbol): p for p in broker_list}
+        # this (CL-qqra); the reconciler had not. CL-oqos: a malformed
+        # snapshot (non-list, nonfinite qty, duplicate leg) is UNKNOWN
+        # alignment, same as an unreachable broker — never a mismatch.
+        try:
+            broker_positions = validate_broker_snapshot(broker_list)
+        except SnapshotUnavailableError as exc:
+            logger.warning("Alignment check: %s — alignment unknown this cycle", exc)
+            return None
 
         report = ReconciliationReport()
         report.entries.extend(self._build_entries(broker_positions))
@@ -299,11 +346,19 @@ class PositionReconciler:
                             list(broker_positions.values()),
                             now,
                         )
-                    except Exception:
+                    except Exception as exc:
+                        # CL-oqos: a pending leg that may have filled but was
+                        # not promoted would be classified ORPHANED_BROKER and
+                        # flattened by the default policy. Ownership is
+                        # unknown — abort before any classification/policy.
                         logger.exception(
                             "confirm_entries during reconcile failed for %s",
                             getattr(strategy, "id", "?"),
                         )
+                        raise RuntimeError(
+                            "pending-entry confirmation failed during cold-start "
+                            f"reconcile for {getattr(strategy, 'id', '?')}"
+                        ) from exc
 
         internal_positions = self._fetch_internal_positions_per_symbol()
 
@@ -474,30 +529,28 @@ class PositionReconciler:
     # ------------------------------------------------------------------
 
     def _fetch_broker_positions(self) -> dict[str, Position]:
+        """Validated broker snapshot; raises :class:`SnapshotUnavailableError`.
+
+        CL-oqos: an unreadable/malformed snapshot is UNKNOWN, never ``{}``
+        (flat) — "flat" would reject potentially-filled pending entries in
+        ``confirm_entries`` and classify every internal leg as orphaned.
+        ``LiveEngine._reconcile_startup`` catches this and halts entries.
+        """
         try:
             positions = self.broker.get_positions()
-            if not isinstance(positions, list):
-                raise ValueError("positions must be a complete list")
-            result: dict[str, Position] = {}
-            for position in positions:
-                key = canonical_symbol(position.symbol)
-                if (
-                    not key
-                    or key in result
-                    or isinstance(position.quantity, bool)
-                    or not math.isfinite(position.quantity)
-                ):
-                    raise ValueError("invalid or duplicate broker position")
-                result[key] = position
         except Exception as exc:
             logger.exception("Reconciliation: snapshot unavailable; no book or order changes")
-            # LiveEngine._reconcile_startup already catches this and halts.
-            # Do not call confirm_entries or apply any policy using fake flatness.
-            raise RuntimeError("Reconciliation snapshot unavailable") from exc
-        # CL-n5xk (P0): canonical keys so an underscore-dialect broker leg
-        # (paper USD_CAD) matches the canonical internal key (USDCAD) instead
-        # of being flattened as a false orphan.
-        return result
+            raise SnapshotUnavailableError(f"get_positions failed ({type(exc).__name__})") from exc
+        try:
+            # CL-n5xk (P0): canonical keys so an underscore-dialect broker leg
+            # (paper USD_CAD) matches the canonical internal key (USDCAD)
+            # instead of being flattened as a false orphan.
+            return validate_broker_snapshot(positions)
+        except SnapshotUnavailableError as exc:
+            logger.error(
+                "Reconciliation: snapshot unavailable (%s); no book or order changes", exc.reason
+            )
+            raise
 
     def _fetch_internal_positions_per_symbol(
         self,
