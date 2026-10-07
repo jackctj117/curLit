@@ -56,16 +56,23 @@ Everything is PAPER. No real money moves anywhere.
   mixed-currency** — e.g. that leg's "+44.29" was ¥44.29 ≈ $0.28. The
   event book state (`data/event_book_state.json`, now version 2) keeps the
   old aggregate verbatim as `legacy_mixed_currency_pnl` and restarts
-  `realized_pnl` (account currency) at 0 on first load. Loss-cap budget
-  consumed = `-realized_pnl + max(0, -legacy_mixed_currency_pnl)`: legacy
-  losses are not forgiven, legacy gains are not credited. A close whose
-  exit rate is unavailable is held in `unconverted_closes` (quote amount
-  only) and blocks new entries while it is a loss, until a fresh rate
-  books it (labelled `conversion_deferred`). Exit P&L is still priced at
-  the trigger-time mid (`exit_price_basis: trigger_price_estimate`), not
-  the broker fill. Rollback note: pre-CL-vfw7 code reading a v2 file
-  would treat the account-currency `realized_pnl` as its aggregate and
-  ignore the legacy figure.
+  `realized_pnl` (account currency) at 0 on first load. The legacy
+  figure's USD value is UNKNOWN, so **new event entries are BLOCKED
+  (`legacy_pnl_unreconciled`) after deploy until the operator reconciles
+  it**: with the engine stopped, set `legacy_reconciled_account_pnl` in
+  the state file to the account-currency realized P&L of all pre-migration
+  event trades (from OANDA transaction history). Loss-cap consumed is then
+  `-realized_pnl - legacy_reconciled_account_pnl` (the migration does not
+  reset the budget). An empty v1 history (0 trades, 0.0) does not block.
+  A close whose exit rate is unavailable — or only stale (> 15 min) at
+  broker confirmation — is held in `unconverted_closes` (quote amount
+  only) and, if a loss, blocks new entries (`unconverted_realized_loss`)
+  until the operator sets that row's `reconciled_pnl_account`; a later
+  rate is never back-filled. Exits are never blocked. Exit P&L is still
+  priced at the trigger-time mid (`exit_price_basis:
+  trigger_price_estimate`), not the broker fill. Rollback note:
+  pre-CL-vfw7 code reading a v2 file would treat the account-currency
+  `realized_pnl` as its aggregate and ignore the legacy figure.
 - **Restart safety**: the reconciler consults multi-leg strategy books
   (CL-8s1e), so an engine restart no longer flattens open event legs. The
   phantom-position pruner (CL-v9g4) drops stale entries the broker doesn't

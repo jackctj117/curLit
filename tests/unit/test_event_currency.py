@@ -321,19 +321,54 @@ class TestPnlAccounting:
         book.check_exits(lambda _s: 156.5585, now, broker_positions=[_HELD])
         records = book.confirm_exits([], now)
         assert records[0].pnl_account is None
+        assert records[0].book_realized_pnl is None  # unknown, not "unchanged"
         assert book.realized_pnl == 0.0  # unknown is NOT zero-booked
         assert book.closed_trades == 1
-        assert book.has_unconverted_losses()
-        # Survives a restart.
-        reloaded = _book(tmp_path, prices)
-        assert reloaded.has_unconverted_losses()
-        # A fresh rate later books it, labelled deferred.
+        assert book.loss_cap_unknown_reason() == "unconverted_realized_loss"
+        # A LATER fresh rate does not back-fill it (it is not the close-time
+        # rate): still blocked after a restart with a live USDJPY tick.
         prices["USD_JPY"] = fresh(156.0)
-        assert reloaded.resolve_unconverted(datetime.now(UTC)) == 1
-        expected = (156.5585 - 156.0) * -222.0 / 156.0
-        assert reloaded.realized_pnl == pytest.approx(expected)
-        assert not reloaded.has_unconverted_losses()
-        assert reloaded.recent_closed[-1]["conversion_deferred"] is True
+        reloaded = _book(tmp_path, prices)
+        assert reloaded.loss_cap_unknown_reason() == "unconverted_realized_loss"
+        assert reloaded.realized_pnl == 0.0
+        # Operator reconciliation from the broker statement books it.
+        state = json.loads((tmp_path / "book.json").read_text())
+        state["unconverted_closes"][0]["reconciled_pnl_account"] = -0.79
+        (tmp_path / "book.json").write_text(json.dumps(state))
+        fixed = _book(tmp_path, prices)
+        assert fixed.loss_cap_unknown_reason() is None
+        assert fixed.realized_pnl == pytest.approx(-0.79)
+        assert fixed.recent_closed[-1]["pnl_account_source"] == "operator_reconciled"
+
+    def test_stale_trigger_conversion_not_used_at_confirmation(self, tmp_path: Path) -> None:
+        # Trigger captured a rate; the exit stayed pending two days (e.g.
+        # rejected re-emits / restart). At confirmation the stored rate is
+        # stale and no fresh tick exists → unconverted, not booked.
+        prices: dict[str, Any] = {"USD_JPY": fresh(150.0)}
+        book = _book(tmp_path, prices)
+        book.open_positions["USD_JPY"] = _short_jpy()
+        trigger = datetime.now(UTC)
+        book.check_exits(lambda _s: 156.5585, trigger, broker_positions=[_HELD])
+        assert book.pending_exits["USD_JPY"].exit_conversion is not None
+        prices.clear()
+        records = book.confirm_exits([], trigger + timedelta(days=2))
+        assert records[0].pnl_account is None
+        assert book.realized_pnl == 0.0
+        assert len(book.unconverted_closes) == 1
+
+    def test_stale_trigger_conversion_refreshed_when_fresh_rate_exists(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        prices: dict[str, Any] = {"USD_JPY": fresh(150.0)}
+        book = _book(tmp_path, prices)
+        book.open_positions["USD_JPY"] = _short_jpy()
+        trigger = datetime.now(UTC) - timedelta(hours=1)
+        prices["USD_JPY"] = fresh(150.0, age=timedelta(hours=1))
+        book.check_exits(lambda _s: 156.5585, trigger, broker_positions=[_HELD])
+        prices["USD_JPY"] = fresh(156.76)
+        records = book.confirm_exits([], datetime.now(UTC))
+        assert records[0].pnl_account == pytest.approx(44.289 / 156.76)
 
     def test_unconverted_loss_blocks_strategy_entries(self, tmp_path: Path) -> None:
         strat = make_strat(tmp_path)
@@ -345,7 +380,6 @@ class TestPnlAccounting:
                 "closed_at": datetime.now(UTC).isoformat(),
             }
         )
-        # No JPY tick → cannot resolve → entries stay blocked.
         intents, _, skipped = enter(strat, "EUR_USD", {"EURUSD": fresh(1.1)}, "long")
         assert intents == []
         assert skipped == [("EUR_USD", "unconverted_realized_loss")]
@@ -403,34 +437,57 @@ class TestLegacyState:
         assert book.realized_pnl == 0.0
 
     def test_legacy_gain_not_credited_to_loss_budget(self, tmp_path: Path) -> None:
-        # Cap 2% of 100k = $2,000. Account realized -$2,000 → breached even
-        # though a +1,000 legacy (unknown-currency) gain exists.
-        _write(
-            tmp_path,
-            {
-                "version": 2,
-                "account_currency": "USD",
-                "realized_pnl": -2000.0,
-                "legacy_mixed_currency_pnl": 1000.0,
-            },
-        )
-        assert _book(tmp_path, {}).breached(EQUITY)
+        # A +1,000 mixed sum can hide -$5,000 and +¥6,000 (≈ -$4,960): its
+        # USD value is unknown either way, so it neither grants nor consumes
+        # a known budget — the loss cap is UNKNOWN and entries are blocked.
+        _write(tmp_path, {"version": 1, "realized_pnl": 1000.0, "closed_trades": 2})
+        book = _book(tmp_path, {})
+        assert book.loss_cap_unknown_reason() == "legacy_pnl_unreconciled"
 
-    def test_legacy_loss_not_forgiven(self, tmp_path: Path) -> None:
-        # Migration must not reset the budget: legacy -1,500 + account
-        # -600 = 2,100 consumed >= 2,000 cap.
+    def test_v1_history_blocks_strategy_entries(self, tmp_path: Path) -> None:
+        _write(tmp_path, {"version": 1, "realized_pnl": 48.38, "closed_trades": 7})
+        strat = make_strat(tmp_path)
+        intents, _, skipped = enter(strat, "EUR_USD", {"EURUSD": fresh(1.1)}, "long")
+        assert intents == []
+        assert skipped == [("EUR_USD", "legacy_pnl_unreconciled")]
+
+    def test_empty_v1_history_does_not_block(self, tmp_path: Path) -> None:
+        _write(tmp_path, {"version": 1, "realized_pnl": 0.0, "closed_trades": 0})
+        assert _book(tmp_path, {}).loss_cap_unknown_reason() is None
+
+    def test_operator_reconciled_legacy_counts_in_account_currency(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        # Operator supplies the broker-statement value of the legacy period:
+        # -1,500 USD. With -600 since migration: 2,100 consumed >= 2,000 cap
+        # (the migration does not reset the budget).
         _write(
             tmp_path,
             {
                 "version": 2,
                 "account_currency": "USD",
                 "realized_pnl": -600.0,
-                "legacy_mixed_currency_pnl": -1500.0,
+                "legacy_mixed_currency_pnl": 48.38,
+                "legacy_closed_trades": 7,
+                "legacy_reconciled_account_pnl": -1500.0,
             },
         )
         book = _book(tmp_path, {})
+        assert book.loss_cap_unknown_reason() is None
         assert book.loss_cap_consumed() == pytest.approx(2100.0)
         assert book.breached(EQUITY)
+        book.save()
+        saved = json.loads((tmp_path / "book.json").read_text())
+        assert saved["legacy_reconciled_account_pnl"] == -1500.0
+        assert saved["legacy_mixed_currency_pnl"] == pytest.approx(48.38)
+
+    def test_v2_legacy_without_count_stays_unreconciled(self, tmp_path: Path) -> None:
+        _write(
+            tmp_path,
+            {"version": 2, "account_currency": "USD", "legacy_mixed_currency_pnl": 0.0},
+        )
+        assert _book(tmp_path, {}).legacy_unreconciled()
 
     @pytest.mark.parametrize(
         "payload",
@@ -441,6 +498,27 @@ class TestLegacyState:
             {"version": 2},
             {"version": 2, "account_currency": "USD", "legacy_mixed_currency_pnl": "abc"},
             {"version": 2, "account_currency": "USD", "legacy_mixed_currency_pnl": "inf"},
+            {"version": 2, "account_currency": "USD", "legacy_reconciled_account_pnl": "x"},
+            {"version": 2, "account_currency": "USD", "legacy_reconciled_account_pnl": True},
+            {
+                "version": 2,
+                "account_currency": "USD",
+                "legacy_mixed_currency_pnl": 1.0,
+                "legacy_closed_trades": -1,
+            },
+            {
+                "version": 2,
+                "account_currency": "USD",
+                "unconverted_closes": [
+                    {
+                        "symbol": "USD_JPY",
+                        "quote_ccy": "JPY",
+                        "pnl_quote": -5.0,
+                        "closed_at": "2026-10-06T00:00:00+00:00",
+                        "reconciled_pnl_account": "nan",
+                    }
+                ],
+            },
             {"version": 2, "account_currency": "USD", "unconverted_closes": {}},
             {
                 "version": 2,

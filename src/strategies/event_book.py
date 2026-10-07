@@ -53,15 +53,15 @@ conversion (at trigger time, retried at confirmation). ``realized_pnl``
 — the field the loss cap reads — is the ACCOUNT-currency sum from state
 version 2 on. A version-1 file's aggregate was a MIXED-currency sum (e.g.
 ¥44.29 booked as "+44.29"); it is preserved verbatim, labelled
-``legacy_mixed_currency_pnl``, and never added to ``realized_pnl``. Loss
-cap: ``-realized_pnl + max(0, -legacy_mixed_currency_pnl) >= cap`` —
-the legacy figure's LOSSES keep consuming budget at face value (the
-budget is not reset by the migration) while its GAINS are never credited
-(they may be yen, not dollars). A close whose exit conversion is
-unavailable books ``pnl_quote`` only into ``unconverted_closes``; while
-any of those is a LOSS, new entries are blocked (fail closed), and each
-tick retries the conversion (labelled ``deferred``) — the amount is never
-guessed.
+``legacy_mixed_currency_pnl``, and never added to ``realized_pnl``. Its
+account-currency value is UNKNOWN (either sign can hide losses), so the
+loss budget is unknown and NEW entries are blocked until the operator
+records ``legacy_reconciled_account_pnl`` from broker records; then
+loss consumed = ``-realized_pnl - legacy_reconciled_account_pnl``. A close
+whose exit conversion is unavailable (or only stale) books ``pnl_quote``
+into ``unconverted_closes``; while any of those is a LOSS new entries are
+blocked until the operator records its ``reconciled_pnl_account`` — no
+rate is ever guessed or back-filled from a later tick.
 """
 
 from __future__ import annotations
@@ -76,7 +76,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from src.risk.currency import Conversion, ConversionUnavailable, quote_currency
+from src.risk.currency import MAX_RATE_AGE, Conversion, ConversionUnavailable, quote_currency
 
 logger = logging.getLogger(__name__)
 
@@ -147,7 +147,8 @@ class ExitRecord:
     pnl_account: float | None
     held_hours: float
     current_price: float | None
-    book_realized_pnl: float
+    #: None when this exit's account-currency amount is unknown (CL-vfw7).
+    book_realized_pnl: float | None
     #: Exit-intent emissions so far for this leg (1 = the trigger tick).
     #: The strategy records the exit FeatureSnapshot only on the first
     #: emission (CL-9dhg finding 10) — re-emissions would write one
@@ -274,6 +275,12 @@ class EventBook:
         #: P&L. Kept verbatim for the record, NEVER added to realized_pnl.
         #: None = no legacy history (fresh book or already-clean v2).
         self.legacy_mixed_currency_pnl: float | None = None
+        #: Closed-trade count at migration (the legacy history's size).
+        self.legacy_closed_trades: int = 0
+        #: OPERATOR-supplied account-currency realized P&L of the legacy
+        #: history (from broker transaction records). None = unreconciled →
+        #: the loss budget is unknown and new entries are blocked.
+        self.legacy_reconciled_account_pnl: float | None = None
         #: When the v1→v2 migration ran (None = book born on v2).
         self.currency_migrated_at: datetime | None = None
         #: Closed trades whose account P&L is UNKNOWN (no fresh exit rate):
@@ -439,19 +446,22 @@ class EventBook:
         would be silently wrong) and every new field must be sane."""
         if version == 1:
             self.legacy_mixed_currency_pnl = stored_realized
+            self.legacy_closed_trades = self.closed_trades
             self.realized_pnl = 0.0
             self.currency_migrated_at = datetime.now(UTC)
             logger.warning(
-                "Event book %s: v1 state — realized_pnl %.2f is a MIXED-currency "
-                "sum (quote-currency P&L of every pair added together). Preserved "
-                "as legacy_mixed_currency_pnl, NOT counted as %s; account-currency "
-                "realized P&L starts at 0.00 from %s (CL-vfw7). Legacy losses still "
-                "consume the loss-cap budget at face value; legacy gains are not "
-                "credited.",
+                "Event book %s: v1 state — realized_pnl %.2f over %d trade(s) is a "
+                "MIXED-currency sum (quote-currency P&L of every pair added "
+                "together). Preserved as legacy_mixed_currency_pnl, NOT counted as "
+                "%s; account-currency realized P&L starts at 0.00 from %s (CL-vfw7). "
+                "Its %s value is UNKNOWN, so new event entries stay BLOCKED until the "
+                "operator sets legacy_reconciled_account_pnl (docs/CURRENT_OPERATIONS.md §1a).",
                 path,
                 stored_realized,
+                self.legacy_closed_trades,
                 self.account_currency,
                 self.currency_migrated_at.isoformat(),
+                self.account_currency,
             )
             return
         stored_ccy = payload.get("account_currency")
@@ -471,6 +481,14 @@ class EventBook:
             if not math.isfinite(legacy_f):
                 raise ValueError("Event book legacy_mixed_currency_pnl is not finite")
             self.legacy_mixed_currency_pnl = legacy_f
+            # Absent count on a legacy figure = unknown size → treat as
+            # non-empty (never silently clears the reconciliation gate).
+            self.legacy_closed_trades = self._finite_int(
+                payload.get("legacy_closed_trades", 1), "legacy_closed_trades"
+            )
+        self.legacy_reconciled_account_pnl = self._optional_finite(
+            payload.get("legacy_reconciled_account_pnl"), "legacy_reconciled_account_pnl"
+        )
         migrated = payload.get("currency_migrated_at")
         if migrated is not None:
             try:
@@ -492,8 +510,52 @@ class EventBook:
                 raise ValueError(f"Event book unconverted close unparseable: {row!r}") from exc
             if not math.isfinite(pnl_q) or len(ccy) != 3 or not ccy.isalpha():
                 raise ValueError(f"Event book unconverted close invalid: {row!r}")
-        self.unconverted_closes = list(payload.get("unconverted_closes", []))
+            self._optional_finite(row.get("reconciled_pnl_account"), "reconciled_pnl_account")
         self.recent_closed = list(payload.get("recent_closed", []))[-_RECENT_CLOSED_MAX:]
+        # Operator reconciliation of an unconverted close: book the
+        # operator-supplied ACCOUNT amount (broker-statement evidence), never
+        # a rate we chose. Unreconciled rows stay and keep blocking.
+        remaining: list[dict[str, Any]] = []
+        for row in payload.get("unconverted_closes", []):
+            reconciled = self._optional_finite(
+                row.get("reconciled_pnl_account"), "reconciled_pnl_account"
+            )
+            if reconciled is None:
+                remaining.append(row)
+                continue
+            self.realized_pnl += reconciled
+            self._append_recent_closed(
+                {**row, "pnl_account": reconciled, "pnl_account_source": "operator_reconciled"}
+            )
+            logger.warning(
+                "Event book: operator-reconciled close %s (%s %.2f) booked as %.2f %s",
+                row["symbol"],
+                row["quote_ccy"],
+                float(row["pnl_quote"]),
+                reconciled,
+                self.account_currency,
+            )
+        self.unconverted_closes = remaining
+
+    @staticmethod
+    def _optional_finite(raw: Any, name: str) -> float | None:
+        if raw is None:
+            return None
+        if isinstance(raw, bool):
+            raise ValueError(f"Event book {name} must be a number")
+        try:
+            value = float(raw)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Event book {name} unparseable: {raw!r}") from exc
+        if not math.isfinite(value):
+            raise ValueError(f"Event book {name} is not finite")
+        return value
+
+    @staticmethod
+    def _finite_int(raw: Any, name: str) -> int:
+        if isinstance(raw, bool) or not isinstance(raw, int) or raw < 0:
+            raise ValueError(f"Event book {name} must be a non-negative integer: {raw!r}")
+        return int(raw)
 
     @staticmethod
     def _conversion_from_payload(raw: Any) -> Conversion | None:
@@ -552,6 +614,8 @@ class EventBook:
             "realized_pnl": self.realized_pnl,
             "account_currency": self.account_currency,
             "legacy_mixed_currency_pnl": self.legacy_mixed_currency_pnl,
+            "legacy_closed_trades": self.legacy_closed_trades,
+            "legacy_reconciled_account_pnl": self.legacy_reconciled_account_pnl,
             "currency_migrated_at": (
                 self.currency_migrated_at.isoformat()
                 if self.currency_migrated_at is not None
@@ -753,19 +817,33 @@ class EventBook:
             pnl_account=pnl_account,
             held_hours=held_hours,
             current_price=entry.trigger_price,
-            # Projected ACCOUNT-currency total; an unconvertible exit adds
-            # nothing (its amount is unknown, not zero — see unconverted_closes).
-            book_realized_pnl=self.realized_pnl + (pnl_account or 0.0),
+            # Projected ACCOUNT-currency total; None when this exit's account
+            # amount is unknown (never a number that silently omits it).
+            book_realized_pnl=(
+                self.realized_pnl + pnl_account if pnl_account is not None else None
+            ),
             emit_count=entry.emit_count,
             quote_ccy=self.leg_quote_ccy(pos),
             exit_conversion=conv,
         )
 
     def _try_exit_conversion(self, entry: PendingExit, now: datetime) -> None:
-        """Capture the exit quote→account rate if not yet captured (trigger
-        time first, retried at confirmation). Failure leaves it None."""
-        if entry.exit_conversion is not None:
+        """Ensure the exit quote→account rate is FRESH as of ``now``
+        (captured at trigger, re-checked at confirmation). A rate older than
+        MAX_RATE_AGE — an exit that stayed pending, or survived a restart —
+        is discarded and re-resolved; failure leaves it None (→ the close
+        books as unconverted, never at the stale rate)."""
+        conv = entry.exit_conversion
+        if conv is not None and now - conv.observed_at <= MAX_RATE_AGE:
             return
+        if conv is not None:
+            logger.warning(
+                "Event exit %s: exit conversion observed %s is stale at %s — re-resolving",
+                entry.position.symbol,
+                conv.observed_at.isoformat(),
+                now.isoformat(),
+            )
+            entry.exit_conversion = None
         try:
             entry.exit_conversion = self.conversion(self.leg_quote_ccy(entry.position), now)
         except ConversionUnavailable as exc:
@@ -1235,7 +1313,7 @@ class EventBook:
     # ------------------------------------------------------------------
 
     # ------------------------------------------------------------------
-    # Closed-trade provenance + deferred conversion (CL-vfw7)
+    # Closed-trade provenance + loss-cap knowability (CL-vfw7)
     # ------------------------------------------------------------------
 
     def _closed_row(self, record: ExitRecord, now: datetime) -> dict[str, Any]:
@@ -1262,7 +1340,6 @@ class EventBook:
             "exit_conversion": (
                 record.exit_conversion.to_payload() if record.exit_conversion is not None else None
             ),
-            "conversion_deferred": False,
             "closed_at": now.isoformat(),
         }
 
@@ -1275,63 +1352,36 @@ class EventBook:
         the loss cap cannot be evaluated, so new entries must be blocked."""
         return any(float(r["pnl_quote"]) < 0 for r in self.unconverted_closes)
 
-    def resolve_unconverted(self, now: datetime) -> int:
-        """Retry conversion for closes whose exit rate was unavailable.
+    def legacy_unreconciled(self) -> bool:
+        """True while a pre-CL-vfw7 mixed-currency history exists whose
+        account-currency value the operator has not supplied. Its USD value
+        is UNKNOWN (a +1000 sum can hide -$5,000 and +¥6,000), so neither
+        sign of it can be used — the loss budget is unknown."""
+        if self.legacy_mixed_currency_pnl is None:
+            return False
+        if self.legacy_reconciled_account_pnl is not None:
+            return False
+        # An empty v1 history (no trades, zero sum) carries no unknown.
+        return not (self.legacy_mixed_currency_pnl == 0.0 and self.legacy_closed_trades == 0)
 
-        The rate is the CURRENT one, not the close-time one, so the booked
-        amount is labelled ``conversion_deferred`` in ``recent_closed`` and
-        logged at WARNING. Returns the number resolved."""
-        if not self.unconverted_closes:
-            return 0
-        remaining: list[dict[str, Any]] = []
-        resolved = 0
-        for row in self.unconverted_closes:
-            try:
-                conv = self.conversion(str(row["quote_ccy"]), now)
-            except ConversionUnavailable:
-                remaining.append(row)
-                continue
-            pnl_account = float(row["pnl_quote"]) * conv.rate
-            self.realized_pnl += pnl_account
-            resolved += 1
-            booked = dict(row)
-            booked.update(
-                pnl_account=pnl_account,
-                exit_conversion=conv.to_payload(),
-                conversion_deferred=True,
-            )
-            for i, prior in enumerate(self.recent_closed):
-                if prior.get("closed_at") == row.get("closed_at") and prior.get(
-                    "symbol"
-                ) == row.get("symbol"):
-                    self.recent_closed[i] = booked
-                    break
-            logger.warning(
-                "Event close %s: deferred conversion %.2f %s -> %.2f %s at rate %.6f "
-                "(%s, observed %s; close was %s) — booked into realized P&L",
-                row["symbol"],
-                float(row["pnl_quote"]),
-                row["quote_ccy"],
-                pnl_account,
-                self.account_currency,
-                conv.rate,
-                conv.source_pair,
-                conv.observed_at.isoformat(),
-                row["closed_at"],
-            )
-        if resolved:
-            self.unconverted_closes = remaining
-            self.save()
-        return resolved
+    def loss_cap_unknown_reason(self) -> str | None:
+        """Why the loss cap cannot be evaluated (→ block new entries), or
+        None. Exits are never affected. Each is cleared only by operator
+        reconciliation in the state file (see docs/CURRENT_OPERATIONS.md
+        §1a): ``legacy_reconciled_account_pnl`` for the legacy history,
+        ``reconciled_pnl_account`` on an ``unconverted_closes`` row."""
+        if self.legacy_unreconciled():
+            return "legacy_pnl_unreconciled"
+        if self.has_unconverted_losses():
+            return "unconverted_realized_loss"
+        return None
 
     def loss_cap_consumed(self) -> float:
-        """Loss-cap budget consumed, in ACCOUNT currency (CL-vfw7):
-        ``-realized_pnl`` (account-currency since the migration) plus the
-        legacy mixed-currency figure's LOSS at face value. Legacy GAINS are
-        never credited (they may be ¥, not $) and legacy LOSSES are never
-        forgiven by the migration (the budget is not reset)."""
-        legacy_loss = max(0.0, -(self.legacy_mixed_currency_pnl or 0.0))
-        return -self.realized_pnl + legacy_loss
+        """KNOWN loss-cap budget consumed, in ACCOUNT currency (CL-vfw7):
+        ``-realized_pnl`` (account-currency since the migration) minus the
+        operator-reconciled account value of the legacy history. Only
+        meaningful when :meth:`loss_cap_unknown_reason` is None."""
+        return -self.realized_pnl - (self.legacy_reconciled_account_pnl or 0.0)
 
     def breached(self, equity: float | None) -> bool:
         if equity is None or equity <= 0:
@@ -1344,7 +1394,7 @@ class EventBook:
                 logger.critical(
                     "EVENT BOOK LOSS CAP BREACHED: loss consumed %.2f %s >= cap "
                     "%.2f (%.1f%% of equity %.0f; account realized %.2f, legacy "
-                    "mixed-currency %s). NO new event positions will be opened; "
+                    "reconciled %s). NO new event positions will be opened; "
                     "exits still flow. Reset requires operator action on %s. "
                     "(Kill-switch integration pending — this is the loud log.)",
                     consumed,
@@ -1353,7 +1403,7 @@ class EventBook:
                     self._max_loss_pct * 100,
                     equity,
                     self.realized_pnl,
-                    self.legacy_mixed_currency_pnl,
+                    self.legacy_reconciled_account_pnl,
                     self._state_path_str,
                 )
                 self._breach_logged = True
