@@ -1068,7 +1068,9 @@ class EventBook:
                     entry.emit_count,
                 )
                 continue
-            if now - entry.triggered_ts > MAX_RATE_AGE:
+            late = now - entry.triggered_ts > MAX_RATE_AGE
+            if late and self.leg_quote_ccy(entry.position) != self.account_currency:
+                # (Identity — quote == account — is time-invariant and exempt.)
                 # The fill happened somewhere between trigger and now (an
                 # exit pending across re-emits or a restart); no rate we hold
                 # or can fetch is known to be the fill-time rate → the close

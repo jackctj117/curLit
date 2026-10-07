@@ -375,6 +375,30 @@ class TestPnlAccounting:
         assert book.realized_pnl == 0.0
         assert len(book.unconverted_closes) == 1
 
+    def test_delayed_confirmation_of_usd_quoted_leg_books_identity(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        # EUR_USD long 10,000 from 1.1000, trigger 1.0990 → -$10. USD→USD is
+        # 1 at any time, so a late confirmation is still fully known.
+        book = _book(tmp_path, {})
+        book.open_positions["EUR_USD"] = EventPosition(
+            "EUR_USD",
+            1,
+            datetime.now(UTC) - timedelta(hours=6),
+            1.1000,
+            10_000.0,
+            1,
+            1.0890,
+        )
+        trigger = datetime.now(UTC) - timedelta(hours=1)
+        held = SimpleNamespace(symbol="EUR_USD", quantity=10_000.0)
+        book.check_exits(lambda _s: 1.0990, trigger, broker_positions=[held])
+        records = book.confirm_exits([], datetime.now(UTC))
+        assert records[0].pnl_account == pytest.approx(-10.0)
+        assert book.realized_pnl == pytest.approx(-10.0)
+        assert book.loss_cap_unknown_reason() is None
+
     def test_confirmation_within_window_uses_trigger_rate(self, tmp_path: Path) -> None:
         prices: dict[str, Any] = {"USD_JPY": fresh(156.76)}
         book = _book(tmp_path, prices)
