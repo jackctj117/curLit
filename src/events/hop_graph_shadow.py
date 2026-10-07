@@ -126,7 +126,8 @@ def run_hopgraph_arm(
     result = traversal.run(event, playbook, as_of=as_of, market_data=payload["market_data"])
     ideas = result.candidates
     verified = _gate(ideas, tools, payload["market_data"], as_of, event, critic)
-    calls = [c for c in result.model_calls if "response" in c] + entailment.calls
+    # Failed calls stay in: their unknown usage makes the totals unknown.
+    calls = list(result.model_calls) + entailment.calls
     usd = [c.get("usd_cost") for c in calls]
     eligible = [i for i in ideas if i.research_eligible]
     return {

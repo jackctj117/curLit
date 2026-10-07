@@ -640,8 +640,9 @@ def assemble_paths(graph: HopGraph, as_of: datetime, max_hops: int = MAX_HOPS) -
 
 def _cite(claim: RelationshipClaim, sources: Sequence[SourceDocument]) -> str:
     locator = next((s.locator for s in sources if s.source_id == claim.source_id), "?")
-    passage = claim.passage if len(claim.passage) <= 200 else claim.passage[:200] + "..."
-    return f'[{claim.source_id[:12]} {locator}: "{passage}"]'
+    # The FULL passage: it is already bounded at extraction (600 chars), and
+    # upstream passages reach the critic only through this text.
+    return f'[{claim.source_id[:12]} {locator}: "{claim.passage}"]'
 
 
 def path_rationale(path: HopPath) -> str:
@@ -1008,10 +1009,10 @@ class HopGraphTraversal:
                         outcome.sources.append(doc)
         outcome.trace = calls
         # Unknown usage stays None, never a partial sum (CL-h7c1).
-        answered = [c for c in calls if "response" in c]
-        in_tok = [c.get("input_tokens") for c in answered]
-        out_tok = [c.get("output_tokens") for c in answered]
-        if answered and all(type(t) is int for t in in_tok + out_tok):
+        # A failed call has unknown usage, so the total is unknown too.
+        in_tok = [c.get("input_tokens") for c in calls]
+        out_tok = [c.get("output_tokens") for c in calls]
+        if calls and all(type(t) is int for t in in_tok + out_tok):
             outcome.input_tokens = sum(t for t in in_tok if isinstance(t, int))
             outcome.output_tokens = sum(t for t in out_tok if isinstance(t, int))
         logger.info(

@@ -325,8 +325,10 @@ The hop graph separates those concerns:
    through `ResearchTools.filing_documents(cik, symbol, query=...)` (live) or
    the capture's frozen collection (shadow). A candidate passage is an exact
    sentence of a usable captured source that names the counterparty. A
-   Haiku-class entailment check (`no_tools=True`) answers only
-   yes/no/unclear:
+   Haiku-class entailment check (`no_tools=True`) is given the structured
+   statement, for example "Acme Marine Coatings Inc (ACME) supplies Frontline
+   Ltd (FRO)", plus the model's claim, so the relation and both endpoints must
+   be stated, not just the claim prose. It answers only yes/no/unclear:
    - yes and no "no": `sourced`, with a `documented_fact` /
      `relationship` claim;
    - no and no "yes": `contradicted`;

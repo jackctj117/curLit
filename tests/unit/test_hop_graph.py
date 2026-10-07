@@ -621,3 +621,49 @@ def test_upstream_limiting_disclosures_reach_the_critic_input() -> None:
         [idea], world_event()
     )
     assert hedge in prompt
+
+
+# ---------------------------------------------------------------------- #
+# Codex round-2 regressions
+# ---------------------------------------------------------------------- #
+
+FAR_STATEMENT = "Acme Marine Coatings Inc (ACME) supplies Frontline Ltd (FRO)"
+
+
+def test_entailment_is_asked_about_the_endpoints_and_relation() -> None:
+    ent = world_entailment()
+    ent.answers.pop(HOP2_CLAIM)
+    ent.answers[FAR_STATEMENT] = ("yes", "38% of our revenue")
+    result, _, _ = run_world(entailment=ent)
+    assert_far_node_two_hop(result)
+    asked = [c["claim"] for c in ent.calls if "ACME" in c["claim"] and "FRO" in c["claim"]]
+    assert asked and all(c.startswith(FAR_STATEMENT) for c in asked)
+
+
+def test_mismatched_relation_cannot_ride_on_a_matching_free_text_claim() -> None:
+    ent = world_entailment()
+    ent.answers.pop(HOP2_CLAIM)
+    ent.answers[FAR_STATEMENT] = ("yes", "38% of our revenue")
+    edges = world_edges()
+    edges["company:FRO"][0]["relation"] = "buys_from"  # same free-text claim
+    result, _, _ = run_world(entailment=ent, edges=edges)
+    far = next(e for e in result.graph.edges if e.dst.node_id == "company:ACME")
+    assert far.relation == "buys_from" and far.status == "unverifiable"
+    assert "ACME" not in result.candidate_paths
+
+
+def test_long_upstream_limiting_passage_reaches_the_critic_whole() -> None:
+    hedge = (
+        "Our exposure to voyages through the Strait of Hormuz is hedged under a program that "
+        "covers war-risk premia, charter cancellations and rerouting costs across the entire "
+        "fleet for the next three years, and as a result the residual exposure is fully "
+        "hedged and not material."
+    )
+    assert len(hedge) > 200
+    docs = {"FRO": [doc("FRO", FRO_DOC.text + " " + hedge)], "ACME": Retriever().docs["ACME"]}
+    result, _, _ = run_world(retriever=Retriever(docs))
+    idea = next(i for i in result.candidates if i.ticker == "ACME")
+    prompt = AdversarialCritic(client=SupportiveCritic(), model="c")._user_prompt(
+        [idea], world_event()
+    )
+    assert hedge in prompt
