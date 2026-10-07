@@ -85,7 +85,12 @@ def test_actual_pipeline_preserves_audit_without_overwriting_concurrent_decision
                 to_dict=lambda: {"discovery": {"status": "completed"}},
             )
 
-        def merge_into_assessment(self, assessment: dict[str, Any], ideas: list[str]) -> int:
+        def merge_into_assessment(
+            self,
+            assessment: dict[str, Any],
+            ideas: list[str],
+            research_sink: dict[Any, Any] | None = None,  # CL-7kuu keyword
+        ) -> int:
             assessment["trade_ideas"].extend(ideas)
             return len(ideas)
 
