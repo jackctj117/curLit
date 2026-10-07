@@ -1077,8 +1077,10 @@ pids, engine boot excerpt, `/api/system` snapshot, final Codex verdict).
 - Engine boot: event book migrated v1 → v2; the legacy mixed-currency realized figure
   (−249.66 over 11 trades, a quote-currency sum) is kept as `legacy_mixed_currency_pnl`
   and **blocks new FX event entries** (`legacy_pnl_unreconciled`) until
-  `legacy_reconciled_account_pnl` is set from OANDA transaction history. FX entries are
-  independently paused by the durable account halt (PAUSE_ENTRIES, acknowledged at boot as
+  `legacy_reconciled_account_pnl` is set from OANDA transaction history — **done 2026-10-07
+  08:09 UTC: −498.2732 USD** (OANDA lifetime realized `pl` over transactions 1–61; every
+  OANDA order was event_driven or a reconciler flatten of an event leg; the mixed-currency
+  estimate had been −249.66). FX entries remain paused by the durable account halt (PAUSE_ENTRIES, acknowledged at boot as
   `external:operator_entry_paused_startup`). Emergency recovery loaded 0 unresolved
   attempts; cold-start reconciliation ok; 8 switches ARMED; stream catch-up seeded at
   account transaction 61 (no prior checkpoint; earlier fills are not replayed).
