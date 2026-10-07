@@ -15,6 +15,7 @@ journal is optional so unit tests and ad-hoc usage don't require a DB.
 """
 
 import asyncio
+import collections
 import enum
 import logging
 import threading
@@ -36,8 +37,11 @@ from .trade_journal import EventType, TradeJournal
 logger = logging.getLogger(__name__)
 
 #: CL-vj74: cap on the fill-dedup set. Redelivered fills are always recent
-#: (a stream reconnect resumes near now), so dropping ids past this bound is
-#: safe. Sized far above any realistic per-session fill count.
+#: (a stream reconnect resumes near now), so evicting the OLDEST ids past this
+#: bound is safe. Sized far above any realistic per-session fill count, and
+#: at least the catch-up's per-reconnect replay bound (fill_stream: 20 pages x
+#: 500 transactions), so a replay's ids are still remembered when the same
+#: fills arrive on the live stream.
 _SEEN_FILLS_CAP = 10_000
 
 
@@ -170,6 +174,9 @@ class OrderManager:
         # venue transaction id (the stream can redeliver on reconnect).
         self._pending_intents: dict[str, OrderIntent] = {}
         self._seen_fills: set[str] = set()
+        # Insertion order of _seen_fills, so the cap evicts the OLDEST ids
+        # (CL-pksi: a replay overlaps the live stream by recent ids only).
+        self._seen_order: collections.deque[str] = collections.deque()
         # CL-pksi catch-up: fills whose ORDER_FILLED journal append FAILED.
         # Their ids are NOT kept in ``_seen_fills`` (so a replay from the
         # durable stream checkpoint can journal them again); the resolved
@@ -677,7 +684,7 @@ class OrderManager:
                         # redelivered on the transaction stream is deduped by
                         # on_fill and never double-journaled.
                         if placed.order_id:
-                            self._seen_fills.add(placed.order_id)
+                            self._remember_fill_locked(placed.order_id)
                             # Claimed until ORDER_FILLED below is journaled, so
                             # a streamed duplicate is not reported durable early.
                             self._fills_journaling.add(placed.order_id)
@@ -866,7 +873,7 @@ class OrderManager:
             if not known and self._fill_already_journaled(fill_id, client_id):
                 with self._lock:
                     if fill_id not in self._unjournaled_fills:
-                        self._seen_fills.add(fill_id)
+                        self._remember_fill_locked(fill_id)
                         logger.info(
                             "fill %s already journaled before restart — replay skips it",
                             fill_id,
@@ -878,7 +885,7 @@ class OrderManager:
                 # the claimant's journal append has completed.
                 return FillOutcome(
                     newly_processed=False,
-                    durable=fill_id not in self._fills_journaling,
+                    durable=self.journal is not None and fill_id not in self._fills_journaling,
                 )
             retry = bool(fill_id) and fill_id in self._unjournaled_fills
             if retry:
@@ -896,11 +903,7 @@ class OrderManager:
                     str(fill.get("instrument") or (intent.symbol if intent else ""))
                 )
             if fill_id:
-                self._seen_fills.add(fill_id)
-                if len(self._seen_fills) > _SEEN_FILLS_CAP:
-                    # Bounded: redeliveries are always recent, so dropping old
-                    # ids is safe. Keep the one we just processed.
-                    self._seen_fills = {fill_id}
+                self._remember_fill_locked(fill_id)
                 self._fills_journaling.add(fill_id)
         symbol = str(fill.get("instrument") or (intent.symbol if intent else ""))
         # Reuse the original intent so the ORDER_FILLED row links to the
@@ -963,7 +966,9 @@ class OrderManager:
                     listener(dict(fill))
                 except Exception:
                     logger.exception("fill listener failed for fill %s", fill_id or "?")
-        return FillOutcome(newly_processed=True, durable=journaled)
+        # Durable only when a journal actually holds the row: with no journal
+        # nothing survives a restart, so a checkpoint must never pass it.
+        return FillOutcome(newly_processed=True, durable=journaled and self.journal is not None)
 
     def _fill_already_journaled(self, fill_id: str, client_id: Any) -> bool:
         """True when an ORDER_FILLED row for venue fill ``fill_id`` is already
@@ -972,15 +977,29 @@ class OrderManager:
         fill id in their payload. Raises when the journal cannot be read."""
         if self.journal is None:
             return False
-        intent_key = str(client_id) if client_id else fill_id
-        logger.debug("journal lookup for replayed fill %s (intent %s)", fill_id, intent_key)
-        for event in self.journal.query_by_intent(intent_key):
-            if (
-                event.event_type is EventType.ORDER_FILLED
-                and str(event.payload.get("fill_id") or "") == fill_id
-            ):
-                return True
+        keys = [str(client_id)] if client_id else []
+        if fill_id not in keys:
+            keys.append(fill_id)
+        for intent_key in keys:
+            logger.debug("journal lookup for replayed fill %s (intent %s)", fill_id, intent_key)
+            for event in self.journal.query_by_intent(intent_key):
+                if (
+                    event.event_type is EventType.ORDER_FILLED
+                    and str(event.payload.get("fill_id") or "") == fill_id
+                ):
+                    return True
         return False
+
+    def _remember_fill_locked(self, fill_id: str) -> None:
+        """Add a venue fill id to the dedup set (caller holds ``_lock``).
+        Bounded by evicting the OLDEST ids — redeliveries (live/replay
+        overlap) are always recent, so the newest window is what matters."""
+        if fill_id in self._seen_fills:
+            return
+        self._seen_fills.add(fill_id)
+        self._seen_order.append(fill_id)
+        while len(self._seen_fills) > _SEEN_FILLS_CAP and self._seen_order:
+            self._seen_fills.discard(self._seen_order.popleft())
 
     def _bump_symbol_version_locked(self, symbol: str) -> None:
         """CL-80tv: record a state change for ``symbol`` (caller holds _lock)."""

@@ -622,10 +622,11 @@ def build_fill_catch_up(broker: Any, oms: OrderManager, engine: Any | None) -> A
 
     if not isinstance(broker, OandaBroker):
         return None
-    if engine is None:
+    if engine is None or getattr(oms, "journal", None) is None:
+        # The checkpoint may only pass JOURNALED fills: no journal, no catch-up.
         logger.warning(
-            "No database — OANDA transaction-stream catch-up DISABLED (fills missed "
-            "while disconnected rely on the position poll)"
+            "No database/trade journal — OANDA transaction-stream catch-up DISABLED "
+            "(fills missed while disconnected rely on the position poll)"
         )
         return None
     logger.info("OANDA transaction-stream catch-up enabled (checkpoint: migration 028)")

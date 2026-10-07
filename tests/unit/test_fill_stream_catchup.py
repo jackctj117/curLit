@@ -40,7 +40,8 @@ def _txn(tid: int, kind: str = "ORDER_FILL", client: str | None = None) -> dict[
             instrument="EUR_USD",
             units="1000",
             price="1.0841",
-            clientExtensions={"id": client or f"intent-{tid}"},
+            # OANDA OrderFillTransaction field for the filled order's client id.
+            clientOrderID=client or f"intent-{tid}",
         )
     return t
 
@@ -396,6 +397,60 @@ class TestCatchUpUnit:
         assert restarted.catch_up() == 0
         assert journal.fill_ids() == ["101", "102"]
         assert store.load(ACC) == 102
+
+
+class TestReviewRound1:
+    def test_fill_normalization_reads_client_order_id(self):
+        b = _broker(_Account([]))
+        ev = b._normalize_fill(_txn(201, client="intent-x"))
+        assert ev["client_order_id"] == "intent-x"
+        legacy = {"id": "202", "type": "ORDER_FILL", "clientExtensions": {"id": "intent-y"}}
+        assert b._normalize_fill(legacy)["client_order_id"] == "intent-y"
+
+    def test_restart_replay_skips_sync_fill_journaled_under_intent(self):
+        """A synchronous FOK fill journaled under its intent id before a
+        restart must not be journaled again when the replay delivers it."""
+        acct, broker, journal, oms, store, cu = _setup(checkpoint=100)
+        journal.record(
+            event_type=EventType.ORDER_FILLED,
+            payload={"side": "buy", "quantity": 1000.0, "attempt": 1, "fill_id": "101"},
+            intent_id="intent-101",
+            strategy_id="s",
+            symbol="EURUSD",
+        )
+        acct.visible_upto = 101
+        assert cu.catch_up() == 0
+        assert journal.fill_ids() == ["101"]
+        assert store.load(ACC) == 101
+
+    def test_no_journal_is_never_durable(self):
+        oms = OrderManager(_broker(_Account([])))  # type: ignore[arg-type]
+        fill = {"transaction_id": "5", "client_order_id": None, "instrument": "EURUSD"}
+        first = oms.process_fill(fill)
+        assert first.newly_processed and not first.durable
+        again = oms.process_fill(fill)
+        assert not again.newly_processed and not again.durable
+
+    def test_catch_up_disabled_without_trade_journal(self):
+        from src.runtime.run_engine import build_fill_catch_up
+
+        b = _broker(_Account([]))
+        assert build_fill_catch_up(b, OrderManager(b), engine=object()) is None  # type: ignore[arg-type]
+        with_journal = OrderManager(b, journal=_Journal())  # type: ignore[arg-type]
+        assert build_fill_catch_up(b, with_journal, engine=object()) is not None
+
+    def test_dedup_rollover_keeps_recent_ids(self, monkeypatch):
+        import src.execution.oms as oms_mod
+
+        monkeypatch.setattr(oms_mod, "_SEEN_FILLS_CAP", 3)
+        journal = _Journal()
+        oms = OrderManager(_broker(_Account([])), journal=journal)  # type: ignore[arg-type]
+        for i in range(1, 6):
+            oms.on_fill({"transaction_id": str(i), "client_order_id": None})
+        # Overflow evicted only the oldest ids; recent overlap still deduped.
+        for i in (3, 4, 5):
+            assert oms.on_fill({"transaction_id": str(i), "client_order_id": None}) is False
+        assert journal.fill_ids() == ["1", "2", "3", "4", "5"]
 
 
 class TestSqlCheckpointStore:
