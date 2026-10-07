@@ -1088,9 +1088,10 @@ class EventDrivenStrategy:
     def _fetch_entry_baseline(broker: Any) -> list[Any] | None:
         """One broker position snapshot for the entry submit-time baseline
         (ENTRY half of CL-hqyj), used only when reconcile() returned None
-        (all books empty). Fail-safe: an unreadable broker yields None, and
-        record_entry then falls back to its best-effort baseline-None
-        promote/reject path — never crash the tick, never guess a baseline."""
+        (all books empty). Fail-safe: an unreadable or malformed snapshot
+        yields None — never crash the tick, never guess a baseline. CL-oqos:
+        generate_intents then opens no entries this tick; only a broker with
+        no get_positions at all reaches record_entry's baseline-None path."""
         if not hasattr(broker, "get_positions"):
             return None
         try:
@@ -1164,6 +1165,20 @@ class EventDrivenStrategy:
         # baseline of None when the broker is actually readable.
         if rows and broker_positions is None:
             broker_positions = self._fetch_entry_baseline(broker)
+            if broker_positions is None and hasattr(broker, "get_positions"):
+                # CL-oqos (Codex r3): the broker exposes positions but the
+                # snapshot is unreadable/malformed. Entering now would park a
+                # baseline-None leg whose after-grace best-effort promotion
+                # can claim a co-holder's position as our fill. Unknown
+                # account state must not open exposure: skip confluence
+                # evaluation entirely so the events stay un-transitioned and
+                # are retried next tick (exits above already ran).
+                logger.warning(
+                    "event_driven: broker snapshot unavailable — no new entries "
+                    "this tick; %d assessed event(s) retried next tick",
+                    len(rows),
+                )
+                return intents
         expired_alerts_sent = 0
 
         for row in rows:

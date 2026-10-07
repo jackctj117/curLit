@@ -891,8 +891,10 @@ CLI (Claude Code 2.1.287), not assumed:
     mismatch streak, no `reconciliation_failure` trip); the event book's
     per-tick reconcile applies the same whole-snapshot validation, so it
     never prunes, promotes or rejects a pending leg against a malformed
-    snapshot, and a malformed snapshot is never used as a submit-time
-    entry baseline.
+    snapshot. If the submit-time entry baseline cannot be read (broker
+    raises or snapshot malformed) the event strategy opens NO new entries
+    that tick and leaves the assessed events un-transitioned for retry, so a
+    co-holder's position can never be claimed as our fill.
   - Health tick (60 s): three consecutive `get_account()` failures (or
     nonfinite equity) record the sticky cause
     `external:account_snapshot_unavailable` and halt entries; every further
