@@ -384,3 +384,30 @@ def test_corrupt_sourced_row_does_not_lift_contradiction_vetoes(tmp_path: Path) 
     assert "ACME" not in second.candidate_paths
     assert all(e.origin == "model" for e in second.graph.edges)  # no reuse
     assert list(FAR_KEY) in model.calls[-1]["payload"]["do_not_propose"]
+
+
+def test_failed_veto_loading_disables_reuse_of_cached_edges(tmp_path: Path) -> None:
+    engine = _engine(tmp_path)
+    memory = NicheEdgeMemory(engine)
+    _run(memory)  # FRO->ACME sourced under "hormuz"
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO niche_edges SELECT src_id, src_kind, src_ticker, src_label, dst_id, "
+                "dst_kind, dst_ticker, dst_label, relation, 'contradicted', claim, source_hash, "
+                "passage, passage_locator, source_record, evidence_bundle, 'other', as_of, "
+                "expires_at, recorded_at FROM niche_edges WHERE dst_id = 'company:ACME'"
+            )
+        )
+
+    class VetoesDown(NicheEdgeMemory):
+        def load_contradicted(self, as_of: Any) -> set[tuple[str, str, str]]:
+            raise ConnectionError
+
+    flaky = VetoesDown(engine)
+    later = NOW + timedelta(days=1)
+    assert any(e.key == FAR_KEY for e in flaky.load_sourced("hormuz", later))  # cache is there
+    second, retriever, _ = _run(flaky, edges={}, as_of=later)
+    # The model proposes nothing; with vetoes unknown, nothing cached is reused.
+    assert second.graph.edges == [] and second.candidates == []
+    assert retriever.calls == []

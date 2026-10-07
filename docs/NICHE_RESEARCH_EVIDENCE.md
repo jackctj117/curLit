@@ -382,7 +382,9 @@ documents. Before traversal:
 - Non-expired contradicted edges from any theme veto both re-proposals and
   remembered sourced edges with the same key. They are listed to the model as
   `do_not_propose`. Vetoes are loaded first and stay in force if loading
-  sourced memory later fails; that failure means only "no reuse".
+  sourced memory later fails; that failure means only "no reuse". If the
+  vetoes themselves cannot be loaded, no cached edge is reused, because a
+  cached edge cannot be checked against contradictions.
 
 Every frontier node is still sent to the traversal model, because directions
 and terminal facts are specific to the event and are never stored. Memory
