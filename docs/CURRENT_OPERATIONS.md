@@ -129,11 +129,14 @@ Everything is PAPER. No real money moves anywhere.
     first order (`fx_emergency_episodes`, OPEN until the daily re-arm /
     operator resume drops them), so a restart never reduces an already
     completed leg again (a failed write sends nothing that tick). Startup
-    restores open episodes AND their attempts' verified fills; a leg whose
-    close is verified filled stays fenced for every writer (cold-start
-    reconciler included) until the position feed shows it
-    (`derisk_fences.awaiting_position_confirmation`), so a lagging feed
-    cannot trigger a second close. It then re-loads every
+    restores open episodes AND their attempts' verified fills. Any leg whose
+    close is verified filled — by a sync fill, a streamed fill or a lookup,
+    in-process or during recovery — stays fenced for every writer (cold-start
+    reconciler and the other kill-switch action included) until the position
+    feed shows it (`derisk_fences.awaiting_position_confirmation`); its
+    episode stays OPEN across the daily re-arm until then, so a lagging feed
+    cannot trigger a second close even across repeated restarts. It then
+    re-loads every
     unresolved attempt, re-fences it (before the cold-start reconciler can
     submit), records `external:unresolved_emergency_orders`, then asks OANDA.
     A restart never resolves anything. If the tables are unreadable, EVERY OMS

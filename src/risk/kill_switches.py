@@ -472,12 +472,14 @@ class KillSwitchManager:
         self._attempt_lock = threading.RLock()
         # action -> durable episode id holding its FIXED targets (CL-pksi).
         self._episodes: dict[str, str] = {}
-        # Restart only: legs whose emergency close is VERIFIED filled but the
-        # position feed has not yet shown it. Fenced for EVERY writer (the
-        # cold-start reconciler included) until a snapshot agrees with the
-        # target, so a lagging book cannot trigger a second close.
-        # canonical symbol -> (route symbol, target).
-        self._confirm_pending: dict[str, tuple[str, float]] = {}
+        # Legs whose emergency close is VERIFIED filled (by any evidence path,
+        # in-process or at startup) but the position feed has not yet shown
+        # it. Fenced for EVERY writer — the cold-start reconciler and other
+        # kill-switch actions included — until a snapshot agrees with the
+        # target, so a lagging book can never trigger a second close. Its
+        # episode stays OPEN (durable) until then, so a restart restores it.
+        # canonical symbol -> (route symbol, target, action).
+        self._confirm_pending: dict[str, tuple[str, float, str]] = {}
         # True while startup recovery could not read the attempt store: every
         # OMS submission stays blocked until a retry succeeds.
         self._recovery_failed = False
@@ -965,6 +967,19 @@ class KillSwitchManager:
                     [f"{a.client_order_id}:{a.status}" for a in pending],
                 )
                 continue
+            awaiting = self._confirm_pending.get(key)
+            if awaiting is not None:
+                # A verified emergency close is not yet visible in this
+                # snapshot: sizing from it would close (or reverse) twice.
+                logger.critical(
+                    "%s: %s has a verified %s fill (target %.4f) the position feed does not "
+                    "show yet; no order until it confirms",
+                    strategy_id,
+                    symbol,
+                    awaiting[2],
+                    awaiting[1],
+                )
+                continue
             qty = net_qty.get(key, 0.0)
             # Another verified reduction may have passed the original target.
             # Never buy back exposure or flip direction to recreate it.
@@ -1142,7 +1157,7 @@ class KillSwitchManager:
         is already VERIFIED by broker evidence — this never resolves an order.
         """
         with self._attempt_lock:
-            for key, (route, target) in list(self._confirm_pending.items()):
+            for key, (route, target, _action) in list(self._confirm_pending.items()):
                 qty = net_qty.get(key, 0.0)
                 if abs(qty - target) < 1.0 or (abs(qty) < abs(target) and qty * target >= 0):
                     logger.warning(
@@ -1265,6 +1280,14 @@ class KillSwitchManager:
                     order_id=updated.broker_order_id,
                     requested_qty=updated.requested_qty,
                 )
+                if current.unresolved:
+                    # Verified fill, but other writers size off the position
+                    # feed: keep every writer fenced until it shows the fill.
+                    self._confirm_pending[updated.symbol] = (
+                        updated.route_symbol,
+                        updated.target,
+                        updated.action,
+                    )
             elif current.unresolved and not updated.unresolved:
                 if updated.status in RETRYABLE_STATUSES:
                     # Verified zero fill: one retry per tick at the ORIGINAL target.
@@ -1523,10 +1546,14 @@ class KillSwitchManager:
                 else:
                     self._derisk_results.pop(leg, None)
                 if attempt.status is AttemptStatus.FILLED:
-                    self._confirm_pending[attempt.symbol] = (attempt.route_symbol, attempt.target)
-                else:
-                    self._confirm_pending.pop(attempt.symbol, None)
-            for key, (route, _target) in self._confirm_pending.items():
+                    # Latest verified fill per symbol; released only by a
+                    # position snapshot that shows it (_confirm_positions).
+                    self._confirm_pending[attempt.symbol] = (
+                        attempt.route_symbol,
+                        attempt.target,
+                        attempt.action,
+                    )
+            for key, (route, _target, _action) in self._confirm_pending.items():
                 self._sync_fence(key, route)
         if self._recovery_failed:
             # Only now — every recovered fence is installed — may writers run.
@@ -1644,6 +1671,9 @@ class KillSwitchManager:
         # CL-pksi: the fence set is the durable attempt record, not results.
         with self._attempt_lock:
             unresolved = {a.action for a in self._attempts.values() if a.unresolved}
+            # Verified fills awaiting position confirmation are recoverable
+            # state too: their episodes stay OPEN so a restart restores them.
+            unresolved |= {c[2] for c in self._confirm_pending.values()}
             pending_symbols = sorted({a.symbol for a in self._attempts.values() if a.unresolved})
             dropped = [a for a in self._episodes if a not in unresolved]
             closing = [self._episodes.pop(a) for a in dropped]
