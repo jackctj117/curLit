@@ -126,6 +126,21 @@ class TestUnknownMarkNeverZero:
         with pytest.raises(AccountMarkUnavailableError, match="CL-vfw7"):
             b.get_account()
 
+    def test_non_account_currency_round_trip_stays_unknown_when_flat(self) -> None:
+        # Codex r1: closing USDJPY realizes -1,000 JPY. That must not be
+        # reported as -1,000 USD realized, and going flat must not make the
+        # unconverted result "known" again.
+        b = PaperBroker(initial_capital=100_000.0)
+        b.set_price("USDJPY", 149.99, 150.00)
+        b.place_order(_order("buy", 1_000, "USDJPY"))  # @ 150.00
+        b.set_price("USDJPY", 149.00, 149.01)
+        b.place_order(_order("sell", 1_000, "USDJPY"))  # @ 149.00 → -1,000 JPY
+        assert next(p for p in b.get_positions() if p.symbol == "USDJPY").quantity == 0.0
+        with pytest.raises(AccountMarkUnavailableError, match="JPY"):
+            b.get_account()
+        # Account-currency cash was never touched by the JPY amounts.
+        assert b.cash == pytest.approx(100_000.0)
+
     def test_account_currency_is_configurable(self) -> None:
         b = PaperBroker(initial_capital=10_000_000.0, account_currency="JPY")
         b.set_price("USDJPY", 149.99, 150.01)

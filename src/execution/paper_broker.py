@@ -9,7 +9,8 @@ realized deltas, so the drawdown / daily-loss kill switches could not see
 an open position's losses on the paper venue.
 
 A mark that cannot be computed honestly (no price, a non-finite price, or
-a P&L currency that is not the account currency) makes ``get_account``
+a P&L currency that is not the account currency) — or any realized P&L /
+cost booked in a non-account currency, even once flat — makes ``get_account``
 RAISE ``AccountMarkUnavailableError`` — never a silent zero. The live-engine
 health tick already counts account-read failures and halts after three
 (fail closed), the same path a broker outage takes.
@@ -63,6 +64,10 @@ class PaperBroker(Broker):
         # cannot drift from the open book.
         self._cash = initial_capital
         self._realized_pnl = 0.0
+        # Realized P&L + costs from fills whose P&L currency is NOT the
+        # account currency, per currency, awaiting conversion (CL-vfw7).
+        # Non-empty ⇒ account equity is UNKNOWN (get_account raises).
+        self._unconverted: dict[str, float] = {}
         self._positions: dict[str, Position] = {}
         self._trade_log: list[dict[str, Any]] = []
         self._prices: dict[str, tuple[float, float]] = {}
@@ -161,11 +166,26 @@ class PaperBroker(Broker):
             avg_price=avg_price,
             realized_pnl=realized,
         )
-        # NOTE: realized_delta and cost are in the pair's QUOTE currency and
-        # are booked to cash unconverted — pre-existing behavior, correct only
-        # for account-currency-quoted pairs; conversion is CL-vfw7's scope.
-        self._cash += realized_delta - cost
-        self._realized_pnl += realized_delta
+        # realized_delta and cost are denominated in the pair's QUOTE
+        # currency. Only account-currency amounts may enter cash / realized
+        # P&L (CL-9ird); anything else is held per currency until a
+        # converter exists (TODO CL-vfw7) and makes equity UNKNOWN — booking
+        # 1,000 JPY as 1,000 USD would misstate a realized result.
+        pnl_ccy = self._pnl_currency(order.symbol)
+        if pnl_ccy == self._account_currency:
+            self._cash += realized_delta - cost
+            self._realized_pnl += realized_delta
+        else:
+            key = pnl_ccy or f"unknown:{order.symbol}"
+            self._unconverted[key] = self._unconverted.get(key, 0.0) + realized_delta - cost
+            logger.warning(
+                "PaperBroker: %s fill booked %.6f %s unconverted (account %s, CL-vfw7) — "
+                "account equity is UNKNOWN until converted",
+                order.symbol,
+                realized_delta - cost,
+                key,
+                self._account_currency,
+            )
         order.status = OrderStatus.FILLED
         self._trade_log.append(
             {
@@ -197,6 +217,14 @@ class PaperBroker(Broker):
         ``AccountMarkUnavailableError`` when any open position cannot be
         marked — equity is then UNKNOWN, not "cash only".
         """
+        if self._unconverted:
+            msg = (
+                f"realized P&L/costs held in non-account currencies "
+                f"{dict(self._unconverted)} cannot be converted to "
+                f"{self._account_currency} (no converter wired, CL-vfw7) — equity UNKNOWN"
+            )
+            logger.error("PaperBroker: %s", msg)
+            raise AccountMarkUnavailableError(msg)
         unrealized = self._unrealized_pnl()
         equity = self._cash + unrealized
         assert math.isfinite(equity), f"non-finite paper equity {equity}"
@@ -215,6 +243,14 @@ class PaperBroker(Broker):
             realized_pnl=self._realized_pnl,
             unrealized_pnl=unrealized,
         )
+
+    @staticmethod
+    def _pnl_currency(symbol: str) -> str | None:
+        """Currency a position's P&L is denominated in: the pair's QUOTE
+        currency, or None when the symbol is not a currency pair (e.g. an
+        index CFD) and the currency cannot be determined."""
+        pair = currency_pair(symbol)
+        return pair[1] if pair is not None else None
 
     def _unrealized_pnl(self) -> float:
         """Open-position marks summed in ACCOUNT currency; raises if unknown.
@@ -246,15 +282,14 @@ class PaperBroker(Broker):
                 )
                 logger.error("PaperBroker: %s", msg)
                 raise AccountMarkUnavailableError(msg)
-            # A pair position's P&L is denominated in its QUOTE currency.
-            pair = currency_pair(pos.symbol)
-            if pair is None or pair[1] != self._account_currency:
+            pnl_ccy = self._pnl_currency(pos.symbol)
+            if pnl_ccy != self._account_currency:
                 # TODO(CL-vfw7): convert quote-currency P&L to the account
                 # currency via the shared AccountCurrencyConverter
                 # (src/risk/currency.py) once it lands. Until then the mark is
                 # UNKNOWN: adding JPY (or index points) to a USD equity is
                 # wrong by orders of magnitude, and dropping it hides losses.
-                ccy = pair[1] if pair is not None else "unknown"
+                ccy = pnl_ccy or "unknown"
                 msg = (
                     f"cannot mark open position {pos.symbol} x{pos.quantity}: "
                     f"P&L currency {ccy} is not the account currency "
