@@ -213,7 +213,10 @@ def _record_fill(fills: dict[str, float], ev: DeriskEvidence) -> dict[str, float
 
 
 def _complete(cumulative: float, requested: float) -> bool:
-    return requested > 0 and cumulative >= requested - FILL_TOLERANCE_UNITS + 1e-9
+    # Inclusive boundary: a fill exactly FILL_TOLERANCE_UNITS short is complete
+    # (the tolerance exists for broker unit rounding).  The epsilon guards the
+    # float comparison; it must widen the band, never narrow it (CL-pksi).
+    return requested > 0 and cumulative >= requested - FILL_TOLERANCE_UNITS - 1e-9
 
 
 def _from_submission(
