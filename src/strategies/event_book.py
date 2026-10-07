@@ -429,6 +429,13 @@ class EventBook:
                 )
             except (KeyError, TypeError, ValueError) as exc:
                 raise ValueError(f"Unparseable pending entry {sym}; refusing partial book") from exc
+        if version == 1:
+            # CL-vfw7: persist the v1→v2 migration as soon as the whole file
+            # validated, so the operator can reconcile the legacy figure in
+            # the v2 file (a flat book would otherwise never save, and the v1
+            # branch never reads legacy_reconciled_account_pnl).
+            logger.warning("Event book %s: persisting v1→v2 currency migration", path)
+            self.save()
 
     def _load_currency_fields(
         self,
@@ -819,8 +826,12 @@ class EventBook:
             current_price=entry.trigger_price,
             # Projected ACCOUNT-currency total; None when this exit's account
             # amount is unknown (never a number that silently omits it).
+            # None also while ANY earlier close is unconverted: the
+            # cumulative total is then unknown, not a partial subtotal.
             book_realized_pnl=(
-                self.realized_pnl + pnl_account if pnl_account is not None else None
+                self.realized_pnl + pnl_account
+                if pnl_account is not None and not self.unconverted_closes
+                else None
             ),
             emit_count=entry.emit_count,
             quote_ccy=self.leg_quote_ccy(pos),
@@ -1057,7 +1068,24 @@ class EventBook:
                     entry.emit_count,
                 )
                 continue
-            self._try_exit_conversion(entry, now)
+            if now - entry.triggered_ts > MAX_RATE_AGE:
+                # The fill happened somewhere between trigger and now (an
+                # exit pending across re-emits or a restart); no rate we hold
+                # or can fetch is known to be the fill-time rate → the close
+                # books as UNCONVERTED (operator reconciliation), never at a
+                # trigger-time or today's rate.
+                logger.warning(
+                    "Event exit %s confirmed %.0fs after trigger (> %s): fill-time "
+                    "rate unknown — booking as unconverted (trigger-time rate %s "
+                    "not used)",
+                    symbol,
+                    (now - entry.triggered_ts).total_seconds(),
+                    MAX_RATE_AGE,
+                    entry.exit_conversion.to_payload() if entry.exit_conversion else None,
+                )
+                entry.exit_conversion = None
+            else:
+                self._try_exit_conversion(entry, now)
             record = self._pending_exit_record(symbol, entry)
             self.closed_trades += 1
             closed_row = self._closed_row(record, now)
