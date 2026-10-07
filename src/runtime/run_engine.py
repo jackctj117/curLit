@@ -626,6 +626,7 @@ def build_kill_switch_manager(
     """
     from dataclasses import asdict  # noqa: PLC0415
 
+    from src.risk.emergency_attempts import SqlEmergencyAttemptStore  # noqa: PLC0415
     from src.risk.kill_switches import KillSwitchManager  # noqa: PLC0415
     from src.risk.risk_profile import load_active_profile  # noqa: PLC0415
 
@@ -647,6 +648,10 @@ def build_kill_switch_manager(
             oms,
             config=asdict(load_active_profile().kill_switches),
             data_provider=data_provider,
+            # CL-pksi: emergency order attempts are durable (migration 025)
+            # so a restart re-fences them instead of forgetting them. Without
+            # an engine the store stays process-local (out-of-lane callers).
+            attempt_store=SqlEmergencyAttemptStore(engine) if engine is not None else None,
         )
     except Exception as exc:
         raise RuntimeError(

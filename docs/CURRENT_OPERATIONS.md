@@ -93,6 +93,53 @@ Everything is PAPER. No real money moves anywhere.
   — trust that log. State: `data/risk_context_state.json` (day-start +
   peak equity; a corrupt file refuses boot — repair or remove it
   deliberately).
+- **Emergency-order fences, persistence and recovery (CL-o9sq / CL-pksi —
+  NOT YET DEPLOYED; needs migration 025 applied BEFORE the engine restarts on
+  this code).** Kill switches count a flatten/reduce leg complete only on a
+  verified outcome (the OMS returns a typed `SubmissionResult`), keep a FIXED
+  per-leg target across retries, and never resend a close whose outcome is
+  unknown:
+  - **Persistence.** Every emergency order is written to
+    `fx_emergency_attempts` (migration 025) as `SUBMITTING` *before* the
+    broker call, keyed by the intent id that is also the OANDA client id
+    (`clientExtensions.id`), with the original position and the fixed target.
+    Every status change is written back. If the row cannot be written the
+    order is NOT sent and the sticky cause `external:emergency_attempts_unavailable`
+    halts entries.
+  - **Fences.** `SUBMITTING`/`WORKING`/`UNKNOWN`/`PARTIAL_TERMINAL` attempts
+    fence their symbol in the kill-switch manager AND in the OMS: every
+    writer (strategies, reconciler, `/api/trade`, the other kill switch) gets
+    `BLOCKED` on that instrument, and the sticky cause
+    `external:unresolved_emergency_orders` holds the entry halt.
+  - **Resolution = broker evidence only.** A streamed `ORDER_FILL` carrying
+    the attempt's client id (via the OMS's transaction-id-deduped `on_fill`)
+    or an order lookup (`GET /v3/accounts/{id}/orders/@<clientID>` plus the
+    filling transaction, every health tick and at startup). A flat position
+    snapshot never clears a fence. Fills are summed per venue transaction id
+    (duplicates count once, also across restarts). A verified zero-fill
+    rejection/cancel, or "no such order" from OANDA ≥ 120 s after the attempt
+    was recorded, allows ONE retry per symbol per tick against the ORIGINAL
+    target. A partial fill followed by a cancel is `PARTIAL_TERMINAL`: the
+    cumulative fill is recorded, nothing is resent, the fence stays.
+  - **Restart.** Startup re-loads every unresolved attempt, re-fences it
+    (before the cold-start reconciler can submit), restores its original
+    target, records `external:unresolved_emergency_orders`, then asks OANDA.
+    A restart never resolves anything; an unreadable table halts entries
+    (`external:emergency_attempts_unavailable`).
+  - **Operator.** `/api/system` → `derisk_fences` (`count`, `symbols`, and per
+    attempt status / client id / cumulative fill). `/api/system/resume` returns
+    **409** while any attempt is unresolved (auto-resume can never lift
+    `unresolved_emergency_orders`). After reconciling a fence the evidence
+    cannot settle (e.g. `PARTIAL_TERMINAL`) at the broker:
+    `POST /api/system/derisk-fences/release` with
+    `{"symbol", "reason", "changed_by"}` (attributed, persisted as
+    `OPERATOR_RELEASED`), then resume. Inspect rows with
+    `SELECT * FROM fx_emergency_attempts WHERE status IN
+    ('SUBMITTING','WORKING','UNKNOWN','PARTIAL_TERMINAL');`.
+  - Limits: resolved (non-fenced) targets are still process-local, so a
+    restart after a verified rejection recomputes that leg's target from the
+    current book; the paper broker has no order lookup (its orders resolve
+    synchronously).
 - **Sporadic practice 401s (CL-wrsa)**: OANDA practice intermittently
   returns `401 Unauthorized` on `GET accounts/<id>/summary` / `/positions`
   (and on price-stream connects). Observed 2026-07-21..10-01: 15 of 16 REST

@@ -59,6 +59,14 @@ class Order:
     #: fetch for priceBound dies: getting flat beats slippage protection) and
     #: fail CLOSED for everything else.
     emergency: bool = False
+    #: CL-pksi: cumulative quantity the venue reports FILLED for this order,
+    #: independent of ``status`` (a cancelled order may carry a partial fill).
+    #: ``None`` means the venue evidence did not establish it — never "zero".
+    #: Populated by order LOOKUPS (``get_order``); placement leaves it unset.
+    filled_quantity: float | None = None
+    #: CL-pksi: venue transaction id of the fill behind ``filled_quantity``,
+    #: so the same fill seen on the transaction stream is counted once.
+    fill_transaction_id: str | None = None
 
 
 @dataclass
@@ -80,6 +88,15 @@ class BrokerRejectedOrderError(RuntimeError):
     policy path (classification by message text, halved retries, strategy
     halt) as transport exceptions — ultrareview #2: before this, a REJECTED
     status silently entered _pending forever and was journaled ORDER_PLACED.
+    """
+
+
+class BrokerOrderNotFoundError(LookupError):
+    """The venue has no order for the requested id / client id (CL-pksi).
+
+    Raised by ``get_order`` on a confirmed "does not exist" answer (OANDA
+    HTTP 404). Distinct from a transport failure, which proves nothing: only
+    this exception is evidence that no order was ever created.
     """
 
 
