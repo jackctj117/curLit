@@ -162,6 +162,27 @@ Everything is PAPER. No real money moves anywhere.
   - Limits: an emergency order whose request never reached OANDA (404 on
     lookup) needs an operator release before the leg is retried; the paper
     broker has no order lookup (its orders resolve synchronously).
+- **Transaction-stream catch-up + OMS lock scope (CL-pksi finding / CL-80tv —
+  NOT YET DEPLOYED; apply migration 028 before the engine restarts on this
+  code).**
+  - The engine keeps a durable cursor of the last OANDA transaction whose fill
+    is journaled (`oanda_stream_checkpoint`, migration 028). On every stream
+    (re)connect it replays `GET /v3/accounts/{id}/transactions/sinceid` from
+    that cursor through the same OMS fill path (deduplicated by transaction id,
+    and against the journal after a restart), then the live stream continues.
+    Pages are capped at 500 transactions, 20 pages per reconnect; the log line
+    `REPLAYED <n> missed fill(s)` (WARNING when n > 0) reports each catch-up,
+    `TRUNCATED` means the remaining backlog waits for the next reconnect.
+  - The cursor advances only after a fill's ORDER_FILLED row is written. A
+    failed replay or journal write leaves it where it is (logged; the stream
+    stays up) and freezes it until the next successful replay. No checkpoint
+    yet (first boot) = seeded at the account's latest transaction (earlier
+    fills are not replayed). A missing table only disables the catch-up
+    (logged on every reconnect); the position poll remains the backstop.
+  - The OMS now reads broker positions OUTSIDE its state lock: a slow
+    `get_positions` no longer stalls halts, fills or other symbols' submits.
+    A fill for the same symbol processed during the read discards the
+    snapshot (one re-read; a second change refuses the intent as `BLOCKED`).
 - **Sporadic practice 401s (CL-wrsa)**: OANDA practice intermittently
   returns `401 Unauthorized` on `GET accounts/<id>/summary` / `/positions`
   (and on price-stream connects). Observed 2026-07-21..10-01: 15 of 16 REST

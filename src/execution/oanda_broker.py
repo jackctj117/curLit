@@ -5,7 +5,7 @@ import json
 import logging
 import re
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import UTC, datetime
 from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
 from email.utils import parsedate_to_datetime
@@ -22,6 +22,7 @@ from .broker import (
     OrderType,
     Position,
 )
+from .fill_stream import TransactionPage
 
 logger = logging.getLogger(__name__)
 
@@ -912,7 +913,10 @@ class OandaBroker(Broker):
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, self._STREAM_BACKOFF_MAX)
 
-    async def stream_transactions(self) -> AsyncIterator[dict[str, Any]]:
+    async def stream_transactions(
+        self,
+        on_connect: Callable[[], Awaitable[None]] | None = None,
+    ) -> AsyncIterator[dict[str, Any]]:
         """Self-healing OANDA transactions stream (CL-vj74).
 
         Consumes ``/v3/accounts/{id}/transactions/stream`` and yields a
@@ -925,6 +929,14 @@ class OandaBroker(Broker):
         Non-fill transactions (HEARTBEAT, order create/cancel, funding, …) are
         skipped; a fill carries ``orderID``, echoed ``clientExtensions.id``,
         ``units`` and ``price`` for per-order attribution.
+
+        ``on_connect`` (CL-pksi catch-up) is awaited after EVERY successful
+        (re)connect, before the first streamed line is read: the stream only
+        carries transactions created while connected, so the caller replays
+        the gap there (``/transactions/sinceid``). Connecting first and then
+        replaying leaves no window — anything newer than the replay is already
+        buffered on this connection, and overlap is deduplicated by
+        transaction id. A failing hook is logged and the stream stays up.
         """
         base_url = (
             self.STREAM_PRACTICE if "practice" in str(self.client.base_url) else self.STREAM_LIVE
@@ -978,6 +990,19 @@ class OandaBroker(Broker):
                         continue
                     backoff = self._STREAM_BACKOFF_START  # connected — reset
                     rejections = 0
+                    if on_connect is not None:
+                        logger.info("OANDA transaction stream connected — running catch-up")
+                        try:
+                            await on_connect()
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception:
+                            # Never let a failed replay take the live stream
+                            # down; the checkpoint stays put for the next try.
+                            logger.exception(
+                                "OANDA transaction stream catch-up hook failed — "
+                                "continuing with the live stream",
+                            )
                     async for line in resp.aiter_lines():
                         if not line.strip():
                             continue
@@ -987,24 +1012,7 @@ class OandaBroker(Broker):
                             continue  # heartbeat / partial line — skip
                         if msg.get("type") != "ORDER_FILL":
                             continue
-                        cext = msg.get("clientExtensions") or {}
-                        try:
-                            units = float(msg.get("units", 0.0))
-                            price = float(msg.get("price", 0.0))
-                        except (TypeError, ValueError):
-                            units, price = 0.0, 0.0
-                        yield {
-                            "type": "ORDER_FILL",
-                            "transaction_id": str(msg.get("id", "")),
-                            "order_id": str(msg.get("orderID", "")),
-                            "client_order_id": cext.get("id"),
-                            "instrument": self._from_oanda(
-                                str(msg.get("instrument", "")),
-                            ),
-                            "units": units,
-                            "price": price,
-                            "ts": msg.get("time"),
-                        }
+                        yield self._normalize_fill(msg)
                     logger.warning(
                         "OANDA transaction stream closed by server — reconnecting",
                     )
@@ -1029,6 +1037,96 @@ class OandaBroker(Broker):
                 )
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, self._STREAM_BACKOFF_MAX)
+
+    def _normalize_fill(self, msg: dict[str, Any]) -> dict[str, Any]:
+        """One ORDER_FILL transaction -> the dict the OMS consumes (CL-vj74).
+        Shared by the live stream and the ``sinceid`` replay (CL-pksi)."""
+        cext = msg.get("clientExtensions") or {}
+        try:
+            units = float(msg.get("units", 0.0))
+            price = float(msg.get("price", 0.0))
+        except (TypeError, ValueError):
+            units, price = 0.0, 0.0
+        return {
+            "type": "ORDER_FILL",
+            "transaction_id": str(msg.get("id", "")),
+            "order_id": str(msg.get("orderID", "")),
+            "client_order_id": cext.get("id") if isinstance(cext, dict) else None,
+            "instrument": self._from_oanda(str(msg.get("instrument", ""))),
+            "units": units,
+            "price": price,
+            "ts": msg.get("time"),
+        }
+
+    def transactions_since(self, since_id: int, *, limit: int) -> TransactionPage:
+        """Bounded page of transactions newer than ``since_id`` (CL-pksi).
+
+        ``GET /v3/accounts/{id}/transactions/sinceid?id=<since_id>`` through
+        the regular REST client (read-only, never retried here). The endpoint
+        has no page-size parameter, so at most ``limit`` transactions (lowest
+        ids first) are kept and ``truncated`` tells the caller to fetch again
+        from the returned ``max_id``. Raises on any HTTP or payload error.
+        """
+        assert since_id >= 0 and limit > 0, "bad replay bounds"
+        path = f"/v3/accounts/{self.account_id}/transactions/sinceid?id={int(since_id)}"
+        logger.info("OANDA transaction replay: fetching transactions since %d", since_id)
+        resp = self._get_read(path, "transaction replay")
+        resp.raise_for_status()
+        body = resp.json()
+        raw = body.get("transactions")
+        if not isinstance(raw, list):
+            msg = f"OANDA sinceid {since_id}: response has no transactions list"
+            raise ValueError(msg)
+        txns: list[tuple[int, dict[str, Any]]] = []
+        for t in raw:
+            if not isinstance(t, dict):
+                continue
+            try:
+                tid = int(str(t.get("id", "")))
+            except ValueError:
+                logger.warning("OANDA sinceid: transaction with bad id %r skipped", t.get("id"))
+                continue
+            if tid > since_id:
+                txns.append((tid, t))
+        txns.sort(key=lambda pair: pair[0])
+        truncated = len(txns) > limit
+        kept = txns[:limit]
+        last_raw = body.get("lastTransactionID")
+        last_id = int(str(last_raw)) if last_raw not in (None, "") else None
+        max_id = kept[-1][0] if kept else None
+        if max_id is not None and last_id is not None and max_id < last_id and not truncated:
+            # The venue returned fewer transactions than exist (server cap):
+            # ask again from max_id rather than declaring the gap closed.
+            truncated = True
+        fills = [self._normalize_fill(t) for _, t in kept if t.get("type") == "ORDER_FILL"]
+        logger.info(
+            "OANDA transaction replay: %d transaction(s) since %d (%d fill(s)), "
+            "max_id=%s last=%s truncated=%s",
+            len(kept),
+            since_id,
+            len(fills),
+            max_id,
+            last_id,
+            truncated,
+        )
+        return TransactionPage(
+            fills=fills,
+            max_id=max_id,
+            last_transaction_id=last_id,
+            truncated=truncated,
+        )
+
+    def last_transaction_id(self) -> int:
+        """The account's latest transaction id (CL-pksi checkpoint seed), from
+        the allowlisted read-only ``summary`` endpoint."""
+        body = self._get_account_read("summary").json()
+        raw = body.get("lastTransactionID")
+        if raw in (None, ""):
+            raw = (body.get("account") or {}).get("lastTransactionID")
+        if raw in (None, ""):
+            msg = "OANDA account summary carries no lastTransactionID"
+            raise ValueError(msg)
+        return int(str(raw))
 
     @staticmethod
     def _to_oanda(sym: str) -> str:

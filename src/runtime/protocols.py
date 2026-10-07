@@ -28,7 +28,7 @@ narrows the type for mypy.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Iterable
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
 from typing import Any, Protocol, runtime_checkable
 
 
@@ -63,7 +63,10 @@ class FillStreamingBroker(Protocol):
     """A broker that can push real-time fills (CL-vj74). OPTIONAL — the paper
     broker has no transaction stream, so this is feature-detected."""
 
-    def stream_transactions(self) -> AsyncIterator[dict[str, Any]]: ...
+    def stream_transactions(
+        self,
+        on_connect: Callable[[], Awaitable[None]] | None = None,
+    ) -> AsyncIterator[dict[str, Any]]: ...
 
 
 @runtime_checkable
@@ -72,6 +75,16 @@ class FillHandlingOrderManager(Protocol):
     with :class:`FillStreamingBroker`."""
 
     def on_fill(self, fill: dict[str, Any]) -> bool: ...
+
+
+@runtime_checkable
+class FillCatchUpLike(Protocol):
+    """Durable transaction-stream catch-up (CL-pksi): replay on (re)connect,
+    checkpoint each journaled live fill. See src/execution/fill_stream.py."""
+
+    def catch_up(self) -> int: ...
+
+    def handle_live(self, fill: dict[str, Any]) -> None: ...
 
 
 @runtime_checkable

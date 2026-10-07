@@ -103,6 +103,17 @@ class SubmissionResult:
     filled_qty: float | None = None
 
 
+@dataclass(frozen=True)
+class FillOutcome:
+    """Result of :meth:`OrderManager.process_fill` (CL-pksi catch-up)."""
+
+    #: First delivery of this venue fill (post-dedup).
+    newly_processed: bool
+    #: The fill's ORDER_FILLED row is known to be journaled (or there is no
+    #: journal): a durable transaction checkpoint may advance past it.
+    durable: bool
+
+
 class OrderManager:
     def __init__(
         self,
@@ -159,6 +170,20 @@ class OrderManager:
         # venue transaction id (the stream can redeliver on reconnect).
         self._pending_intents: dict[str, OrderIntent] = {}
         self._seen_fills: set[str] = set()
+        # CL-pksi catch-up: fills whose ORDER_FILLED journal append FAILED.
+        # Their ids are NOT kept in ``_seen_fills`` (so a replay from the
+        # durable stream checkpoint can journal them again); the resolved
+        # intent is kept here so the retry keeps its attribution, and the
+        # listeners — which already ran — are not fired twice.
+        self._unjournaled_fills: dict[str, OrderIntent | None] = {}
+        # Fill ids claimed by a delivery whose journal append is in progress.
+        self._fills_journaling: set[str] = set()
+        # CL-80tv: per-canonical-symbol change counter, bumped (under _lock)
+        # whenever a fill for that symbol is processed. Broker position reads
+        # run OUTSIDE _lock; a submit captures the counter before its read
+        # and re-checks it under _lock before deciding, so a fill that landed
+        # during the read is detected instead of sizing off a stale book.
+        self._symbol_versions: dict[str, int] = {}
         # CL-pksi: consumers of NEWLY processed streamed fills (the kill-switch
         # manager resolves emergency-order fences from them). Called after the
         # transaction-id dedup above, so a redelivered fill never re-fires.
@@ -175,6 +200,13 @@ class OrderManager:
         # emergency-attempt record could not be recovered, so unknown
         # outstanding emergency orders cannot be duplicated by ANY writer.
         self._submission_block: str | None = None
+
+    #: CL-80tv: position reads per submit when a fill for the same symbol is
+    #: processed during the (lock-free) broker read. One re-read covers the
+    #: usual case — a fill already in flight when the read started; a second
+    #: change means the book is moving under us, so the intent is refused
+    #: (BLOCKED, nothing sent) instead of sized off a stale snapshot.
+    _POSITION_READ_ATTEMPTS = 2
 
     def submit_intent(
         self,
@@ -248,136 +280,73 @@ class OrderManager:
         """submit_intent body, run while holding the per-symbol reservation
         (CL-sbrp). ``positions`` is forced to None when the reservation was
         contended, so the delta is recomputed from a fresh, post-fill book."""
+        csym = canonical_symbol(intent.symbol)
+        # Cheap pre-check so a blocked/fenced submit never pays for a broker
+        # read. Re-checked under the lock at decision time (below), because a
+        # fence can be set while the read is in flight.
         with self._lock:
-            # CL-pksi: checked HERE, under the per-symbol reservation, so a
-            # submit that queued behind an emergency order sees the fence that
-            # order set before it was placed (a pre-reservation check would be
-            # stale by the time the reservation is granted).
-            if self._submission_block is not None:
-                logger.critical(
-                    "OMS: ALL submissions blocked (%s) — refusing intent %s (%s %s)",
-                    self._submission_block,
+            refused = self._refusal_locked(intent)
+        if refused is not None:
+            return refused
+        decision: SubmissionResult | tuple[str, float, bool] | None = None
+        for read_attempt in range(1, self._POSITION_READ_ATTEMPTS + 1):
+            version: int | None = None
+            if positions is not None:
+                snapshot = positions
+            else:
+                # CL-80tv: the broker read (HTTP, possibly slow) runs OUTSIDE
+                # _lock — holding it here stalled every halt_new_trades(),
+                # fill and other-symbol submit behind one slow GET. The
+                # per-symbol reservation (CL-sbrp) still excludes every other
+                # OMS submit for this symbol; the only same-symbol state change
+                # that can land meanwhile is a processed fill, which bumps the
+                # symbol version re-checked below.
+                with self._lock:
+                    version = self._symbol_versions.get(csym, 0)
+                logger.debug(
+                    "OMS: reading broker positions for %s outside the state lock "
+                    "(intent %s, attempt %d/%d, version %d)",
+                    csym,
                     intent.intent_id,
-                    intent.strategy_id,
-                    intent.symbol,
+                    read_attempt,
+                    self._POSITION_READ_ATTEMPTS,
+                    version,
                 )
-                return SubmissionResult(intent.intent_id, SubmissionStatus.BLOCKED)
-            fence = self._symbol_fences.get(canonical_symbol(intent.symbol))
-            if fence is not None and fence[1] != intent.intent_id:
-                logger.critical(
-                    "OMS: %s is FENCED (%s) — refusing intent %s from %s (target=%.4f); "
-                    "an emergency order there is unresolved",
-                    canonical_symbol(intent.symbol),
-                    fence[0],
-                    intent.intent_id,
-                    intent.strategy_id,
-                    intent.target_position,
-                )
-                return SubmissionResult(intent.intent_id, SubmissionStatus.BLOCKED)
-            # Position matching MUST use the canonical key (CL-qqra): broker
-            # positions come back compact ("USDCAD") while event intents are
-            # OANDA-underscore ("USD_CAD"). A raw .get() always missed →
-            # exit deltas of 0 (positions never closed at the broker) and
-            # entries that stacked on an existing position. Routing below
-            # still uses intent.symbol (broker _to_oanda is idempotent).
-            snapshot = positions if positions is not None else self.broker.get_positions()
-            current_positions = {canonical_symbol(p.symbol): p.quantity for p in snapshot}
-            current_qty = current_positions.get(canonical_symbol(intent.symbol), 0.0)
-            delta = intent.target_position - current_qty
-
-            # "Halt new trades" means exactly that (CL-8lv6): risk-REDUCING
-            # intents still pass — a halted OMS must never trap a strategy's
-            # exit while its book already closed (broker keeps the risk, book
-            # says flat). Reducing = smaller absolute size, same side (or
-            # flat); flips and adds are blocked. This gate MUST stay inside
-            # the lock (halt-TOCTOU, CL-8lv6): halt_new_trades takes the same
-            # lock, so the flag read and the place decision are atomic.
-            reducing = abs(intent.target_position) < abs(current_qty) and (
-                intent.target_position == 0.0 or intent.target_position * current_qty > 0
-            )
-            if bypass_halt and not reducing and delta != 0:
-                # A position can change between the risk snapshot and this
-                # submit. An emergency label must never authorize buying back
-                # an already-reduced leg or crossing through zero.
-                logger.critical(
-                    "Emergency intent %s is no longer reducing (%s %.4f -> %.4f); blocked",
-                    intent.intent_id,
-                    intent.symbol,
-                    current_qty,
-                    intent.target_position,
-                )
-                return SubmissionResult(intent.intent_id, SubmissionStatus.BLOCKED)
-            # CL-0deu.2: the durable account halt is consulted for every
-            # non-reducing intent, inside the same lock as the local flag, so
-            # the decision and the halt write serialize. Unknown state blocks.
-            durable_block = None
-            if not bypass_halt and not reducing and self.halt_store is not None:
-                decision = self.halt_store.entry_decision()
-                if not decision.allowed:
-                    durable_block = decision
-            if durable_block is not None:
-                logger.warning(
-                    "OMS: account halt (%s) — rejecting non-reducing intent %s "
-                    "(%s target=%.4f current=%.4f): %s",
-                    durable_block.reason_code,
-                    intent.intent_id,
-                    intent.symbol,
-                    intent.target_position,
-                    current_qty,
-                    durable_block.detail,
-                )
-                return SubmissionResult(intent.intent_id, SubmissionStatus.BLOCKED)
-            if self._halted and not bypass_halt:
-                if not reducing:
+                snapshot = self.broker.get_positions()
+            with self._lock:
+                if version is not None and self._symbol_versions.get(csym, 0) != version:
+                    # A fill for this symbol was processed while the read was
+                    # in flight: the snapshot may or may not include it, so a
+                    # delta from it could double or reverse the position.
                     logger.warning(
-                        "OMS halted — rejecting non-reducing intent %s "
-                        "(%s target=%.4f current=%.4f)",
+                        "OMS: %s changed during the position read for intent %s "
+                        "(version %d -> %d, attempt %d/%d) — discarding the snapshot",
+                        csym,
                         intent.intent_id,
-                        intent.symbol,
-                        intent.target_position,
-                        current_qty,
+                        version,
+                        self._symbol_versions.get(csym, 0),
+                        read_attempt,
+                        self._POSITION_READ_ATTEMPTS,
                     )
-                    return SubmissionResult(intent.intent_id, SubmissionStatus.BLOCKED)
-                logger.warning(
-                    "OMS halted — allowing risk-REDUCING intent %s (%s target=%.4f current=%.4f)",
-                    intent.intent_id,
-                    intent.symbol,
-                    intent.target_position,
-                    current_qty,
-                )
-
-            intent_payload: dict[str, Any] = {
-                "target_position": intent.target_position,
-                "current_position": current_qty,
-                "delta": delta,
-                "urgency": intent.urgency,
-                "max_slippage_bps": intent.max_slippage_bps,
-            }
-            # Strategy-attached metadata (e.g. feature snapshot id from
-            # CL-xpw9) flows through to the journal so reconstruct_features
-            # can find the snapshot from the intent's audit row.
-            if intent.metadata:
-                intent_payload.update(intent.metadata)
-            self._journal_event(
-                EventType.INTENT_SUBMITTED,
-                intent=intent,
-                payload=intent_payload,
+                    continue
+                # The DECISION (gates + delta + journal + in-flight count)
+                # stays atomic with the halt flag (CL-8lv6).
+                decision = self._decide_locked(intent, snapshot, bypass_halt=bypass_halt)
+                break
+        if decision is None:
+            logger.critical(
+                "OMS: %s kept changing during %d position reads — refusing intent %s "
+                "(%s target=%.4f) rather than sizing off a stale book",
+                csym,
+                self._POSITION_READ_ATTEMPTS,
+                intent.intent_id,
+                intent.strategy_id,
+                intent.target_position,
             )
-
-            if abs(delta) < self._min_trade_size(intent.symbol):
-                # Dust below venue minimum is not a completed flatten.
-                return SubmissionResult(
-                    intent.intent_id,
-                    SubmissionStatus.AT_TARGET if delta == 0 else SubmissionStatus.SKIPPED,
-                    target_reached=delta == 0,
-                )
-
-            side = "buy" if delta > 0 else "sell"
-            # Registered under the lock, before it is released for the HTTP
-            # call: a concurrent acknowledge_portfolio_halt() then sees it.
-            counts_as_entry = not reducing and not bypass_halt
-            if counts_as_entry:
-                self._inflight_entries += 1
+            return SubmissionResult(intent.intent_id, SubmissionStatus.BLOCKED)
+        if isinstance(decision, SubmissionResult):
+            return decision
+        side, qty, counts_as_entry = decision
 
         # Lock RELEASED before the blocking submit (CL-8s2a): place_order HTTP
         # + RejectionHandler retry sleeps no longer hold the RLock, so a
@@ -386,11 +355,164 @@ class OrderManager:
         # short _pending mutations.
         if counts_as_entry:
             try:
-                return self._submit_with_retry(intent, side, abs(delta), emergency=bypass_halt)
+                return self._submit_with_retry(intent, side, qty, emergency=bypass_halt)
             finally:
                 with self._lock:
                     self._inflight_entries -= 1
-        return self._submit_with_retry(intent, side, abs(delta), emergency=bypass_halt)
+        return self._submit_with_retry(intent, side, qty, emergency=bypass_halt)
+
+    def _refusal_locked(self, intent: OrderIntent) -> SubmissionResult | None:
+        """BLOCKED result when an account block or a foreign symbol fence
+        refuses ``intent`` (CL-pksi), else None. Caller holds ``_lock``."""
+        # CL-pksi: checked HERE, under the per-symbol reservation, so a
+        # submit that queued behind an emergency order sees the fence that
+        # order set before it was placed (a pre-reservation check would be
+        # stale by the time the reservation is granted).
+        if self._submission_block is not None:
+            logger.critical(
+                "OMS: ALL submissions blocked (%s) — refusing intent %s (%s %s)",
+                self._submission_block,
+                intent.intent_id,
+                intent.strategy_id,
+                intent.symbol,
+            )
+            return SubmissionResult(intent.intent_id, SubmissionStatus.BLOCKED)
+        fence = self._symbol_fences.get(canonical_symbol(intent.symbol))
+        if fence is not None and fence[1] != intent.intent_id:
+            logger.critical(
+                "OMS: %s is FENCED (%s) — refusing intent %s from %s (target=%.4f); "
+                "an emergency order there is unresolved",
+                canonical_symbol(intent.symbol),
+                fence[0],
+                intent.intent_id,
+                intent.strategy_id,
+                intent.target_position,
+            )
+            return SubmissionResult(intent.intent_id, SubmissionStatus.BLOCKED)
+        return None
+
+    def _decide_locked(
+        self,
+        intent: OrderIntent,
+        snapshot: list[Any],
+        *,
+        bypass_halt: bool,
+    ) -> SubmissionResult | tuple[str, float, bool]:
+        """Gate + size one intent against ``snapshot`` (caller holds ``_lock``).
+
+        Returns a terminal :class:`SubmissionResult`, or ``(side, qty,
+        counts_as_entry)`` for an order to place; an entry has already been
+        added to ``_inflight_entries`` and the caller must decrement it.
+        """
+        # CL-pksi: re-checked HERE, under the per-symbol reservation AND the
+        # state lock at decision time, so a submit that queued behind an
+        # emergency order (or whose position read raced a new fence) sees it.
+        refused = self._refusal_locked(intent)
+        if refused is not None:
+            return refused
+        # Position matching MUST use the canonical key (CL-qqra): broker
+        # positions come back compact ("USDCAD") while event intents are
+        # OANDA-underscore ("USD_CAD"). A raw .get() always missed →
+        # exit deltas of 0 (positions never closed at the broker) and
+        # entries that stacked on an existing position. Routing below
+        # still uses intent.symbol (broker _to_oanda is idempotent).
+        current_positions = {canonical_symbol(p.symbol): p.quantity for p in snapshot}
+        current_qty = current_positions.get(canonical_symbol(intent.symbol), 0.0)
+        delta = intent.target_position - current_qty
+
+        # "Halt new trades" means exactly that (CL-8lv6): risk-REDUCING
+        # intents still pass — a halted OMS must never trap a strategy's
+        # exit while its book already closed (broker keeps the risk, book
+        # says flat). Reducing = smaller absolute size, same side (or
+        # flat); flips and adds are blocked. This gate MUST stay inside
+        # the lock (halt-TOCTOU, CL-8lv6): halt_new_trades takes the same
+        # lock, so the flag read and the place decision are atomic.
+        reducing = abs(intent.target_position) < abs(current_qty) and (
+            intent.target_position == 0.0 or intent.target_position * current_qty > 0
+        )
+        if bypass_halt and not reducing and delta != 0:
+            # A position can change between the risk snapshot and this
+            # submit. An emergency label must never authorize buying back
+            # an already-reduced leg or crossing through zero.
+            logger.critical(
+                "Emergency intent %s is no longer reducing (%s %.4f -> %.4f); blocked",
+                intent.intent_id,
+                intent.symbol,
+                current_qty,
+                intent.target_position,
+            )
+            return SubmissionResult(intent.intent_id, SubmissionStatus.BLOCKED)
+        # CL-0deu.2: the durable account halt is consulted for every
+        # non-reducing intent, inside the same lock as the local flag, so
+        # the decision and the halt write serialize. Unknown state blocks.
+        durable_block = None
+        if not bypass_halt and not reducing and self.halt_store is not None:
+            decision = self.halt_store.entry_decision()
+            if not decision.allowed:
+                durable_block = decision
+        if durable_block is not None:
+            logger.warning(
+                "OMS: account halt (%s) — rejecting non-reducing intent %s "
+                "(%s target=%.4f current=%.4f): %s",
+                durable_block.reason_code,
+                intent.intent_id,
+                intent.symbol,
+                intent.target_position,
+                current_qty,
+                durable_block.detail,
+            )
+            return SubmissionResult(intent.intent_id, SubmissionStatus.BLOCKED)
+        if self._halted and not bypass_halt:
+            if not reducing:
+                logger.warning(
+                    "OMS halted — rejecting non-reducing intent %s (%s target=%.4f current=%.4f)",
+                    intent.intent_id,
+                    intent.symbol,
+                    intent.target_position,
+                    current_qty,
+                )
+                return SubmissionResult(intent.intent_id, SubmissionStatus.BLOCKED)
+            logger.warning(
+                "OMS halted — allowing risk-REDUCING intent %s (%s target=%.4f current=%.4f)",
+                intent.intent_id,
+                intent.symbol,
+                intent.target_position,
+                current_qty,
+            )
+
+        intent_payload: dict[str, Any] = {
+            "target_position": intent.target_position,
+            "current_position": current_qty,
+            "delta": delta,
+            "urgency": intent.urgency,
+            "max_slippage_bps": intent.max_slippage_bps,
+        }
+        # Strategy-attached metadata (e.g. feature snapshot id from
+        # CL-xpw9) flows through to the journal so reconstruct_features
+        # can find the snapshot from the intent's audit row.
+        if intent.metadata:
+            intent_payload.update(intent.metadata)
+        self._journal_event(
+            EventType.INTENT_SUBMITTED,
+            intent=intent,
+            payload=intent_payload,
+        )
+
+        if abs(delta) < self._min_trade_size(intent.symbol):
+            # Dust below venue minimum is not a completed flatten.
+            return SubmissionResult(
+                intent.intent_id,
+                SubmissionStatus.AT_TARGET if delta == 0 else SubmissionStatus.SKIPPED,
+                target_reached=delta == 0,
+            )
+
+        side = "buy" if delta > 0 else "sell"
+        # Registered under the lock, before it is released for the HTTP
+        # call: a concurrent acknowledge_portfolio_halt() then sees it.
+        counts_as_entry = not reducing and not bypass_halt
+        if counts_as_entry:
+            self._inflight_entries += 1
+        return side, abs(delta), counts_as_entry
 
     async def submit_intent_async(
         self,
@@ -438,14 +560,45 @@ class OrderManager:
                 # reservation from CL-sbrp, so no concurrent submit races this
                 # read.) If the fill isn't visible yet, fall through and retry
                 # as before — strictly no worse than the old behavior.
+                #
+                # CL-80tv: the read runs outside _lock (it always did — the
+                # lock was released before this loop), and is now version-
+                # checked like the submit-time read: a fill for this symbol
+                # processed DURING the read (very likely the prior attempt's
+                # own fill) triggers one re-read; if the book is still moving
+                # the outcome is UNKNOWN rather than a blind re-send.
+                csym = canonical_symbol(intent.symbol)
                 try:
-                    fresh = {
-                        canonical_symbol(p.symbol): p.quantity for p in self.broker.get_positions()
-                    }
-                    residual = intent.target_position - fresh.get(
-                        canonical_symbol(intent.symbol),
-                        0.0,
-                    )
+                    fresh: dict[str, float] | None = None
+                    for read_attempt in range(1, self._POSITION_READ_ATTEMPTS + 1):
+                        with self._lock:
+                            version = self._symbol_versions.get(csym, 0)
+                        snapshot = self.broker.get_positions()
+                        with self._lock:
+                            stable = self._symbol_versions.get(csym, 0) == version
+                        if stable:
+                            fresh = {canonical_symbol(p.symbol): p.quantity for p in snapshot}
+                            break
+                        logger.warning(
+                            "Retry re-read for %s: a fill landed during the read "
+                            "(attempt %d/%d) — re-reading",
+                            intent.symbol,
+                            read_attempt,
+                            self._POSITION_READ_ATTEMPTS,
+                        )
+                    if fresh is None:
+                        logger.critical(
+                            "Retry ABORTED for %s (intent %s): position kept changing "
+                            "during the re-read — outcome UNKNOWN, not re-submitting",
+                            intent.symbol,
+                            intent.intent_id,
+                        )
+                        return SubmissionResult(
+                            intent.intent_id,
+                            SubmissionStatus.UNKNOWN,
+                            requested_qty=original_qty * size_fraction,
+                        )
+                    residual = intent.target_position - fresh.get(csym, 0.0)
                     if abs(residual) < self._min_trade_size(intent.symbol):
                         logger.warning(
                             "Retry ABORTED for %s — position already at target "
@@ -525,6 +678,10 @@ class OrderManager:
                         # on_fill and never double-journaled.
                         if placed.order_id:
                             self._seen_fills.add(placed.order_id)
+                            # Claimed until ORDER_FILLED below is journaled, so
+                            # a streamed duplicate is not reported durable early.
+                            self._fills_journaling.add(placed.order_id)
+                        self._bump_symbol_version_locked(intent.symbol)
                     else:
                         self._pending[intent.intent_id] = [placed]
                         # CL-vj74: keep the intent so a later async ORDER_FILL
@@ -554,15 +711,27 @@ class OrderManager:
                 # OANDA, fills arrive via stream and would need a separate
                 # fill-stream wiring; ORDER_PLACED is all OMS sees here.
                 if placed.status == OrderStatus.FILLED:
-                    self._journal_event(
+                    sync_journaled = self._journal_event(
                         EventType.ORDER_FILLED,
                         intent=intent,
                         payload={
                             "side": side,
                             "quantity": qty,
                             "attempt": attempt,
+                            # Venue fill-transaction id (CL-pksi catch-up): a
+                            # replay after restart finds this row and does not
+                            # journal the same fill a second time.
+                            "fill_id": placed.order_id or None,
                         },
                     )
+                    if placed.order_id:
+                        with self._lock:
+                            self._fills_journaling.discard(placed.order_id)
+                            if not sync_journaled:
+                                # Let the streamed / replayed copy journal it
+                                # (its listeners never fired for a sync fill).
+                                self._seen_fills.discard(placed.order_id)
+                                self._unjournaled_fills[placed.order_id] = intent
                 return SubmissionResult(
                     intent.intent_id,
                     SubmissionStatus.FILLED
@@ -667,20 +836,72 @@ class OrderManager:
         The position-poll confirmation (EventBook.confirm_entries/confirm_exits)
         stays as the backstop; this is the low-latency, attributed fast path.
         """
+        return self.process_fill(fill).newly_processed
+
+    def process_fill(self, fill: dict[str, Any], *, check_journal: bool = False) -> FillOutcome:
+        """:meth:`on_fill` plus the durability verdict the stream checkpoint
+        needs (CL-pksi catch-up).
+
+        ``FillOutcome.durable`` is True only when the fill's ORDER_FILLED row
+        is known to be in the journal (or no journal is configured): a durable
+        transaction-id checkpoint may then advance past it. A failed journal
+        append is NOT durable — the id is dropped from the dedup set (so a
+        replay journals it again) and the fill's intent is kept for that retry.
+
+        ``check_journal`` (replay after a restart, when the in-memory dedup set
+        is empty): look the fill up in the journal first, so a fill journaled
+        before the restart is not journaled twice. That DB read runs outside
+        ``_lock``; a lookup failure propagates (the caller must not advance).
+
+        Exactly-once: the claim (dedup check + pending pop + version bump) is
+        one ``_lock`` section; journaling and listeners run outside it, and a
+        concurrent duplicate reports ``durable=False`` until the claimant's
+        journal append has finished.
+        """
         fill_id = str(fill.get("transaction_id") or "")
         client_id = fill.get("client_order_id")
+        if check_journal and fill_id:
+            with self._lock:
+                known = fill_id in self._seen_fills or fill_id in self._unjournaled_fills
+            if not known and self._fill_already_journaled(fill_id, client_id):
+                with self._lock:
+                    if fill_id not in self._unjournaled_fills:
+                        self._seen_fills.add(fill_id)
+                        logger.info(
+                            "fill %s already journaled before restart — replay skips it",
+                            fill_id,
+                        )
+                        return FillOutcome(newly_processed=False, durable=True)
         with self._lock:
             if fill_id and fill_id in self._seen_fills:
-                return False  # already handled (redelivery or sync fill)
+                # Already handled (redelivery or sync fill); durable only once
+                # the claimant's journal append has completed.
+                return FillOutcome(
+                    newly_processed=False,
+                    durable=fill_id not in self._fills_journaling,
+                )
+            retry = bool(fill_id) and fill_id in self._unjournaled_fills
+            if retry:
+                # A previous delivery claimed this fill but its journal append
+                # failed: reuse its attribution, do not re-fire listeners.
+                intent = self._unjournaled_fills.pop(fill_id)
+            else:
+                intent = self._pending_intents.pop(str(client_id), None) if client_id else None
+                if client_id:
+                    self._pending.pop(str(client_id), None)
+                # CL-80tv: a processed fill changes this symbol's book — a
+                # submit whose (lock-free) position read overlapped it must
+                # discard that snapshot.
+                self._bump_symbol_version_locked(
+                    str(fill.get("instrument") or (intent.symbol if intent else ""))
+                )
             if fill_id:
                 self._seen_fills.add(fill_id)
                 if len(self._seen_fills) > _SEEN_FILLS_CAP:
                     # Bounded: redeliveries are always recent, so dropping old
                     # ids is safe. Keep the one we just processed.
                     self._seen_fills = {fill_id}
-            intent = self._pending_intents.pop(str(client_id), None) if client_id else None
-            if client_id:
-                self._pending.pop(str(client_id), None)
+                self._fills_journaling.add(fill_id)
         symbol = str(fill.get("instrument") or (intent.symbol if intent else ""))
         # Reuse the original intent so the ORDER_FILLED row links to the
         # INTENT_SUBMITTED row; fall back to a synthetic one (e.g. a fill for
@@ -691,36 +912,81 @@ class OrderManager:
             target_position=0.0,
             intent_id=str(client_id) if client_id else (fill_id or "unknown"),
         )
-        self._journal_event(
-            EventType.ORDER_FILLED,
-            intent=journal_intent,
-            payload={
-                "source": "oanda_transaction_stream",
-                "order_id": fill.get("order_id"),
-                "client_order_id": client_id,
-                "fill_id": fill_id,
-                "symbol": symbol,
-                "units": fill.get("units"),
-                "price": fill.get("price"),
-            },
-        )
+        journaled = False
+        try:
+            journaled = self._journal_event(
+                EventType.ORDER_FILLED,
+                intent=journal_intent,
+                payload={
+                    "source": "oanda_transaction_stream",
+                    "order_id": fill.get("order_id"),
+                    "client_order_id": client_id,
+                    "fill_id": fill_id,
+                    "symbol": symbol,
+                    "units": fill.get("units"),
+                    "price": fill.get("price"),
+                },
+            )
+        finally:
+            if fill_id:
+                with self._lock:
+                    self._fills_journaling.discard(fill_id)
+                    if not journaled:
+                        # Not durable: forget the id so a replay can journal
+                        # it, and keep the intent for that retry.
+                        self._seen_fills.discard(fill_id)
+                        if len(self._unjournaled_fills) < _SEEN_FILLS_CAP:
+                            self._unjournaled_fills[fill_id] = intent
+        if not journaled:
+            logger.error(
+                "ORDER_FILLED (stream) NOT journaled: fill=%s client=%s %s — "
+                "kept replayable (the stream checkpoint will not advance past it)",
+                fill_id or "?",
+                client_id,
+                symbol,
+            )
         logger.info(
-            "ORDER_FILLED (stream): client=%s order=%s %s units=%s @ %s",
+            "ORDER_FILLED (stream): client=%s order=%s %s units=%s @ %s%s",
             client_id,
             fill.get("order_id"),
             symbol,
             fill.get("units"),
             fill.get("price"),
+            " (journal retry)" if retry else "",
         )
-        # CL-pksi: hand the NEWLY processed fill (post-dedup) to listeners —
-        # the kill-switch manager resolves emergency-order fences from it. A
-        # listener failure must never break fill journaling.
-        for listener in list(self._fill_listeners):
-            try:
-                listener(dict(fill))
-            except Exception:
-                logger.exception("fill listener failed for fill %s", fill_id or "?")
-        return True
+        if not retry:
+            # CL-pksi: hand the NEWLY processed fill (post-dedup) to listeners —
+            # the kill-switch manager resolves emergency-order fences from it.
+            # A listener failure must never break fill journaling.
+            for listener in list(self._fill_listeners):
+                try:
+                    listener(dict(fill))
+                except Exception:
+                    logger.exception("fill listener failed for fill %s", fill_id or "?")
+        return FillOutcome(newly_processed=True, durable=journaled)
+
+    def _fill_already_journaled(self, fill_id: str, client_id: Any) -> bool:
+        """True when an ORDER_FILLED row for venue fill ``fill_id`` is already
+        in the journal (CL-pksi catch-up). Rows are keyed by intent id — the
+        client id, or the fill id for an unattributed fill — and carry the
+        fill id in their payload. Raises when the journal cannot be read."""
+        if self.journal is None:
+            return False
+        intent_key = str(client_id) if client_id else fill_id
+        logger.debug("journal lookup for replayed fill %s (intent %s)", fill_id, intent_key)
+        for event in self.journal.query_by_intent(intent_key):
+            if (
+                event.event_type is EventType.ORDER_FILLED
+                and str(event.payload.get("fill_id") or "") == fill_id
+            ):
+                return True
+        return False
+
+    def _bump_symbol_version_locked(self, symbol: str) -> None:
+        """CL-80tv: record a state change for ``symbol`` (caller holds _lock)."""
+        csym = canonical_symbol(symbol)
+        if csym:
+            self._symbol_versions[csym] = self._symbol_versions.get(csym, 0) + 1
 
     def add_fill_listener(self, listener: Callable[[dict[str, Any]], None]) -> None:
         """Register a consumer of newly processed streamed fills (CL-pksi)."""
@@ -831,14 +1097,16 @@ class OrderManager:
         event_type: EventType,
         intent: OrderIntent,
         payload: dict[str, Any],
-    ) -> None:
+    ) -> bool:
         """Append one event to the trade journal — silent no-op without one.
 
         Journal failures must NOT propagate: trading is more important than
         bookkeeping, and a DB hiccup must not drop or duplicate orders.
+        Returns False only when an append was attempted and FAILED (CL-pksi:
+        the stream checkpoint must not advance past an unjournaled fill).
         """
         if self.journal is None:
-            return
+            return True
         try:
             self.journal.record(
                 event_type=event_type,
@@ -853,3 +1121,5 @@ class OrderManager:
                 event_type.value,
                 intent.intent_id,
             )
+            return False
+        return True

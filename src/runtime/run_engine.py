@@ -607,6 +607,31 @@ def build_coordinator(
     return coordinator
 
 
+def build_fill_catch_up(broker: Any, oms: OrderManager, engine: Any | None) -> Any | None:
+    """CL-pksi: durable OANDA transaction-stream catch-up, or None.
+
+    Only for the OANDA broker with a database (migration 028 holds the
+    checkpoint). Without either, the stream runs live-only as before and the
+    position poll stays the backstop for fills missed while disconnected.
+    """
+    from src.execution.fill_stream import (  # noqa: PLC0415
+        FillStreamCatchUp,
+        SqlTransactionCheckpointStore,
+    )
+    from src.execution.oanda_broker import OandaBroker  # noqa: PLC0415
+
+    if not isinstance(broker, OandaBroker):
+        return None
+    if engine is None:
+        logger.warning(
+            "No database — OANDA transaction-stream catch-up DISABLED (fills missed "
+            "while disconnected rely on the position poll)"
+        )
+        return None
+    logger.info("OANDA transaction-stream catch-up enabled (checkpoint: migration 028)")
+    return FillStreamCatchUp(broker, oms, SqlTransactionCheckpointStore(engine), broker.account_id)
+
+
 def build_kill_switch_manager(
     broker: Any,
     oms: OrderManager,
@@ -783,6 +808,7 @@ async def run_engine(broker_mode: str = "paper") -> None:
         coordinator=coordinator,
         cold_start_reconciler=reconciler,
         kill_switch_manager=kill_switch_manager,
+        fill_catch_up=build_fill_catch_up(broker, oms, db_engine),
     )
     # CL-vfw7: quote→account conversions read the engine's live tick dict.
     # (An engine without one leaves each strategy on its default converter,
