@@ -94,7 +94,7 @@ Everything is PAPER. No real money moves anywhere.
   peak equity; a corrupt file refuses boot — repair or remove it
   deliberately).
 - **Emergency-order fences, persistence and recovery (CL-o9sq / CL-pksi —
-  NOT YET DEPLOYED; needs migration 027 applied BEFORE the engine restarts on
+  DEPLOYED 2026-10-07 (migration 027 applied before the engine restart; needs it BEFORE any engine restart on
   this code).** Kill switches count a flatten/reduce leg complete only on a
   verified outcome (the OMS returns a typed `SubmissionResult`), keep a FIXED
   per-leg target across retries, and never resend a close whose outcome is
@@ -1054,6 +1054,39 @@ CLI (Claude Code 2.1.287), not assumed:
   enabled, or set `enabled: false` to park it.
 
 ---
+
+### 2026-10-07 review-wave deployment (PR #3, main 498b2b7)
+
+Deployed after Codex integration round 5 APPROVE and CI 7/7: durable emergency orders
+(CL-o9sq/CL-pksi, migrations 027 + 028), account-currency event sizing/P&L with event book
+state v2 (CL-vfw7), snapshot-unavailable interlock + `/api/system` `halt_causes` /
+`last_reconciliation` / `derisk_fences` (CL-oqos), paper mark-to-market + coordinator
+attribution (CL-9ird/CL-5bwc), idea research-status provenance (CL-7kuu, migration 025),
+shadow-only hop-graph niche discovery (CL-ynuh, migration 026 — not wired to trading),
+OMS lock scoping + OANDA transaction-stream catch-up (CL-80tv), CLI env allowlist /
+loopback metrics / approver allowlist / strategy registry (CL-esh6/CL-nix8).
+Evidence: `data/deployments/2026-10-07_review_wave/` (migration log, table check, restart
+pids, engine boot excerpt, `/api/system` snapshot, final Codex verdict).
+
+- Restarted one at a time with pid verification: event-pipeline, execute-options,
+  execute-equities, engine (63356 → 10323), health_watch (62112 → 10768).
+- **Not restarted:** `telegram_approval_bot` — the new code exits unless
+  `TELEGRAM_APPROVER_IDS` is set; set it in `.env`, then
+  `./scripts/daemons.sh restart telegram_approval_bot`. Daemons with no code change in
+  this wave were left running.
+- Engine boot: event book migrated v1 → v2; the legacy mixed-currency realized figure
+  (−249.66 over 11 trades, a quote-currency sum) is kept as `legacy_mixed_currency_pnl`
+  and **blocks new FX event entries** (`legacy_pnl_unreconciled`) until
+  `legacy_reconciled_account_pnl` is set from OANDA transaction history. FX entries are
+  independently paused by the durable account halt (PAUSE_ENTRIES, acknowledged at boot as
+  `external:operator_entry_paused_startup`). Emergency recovery loaded 0 unresolved
+  attempts; cold-start reconciliation ok; 8 switches ARMED; stream catch-up seeded at
+  account transaction 61 (no prior checkpoint; earlier fills are not replayed).
+- Behaviour changes now live: aggregated intents carry contributors' slippage bounds
+  (event-driven 10 bps instead of the silent 2 bps default); a transient positions-read
+  failure delays event entries one tick; `/api/system/resume` returns 409 while any
+  emergency order is unresolved; `POST /api/system/derisk-fences/release` exists for
+  operator release of a PARTIAL_TERMINAL fence.
 
 ## 7. Known gaps, honest limits, and blocked items
 
