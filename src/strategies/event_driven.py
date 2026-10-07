@@ -592,7 +592,11 @@ class EventDrivenStrategy:
                             else None
                         ),
                         "held_hours": float(rec.held_hours),
-                        "book_realized_pnl": float(rec.book_realized_pnl),
+                        "book_realized_pnl": (
+                            float(rec.book_realized_pnl)
+                            if rec.book_realized_pnl is not None
+                            else None
+                        ),
                     }
                 )
             )
@@ -765,22 +769,26 @@ class EventDrivenStrategy:
             skipped.extend((str(aff.get("instrument") or ""), "no_account") for aff in tradables)
             return intents, entered, skipped
 
+        unknown = self.book.loss_cap_unknown_reason()
+        if unknown is not None:
+            # CL-vfw7: part of the realized history has no known account-
+            # currency value, so the loss cap cannot be evaluated — fail
+            # closed until the operator reconciles it in the state file.
+            logger.warning(
+                "Event entries blocked for event id=%s: loss cap unknown (%s; "
+                "legacy_mixed_currency_pnl=%s, %d unconverted close(s)) — operator "
+                "reconciliation required in %s",
+                event_id,
+                unknown,
+                self.book.legacy_mixed_currency_pnl,
+                len(self.book.unconverted_closes),
+                self.config.event_book_state_path,
+            )
+            skipped.extend((str(aff.get("instrument") or ""), unknown) for aff in tradables)
+            return intents, entered, skipped
         if self.book.breached(equity):
             skipped.extend(
                 (str(aff.get("instrument") or ""), "event_book_loss_cap") for aff in tradables
-            )
-            return intents, entered, skipped
-        if self.book.has_unconverted_losses():
-            # CL-vfw7: a closed loss whose account-currency amount is
-            # unknown means the loss cap cannot be evaluated — fail closed.
-            logger.warning(
-                "Event entries blocked for event id=%s: %d closed trade(s) "
-                "have no account-currency conversion yet (loss cap unknown)",
-                event_id,
-                len(self.book.unconverted_closes),
-            )
-            skipped.extend(
-                (str(aff.get("instrument") or ""), "unconverted_realized_loss") for aff in tradables
             )
             return intents, entered, skipped
 
@@ -1124,9 +1132,6 @@ class EventDrivenStrategy:
             # closes the window inside one strategy tick.
             self.book.confirm_entries(broker_positions, now)
             self.book.confirm_exits(broker_positions, now)
-        # CL-vfw7: book any close whose exit rate was unavailable earlier,
-        # now that a fresh rate may exist (labelled deferred).
-        self.book.resolve_unconverted(now)
         # The same snapshot feeds check_exits so a leg triggering THIS
         # tick captures trigger_broker_qty for residual/phantom
         # confirmation (CL-9dhg findings 1 + 2).

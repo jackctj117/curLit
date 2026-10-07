@@ -850,7 +850,10 @@ class TestCaps:
         state_path.write_text(
             json.dumps(
                 {
-                    "version": 1,
+                    # CL-vfw7: v2 = account-currency realized P&L (a v1
+                    # mixed-currency file blocks entries as unreconciled).
+                    "version": 2,
+                    "account_currency": "USD",
                     "realized_pnl": -2500.0,
                     "closed_trades": 3,
                     "open_positions": {},
@@ -873,7 +876,8 @@ class TestCaps:
         state_path.write_text(
             json.dumps(
                 {
-                    "version": 1,
+                    "version": 2,  # account-currency realized (CL-vfw7)
+                    "account_currency": "USD",
                     "realized_pnl": -1000.0,  # under 2% of 100k
                     "closed_trades": 1,
                     "open_positions": {},
