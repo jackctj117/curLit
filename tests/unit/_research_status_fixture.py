@@ -1,13 +1,14 @@
 """Test helper: install the real migration-025 research-status schema (CL-7kuu).
 
 Applies the production SQL (not a hand-copied schema) with the usual sqlite
-type shims. The Postgres-only ``CREATE OR REPLACE RULE`` statement (the
-no-update rule) has no sqlite equivalent and is skipped; executor tests prove
-read-only behavior by capturing the SQL the executors issue instead.
+type shims. The Postgres-only ``CREATE OR REPLACE RULE`` statements (the
+no-update / no-delete rules) are emulated with sqlite ``RAISE(IGNORE)``
+triggers; executor tests additionally capture the SQL the executors issue.
 """
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -26,11 +27,29 @@ def research_status_statements() -> list[str]:
     return [s.strip() for s in sql.split(";") if s.strip()]
 
 
+_RULE_RE = re.compile(
+    r"CREATE OR REPLACE RULE (\w+) AS ON (UPDATE|DELETE) TO (\w+) DO INSTEAD NOTHING",
+    re.IGNORECASE,
+)
+
+
 def install_research_status(engine: Any) -> None:
+    """Apply migration 025. Each Postgres ``DO INSTEAD NOTHING`` rule is
+    emulated by the sqlite equivalent, a BEFORE trigger that silently skips
+    the row (``RAISE(IGNORE)``); any other rule shape fails loudly."""
     with engine.begin() as conn:
         for stmt in research_status_statements():
             if stmt.upper().startswith("CREATE OR REPLACE RULE"):
-                continue  # Postgres-only immutability rule.
+                match = _RULE_RE.fullmatch(" ".join(stmt.split()))
+                assert match is not None, f"unemulated rule: {stmt}"
+                name, verb, table = match.groups()
+                conn.execute(
+                    text(
+                        f"CREATE TRIGGER {name} BEFORE {verb.upper()} ON {table} "
+                        "BEGIN SELECT RAISE(IGNORE); END"
+                    )
+                )
+                continue
             conn.execute(text(stmt))
 
 

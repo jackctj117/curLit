@@ -14,7 +14,7 @@ This module is the single owner of the ``idea_research_status`` table
   :class:`ResearchStatus`.
 * :func:`insert_research_status` writes it ONCE, inside the idea ledger's
   insert transaction. A second insert for the same idea_id is ignored and
-  logged; there is no UPDATE path anywhere in the codebase.
+  logged; there is no UPDATE or DELETE path, and migration 025 rules discard both.
 * :func:`executable_research_predicate` is the SQL the executors use when their
   policy flags are on. It only READS the table.
 
@@ -45,18 +45,19 @@ EVIDENCE_OK = "source_backed"
 REVIEW_OK = "supported"
 LIQUIDITY_OK = "sufficient"
 
+_EXISTS_SQL = text("SELECT 1 FROM idea_research_status WHERE idea_id = :idea_id")
 _INSERT_SQL = text(
     "INSERT INTO idea_research_status "
     "(idea_id, discovery_status, evidence_status, review_status, liquidity_status, "
     " research_eligible, source_hashes, score_version, research_invocation_id, recorded_at) "
-    "SELECT :idea_id, :discovery_status, :evidence_status, :review_status, "
+    "VALUES (:idea_id, :discovery_status, :evidence_status, :review_status, "
     " :liquidity_status, :research_eligible, :source_hashes, :score_version, "
-    " :research_invocation_id, :recorded_at "
-    "WHERE NOT EXISTS (SELECT 1 FROM idea_research_status WHERE idea_id = :idea_id)"
+    " :research_invocation_id, :recorded_at)"
 )
-# NOT ``ON CONFLICT``: Postgres rejects ON CONFLICT on a table that has an
-# UPDATE rule, and migration 025's no-update rule is what makes rows immutable.
-# A concurrent duplicate would hit the primary key and raise (fail loud); the
+# NOT ``ON CONFLICT``: Postgres rejects ON CONFLICT on a table that has
+# UPDATE rules, and migration 025's no-update/no-delete rules are what make
+# rows immutable. Existence is checked first on the caller's transaction; a
+# concurrent duplicate would hit the primary key and raise (fail loud). The
 # ledger only reaches this after winning the trade_ideas insert, so a race for
 # the same idea_id is already serialized by trade_ideas' unique index.
 
@@ -143,14 +144,17 @@ def insert_research_status(
         status.review_status,
         len(status.source_hashes),
     )
-    result = conn.execute(_INSERT_SQL, params)
-    written = (result.rowcount or 0) == 1
-    if not written:
+    if conn.execute(_EXISTS_SQL, {"idea_id": idea_id}).first() is not None:
         logger.warning(
             "research status: row for idea=%s already exists; second write ignored "
             "(status rows are write-once)",
             idea_id,
         )
+        return False
+    result = conn.execute(_INSERT_SQL, params)
+    written = (result.rowcount or 0) == 1
+    if not written:  # never claim a write that did not happen
+        logger.warning("research status: insert for idea=%s wrote no row", idea_id)
     return written
 
 

@@ -124,7 +124,7 @@ Everything is PAPER. No real money moves anywhere.
     idea, only for ideas the niche merge created from a research-eligible
     NicheIdea; note text, an LLM-emitted `niche`/`research` key, or an idea
     persisted earlier never gains one. Executors only read it; a Postgres
-    rule discards any UPDATE. Ideas persisted before migration 025 have no
+    rules discard any UPDATE or DELETE. Ideas persisted before migration 025 have no
     row, so they are NOT executable under the gates;
   - with both gates **off** (the current paper `.env`), the candidate query
     is byte-identical to before CL-7kuu — no behavior change;
