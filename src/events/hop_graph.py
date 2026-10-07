@@ -817,8 +817,13 @@ class HopGraphTraversal:
         forbidden: set[tuple[str, str, str]] = set()
         remembered: list[Edge] = []
         if self.memory is not None:
+            # Vetoes load first and are never cleared by a later failure: a
+            # sourced-memory failure degrades to "no reuse", not "no vetoes".
             try:
                 forbidden = set(self.memory.load_contradicted(as_of))
+            except Exception as exc:
+                logger.warning("hop-graph contradiction memory unavailable: %s", type(exc).__name__)
+            try:
                 remembered = [
                     e
                     for e in self.memory.load_sourced(theme, as_of)
@@ -826,8 +831,8 @@ class HopGraphTraversal:
                 ]
             except Exception as exc:
                 # Memory is an optimization; an outage must not invent edges.
-                logger.warning("hop-graph memory unavailable: %s", type(exc).__name__)
-                forbidden, remembered = set(), []
+                logger.warning("hop-graph sourced memory unavailable: %s", type(exc).__name__)
+                remembered = []
         logger.info(
             "hop-graph: event=%s theme=%s seeds=%d remembered=%d forbidden=%d",
             event_row.get("id"),

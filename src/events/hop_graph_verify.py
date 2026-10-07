@@ -65,11 +65,11 @@ _MAX_PASSAGE_CHARS = 600
 # hedged and not material") often closes a long sentence. 2,000 chars bounds
 # the critic prompt while covering typical risk-factor sentences.
 _MAX_LIMITING_CHARS = 2000
-# When a sentence exceeds that cap, keep this much text after the phrase.
-_LIMITING_TAIL_CHARS = 300
 # Fragments shorter than this ("Item 7.") cannot state a relationship.
 _MIN_PASSAGE_CHARS = 20
-_MAX_DISCONFIRMING = 2
+# Per-target limiting passages carried to the critic (4 x 2,000 chars bounds
+# the prompt). More than this is incomplete context, not a reason to drop some.
+_MAX_DISCONFIRMING = 4
 _CORPORATE_SUFFIXES = re.compile(
     r"\b(inc|incorporated|corp|corporation|co|company|plc|ltd|limited|llc|lp|"
     r"holdings|group|sa|nv|ag|se)\b\.?",
@@ -271,25 +271,26 @@ def scored_passages(
 
 def disconfirming_passages(
     doc: SourceDocument, terms: Sequence[str], ticker: str | None, keywords: Sequence[str]
-) -> list[str]:
-    """Limiting sentences, scanned WHOLE (a qualifier late in a long sentence
-    must not be cut off). A sentence longer than the cap is cut to a window
-    that ends after the limiting phrase, still an exact substring."""
-    out = []
+) -> tuple[list[str], bool]:
+    """(limiting sentences kept WHOLE, incomplete flag).
+
+    A relevant limiting sentence longer than ``_MAX_LIMITING_CHARS`` is never
+    clipped (a fragment can keep "unhedged" and drop a later "fully hedged
+    and not material"); it sets ``incomplete`` instead, and the verifier then
+    refuses to call the target sourced."""
+    out: list[str] = []
+    incomplete = False
     for _, full in sentences(doc.text):
-        match = _DISCONFIRM_RE.search(full)
-        if len(full) < _MIN_PASSAGE_CHARS or match is None:
+        if len(full) < _MIN_PASSAGE_CHARS or _DISCONFIRM_RE.search(full) is None:
             continue
         if not (_mentions(full, terms, ticker) or _keyword_hits(full, keywords)):
             continue
-        if len(full) <= _MAX_LIMITING_CHARS:
-            passage = full
-        else:
-            end = min(len(full), match.end() + _LIMITING_TAIL_CHARS)
-            passage = full[max(0, end - _MAX_LIMITING_CHARS) : end].strip()
-        assert passage in doc.text and _DISCONFIRM_RE.search(passage)
-        out.append(passage)
-    return out[:_MAX_DISCONFIRMING]
+        if len(full) > _MAX_LIMITING_CHARS:
+            incomplete = True
+            continue
+        assert full in doc.text
+        out.append(full)
+    return out, incomplete
 
 
 _ENTAILMENT_PROMPT = """You check whether ONE quoted SEC filing passage states ONE claim.
@@ -454,6 +455,7 @@ class EdgeVerifier:
     def _run(
         self, claim: str, plans: list[_Plan], is_catalyst: bool
     ) -> tuple[str, list[RelationshipClaim], list[RelationshipClaim], list[SourceDocument], str]:
+        limits_incomplete = False
         evidence: list[RelationshipClaim] = []
         contrary: list[RelationshipClaim] = []
         sources: dict[str, SourceDocument] = {}
@@ -480,9 +482,11 @@ class EdgeVerifier:
                     mentions, kw, offset, passage = found[0]
                     form_rank = int(is_catalyst and not doc.locator.startswith("8-K"))
                     ranked.append(((form_rank, mentions, kw, index, offset), doc, passage))
-                for passage in disconfirming_passages(
+                limiting, overlong = disconfirming_passages(
                     doc, plan.terms, plan.term_ticker, plan.keywords
-                ):
+                )
+                limits_incomplete = limits_incomplete or overlong
+                for passage in limiting:
                     item = RelationshipClaim(
                         "documented_fact",
                         "disconfirming",
@@ -490,9 +494,13 @@ class EdgeVerifier:
                         doc.source_id,
                         passage,
                     )
-                    if item not in contrary and len(contrary) < _MAX_DISCONFIRMING:
-                        contrary.append(item)
-                        sources.setdefault(doc.source_id, doc)
+                    if item in contrary:
+                        continue
+                    if len(contrary) >= _MAX_DISCONFIRMING:
+                        limits_incomplete = True  # never silently drop a limitation
+                        continue
+                    contrary.append(item)
+                    sources.setdefault(doc.source_id, doc)
             if not ranked or len(answers) >= self.max_entailments:
                 continue
             _, doc, passage = min(ranked, key=lambda item: item[0])
@@ -530,6 +538,10 @@ class EdgeVerifier:
         else:
             status = "unverifiable"
             note = "entailment_unclear" if answers else "no_passage"
+        if status == "sourced" and limits_incomplete:
+            # Support cannot be weighed against limitations we could not carry.
+            status, note = "unverifiable", "limiting_context_incomplete"
+            evidence = []
         return status, evidence, contrary, list(sources.values()), note
 
     def _verify_edge(self, edge: Edge) -> Edge:

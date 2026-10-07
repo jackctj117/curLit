@@ -687,11 +687,46 @@ def test_qualifier_late_in_a_long_upstream_sentence_is_kept() -> None:
     assert "fully hedged and not material" in prompt
 
 
-def test_overlong_limiting_sentence_keeps_the_qualifier_window() -> None:
+def test_overlong_limiting_sentence_is_incomplete_not_clipped() -> None:
     from src.events.hop_graph_verify import disconfirming_passages
 
     sentence = "Strait of Hormuz voyages " + "x" * 3000 + " are fully hedged and not material."
-    source = doc("FRO", sentence)
-    [passage] = disconfirming_passages(source, ("Strait of Hormuz",), None, ())
-    assert passage in source.text and passage.endswith("not material.")
-    assert len(passage) <= 2000
+    passages, incomplete = disconfirming_passages(
+        doc("FRO", sentence), ("Strait of Hormuz",), None, ()
+    )
+    assert passages == [] and incomplete
+
+
+def _overlong_two_match_hedge() -> str:
+    filler = "spanning charter cancellations and rerouting costs across the fleet " * 30
+    return (
+        "Voyages through the Strait of Hormuz were unhedged under the previous program, "
+        + filler
+        + "and under the current program the exposure is fully hedged and not material."
+    )
+
+
+def test_overlong_disclosure_with_late_decisive_qualifier_is_not_sourced() -> None:
+    hedge = _overlong_two_match_hedge()
+    assert len(hedge) > 2000
+    assert hedge.index("unhedged") < 100 and hedge.endswith("not material.")
+    docs = {"FRO": [doc("FRO", FRO_DOC.text + " " + hedge)], "ACME": Retriever().docs["ACME"]}
+    result, _, _ = run_world(retriever=Retriever(docs))
+    hop1 = next(e for e in result.graph.edges if e.dst.node_id == "company:FRO")
+    # Neither a misleading fragment as evidence context nor a sourced edge.
+    assert hop1.status == "unverifiable" and hop1.note == "limiting_context_incomplete"
+    assert hop1.evidence == []
+    assert all("unhedged" not in c.passage for c in hop1.disconfirming)
+    assert result.candidate_paths == {}
+
+
+def test_more_limitations_than_the_cap_make_the_target_unverifiable() -> None:
+    limits = " ".join(
+        f"Voyages through the Strait of Hormuz in region {i} are hedged under program {i}."
+        for i in range(6)
+    )
+    docs = {"FRO": [doc("FRO", FRO_DOC.text + " " + limits)], "ACME": Retriever().docs["ACME"]}
+    result, _, _ = run_world(retriever=Retriever(docs))
+    hop1 = next(e for e in result.graph.edges if e.dst.node_id == "company:FRO")
+    assert hop1.status == "unverifiable" and hop1.note == "limiting_context_incomplete"
+    assert result.candidate_paths == {}
