@@ -89,11 +89,15 @@ class FillProcessor(Protocol):
         defer_on_lookup_failure: bool = False,
     ) -> Any: ...
 
+    def deferred_fills(self) -> list[dict[str, Any]]: ...
+
 
 class TransactionCheckpointStore(Protocol):
     def load(self, account_id: str) -> int | None: ...
 
     def advance(self, account_id: str, transaction_id: int) -> None: ...
+
+    def rewind(self, account_id: str, transaction_id: int) -> None: ...
 
 
 class InMemoryTransactionCheckpointStore:
@@ -110,6 +114,13 @@ class InMemoryTransactionCheckpointStore:
         assert transaction_id >= 0, "transaction ids are non-negative"
         self.writes.append((account_id, transaction_id))
         if transaction_id > self._rows.get(account_id, -1):
+            self._rows[account_id] = transaction_id
+
+    def rewind(self, account_id: str, transaction_id: int) -> None:
+        assert transaction_id >= 0, "transaction ids are non-negative"
+        self.writes.append((account_id, -transaction_id - 1))  # marks a rewind
+        current = self._rows.get(account_id)
+        if current is None or current > transaction_id:
             self._rows[account_id] = transaction_id
 
 
@@ -144,6 +155,27 @@ class SqlTransactionCheckpointStore:
                     "updated_at = excluded.updated_at "
                     "WHERE oanda_stream_checkpoint.last_transaction_id "
                     "< excluded.last_transaction_id"
+                ),
+                {"a": account_id, "t": int(transaction_id), "u": datetime.now(UTC)},
+            )
+
+    def rewind(self, account_id: str, transaction_id: int) -> None:
+        """The ONLY backwards move (integration review r3): lower the cursor
+        to ``transaction_id`` when it is above it (or create the row), so a
+        replay after a restart re-fetches a deferred fill. One short
+        transaction, no network inside."""
+        assert transaction_id >= 0, "transaction ids are non-negative"
+        with self.engine.begin() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO oanda_stream_checkpoint "
+                    "(account_id, last_transaction_id, updated_at) "
+                    "VALUES (:a, :t, :u) "
+                    "ON CONFLICT (account_id) DO UPDATE SET "
+                    "last_transaction_id = excluded.last_transaction_id, "
+                    "updated_at = excluded.updated_at "
+                    "WHERE oanda_stream_checkpoint.last_transaction_id "
+                    "> excluded.last_transaction_id"
                 ),
                 {"a": account_id, "t": int(transaction_id), "u": datetime.now(UTC)},
             )
@@ -186,15 +218,77 @@ class FillStreamCatchUp:
         # True = the checkpoint must not advance until a replay succeeds.
         # Starts frozen: nothing may advance before the first catch-up ran.
         self._frozen = True
+        # Integration review r3: a durable rewind still owed for a deferred
+        # fill (target = its transaction id - 1), retried on every live fill
+        # and at every catch-up until the store accepts it. While pending the
+        # checkpoint may not advance at all.
+        self._rewind_to: int | None = None
+        # Checkpoint freshly seeded from lastTransactionID this session and no
+        # fill seen yet: the first streamed fill bounds it (seed <= id - 1).
+        self._seeded_at: int | None = None
 
     @property
     def frozen(self) -> bool:
         return self._frozen
 
     def _advance(self, txn_id: int) -> None:
-        """Checkpoint write — a DB transaction with no network inside."""
+        """Checkpoint write — a DB transaction with no network inside. Never
+        past a still-deferred fill, and not at all while a rewind is owed."""
+        if self._rewind_to is not None:
+            logger.warning(
+                "stream checkpoint: NOT advancing %s to %d — rewind to %d still pending",
+                self.account_id,
+                txn_id,
+                self._rewind_to,
+            )
+            return
+        deferred = [i for i in (_txn_id(f) for f in self.oms.deferred_fills()) if i is not None]
+        if deferred and txn_id >= min(deferred):
+            logger.warning(
+                "stream checkpoint: NOT advancing %s to %d — fill %d still deferred",
+                self.account_id,
+                txn_id,
+                min(deferred),
+            )
+            return
         logger.debug("stream checkpoint: advancing %s to %d", self.account_id, txn_id)
         self.store.advance(self.account_id, txn_id)
+
+    def _request_rewind(self, target: int, why: str) -> None:
+        """Owe a durable rewind to ``target`` (kept at the lowest target) and
+        try it now; a failure is logged and retried later (never raises)."""
+        target = max(target, 0)
+        if self._rewind_to is None or target < self._rewind_to:
+            self._rewind_to = target
+        logger.warning(
+            "stream checkpoint: REWIND for %s requested for %s to %d (%s)",
+            why,
+            self.account_id,
+            self._rewind_to,
+            "retrying" if self._rewind_to != target else "new",
+        )
+        try:
+            self._apply_rewind()
+        except Exception:
+            logger.exception(
+                "stream checkpoint: rewind of %s to %d FAILED — retried on the next "
+                "fill / catch-up; checkpoint will not advance until it succeeds",
+                self.account_id,
+                self._rewind_to,
+            )
+
+    def _apply_rewind(self) -> None:
+        """Perform an owed rewind (raises on store failure)."""
+        if self._rewind_to is None:
+            return
+        target = self._rewind_to
+        self.store.rewind(self.account_id, target)
+        logger.warning(
+            "stream checkpoint: REWOUND %s to %d for a deferred fill (replay re-fetches it)",
+            self.account_id,
+            target,
+        )
+        self._rewind_to = None
 
     def catch_up(self) -> int:
         """Replay fills missed since the checkpoint. Returns the number of
@@ -215,25 +309,48 @@ class FillStreamCatchUp:
                 return -1
 
     def _catch_up_locked(self) -> int:
+        # 1. A durable rewind owed for a deferred fill comes first: until it
+        #    lands, a restart could skip that fill, so nothing else proceeds.
+        self._apply_rewind()
+        # 2. Drain deferred fills from memory, independent of the venue page
+        #    (their ids may be at or below the checkpoint). Journal-checked:
+        #    appended exactly once, listeners not re-fired.
+        drained = 0
+        for fill in self.oms.deferred_fills():
+            outcome = self.oms.process_fill(fill, check_journal=True)
+            if not outcome.durable:
+                msg = f"deferred fill {fill.get('transaction_id')} was not journaled"
+                raise ReplayIncompleteError(msg)
+            if outcome.newly_processed:
+                drained += 1  # appended now (a row that already existed is not)
+        if drained:
+            logger.warning(
+                "OANDA transaction catch-up for %s: drained %d deferred fill(s)",
+                self.account_id,
+                drained,
+            )
         checkpoint = self.store.load(self.account_id)
         if checkpoint is None:
             seed = int(self.source.last_transaction_id())
             logger.warning(
                 "OANDA transaction catch-up: no checkpoint for %s — seeding at the "
-                "account's last transaction %d (earlier fills are NOT replayed)",
+                "account's last transaction %d (earlier fills are NOT replayed; the "
+                "first streamed fill lowers it if it is not above the seed)",
                 self.account_id,
                 seed,
             )
             self._advance(seed)
+            self._seeded_at = seed
             self._frozen = False
-            return 0
+            return drained
+        self._seeded_at = None
         logger.info(
             "OANDA transaction catch-up: replaying %s since transaction %d",
             self.account_id,
             checkpoint,
         )
         cursor = checkpoint
-        replayed = 0
+        replayed = drained  # deferred fills journaled above count as replayed
         duplicates = 0
         for page_no in range(1, self.max_pages + 1):
             # Network read with NO DB transaction open.
@@ -289,6 +406,15 @@ class FillStreamCatchUp:
         it is journaled and no earlier gap is outstanding. Never raises."""
         with self._lock:
             fid = _txn_id(fill)
+            if self._rewind_to is not None:
+                self._request_rewind(self._rewind_to, "a pending deferral (retry)")
+            if self._seeded_at is not None and fid is not None:
+                if fid <= self._seeded_at:
+                    # A fill already buffered when the checkpoint was seeded:
+                    # the seed may not cover it, or a deferral of it would be
+                    # stranded behind the checkpoint across a restart.
+                    self._request_rewind(fid - 1, f"seed above first streamed fill {fid}")
+                self._seeded_at = None
             try:
                 # Durable dedup on the live path too: a replay can evict a
                 # newer fill id from the OMS's bounded in-memory set (a sync
@@ -306,6 +432,11 @@ class FillStreamCatchUp:
                 self._frozen = True
                 logger.exception("stream fill %s handling failed — checkpoint frozen", fid or "?")
                 return
+            if getattr(outcome, "deferred", False) and fid is not None:
+                # Journal state unknown: the durable boundary must sit below
+                # this fill so even a restart (which loses the in-memory
+                # deferred map) replays it.
+                self._request_rewind(fid - 1, f"deferred fill {fid}")
             if not outcome.durable:
                 if not self._frozen:
                     logger.error(

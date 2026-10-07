@@ -421,3 +421,18 @@ def test_daemon_legacy_shim_env(monkeypatch: pytest.MonkeyPatch, caplog: Any, bo
     monkeypatch.setenv("ALPACA_LEGACY_NOTE_MATCH", "maybe")
     with pytest.raises(ValueError, match="ALPACA_LEGACY_NOTE_MATCH"):
         daemon._config_from_env()
+
+
+def test_predicate_rejects_non_identifier_alias() -> None:
+    """Integration review r3: idea_alias is spliced into SQL — only a bare
+    identifier is accepted (both production callers pass "ti")."""
+    import pytest
+
+    from src.events.research_status import executable_research_predicate
+
+    assert executable_research_predicate(
+        require_niche=True, require_red_team=False, idea_alias="ti"
+    )
+    for bad in ("ti; DROP TABLE trade_ideas", "ti.idea_id", "1ti", "", "ti --", "t i"):
+        with pytest.raises(ValueError):
+            executable_research_predicate(require_niche=True, require_red_team=True, idea_alias=bad)
