@@ -44,6 +44,10 @@ services:
       CURLIT_API_HOST: 0.0.0.0
       CURLIT_API_PORT: ${CURLIT_API_PORT:-8200}
       CURLIT_METRICS_PORT: ${CURLIT_METRICS_PORT:-8099}
+      # CL-esh6: /metrics binds loopback by default; inside the container
+      # it must listen on the container interface for the (host-loopback)
+      # published port below and the watchdog's engine:8099 probe.
+      METRICS_BIND_ADDR: 0.0.0.0
       PYTHONUNBUFFERED: "1"
     volumes:
       - ./logs:/opt/curlit/logs

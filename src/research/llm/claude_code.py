@@ -13,9 +13,14 @@ Operational notes:
   * **Auth precedence trap.** An ``ANTHROPIC_API_KEY`` (or
     ``ANTHROPIC_AUTH_TOKEN``) in the environment OUTRANKS the
     subscription login inside the CLI — and ``dotenv_bootstrap`` puts
-    the API key in this process's env. The driver strips both from the
-    subprocess environment so calls are guaranteed to ride the
+    the API key in this process's env. The driver never passes either
+    to the subprocess, so calls are guaranteed to ride the
     subscription, never the API org.
+  * **Minimal child environment (CL-esh6).** The subprocess gets an
+    explicit allowlist (``_CLI_ENV_ALLOWLIST``: process basics, the
+    config-dir / subscription-login variables, the output cap, proxy/CA
+    settings) — never the whole environment, which carries every broker,
+    DB and messaging secret ``dotenv_bootstrap`` loaded from ``.env``.
   * **Quota sharing.** Subscription usage limits (5-hour / weekly
     windows) are shared with interactive Claude Code sessions. A heavy
     pipeline run can throttle the operator's own sessions.
@@ -32,8 +37,8 @@ env-var handling), not assumed:
     ``CLAUDE_CODE_MAX_OUTPUT_TOKENS`` environment variable as the per-request
     output cap (thinking included); a value above the model's own ceiling is
     clamped DOWN to that ceiling, never raised. With the gate ON the driver
-    sets it from ``max_tokens`` on every call; with it OFF the environment is
-    untouched and ``max_tokens`` is reported in ``unenforced_params``. Per the binary,
+    sets it from ``max_tokens`` on every call; with it OFF any inherited value
+    passes through unchanged and ``max_tokens`` is reported in ``unenforced_params``. Per the binary,
     hitting the cap yields an API-error result ("exceeded the N output
     token maximum"); an ``is_error`` payload raises here (fail loud). Not
     yet observed live — no real calls are made in development.
@@ -101,6 +106,89 @@ ENFORCE_CAP_ENV = "CURLIT_CLAUDE_ENFORCE_OUTPUT_CAP"
 
 def _cap_enforcement_enabled() -> bool:
     return os.environ.get(ENFORCE_CAP_ENV, "").strip().lower() in ("1", "true", "yes", "on")
+
+
+#: Exact environment variables the ``claude`` subprocess may inherit
+#: (CL-esh6). Everything else in this process's env — broker keys, DB
+#: passwords, Telegram/Moonshot tokens, WEB_API_SECRET, all loaded from
+#: .env by dotenv_bootstrap — is withheld from the child. Determined by
+#: reading the installed CLI (2.1.292) rather than assumed:
+#:
+#: * PATH / HOME / USER / LOGNAME / SHELL / TERM / TMPDIR / LANG / TZ —
+#:   process basics. The subscription login is resolved from the config
+#:   dir (``$CLAUDE_CONFIG_DIR`` or ``$HOME/.claude``) and, on macOS, the
+#:   login Keychain item queried via ``security find-generic-password -a
+#:   "$USER"`` — so HOME and USER are REQUIRED for subscription auth.
+#: * XDG_CONFIG_HOME — read by the CLI when locating its config.
+#: * CLAUDE_CONFIG_DIR / CLAUDE_SECURESTORAGE_CONFIG_DIR — relocate the
+#:   config/credentials; the Keychain service name is suffixed with a hash
+#:   of the config dir, so dropping these would look up a different item.
+#: * CLAUDE_CODE_OAUTH_TOKEN — the env form of the SUBSCRIPTION login
+#:   (``claude setup-token``); used on hosts without a Keychain login.
+#: * CLAUDE_CODE_MAX_OUTPUT_TOKENS — the output cap (CL-h7c1). Passed
+#:   through as-is with enforcement OFF (pre-existing behavior); overridden
+#:   from ``max_tokens`` with enforcement ON.
+#: * HTTP(S)_PROXY / NO_PROXY / NODE_EXTRA_CA_CERTS / SSL_CERT_FILE /
+#:   SSL_CERT_DIR — network reachability on proxied / custom-CA hosts.
+#:
+#: Deliberately NOT passed: ``ANTHROPIC_API_KEY`` / ``ANTHROPIC_AUTH_TOKEN``
+#: (they OUTRANK the subscription login — see the module docstring) and
+#: every other ``ANTHROPIC_*`` / ``CLAUDE_CODE_USE_*`` provider switch
+#: (base URL, Bedrock/Vertex routing) that could move billing off the
+#: subscription.
+_CLI_ENV_ALLOWLIST: frozenset[str] = frozenset(
+    {
+        "PATH",
+        "HOME",
+        "USER",
+        "LOGNAME",
+        "SHELL",
+        "TERM",
+        "TMPDIR",
+        "LANG",
+        "TZ",
+        "XDG_CONFIG_HOME",
+        "CLAUDE_CONFIG_DIR",
+        "CLAUDE_SECURESTORAGE_CONFIG_DIR",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        MAX_OUTPUT_TOKENS_ENV,
+        "HTTPS_PROXY",
+        "HTTP_PROXY",
+        "NO_PROXY",
+        "https_proxy",
+        "http_proxy",
+        "no_proxy",
+        "NODE_EXTRA_CA_CERTS",
+        "SSL_CERT_FILE",
+        "SSL_CERT_DIR",
+    }
+)
+
+#: Locale family (``LC_ALL``, ``LC_CTYPE``, ...) — prefix-allowed.
+_CLI_ENV_ALLOWED_PREFIXES: tuple[str, ...] = ("LC_",)
+
+#: API credentials that must never reach the CLI (billing-path guard).
+_CLI_ENV_FORBIDDEN: frozenset[str] = frozenset({"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"})
+
+
+def build_cli_env(
+    parent_env: dict[str, str] | os._Environ[str],
+    *,
+    enforce_cap: bool,
+    max_tokens: int,
+) -> dict[str, str]:
+    """The explicit, minimal environment for the ``claude`` subprocess
+    (CL-esh6): only allowlisted keys from ``parent_env``, plus the output
+    cap when enforcement is on. Pure — no reads of ``os.environ``."""
+    env = {
+        k: v
+        for k, v in parent_env.items()
+        if k in _CLI_ENV_ALLOWLIST or k.startswith(_CLI_ENV_ALLOWED_PREFIXES)
+    }
+    if enforce_cap:
+        env[MAX_OUTPUT_TOKENS_ENV] = str(max_tokens)
+    assert not (env.keys() & _CLI_ENV_FORBIDDEN), "API credentials must not reach the CLI"
+    return env
 
 
 #: Parameters the CLI cannot enforce at all — reported, never silently dropped.
@@ -268,19 +356,14 @@ class ClaudeCodeDriver(Driver):
         if system_text:
             cmd += ["--system-prompt", system_text]
 
-        # Strip API credentials so the CLI cannot silently bill the
-        # API org — an env API key outranks the subscription login.
-        env = {
-            k: v
-            for k, v in os.environ.items()
-            if k not in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
-        }
-        # CL-h7c1: enforce the requested output cap only behind the rollout
-        # gate. When enabled it overrides any inherited value so the caller's
-        # max_tokens — not ambient env — is the cap; when disabled the env is
-        # untouched (pre-CL-h7c1 behavior) and the cap is reported unenforced.
-        if enforce_cap:
-            env[MAX_OUTPUT_TOKENS_ENV] = str(max_tokens)
+        # CL-esh6: explicit allowlisted env — no trading/DB/messaging
+        # secrets reach the CLI, and the API credentials (which outrank the
+        # subscription login) are never passed. CL-h7c1: with the rollout
+        # gate ON the caller's max_tokens overrides any inherited cap; with
+        # it OFF an inherited cap passes through and the requested one is
+        # reported unenforced.
+        env = build_cli_env(os.environ, enforce_cap=enforce_cap, max_tokens=max_tokens)
+        logger.debug("claude-code: subprocess env keys=%s", sorted(env))
         if not self._warned_unenforced:
             self._warned_unenforced = True
             logger.warning(

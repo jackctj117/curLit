@@ -71,6 +71,9 @@ dev = [
     "mypy>=1.5",
     "types-defusedxml>=0.7.0",  # Typed XML boundary; do not ignore import errors.
     "packaging>=24.0",     # CI audit validates distribution identities/versions.
+    # CL-nix8: pandas' Parquet engine for tests/unit/test_trade_journal.py
+    # (export_annual_to_parquet). Test-only — not a runtime dependency.
+    "pyarrow>=14.0",
     "black>=23.7",
     "pre-commit>=3.3",
 ]
