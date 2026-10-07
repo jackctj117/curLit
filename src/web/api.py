@@ -96,6 +96,14 @@ class ResumeRequest(BaseModel):
     changed_by: str | None = None
 
 
+class FenceReleaseRequest(BaseModel):
+    """Body for POST /api/system/derisk-fences/release (CL-pksi)."""
+
+    symbol: str
+    reason: str
+    changed_by: str
+
+
 class TradeRequest(BaseModel):
     symbol: str
     target_position: float
@@ -357,6 +365,7 @@ def system_status(_: None = Depends(verify_secret)) -> dict[str, Any]:
         "oms_halted": _oms_halted(oms) if oms is not None else True,
         "kill_switch_manager_wired": (_runtime.get("kill_switch_manager") is not None),
         "account_halt": _account_halt_summary(),
+        "derisk_fences": _derisk_fence_summary(),
         **_entry_block_reasons(),
     }
 
@@ -392,6 +401,65 @@ def _entry_block_reasons() -> dict[str, Any]:
         "account_read_failures": safety.get("account_read_failures"),
         "last_reconciliation": safety.get("last_reconciliation"),
     }
+
+
+def _derisk_fence_summary() -> dict[str, Any] | None:
+    """Unresolved emergency-order fences (CL-o9sq/CL-pksi), or None unwired.
+
+    ``count`` / ``symbols`` are what the operator must reconcile before a
+    resume can lift the ``unresolved_emergency_orders`` halt cause.
+    """
+    manager = _runtime.get("kill_switch_manager")
+    summary = getattr(manager, "derisk_fence_summary", None)
+    if not callable(summary):
+        return None
+    try:
+        result = summary()
+    except Exception as exc:
+        logger.exception("/api/system: de-risk fence summary failed")
+        return {"readable": False, "error": f"{type(exc).__name__}"}
+    return result if isinstance(result, dict) else None
+
+
+def _unresolved_fence_symbols() -> list[str]:
+    manager = _runtime.get("kill_switch_manager")
+    probe = getattr(manager, "unresolved_derisk_symbols", None)
+    if not callable(probe):
+        return []
+    symbols = probe()
+    return [str(s) for s in symbols] if isinstance(symbols, list) else []
+
+
+@app.post("/api/system/derisk-fences/release")
+def release_derisk_fence(
+    req: FenceReleaseRequest, _: None = Depends(verify_secret)
+) -> dict[str, Any]:
+    """Operator release of an unresolved emergency-order fence (CL-pksi).
+
+    Only after the operator has reconciled the position at the broker (e.g. a
+    partial fill that went terminal). Attributed and persisted; it does NOT
+    resume trading — ``/api/system/resume`` is still required.
+    """
+    manager = _runtime.get("kill_switch_manager")
+    release = getattr(manager, "release_derisk_fence", None)
+    if not callable(release):
+        raise HTTPException(status_code=503, detail="kill_switch_manager not wired")
+    symbol = (req.symbol or "").strip()
+    if not symbol or len(symbol) > _MAX_SYMBOL_LEN:
+        raise HTTPException(status_code=400, detail="invalid symbol")
+    logger.warning(
+        "/api/system/derisk-fences/release: %s by %s: %s", symbol, req.changed_by, req.reason
+    )
+    try:
+        released = release(symbol, changed_by=req.changed_by, reason=req.reason)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("/api/system/derisk-fences/release failed — fence kept")
+        raise HTTPException(
+            status_code=503, detail=f"release not recorded ({type(exc).__name__}); fence kept"
+        ) from exc
+    return {"ok": True, "released": released, "derisk_fences": _derisk_fence_summary()}
 
 
 def _account_halt_summary() -> dict[str, Any] | None:
@@ -496,6 +564,19 @@ def resume_system(
     world they are in.
     """
     oms = _require_oms()
+    # CL-pksi: an unresolved emergency order means the broker may still change
+    # (or already changed) a position by an unreconciled amount. Refuse BEFORE
+    # touching any halt, so nothing is even briefly resumed.
+    fenced = _unresolved_fence_symbols()
+    if fenced:
+        logger.critical("/api/system/resume REFUSED: unresolved emergency orders on %s", fenced)
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"unresolved emergency orders on {fenced}; resolve them (broker evidence) or "
+                "reconcile and POST /api/system/derisk-fences/release first"
+            ),
+        )
     store = _runtime.get("halt_store")
     if store is not None:
         # CL-0deu.2: resume is explicit and attributed, and the DURABLE record

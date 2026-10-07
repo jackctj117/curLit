@@ -94,6 +94,10 @@ class SubmissionResult:
     status: SubmissionStatus
     target_reached: bool = False
     order_id: str | None = None
+    #: CL-pksi: absolute units of the order actually sent to the broker (None
+    #: when nothing was sent). Lets the risk layer compare cumulative fills
+    #: against what was requested instead of trusting a status label.
+    requested_qty: float | None = None
 
 
 class OrderManager:
@@ -152,6 +156,18 @@ class OrderManager:
         # venue transaction id (the stream can redeliver on reconnect).
         self._pending_intents: dict[str, OrderIntent] = {}
         self._seen_fills: set[str] = set()
+        # CL-pksi: consumers of NEWLY processed streamed fills (the kill-switch
+        # manager resolves emergency-order fences from them). Called after the
+        # transaction-id dedup above, so a redelivered fill never re-fires.
+        self._fill_listeners: list[Callable[[dict[str, Any]], None]] = []
+        # CL-pksi: canonical symbols with an unresolved emergency order at the
+        # broker. EVERY submit for a fenced symbol is refused (strategy,
+        # reconciler, manual and emergency alike): sizing a new order off a
+        # snapshot that may not yet include that order's fill can duplicate
+        # or reverse the close. Value = (reason, owner intent id): the owner is
+        # the emergency intent being submitted under the fence (None once its
+        # outcome is known to be unresolved — then nobody is exempt).
+        self._symbol_fences: dict[str, tuple[str, str | None]] = {}
 
     def submit_intent(
         self,
@@ -226,6 +242,22 @@ class OrderManager:
         (CL-sbrp). ``positions`` is forced to None when the reservation was
         contended, so the delta is recomputed from a fresh, post-fill book."""
         with self._lock:
+            # CL-pksi: checked HERE, under the per-symbol reservation, so a
+            # submit that queued behind an emergency order sees the fence that
+            # order set before it was placed (a pre-reservation check would be
+            # stale by the time the reservation is granted).
+            fence = self._symbol_fences.get(canonical_symbol(intent.symbol))
+            if fence is not None and fence[1] != intent.intent_id:
+                logger.critical(
+                    "OMS: %s is FENCED (%s) — refusing intent %s from %s (target=%.4f); "
+                    "an emergency order there is unresolved",
+                    canonical_symbol(intent.symbol),
+                    fence[0],
+                    intent.intent_id,
+                    intent.strategy_id,
+                    intent.target_position,
+                )
+                return SubmissionResult(intent.intent_id, SubmissionStatus.BLOCKED)
             # Position matching MUST use the canonical key (CL-qqra): broker
             # positions come back compact ("USDCAD") while event intents are
             # OANDA-underscore ("USD_CAD"). A raw .get() always missed →
@@ -444,7 +476,10 @@ class OrderManager:
                     # A generic canceled order may already have partial fills;
                     # this adapter contract has no cumulative-fill field.
                     return SubmissionResult(
-                        intent.intent_id, SubmissionStatus.UNKNOWN, order_id=placed.order_id or None
+                        intent.intent_id,
+                        SubmissionStatus.UNKNOWN,
+                        order_id=placed.order_id or None,
+                        requested_qty=qty,
                     )
                 if placed.status == OrderStatus.REJECTED:
                     # Ultrareview #2: a REJECTED status must flow through the
@@ -523,6 +558,7 @@ class OrderManager:
                         and placed.quantity == original_qty
                     ),
                     order_id=placed.order_id or None,
+                    requested_qty=qty,
                 )
             except Exception as exc:
                 # Emergency retries must not turn an ambiguous acceptance into
@@ -541,7 +577,7 @@ class OrderManager:
                         status,
                         exc_info=True,
                     )
-                    return SubmissionResult(intent.intent_id, status)
+                    return SubmissionResult(intent.intent_id, status, requested_qty=qty)
                 if self.rejection_handler is None:
                     # Legacy behavior: log and drop.
                     logger.exception("Order failed for %s", intent.intent_id)
@@ -653,7 +689,51 @@ class OrderManager:
             fill.get("units"),
             fill.get("price"),
         )
+        # CL-pksi: hand the NEWLY processed fill (post-dedup) to listeners —
+        # the kill-switch manager resolves emergency-order fences from it. A
+        # listener failure must never break fill journaling.
+        for listener in list(self._fill_listeners):
+            try:
+                listener(dict(fill))
+            except Exception:
+                logger.exception("fill listener failed for fill %s", fill_id or "?")
         return True
+
+    def add_fill_listener(self, listener: Callable[[dict[str, Any]], None]) -> None:
+        """Register a consumer of newly processed streamed fills (CL-pksi)."""
+        assert callable(listener), "fill listener must be callable"
+        with self._lock:
+            if listener not in self._fill_listeners:
+                self._fill_listeners.append(listener)
+
+    def fence_symbol(self, symbol: str, reason: str, owner: str | None = None) -> None:
+        """Refuse every submit for ``symbol`` until released (CL-pksi).
+
+        Set while an emergency order on that instrument is unresolved at the
+        broker, so no other writer (strategy, reconciler, manual trade, a
+        second kill switch) sizes an order off a book that may not include it.
+        ``owner`` exempts exactly one intent id: the emergency order about to
+        be placed under the fence (set BEFORE its submission, so no other
+        writer can slip in between its placement and its outcome).
+        """
+        csym = canonical_symbol(symbol)
+        assert csym and reason, "fence needs a symbol and a reason"
+        with self._lock:
+            if self._symbol_fences.get(csym) != (reason, owner):
+                logger.critical("OMS: fencing %s (owner=%s) — %s", csym, owner, reason)
+            self._symbol_fences[csym] = (reason, owner)
+
+    def release_symbol_fence(self, symbol: str) -> None:
+        """Lift a fence set by :meth:`fence_symbol` (CL-pksi)."""
+        csym = canonical_symbol(symbol)
+        with self._lock:
+            if self._symbol_fences.pop(csym, None) is not None:
+                logger.warning("OMS: fence on %s released", csym)
+
+    def fenced_symbols(self) -> dict[str, str]:
+        """Snapshot of fenced canonical symbols -> reason (CL-pksi)."""
+        with self._lock:
+            return {sym: fence[0] for sym, fence in self._symbol_fences.items()}
 
     def acknowledge_portfolio_halt(self) -> bool:
         """Acknowledge the durable halt for the FX path (CL-0deu.2).

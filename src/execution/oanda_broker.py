@@ -13,7 +13,15 @@ from typing import Any
 
 import httpx
 
-from .broker import Account, Broker, Order, OrderStatus, Position
+from .broker import (
+    Account,
+    Broker,
+    BrokerOrderNotFoundError,
+    Order,
+    OrderStatus,
+    OrderType,
+    Position,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -514,8 +522,130 @@ class OandaBroker(Broker):
             logger.warning("OANDA cancel %s errored: %s", order_id, str(exc)[:150])
             return False
 
+    #: CL-pksi: OANDA v20 order ``state`` -> adapter status. TRIGGERED is a
+    #: still-live (not yet terminal) order, so it is reported as PENDING.
+    _ORDER_STATES: dict[str, OrderStatus] = {
+        "PENDING": OrderStatus.PENDING,
+        "TRIGGERED": OrderStatus.PENDING,
+        "FILLED": OrderStatus.FILLED,
+        "CANCELLED": OrderStatus.CANCELLED,
+    }
+    _ORDER_TYPES: dict[str, OrderType] = {
+        "MARKET": OrderType.MARKET,
+        "LIMIT": OrderType.LIMIT,
+        "STOP": OrderType.STOP,
+    }
+
+    def _get_read(self, path: str, what: str) -> httpx.Response:
+        """One side-effect-free GET (CL-pksi). Never retried here; a 404 is
+        surfaced as :class:`BrokerOrderNotFoundError` by the callers that
+        treat "does not exist" as evidence. Only ids are logged."""
+        resp = self.client.get(path)
+        self._log_auth_rejection("GET", path, resp, f"{what} — not retried")
+        return resp
+
     def get_order(self, order_id: str) -> Order:
-        raise NotImplementedError
+        """Look one order up by OANDA order id OR ``@<clientID>`` (CL-pksi).
+
+        ``GET /v3/accounts/{id}/orders/{orderSpecifier}``. The returned
+        :class:`Order` carries the venue ``status`` AND, independently, the
+        venue-reported ``filled_quantity`` (read from the order's filling
+        ORDER_FILL transaction): a CANCELLED order is only reported with
+        ``filled_quantity == 0.0`` when OANDA lists no filling transaction,
+        and a FILLED order whose fill transaction cannot be read reports
+        ``None`` (amount unknown), never a guess.
+
+        Raises :class:`BrokerOrderNotFoundError` on HTTP 404 (no such order),
+        ``httpx.HTTPStatusError`` on other HTTP errors, and ``ValueError`` on
+        an unrecognised payload. Read-only: never places or cancels anything.
+        """
+        spec = str(order_id).strip()
+        if not spec or "/" in spec:
+            msg = f"invalid OANDA order specifier {order_id!r}"
+            raise ValueError(msg)
+        path = f"/v3/accounts/{self.account_id}/orders/{spec}"
+        logger.info("OANDA order lookup: %s", spec)
+        resp = self._get_read(path, "order lookup")
+        if resp.status_code == 404:
+            logger.warning("OANDA order lookup: %s does not exist (HTTP 404)", spec)
+            raise BrokerOrderNotFoundError(spec)
+        resp.raise_for_status()
+        raw = resp.json().get("order")
+        if not isinstance(raw, dict):
+            msg = f"OANDA order lookup {spec}: response has no order object"
+            raise ValueError(msg)
+        state = str(raw.get("state", ""))
+        status = self._ORDER_STATES.get(state)
+        if status is None:
+            msg = f"OANDA order lookup {spec}: unrecognised state {state!r}"
+            raise ValueError(msg)
+        units = float(raw.get("units", 0.0))
+        fill_txn = raw.get("fillingTransactionID")
+        fill_txn_id = str(fill_txn) if fill_txn else None
+        filled: float | None = None
+        if fill_txn_id is not None:
+            filled = self._fill_transaction_units(fill_txn_id)
+        elif status is OrderStatus.CANCELLED:
+            # OANDA records the filling transaction on any order that filled
+            # (fully or partially); none listed on a terminal cancel = zero.
+            filled = 0.0
+        cext = raw.get("clientExtensions") or {}
+        order = Order(
+            symbol=self._from_oanda(str(raw.get("instrument", ""))),
+            side="buy" if units > 0 else "sell",
+            quantity=abs(units),
+            order_type=self._ORDER_TYPES.get(str(raw.get("type", "")), OrderType.MARKET),
+            order_id=str(raw.get("id", "")),
+            client_order_id=(
+                str(cext["id"]) if isinstance(cext, dict) and cext.get("id") else None
+            ),
+            status=status,
+            filled_quantity=filled,
+            fill_transaction_id=fill_txn_id,
+        )
+        logger.info(
+            "OANDA order lookup: %s id=%s state=%s filled=%s fill_txn=%s",
+            spec,
+            order.order_id,
+            state,
+            filled,
+            fill_txn_id,
+        )
+        return order
+
+    def get_order_by_client_id(self, client_order_id: str) -> Order:
+        """Look an order up by OUR client id (``clientExtensions.id``), so an
+        order whose placement response was lost can still be found (CL-pksi).
+        """
+        cid = str(client_order_id).strip()
+        if not cid:
+            msg = "client order id is required"
+            raise ValueError(msg)
+        return self.get_order(f"@{cid}")
+
+    def _fill_transaction_units(self, transaction_id: str) -> float | None:
+        """Absolute units of one ORDER_FILL transaction, or None when it cannot
+        be read or is not a fill (CL-pksi) — unknown is never reported as 0."""
+        path = f"/v3/accounts/{self.account_id}/transactions/{transaction_id}"
+        try:
+            resp = self._get_read(path, "fill transaction lookup")
+            resp.raise_for_status()
+            txn = resp.json().get("transaction") or {}
+            if txn.get("type") != "ORDER_FILL":
+                logger.warning(
+                    "OANDA transaction %s is %r, not ORDER_FILL — fill amount unknown",
+                    transaction_id,
+                    txn.get("type"),
+                )
+                return None
+            return abs(float(txn["units"]))
+        except Exception as exc:
+            logger.warning(
+                "OANDA fill transaction %s unreadable (%s) — fill amount unknown",
+                transaction_id,
+                type(exc).__name__,
+            )
+            return None
 
     def get_positions(self) -> list[Position]:
         resp = self._get_account_read("positions")  # one 401 retry (CL-wrsa)

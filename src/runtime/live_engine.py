@@ -151,7 +151,20 @@ class LiveEngine:
         manager as a sticky ``external:*`` cause, so a later ``stale_prices``
         trip + recovery cannot auto-resume entries the operator (or a dirty
         reconciliation) deliberately paused.
+
+        CL-pksi: unresolved emergency orders from a previous process are
+        re-fenced FIRST — before the cold-start reconciler can submit anything
+        — and resolved from broker order evidence where possible. A restart is
+        never a resolution.
         """
+        recover = getattr(self.kill_switch_manager, "recover_emergency_attempts", None)
+        if callable(recover):
+            try:
+                logger.info("Startup: recovering unresolved emergency order attempts")
+                recover()
+            except Exception:
+                logger.exception("Startup emergency-attempt recovery failed — entries blocked")
+                self._startup_halt("emergency_attempt_recovery_failed")
         if os.environ.get("CURLIT_START_ENTRY_PAUSED", "0").lower() in {"1", "true", "yes"}:
             logger.warning(
                 "Operator-requested entry-paused startup; verified reductions remain available"
@@ -543,6 +556,15 @@ class LiveEngine:
                 self.kill_switch_manager.reset_daily(clear_causes=False)
         else:
             context = {"equity": equity}
+        # CL-pksi: resolve unresolved emergency-order fences from broker order
+        # evidence BEFORE the switches act, so a verified zero-fill outcome can
+        # be retried (once) this tick and a filled one is never re-sent.
+        refresh = getattr(self.kill_switch_manager, "refresh_unresolved_derisk", None)
+        if callable(refresh):
+            try:
+                refresh()
+            except Exception:
+                logger.exception("Health: emergency-order evidence refresh failed; fences kept")
         self.kill_switch_manager.check(context)
         # CL-nxjx: after evaluating, auto-lift a halt whose ONLY cause was a
         # data-availability gate (stale_prices) that has since cleared — so
