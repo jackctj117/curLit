@@ -44,6 +44,24 @@ PROMOTES the leg into ``open_positions`` at the ACTUAL broker fill (or
 REJECTS it, booking nothing, after grace with no fill). Only a promoted
 leg is reconciler-facing exposure and only it gets stop/time-stop
 evaluation — so the reconciler never sees the intended phantom.
+
+ACCOUNT CURRENCY (CL-vfw7): every amount compared against account equity
+is converted from the leg's QUOTE currency first, via an injected
+``quote -> account`` rate (:mod:`src.risk.currency`). Each leg carries
+its ``quote_ccy`` and entry conversion; each exit captures its own exit
+conversion (at trigger time, retried at confirmation). ``realized_pnl``
+— the field the loss cap reads — is the ACCOUNT-currency sum from state
+version 2 on. A version-1 file's aggregate was a MIXED-currency sum (e.g.
+¥44.29 booked as "+44.29"); it is preserved verbatim, labelled
+``legacy_mixed_currency_pnl``, and never added to ``realized_pnl``. Loss
+cap: ``-realized_pnl + max(0, -legacy_mixed_currency_pnl) >= cap`` —
+the legacy figure's LOSSES keep consuming budget at face value (the
+budget is not reset by the migration) while its GAINS are never credited
+(they may be yen, not dollars). A close whose exit conversion is
+unavailable books ``pnl_quote`` only into ``unconverted_closes``; while
+any of those is a LOSS, new entries are blocked (fail closed), and each
+tick retries the conversion (labelled ``deferred``) — the amount is never
+guessed.
 """
 
 from __future__ import annotations
@@ -58,9 +76,26 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from src.risk.currency import Conversion, ConversionUnavailable, quote_currency
+
 logger = logging.getLogger(__name__)
 
-_STATE_VERSION = 1
+#: v2 (CL-vfw7): ``realized_pnl`` is ACCOUNT currency; adds
+#: ``account_currency``, ``legacy_mixed_currency_pnl``,
+#: ``currency_migrated_at``, ``unconverted_closes``, ``recent_closed`` and
+#: per-leg ``quote_ccy`` / conversions. v1 files (no ``version`` key or 1)
+#: still load; anything else refuses to start.
+_STATE_VERSION = 2
+_SUPPORTED_STATE_VERSIONS = frozenset({1, 2})
+
+#: Closed-trade provenance rows retained in the state file. Event legs
+#: close a few times a week, so 100 rows is months of audit trail while
+#: keeping the atomically-rewritten file small.
+_RECENT_CLOSED_MAX = 100
+
+#: ``quote -> account`` rate resolver: returns a Conversion or raises
+#: ConversionUnavailable (never a default rate).
+ConvertFn = Callable[[str, datetime], Conversion]
 
 #: Pure safe-haven OANDA instruments (CL-5mkf). Combined open notional
 #: across these is capped at ``haven_max_pct`` of equity — a tighter
@@ -79,6 +114,12 @@ class EventPosition:
     direction: int  # +1 long / -1 short
     stop_price: float
     headline: str = ""
+    #: Quote currency of ``entry_price``/``stop_price`` (CL-vfw7). None on
+    #: legs persisted before the currency migration — derived from the
+    #: symbol when needed, never assumed to be the account currency.
+    quote_ccy: str | None = None
+    #: The quote→account rate used to SIZE this leg (provenance only).
+    entry_conversion: Conversion | None = None
 
 
 @dataclass
@@ -97,7 +138,13 @@ class ExitRecord:
     symbol: str
     position: EventPosition
     reason: str  # "hard_stop" | "time_stop"
-    pnl: float
+    #: P&L in the leg's QUOTE currency, from the trigger price (an
+    #: ESTIMATE of the fill — the broker-flat confirmation is not fill
+    #: evidence). CL-vfw7 split ``pnl`` into the two denominations.
+    pnl_quote: float
+    #: ``pnl_quote`` converted at the exit conversion; None when no fresh
+    #: rate was available (never booked into ``realized_pnl`` then).
+    pnl_account: float | None
     held_hours: float
     current_price: float | None
     book_realized_pnl: float
@@ -106,6 +153,8 @@ class ExitRecord:
     #: emission (CL-9dhg finding 10) — re-emissions would write one
     #: near-identical row per tick per pending exit.
     emit_count: int = 1
+    quote_ccy: str | None = None
+    exit_conversion: Conversion | None = None
 
 
 @dataclass
@@ -142,6 +191,9 @@ class PendingExit:
     #: unreadable at trigger (and every pre-CL-9dhg persisted entry):
     #: confirm only on broker-flat and book P&L as before — never guess.
     trigger_broker_qty: float | None = None
+    #: quote→account rate captured at TRIGGER time (CL-vfw7); None when
+    #: unavailable then (retried at confirmation; missing on legacy rows).
+    exit_conversion: Conversion | None = None
 
 
 @dataclass
@@ -191,8 +243,16 @@ class EventBook:
         haven_max_pct: float,
         max_holding_hours: float,
         reconcile_grace_sec: int,
+        account_currency: str = "USD",
+        convert: ConvertFn | None = None,
     ) -> None:
         self._state_path_str = state_path
+        # CL-vfw7: the currency every equity-comparable amount is booked in,
+        # and the quote→account rate resolver (None = identity only — any
+        # other quote currency is unavailable, i.e. fail closed).
+        self.account_currency = account_currency.strip().upper()
+        assert len(self.account_currency) == 3, "account currency must be ISO-4217"
+        self._convert: ConvertFn | None = convert
         self._max_loss_pct = max_loss_pct
         self._per_instrument_max_pct = per_instrument_max_pct
         self._haven_max_pct = haven_max_pct
@@ -207,11 +267,54 @@ class EventBook:
         # confirm_entries PROMOTES it (fill seen) or REJECTS it (no fill
         # after grace). Keys never overlap open_positions/pending_exits.
         self.pending_entries: dict[str, PendingEntry] = {}
+        #: ACCOUNT-currency realized P&L (CL-vfw7) — what the loss cap reads.
         self.realized_pnl: float = 0.0
         self.closed_trades: int = 0
+        #: Pre-CL-vfw7 aggregate: a MIXED-currency sum of quote-currency
+        #: P&L. Kept verbatim for the record, NEVER added to realized_pnl.
+        #: None = no legacy history (fresh book or already-clean v2).
+        self.legacy_mixed_currency_pnl: float | None = None
+        #: When the v1→v2 migration ran (None = book born on v2).
+        self.currency_migrated_at: datetime | None = None
+        #: Closed trades whose account P&L is UNKNOWN (no fresh exit rate):
+        #: dicts with symbol/quote_ccy/pnl_quote/closed_at/... — see
+        #: resolve_unconverted. Losses here block new entries.
+        self.unconverted_closes: list[dict[str, Any]] = []
+        #: Bounded closed-trade provenance (newest last).
+        self.recent_closed: list[dict[str, Any]] = []
         # Loss-cap breach is CRITICAL once per activation, WARNING after.
         self._breach_logged = False
         self.load()
+
+    # ------------------------------------------------------------------
+    # Currency conversion (CL-vfw7)
+    # ------------------------------------------------------------------
+
+    def set_converter(self, convert: ConvertFn | None) -> None:
+        self._convert = convert
+
+    def conversion(self, quote_ccy: str | None, now: datetime) -> Conversion:
+        """quote→account rate or :class:`ConversionUnavailable`. Identity
+        needs no market data; anything else needs the injected resolver."""
+        if quote_ccy is None:
+            raise ConversionUnavailable("instrument quote currency unknown")
+        if quote_ccy == self.account_currency:
+            return Conversion(quote_ccy, self.account_currency, 1.0, "identity", now)
+        if self._convert is None:
+            raise ConversionUnavailable(
+                f"no rate source for {quote_ccy}->{self.account_currency}",
+            )
+        conv = self._convert(quote_ccy, now)
+        if conv.quote_ccy != quote_ccy or conv.account_ccy != self.account_currency:
+            raise ConversionUnavailable(
+                f"converter returned {conv.quote_ccy}->{conv.account_ccy} for "
+                f"{quote_ccy}->{self.account_currency}"
+            )
+        return conv
+
+    @staticmethod
+    def leg_quote_ccy(pos: EventPosition) -> str | None:
+        return pos.quote_ccy or quote_currency(pos.symbol)
 
     # ------------------------------------------------------------------
     # State file (atomic tmp+rename, like equity trailing stop)
@@ -257,10 +360,21 @@ class EventBook:
                 "pending_entries — refusing to start. Repair the state file "
                 "by hand (a leg belongs in exactly one book)."
             )
-        self.realized_pnl = float(payload.get("realized_pnl", 0.0))
-        self.closed_trades = int(payload.get("closed_trades", 0))
-        if not math.isfinite(self.realized_pnl) or self.closed_trades < 0:
+        version = payload.get("version", 1)
+        if (
+            isinstance(version, bool)
+            or not isinstance(version, int)
+            or version not in _SUPPORTED_STATE_VERSIONS
+        ):
+            raise ValueError(f"Event book state {path} has unsupported version {version!r}")
+        try:
+            stored_realized = float(payload.get("realized_pnl", 0.0))
+            self.closed_trades = int(payload.get("closed_trades", 0))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Event book has invalid loss/trade history") from exc
+        if not math.isfinite(stored_realized) or self.closed_trades < 0:
             raise ValueError("Event book has invalid loss/trade history; reconciliation required")
+        self._load_currency_fields(path, version, stored_realized, payload)
         for sym, pos in (payload.get("open_positions") or {}).items():
             try:
                 self.open_positions[sym] = self._position_from_payload(sym, pos)
@@ -287,6 +401,7 @@ class EventBook:
                     trigger_price=float(price_raw) if price_raw is not None else None,
                     emit_count=int(entry.get("emit_count", 1)),
                     trigger_broker_qty=(float(qty_raw) if qty_raw is not None else None),
+                    exit_conversion=self._conversion_from_payload(entry.get("exit_conversion")),
                 )
             except (KeyError, TypeError, ValueError) as exc:
                 raise ValueError(f"Unparseable pending exit {sym}; refusing partial book") from exc
@@ -308,12 +423,98 @@ class EventBook:
             except (KeyError, TypeError, ValueError) as exc:
                 raise ValueError(f"Unparseable pending entry {sym}; refusing partial book") from exc
 
+    def _load_currency_fields(
+        self,
+        path: Path,
+        version: int,
+        stored_realized: float,
+        payload: dict[str, Any],
+    ) -> None:
+        """CL-vfw7 currency semantics of the persisted aggregate.
+
+        v1: ``realized_pnl`` was a mixed-currency sum → preserved as
+        ``legacy_mixed_currency_pnl``; account realized starts at 0 and the
+        migration marker is stamped (persisted on the next save). v2: the
+        file's ``account_currency`` must match ours (a USD sum read as EUR
+        would be silently wrong) and every new field must be sane."""
+        if version == 1:
+            self.legacy_mixed_currency_pnl = stored_realized
+            self.realized_pnl = 0.0
+            self.currency_migrated_at = datetime.now(UTC)
+            logger.warning(
+                "Event book %s: v1 state — realized_pnl %.2f is a MIXED-currency "
+                "sum (quote-currency P&L of every pair added together). Preserved "
+                "as legacy_mixed_currency_pnl, NOT counted as %s; account-currency "
+                "realized P&L starts at 0.00 from %s (CL-vfw7). Legacy losses still "
+                "consume the loss-cap budget at face value; legacy gains are not "
+                "credited.",
+                path,
+                stored_realized,
+                self.account_currency,
+                self.currency_migrated_at.isoformat(),
+            )
+            return
+        stored_ccy = payload.get("account_currency")
+        if not isinstance(stored_ccy, str) or stored_ccy.upper() != self.account_currency:
+            raise ValueError(
+                f"Event book state {path} is denominated in {stored_ccy!r}, but the "
+                f"account currency is {self.account_currency!r} — refusing to start "
+                "(a realized sum in another currency cannot be compared to equity)"
+            )
+        self.realized_pnl = stored_realized
+        legacy = payload.get("legacy_mixed_currency_pnl")
+        if legacy is not None:
+            try:
+                legacy_f = float(legacy)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("Event book legacy_mixed_currency_pnl unparseable") from exc
+            if not math.isfinite(legacy_f):
+                raise ValueError("Event book legacy_mixed_currency_pnl is not finite")
+            self.legacy_mixed_currency_pnl = legacy_f
+        migrated = payload.get("currency_migrated_at")
+        if migrated is not None:
+            try:
+                ts = datetime.fromisoformat(str(migrated))
+            except ValueError as exc:
+                raise ValueError("Event book currency_migrated_at unparseable") from exc
+            self.currency_migrated_at = ts if ts.tzinfo else ts.replace(tzinfo=UTC)
+        for key in ("unconverted_closes", "recent_closed"):
+            raw = payload.get(key, [])
+            if not isinstance(raw, list) or not all(isinstance(r, dict) for r in raw):
+                raise ValueError(f"Event book {key} must be a list of objects")
+        for row in payload.get("unconverted_closes", []):
+            try:
+                pnl_q = float(row["pnl_quote"])
+                ccy = str(row["quote_ccy"])
+                str(row["symbol"])
+                datetime.fromisoformat(str(row["closed_at"]))
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ValueError(f"Event book unconverted close unparseable: {row!r}") from exc
+            if not math.isfinite(pnl_q) or len(ccy) != 3 or not ccy.isalpha():
+                raise ValueError(f"Event book unconverted close invalid: {row!r}")
+        self.unconverted_closes = list(payload.get("unconverted_closes", []))
+        self.recent_closed = list(payload.get("recent_closed", []))[-_RECENT_CLOSED_MAX:]
+
     @staticmethod
-    def _position_from_payload(sym: str, pos: dict[str, Any]) -> EventPosition:
-        """Parse one persisted position; invalid state must prevent startup."""
+    def _conversion_from_payload(raw: Any) -> Conversion | None:
+        if raw is None:
+            return None
+        if not isinstance(raw, dict):
+            raise ValueError(f"conversion record must be an object: {raw!r}")
+        return Conversion.from_payload(raw)
+
+    @classmethod
+    def _position_from_payload(cls, sym: str, pos: dict[str, Any]) -> EventPosition:
+        """Parse one persisted position; invalid state must prevent startup.
+        ``quote_ccy``/``entry_conversion`` are ABSENT on pre-CL-vfw7 legs."""
         entry_ts = datetime.fromisoformat(pos["entry_ts"])
         if entry_ts.tzinfo is None:
             entry_ts = entry_ts.replace(tzinfo=UTC)
+        quote_raw = pos.get("quote_ccy")
+        if quote_raw is not None and (
+            not isinstance(quote_raw, str) or len(quote_raw) != 3 or not quote_raw.isalpha()
+        ):
+            raise ValueError(f"invalid quote_ccy {quote_raw!r}")
         return EventPosition(
             symbol=sym,
             event_id=pos.get("event_id"),
@@ -323,6 +524,8 @@ class EventBook:
             direction=int(pos["direction"]),
             stop_price=float(pos["stop_price"]),
             headline=str(pos.get("headline", "")),
+            quote_ccy=quote_raw.upper() if isinstance(quote_raw, str) else None,
+            entry_conversion=cls._conversion_from_payload(pos.get("entry_conversion")),
         )
 
     @staticmethod
@@ -335,13 +538,27 @@ class EventBook:
             "direction": pos.direction,
             "stop_price": pos.stop_price,
             "headline": pos.headline,
+            "quote_ccy": pos.quote_ccy,
+            "entry_conversion": (
+                pos.entry_conversion.to_payload() if pos.entry_conversion is not None else None
+            ),
         }
 
     def save(self) -> None:
         path = self._path()
         payload = {
             "version": _STATE_VERSION,
+            # ACCOUNT-currency realized P&L (CL-vfw7) — the loss-cap input.
             "realized_pnl": self.realized_pnl,
+            "account_currency": self.account_currency,
+            "legacy_mixed_currency_pnl": self.legacy_mixed_currency_pnl,
+            "currency_migrated_at": (
+                self.currency_migrated_at.isoformat()
+                if self.currency_migrated_at is not None
+                else None
+            ),
+            "unconverted_closes": self.unconverted_closes,
+            "recent_closed": self.recent_closed[-_RECENT_CLOSED_MAX:],
             "closed_trades": self.closed_trades,
             "open_positions": {
                 sym: self._position_payload(pos) for sym, pos in self.open_positions.items()
@@ -354,6 +571,11 @@ class EventBook:
                     "trigger_price": entry.trigger_price,
                     "emit_count": entry.emit_count,
                     "trigger_broker_qty": entry.trigger_broker_qty,
+                    "exit_conversion": (
+                        entry.exit_conversion.to_payload()
+                        if entry.exit_conversion is not None
+                        else None
+                    ),
                 }
                 for sym, entry in self.pending_exits.items()
             },
@@ -453,6 +675,8 @@ class EventBook:
                 direction=pos.direction,
                 stop_price=pos.stop_price,
                 headline=pos.headline,
+                quote_ccy=pos.quote_ccy,
+                entry_conversion=pos.entry_conversion,
             )
         return merged
 
@@ -501,6 +725,8 @@ class EventBook:
                 direction=pos.direction,
                 stop_price=pos.stop_price,
                 headline=pos.headline,
+                quote_ccy=pos.quote_ccy,
+                entry_conversion=pos.entry_conversion,
             )
         return merged
 
@@ -510,22 +736,46 @@ class EventBook:
         ``book_realized_pnl`` is the projected cumulative P&L after this
         exit CONFIRMS (pre-CL-8cw1 snapshot semantics preserved)."""
         pos = entry.position
-        pnl = (
+        # Quote-currency P&L: price units of the QUOTE currency × units.
+        pnl_quote = (
             (entry.trigger_price - pos.entry_price) * pos.quantity
             if entry.trigger_price is not None
             else 0.0
         )
+        conv = entry.exit_conversion
+        pnl_account = pnl_quote * conv.rate if conv is not None else None
         held_hours = (entry.triggered_ts - pos.entry_ts).total_seconds() / 3600.0
         return ExitRecord(
             symbol=symbol,
             position=pos,
             reason=entry.reason,
-            pnl=pnl,
+            pnl_quote=pnl_quote,
+            pnl_account=pnl_account,
             held_hours=held_hours,
             current_price=entry.trigger_price,
-            book_realized_pnl=self.realized_pnl + pnl,
+            # Projected ACCOUNT-currency total; an unconvertible exit adds
+            # nothing (its amount is unknown, not zero — see unconverted_closes).
+            book_realized_pnl=self.realized_pnl + (pnl_account or 0.0),
             emit_count=entry.emit_count,
+            quote_ccy=self.leg_quote_ccy(pos),
+            exit_conversion=conv,
         )
+
+    def _try_exit_conversion(self, entry: PendingExit, now: datetime) -> None:
+        """Capture the exit quote→account rate if not yet captured (trigger
+        time first, retried at confirmation). Failure leaves it None."""
+        if entry.exit_conversion is not None:
+            return
+        try:
+            entry.exit_conversion = self.conversion(self.leg_quote_ccy(entry.position), now)
+        except ConversionUnavailable as exc:
+            logger.warning(
+                "Event exit %s: quote->%s conversion unavailable (%s) — P&L "
+                "stays quote-only until a fresh rate exists",
+                entry.position.symbol,
+                self.account_currency,
+                exc,
+            )
 
     def _net_broker_quantities(
         self,
@@ -625,6 +875,8 @@ class EventBook:
                 trigger_price=current,
                 trigger_broker_qty=trigger_broker_qty,
             )
+            # CL-vfw7: rate captured at the same moment as the trigger price.
+            self._try_exit_conversion(entry, now)
             del self.open_positions[symbol]
             self.pending_exits[symbol] = entry
             self.save()
@@ -650,7 +902,11 @@ class EventBook:
     #: then REJECTS. Same 1-unit dust floor the exit side uses for "flat".
     _MIN_ENTRY_FILL = 1.0
 
-    def confirm_exits(self, broker_positions: Iterable[Any]) -> list[ExitRecord]:
+    def confirm_exits(
+        self,
+        broker_positions: Iterable[Any],
+        now: datetime | None = None,
+    ) -> list[ExitRecord]:
         """Finalize pending exits the broker CONFIRMS are out (CL-8cw1;
         residual + phantom semantics CL-9dhg findings 1 + 2).
 
@@ -681,9 +937,15 @@ class EventBook:
         realized P&L from the trigger price captured at trigger time,
         ``closed_trades`` bump, persisted, ExitRecord returned — and
         exactly ONCE: finalized legs leave ``pending_exits``, so a
-        repeat call with the same snapshot is a no-op."""
+        repeat call with the same snapshot is a no-op.
+
+        CL-vfw7: ``realized_pnl`` grows by the ACCOUNT-currency P&L only.
+        If no exit conversion was captured at trigger and none is fresh now,
+        the close books into ``unconverted_closes`` (quote amount only) and
+        ``realized_pnl`` is untouched — never a guessed rate."""
         if not self.pending_exits:
             return []
+        now = now or datetime.now(UTC)
         net = self._net_broker_quantities(broker_positions)
         records: list[ExitRecord] = []
         for symbol, entry in list(self.pending_exits.items()):
@@ -717,16 +979,25 @@ class EventBook:
                     entry.emit_count,
                 )
                 continue
+            self._try_exit_conversion(entry, now)
             record = self._pending_exit_record(symbol, entry)
-            self.realized_pnl += record.pnl
             self.closed_trades += 1
+            closed_row = self._closed_row(record, now)
+            if record.pnl_account is not None:
+                self.realized_pnl += record.pnl_account
+            else:
+                self.unconverted_closes.append(closed_row)
+            self._append_recent_closed(closed_row)
             self.save()
             logger.info(
-                "Event exit %s: %s pnl=%.2f held=%.1fh event_id=%s (broker "
-                "confirmed %s after %d emission(s))",
+                "Event exit %s: %s pnl_quote=%.2f %s pnl_account=%s %s held=%.1fh "
+                "event_id=%s (broker confirmed %s after %d emission(s))",
                 symbol,
                 entry.reason,
-                record.pnl,
+                record.pnl_quote,
+                record.quote_ccy,
+                "UNCONVERTED" if record.pnl_account is None else f"{record.pnl_account:.2f}",
+                self.account_currency,
                 record.held_hours,
                 entry.position.event_id,
                 "flat"
@@ -846,6 +1117,8 @@ class EventBook:
             direction=pos.direction,
             stop_price=pos.stop_price,
             headline=pos.headline,
+            quote_ccy=pos.quote_ccy,
+            entry_conversion=pos.entry_conversion,
         )
         del self.pending_entries[symbol]
         self.open_positions[symbol] = confirmed
@@ -961,30 +1234,134 @@ class EventBook:
     # Event-book protection (loss-cap freeze on NEW entries)
     # ------------------------------------------------------------------
 
+    # ------------------------------------------------------------------
+    # Closed-trade provenance + deferred conversion (CL-vfw7)
+    # ------------------------------------------------------------------
+
+    def _closed_row(self, record: ExitRecord, now: datetime) -> dict[str, Any]:
+        pos = record.position
+        return {
+            "symbol": record.symbol,
+            "event_id": pos.event_id,
+            "reason": record.reason,
+            # "XXX" = ISO-4217 "no currency": an unparseable quote stays
+            # unconvertible (fail closed) instead of being assumed USD.
+            "quote_ccy": record.quote_ccy if record.quote_ccy is not None else "XXX",
+            "quantity": pos.quantity,
+            "entry_price": pos.entry_price,
+            "exit_price": record.current_price,
+            # The exit price is the TRIGGER-time mid, not broker fill
+            # evidence — an estimate, labelled as such.
+            "exit_price_basis": "trigger_price_estimate",
+            "pnl_quote": record.pnl_quote,
+            "pnl_account": record.pnl_account,
+            "account_ccy": self.account_currency,
+            "entry_conversion": (
+                pos.entry_conversion.to_payload() if pos.entry_conversion is not None else None
+            ),
+            "exit_conversion": (
+                record.exit_conversion.to_payload() if record.exit_conversion is not None else None
+            ),
+            "conversion_deferred": False,
+            "closed_at": now.isoformat(),
+        }
+
+    def _append_recent_closed(self, row: dict[str, Any]) -> None:
+        self.recent_closed.append(row)
+        del self.recent_closed[:-_RECENT_CLOSED_MAX]
+
+    def has_unconverted_losses(self) -> bool:
+        """True while any closed trade's ACCOUNT-currency loss is unknown —
+        the loss cap cannot be evaluated, so new entries must be blocked."""
+        return any(float(r["pnl_quote"]) < 0 for r in self.unconverted_closes)
+
+    def resolve_unconverted(self, now: datetime) -> int:
+        """Retry conversion for closes whose exit rate was unavailable.
+
+        The rate is the CURRENT one, not the close-time one, so the booked
+        amount is labelled ``conversion_deferred`` in ``recent_closed`` and
+        logged at WARNING. Returns the number resolved."""
+        if not self.unconverted_closes:
+            return 0
+        remaining: list[dict[str, Any]] = []
+        resolved = 0
+        for row in self.unconverted_closes:
+            try:
+                conv = self.conversion(str(row["quote_ccy"]), now)
+            except ConversionUnavailable:
+                remaining.append(row)
+                continue
+            pnl_account = float(row["pnl_quote"]) * conv.rate
+            self.realized_pnl += pnl_account
+            resolved += 1
+            booked = dict(row)
+            booked.update(
+                pnl_account=pnl_account,
+                exit_conversion=conv.to_payload(),
+                conversion_deferred=True,
+            )
+            for i, prior in enumerate(self.recent_closed):
+                if prior.get("closed_at") == row.get("closed_at") and prior.get(
+                    "symbol"
+                ) == row.get("symbol"):
+                    self.recent_closed[i] = booked
+                    break
+            logger.warning(
+                "Event close %s: deferred conversion %.2f %s -> %.2f %s at rate %.6f "
+                "(%s, observed %s; close was %s) — booked into realized P&L",
+                row["symbol"],
+                float(row["pnl_quote"]),
+                row["quote_ccy"],
+                pnl_account,
+                self.account_currency,
+                conv.rate,
+                conv.source_pair,
+                conv.observed_at.isoformat(),
+                row["closed_at"],
+            )
+        if resolved:
+            self.unconverted_closes = remaining
+            self.save()
+        return resolved
+
+    def loss_cap_consumed(self) -> float:
+        """Loss-cap budget consumed, in ACCOUNT currency (CL-vfw7):
+        ``-realized_pnl`` (account-currency since the migration) plus the
+        legacy mixed-currency figure's LOSS at face value. Legacy GAINS are
+        never credited (they may be ¥, not $) and legacy LOSSES are never
+        forgiven by the migration (the budget is not reset)."""
+        legacy_loss = max(0.0, -(self.legacy_mixed_currency_pnl or 0.0))
+        return -self.realized_pnl + legacy_loss
+
     def breached(self, equity: float | None) -> bool:
         if equity is None or equity <= 0:
             return False
         cap = self._max_loss_pct * equity
-        breached = -self.realized_pnl >= cap
+        consumed = self.loss_cap_consumed()
+        breached = consumed >= cap
         if breached:
             if not self._breach_logged:
                 logger.critical(
-                    "EVENT BOOK LOSS CAP BREACHED: cumulative realized P&L "
-                    "%.2f <= -%.2f (%.1f%% of equity %.0f). NO new event "
-                    "positions will be opened; exits still flow. Reset "
-                    "requires operator action on %s. (Kill-switch "
-                    "integration pending — this is the loud log.)",
-                    self.realized_pnl,
+                    "EVENT BOOK LOSS CAP BREACHED: loss consumed %.2f %s >= cap "
+                    "%.2f (%.1f%% of equity %.0f; account realized %.2f, legacy "
+                    "mixed-currency %s). NO new event positions will be opened; "
+                    "exits still flow. Reset requires operator action on %s. "
+                    "(Kill-switch integration pending — this is the loud log.)",
+                    consumed,
+                    self.account_currency,
                     cap,
                     self._max_loss_pct * 100,
                     equity,
+                    self.realized_pnl,
+                    self.legacy_mixed_currency_pnl,
                     self._state_path_str,
                 )
                 self._breach_logged = True
             else:
                 logger.warning(
-                    "Event book loss cap still breached (realized P&L %.2f) — new entries blocked",
-                    self.realized_pnl,
+                    "Event book loss cap still breached (consumed %.2f %s) — new entries blocked",
+                    consumed,
+                    self.account_currency,
                 )
         elif self._breach_logged:
             logger.warning(
@@ -999,28 +1376,37 @@ class EventBook:
     # sizing + the loss cap; not a substitute for the correlation switch.
     # ------------------------------------------------------------------
 
-    def _open_instrument_notional(self, symbol: str) -> float:
-        """Open notional (|quantity| * entry_price, the sizing units) in a
-        SINGLE instrument, from tracked positions (open + pending-exit +
-        pending-ENTRY at its intended magnitude — a pending exit is still
-        broker exposure until confirmed flat (CL-8cw1) and a pending entry
-        is a committed submission that must count against the cap before it
-        confirms, ENTRY half of CL-hqyj) — uses the accounting view,
-        nothing new persisted."""
+    def _account_notional(self, pos: EventPosition, now: datetime) -> float:
+        """|quantity| * entry_price (QUOTE currency) converted to ACCOUNT
+        currency at the current rate (CL-vfw7). Raises
+        :class:`ConversionUnavailable` — the cap cannot be evaluated."""
+        conv = self.conversion(self.leg_quote_ccy(pos), now)
+        return abs(pos.quantity) * pos.entry_price * conv.rate
+
+    def _open_instrument_notional(self, symbol: str, now: datetime | None = None) -> float:
+        """Open ACCOUNT-currency notional in a SINGLE instrument, from
+        tracked positions (open + pending-exit + pending-ENTRY at its
+        intended magnitude — a pending exit is still broker exposure until
+        confirmed flat (CL-8cw1) and a pending entry is a committed
+        submission that must count against the cap before it confirms,
+        ENTRY half of CL-hqyj) — uses the accounting view, nothing new
+        persisted. Raises ConversionUnavailable (CL-vfw7)."""
+        now = now or datetime.now(UTC)
         total = 0.0
         for sym, pos in self.accounting_positions().items():
             if sym == symbol:
-                total += abs(pos.quantity) * pos.entry_price
+                total += self._account_notional(pos, now)
         return total
 
-    def _open_haven_notional(self) -> float:
-        """Combined open notional (|quantity| * entry_price) across
-        HAVEN_INSTRUMENTS (gold/silver), from tracked positions (open +
-        pending-exit + pending-entry at intended magnitude, as above)."""
+    def _open_haven_notional(self, now: datetime | None = None) -> float:
+        """Combined open ACCOUNT-currency notional across HAVEN_INSTRUMENTS
+        (gold/silver), from tracked positions (open + pending-exit +
+        pending-entry at intended magnitude, as above)."""
+        now = now or datetime.now(UTC)
         total = 0.0
         for sym, pos in self.accounting_positions().items():
             if sym in HAVEN_INSTRUMENTS:
-                total += abs(pos.quantity) * pos.entry_price
+                total += self._account_notional(pos, now)
         return total
 
     def concentration_capped_size(
@@ -1029,6 +1415,7 @@ class EventBook:
         size: float,
         entry_price: float,
         equity: float,
+        now: datetime | None = None,
     ) -> float:
         """Reduce a NEW event leg's signed ``size`` so it satisfies the
         concentration caps (CL-wbmw). Two layers: (1) per-instrument cap
@@ -1038,13 +1425,18 @@ class EventBook:
         cap is a ceiling the base sizing grows toward, so under-cap legs
         pass through UNCHANGED. Returns the (possibly reduced) signed
         size — 0.0 when EITHER cap is already at/over (skip). Logs at
-        WARNING naming the binding cap. Preserves sign."""
+        WARNING naming the binding cap. Preserves sign. All notionals are
+        ACCOUNT currency (CL-vfw7): raises ConversionUnavailable when the new
+        leg or any counted leg has no fresh quote->account rate."""
+        now = now or datetime.now(UTC)
         if equity <= 0:
             return size
+        # Quote→account rate of the NEW leg (raises when unavailable).
+        rate = self.conversion(quote_currency(symbol), now).rate
 
         # Layer 1: per-instrument headroom (every symbol).
         per_cap = self._per_instrument_max_pct * equity
-        per_open = self._open_instrument_notional(symbol)
+        per_open = self._open_instrument_notional(symbol, now)
         headroom = per_cap - per_open
         binding = "per-instrument"
         cap_pct = self._per_instrument_max_pct
@@ -1054,7 +1446,7 @@ class EventBook:
         # Layer 2: haven-cluster headroom (havens only) — take the tighter.
         if symbol in HAVEN_INSTRUMENTS:
             haven_cap = self._haven_max_pct * equity
-            haven_open = self._open_haven_notional()
+            haven_open = self._open_haven_notional(now)
             haven_headroom = haven_cap - haven_open
             if haven_headroom < headroom:
                 headroom = haven_headroom
@@ -1064,7 +1456,7 @@ class EventBook:
                 open_exposure = haven_open
                 cap_notional = haven_cap
 
-        proposed_notional = abs(size) * entry_price
+        proposed_notional = abs(size) * entry_price * rate
         if headroom <= 0:
             logger.warning(
                 "Concentration cap [%s]: already at/over %.0f%% of equity "
@@ -1079,7 +1471,7 @@ class EventBook:
         if proposed_notional <= headroom:
             return size  # fits under the (more binding) cap — unchanged
         # Trim the position to exactly fill the remaining headroom.
-        max_units = headroom / entry_price
+        max_units = headroom / (entry_price * rate)
         capped = max_units if size > 0 else -max_units
         logger.warning(
             "Concentration cap [%s]: %s entry reduced from %.0f to %.0f "

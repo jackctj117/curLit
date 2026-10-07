@@ -21,6 +21,7 @@ import sqlalchemy as sa
 from sqlalchemy import text
 
 from src.execution.oms import OrderIntent, Urgency
+from src.risk.currency import AccountCurrencyConverter
 from src.risk.liquidity_window import LiquidityProfile
 from src.strategies.event_driven import (
     EventDrivenConfig,
@@ -170,7 +171,29 @@ def make_strategy(
 ) -> EventDrivenStrategy:
     overrides.setdefault("event_book_state_path", str(tmp_path / "event_book_state.json"))
     cfg = EventDrivenConfig(**overrides)
-    return EventDrivenStrategy(cfg, data_provider=provider, db_engine=db)
+    strat = EventDrivenStrategy(cfg, data_provider=provider, db_engine=db)
+    install_fresh_tick_converter(strat)
+    return strat
+
+
+def install_fresh_tick_converter(strat: EventDrivenStrategy) -> None:
+    """CL-vfw7: these tests' tick dicts carry no timestamp (production
+    OANDA/paper ticks always do). Inject a FAKE price source that treats the
+    tick snapshot the strategy received this call as observed NOW, so the
+    real quote→USD converter resolves (USD_CAD @ 1.0 → CAD→USD rate 1.0,
+    leaving every pre-CL-vfw7 sizing expectation numerically unchanged).
+    Staleness/missing-rate behavior is covered in test_event_currency.py."""
+
+    def _fresh() -> dict[str, Any]:
+        stamp = datetime.now(UTC).isoformat()
+        return {
+            k: {**v, "ts": stamp} if isinstance(v, dict) else v
+            for k, v in strat._tick_prices.items()
+        }
+
+    strat.set_currency_converter(
+        AccountCurrencyConverter(price_source=_fresh, account_currency=strat.account_currency),
+    )
 
 
 def run(
@@ -786,8 +809,14 @@ class TestExits:
         broker._held = set()  # exit filled
         run(strat, {"USD_CAD": tick(0.985)}, broker)
         assert strat.open_positions == {}
-        # Loss booked from the trigger price: (0.985 - 1.0) * 50000.
-        assert strat.book.realized_pnl == pytest.approx(-750.0)
+        # Loss booked from the trigger price: (0.985 - 1.0) * 50000 =
+        # -750 CAD (USD_CAD is CAD-quoted). CL-vfw7: realized_pnl is now
+        # ACCOUNT currency — converted at the trigger-time USDCAD mid
+        # 0.985: -750 / 0.985 = -761.42 USD (pre-fix code booked "-750").
+        exit_rec = strat.book.recent_closed[-1]
+        assert exit_rec["pnl_quote"] == pytest.approx(-750.0)
+        assert exit_rec["quote_ccy"] == "CAD"
+        assert strat.book.realized_pnl == pytest.approx(-750.0 / 0.985)
 
 
 # =============================================================================
@@ -1412,7 +1441,9 @@ class TestStatePersistence:
         )
         strat = make_strategy(tmp_path, db=make_db())
         assert strat.book.pending_exits == {}
-        assert strat.book.realized_pnl == pytest.approx(-250.0)
+        # CL-vfw7: the v1 aggregate keeps its value under the legacy label.
+        assert strat.book.legacy_mixed_currency_pnl == pytest.approx(-250.0)
+        assert strat.book.realized_pnl == 0.0
         assert strat.book.closed_trades == 2
         assert "USD_CAD" in strat.book.open_positions
 
@@ -2086,7 +2117,10 @@ class TestTriggerBrokerCapture:
         broker = _BrokerWithNetQty({"USDCAD": 30_000.0})
         assert strat.book.confirm_exits(broker.get_positions()) == []
         assert "USD_CAD" in strat.book.pending_exits
-        # Broker flat → confirms, books (1.0 - 0.99) * 50000 = 500.
+        # Broker flat → confirms, books (1.0 - 0.99) * 50000 = 500 CAD.
+        # CL-vfw7: the legacy row has no exit conversion, so confirmation
+        # needs a fresh USDCAD rate — 1.0 here → 500 USD.
+        strat._tick_prices = {"USD_CAD": tick(1.0)}
         broker.net = {}
         records = strat.book.confirm_exits(broker.get_positions())
         assert [r.symbol for r in records] == ["USD_CAD"]
@@ -2448,7 +2482,10 @@ class TestEntryLifecycle:
         )
         strat = make_strategy(tmp_path, db=make_db())
         assert strat.book.pending_entries == {}
-        assert strat.book.realized_pnl == pytest.approx(-250.0)
+        # CL-vfw7: a v1 aggregate is MIXED-currency — preserved verbatim
+        # under its own label, never counted as account-currency P&L.
+        assert strat.book.legacy_mixed_currency_pnl == pytest.approx(-250.0)
+        assert strat.book.realized_pnl == 0.0
         assert strat.book.closed_trades == 2
         assert strat.book.open_positions["USD_CAD"].quantity == pytest.approx(1000.0)
 

@@ -6,6 +6,7 @@ import contextlib
 import logging
 import os
 import signal
+from collections.abc import Mapping
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any
@@ -35,6 +36,7 @@ from src.portfolio import (
     PreTradeValidator,
     ReconciliationPolicy,
 )
+from src.risk.currency import AccountCurrencyConverter
 from src.runtime.live_engine import LiveEngine
 from src.strategies.carry_vol_filter import (
     CarryVolFilterConfig,
@@ -492,6 +494,30 @@ def build_strategies(
     return strategies
 
 
+def wire_account_currency(
+    strategies: list[Any],
+    live_prices: Mapping[str, Any],
+) -> int:
+    """Bind each strategy that converts quote→account currency (CL-vfw7:
+    EventDrivenStrategy) to a converter reading the engine's LIVE tick dict.
+    The account currency is the strategy's own (resolved and logged at its
+    construction); a mismatch raises — boot fails loud rather than booking
+    P&L in the wrong currency. Returns the number of strategies wired."""
+    wired = 0
+    for strategy in strategies:
+        setter = getattr(strategy, "set_currency_converter", None)
+        if not callable(setter):
+            continue
+        converter = AccountCurrencyConverter(
+            price_source=lambda: live_prices,
+            account_currency=strategy.account_currency,
+        )
+        setter(converter)
+        wired += 1
+    logger.info("Account-currency converters wired to the live tick stream: %d", wired)
+    return wired
+
+
 def _supported_instruments(
     config: dict[str, Any],
     strategies: list[Any],
@@ -753,6 +779,15 @@ async def run_engine(broker_mode: str = "paper") -> None:
         cold_start_reconciler=reconciler,
         kill_switch_manager=kill_switch_manager,
     )
+    # CL-vfw7: quote→account conversions read the engine's live tick dict.
+    # (An engine without one leaves each strategy on its default converter,
+    # which reads the same ticks from the per-call snapshot — still
+    # fresh-tick-only, never a default rate.)
+    live_prices = getattr(engine, "_last_prices", None)
+    if isinstance(live_prices, Mapping):
+        wire_account_currency(strategies, live_prices)
+    else:
+        logger.warning("Engine exposes no live tick dict — converters stay per-tick snapshot")
 
     # Wire web API to live state. A failure here means the control plane
     # (halt/resume/close endpoints) is DEAD while the engine trades — say
