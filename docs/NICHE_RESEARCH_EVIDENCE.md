@@ -337,7 +337,11 @@ The hop graph separates those concerns:
 
    Hedging, contract-expiry, termination and "<5% / not material"
    sentences in the same documents become `disconfirming` claims for the
-   critic. Edges run on a bounded thread pool with a per-thread
+   critic. They are always kept whole. Sentences are never clipped and
+   limitations are never dropped. If a relevant limiting sentence exceeds
+   2,000 characters, or a target has more than four limiting passages, the
+   target is `unverifiable` (`limiting_context_incomplete`), never `sourced`
+   on a fragment. Edges run on a bounded thread pool with a per-thread
    `claude-code` client.
 3. **Path assembly.** Only simple paths from a seed whose **every** edge is
    sourced become `NicheIdea` candidates: status `sourced` plus exact
@@ -377,7 +381,8 @@ documents. Before traversal:
   respects the per-node edge cap.
 - Non-expired contradicted edges from any theme veto both re-proposals and
   remembered sourced edges with the same key. They are listed to the model as
-  `do_not_propose`.
+  `do_not_propose`. Vetoes are loaded first and stay in force if loading
+  sourced memory later fails; that failure means only "no reuse".
 
 Every frontier node is still sent to the traversal model, because directions
 and terminal facts are specific to the event and are never stored. Memory

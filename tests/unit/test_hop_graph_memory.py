@@ -353,3 +353,34 @@ def test_memory_respects_the_edge_cap_and_still_asks_for_directions(tmp_path: Pa
     assert [e.origin for e in reused] == ["memory"]
     assert reused[0].dst.ticker in {i.ticker for i in warm.candidates}
     assert warm.undirected_terminals == []
+
+
+def test_corrupt_sourced_row_does_not_lift_contradiction_vetoes(tmp_path: Path) -> None:
+    engine = _engine(tmp_path)
+    memory = NicheEdgeMemory(engine)
+    _run(memory)  # FRO->ACME (and route->FRO) sourced under "hormuz"
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO niche_edges SELECT src_id, src_kind, src_ticker, src_label, dst_id, "
+                "dst_kind, dst_ticker, dst_label, relation, 'contradicted', claim, source_hash, "
+                "passage, passage_locator, source_record, evidence_bundle, 'other', as_of, "
+                "expires_at, recorded_at FROM niche_edges WHERE dst_id = 'company:ACME'"
+            )
+        )
+        # Corrupt an UNRELATED sourced row so load_sourced() raises.
+        conn.execute(
+            text(
+                "UPDATE niche_edges SET passage = 'invented passage text here' "
+                "WHERE dst_id = 'company:FRO' AND status = 'sourced'"
+            )
+        )
+    later = NOW + timedelta(days=1)
+    with pytest.raises(ValueError):
+        memory.load_sourced("hormuz", later)
+    assert FAR_KEY in memory.load_contradicted(later)
+    second, retriever, model = _run(memory, as_of=later)
+    assert FAR_KEY not in {e.key for e in second.graph.edges}
+    assert "ACME" not in second.candidate_paths
+    assert all(e.origin == "model" for e in second.graph.edges)  # no reuse
+    assert list(FAR_KEY) in model.calls[-1]["payload"]["do_not_propose"]
