@@ -453,6 +453,36 @@ class TestReviewRound1:
         assert journal.fill_ids() == ["1", "2", "3", "4", "5"]
 
 
+class TestReviewRound3:
+    def test_live_copy_of_evicted_fill_is_not_rejournaled(self, monkeypatch):
+        """A fill recorded before a long replay is evicted from the bounded
+        in-memory dedup set; its buffered live copy must still be deduped."""
+        import src.execution.oms as oms_mod
+
+        monkeypatch.setattr(oms_mod, "_SEEN_FILLS_CAP", 2)
+        acct, _broker_, journal, oms, store, cu = _setup(checkpoint=100)
+        newest = {"transaction_id": "900", "client_order_id": "intent-900", "instrument": "EURUSD"}
+        assert oms.on_fill(newest)
+        for fid in ("101", "102", "103"):  # replay of older fills evicts 900
+            oms.on_fill({"transaction_id": fid, "client_order_id": f"intent-{fid}"})
+        assert "900" not in oms._seen_fills
+        cu.handle_live(newest)
+        assert journal.fill_ids().count("900") == 1
+
+    def test_live_journal_lookup_failure_still_processes_and_freezes(self):
+        acct, _broker_, journal, oms, store, cu = _setup(checkpoint=100)
+        cu._frozen = False
+
+        def broken(_iid):  # noqa: ANN001, ANN202
+            raise RuntimeError("db down")
+
+        journal.query_by_intent = broken
+        cu.handle_live({"transaction_id": "101", "client_order_id": "intent-101"})
+        assert journal.fill_ids() == ["101"]  # never dropped
+        assert cu.frozen
+        assert store.load(ACC) == 100
+
+
 class TestSqlCheckpointStore:
     def test_migration_028_and_monotonic_upsert_on_sqlite(self):
         eng = create_engine("sqlite://")

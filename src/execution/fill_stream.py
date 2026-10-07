@@ -284,7 +284,23 @@ class FillStreamCatchUp:
         with self._lock:
             fid = _txn_id(fill)
             try:
-                outcome = self.oms.process_fill(fill)
+                try:
+                    # Durable dedup on the live path too: a replay can evict a
+                    # newer fill id from the OMS's bounded in-memory set (a
+                    # sync fill recorded before a long replay), so its buffered
+                    # live copy must be checked against the journal. The OMS
+                    # only queries the journal when the id is not remembered.
+                    outcome = self.oms.process_fill(fill, check_journal=True)
+                except Exception:
+                    # Journal unreadable: still process the fill (never drop a
+                    # live fill), but nothing after it may be checkpointed.
+                    logger.exception(
+                        "journal lookup for live fill %s failed — processing it "
+                        "without durable dedup; checkpoint frozen",
+                        fid or "?",
+                    )
+                    self._frozen = True
+                    outcome = self.oms.process_fill(fill)
             except Exception:
                 self._frozen = True
                 logger.exception("stream fill %s handling failed — checkpoint frozen", fid or "?")
