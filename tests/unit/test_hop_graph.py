@@ -667,3 +667,31 @@ def test_long_upstream_limiting_passage_reaches_the_critic_whole() -> None:
         [idea], world_event()
     )
     assert hedge in prompt
+
+
+def test_qualifier_late_in_a_long_upstream_sentence_is_kept() -> None:
+    hedge = (
+        "Our voyages through the Strait of Hormuz are covered by a program "
+        + "spanning war-risk premia, charter cancellations and rerouting costs " * 9
+        + "and the residual exposure is fully hedged and not material."
+    )
+    assert len(hedge) > 600
+    docs = {"FRO": [doc("FRO", FRO_DOC.text + " " + hedge)], "ACME": Retriever().docs["ACME"]}
+    result, _, _ = run_world(retriever=Retriever(docs))
+    hop1 = result.candidate_paths["ACME"].edges[0]
+    assert [c.passage for c in hop1.disconfirming] == [hedge]
+    idea = next(i for i in result.candidates if i.ticker == "ACME")
+    prompt = AdversarialCritic(client=SupportiveCritic(), model="c")._user_prompt(
+        [idea], world_event()
+    )
+    assert "fully hedged and not material" in prompt
+
+
+def test_overlong_limiting_sentence_keeps_the_qualifier_window() -> None:
+    from src.events.hop_graph_verify import disconfirming_passages
+
+    sentence = "Strait of Hormuz voyages " + "x" * 3000 + " are fully hedged and not material."
+    source = doc("FRO", sentence)
+    [passage] = disconfirming_passages(source, ("Strait of Hormuz",), None, ())
+    assert passage in source.text and passage.endswith("not material.")
+    assert len(passage) <= 2000

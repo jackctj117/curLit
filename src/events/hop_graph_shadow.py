@@ -36,6 +36,7 @@ from src.events.niche_scoring import NicheIdea, evidence_score, verify_ideas
 from src.events.niche_shadow import (
     CapturedInput,
     FrozenTools,
+    ModelReply,
     ResearchBudget,
     ResearchModel,
     compare_captured,
@@ -165,6 +166,25 @@ def run_hopgraph_arm(
     }
 
 
+class _CountingModel:
+    """Counts baseline call attempts and failures without changing replies."""
+
+    def __init__(self, inner: ResearchModel) -> None:
+        self.inner = inner
+        self.provider = inner.provider
+        self.model = inner.model
+        self.attempts = 0
+        self.failures = 0
+
+    def complete(self, messages: list[dict[str, str]], max_tokens: int) -> ModelReply:
+        self.attempts += 1
+        try:
+            return self.inner.complete(messages, max_tokens)
+        except Exception:
+            self.failures += 1
+            raise
+
+
 def run_baseline_arm(
     capture: CapturedInput,
     model: ResearchModel,
@@ -173,13 +193,16 @@ def run_baseline_arm(
     budget: ResearchBudget | None = None,
 ) -> dict[str, Any]:
     """The existing equivalent-tool discovery + the same unchanged gates."""
-    report = compare_captured(capture, [model], critic=critic, budget=budget)
+    counted = _CountingModel(model)
+    report = compare_captured(capture, [counted], critic=critic, budget=budget)
     trial = report["trials"][0]
     discovery = trial["discovery"]
     candidates = trial["post_critic_candidates"]
     eligible = [c for c in candidates if (c.get("research") or {}).get("eligible")]
     trace = discovery.get("trace") or []
-    model_calls = sum(1 for t in trace if "response" in t)
+    # Attempts, not only answers: a failed call has unknown usage, so the
+    # discovery loop's partial token sums are reported as unknown.
+    usage_known = counted.failures == 0
     return {
         "arm": "baseline",
         "provider": discovery.get("provider"),
@@ -194,15 +217,16 @@ def run_baseline_arm(
             "eligible": len(eligible),
             "hop_depth_candidates": _hop_depths(int(c.get("hop_count") or 0) for c in candidates),
             "hop_depth_eligible": _hop_depths(int(c.get("hop_count") or 0) for c in eligible),
-            "model_calls": model_calls,
+            "model_calls": counted.attempts,
+            "failed_model_calls": counted.failures,
             "tool_calls": sum(1 for t in trace if "tool" in t),
         },
         "cost": {
             # The shadow models report tokens, not billed USD (niche_shadow).
             "usd_cost": discovery.get("billed_cost_usd"),
             "cost_provenance": ["tokens_only_no_billed_usd"],
-            "input_tokens": discovery.get("input_tokens"),
-            "output_tokens": discovery.get("output_tokens"),
+            "input_tokens": discovery.get("input_tokens") if usage_known else None,
+            "output_tokens": discovery.get("output_tokens") if usage_known else None,
         },
         "candidates": candidates,
     }

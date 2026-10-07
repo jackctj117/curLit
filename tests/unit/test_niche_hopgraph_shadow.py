@@ -198,3 +198,19 @@ def test_failed_traversal_call_makes_usage_unknown() -> None:
     assert arm["metrics"]["traversal_calls"] == 2
     assert arm["cost"]["input_tokens"] is None and arm["cost"]["output_tokens"] is None
     assert arm["graph"]["outcome"]["input_tokens"] is None
+
+
+def test_failed_baseline_call_counts_as_an_attempt_with_unknown_usage() -> None:
+    from src.events.hop_graph_shadow import run_baseline_arm
+
+    class Down(Baseline):
+        def complete(self, messages: list[dict[str, str]], max_tokens: int) -> ModelReply:
+            self.calls += 1
+            raise TimeoutError
+
+    arm = run_baseline_arm(CapturedInput.capture(capture_payload()), Down())
+    assert arm["discovery_status"] == "unavailable"
+    assert arm["metrics"]["model_calls"] == 1 and arm["metrics"]["failed_model_calls"] == 1
+    assert arm["cost"]["input_tokens"] is None and arm["cost"]["output_tokens"] is None
+    ok = run_baseline_arm(CapturedInput.capture(capture_payload()), Baseline())
+    assert ok["metrics"]["model_calls"] == 1 and ok["cost"]["input_tokens"] == 20
