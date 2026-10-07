@@ -356,19 +356,54 @@ class TestPnlAccounting:
         assert book.realized_pnl == 0.0
         assert len(book.unconverted_closes) == 1
 
-    def test_stale_trigger_conversion_refreshed_when_fresh_rate_exists(
+    def test_delayed_confirmation_not_backfilled_with_todays_rate(
         self,
         tmp_path: Path,
     ) -> None:
-        prices: dict[str, Any] = {"USD_JPY": fresh(150.0)}
+        # Trigger 1 h ago (rate then 150); confirmation now with a FRESH
+        # 156.76 tick. The fill time lies somewhere in between, so neither
+        # rate is known to be the fill-time rate → unconverted.
+        prices: dict[str, Any] = {"USD_JPY": fresh(150.0, age=timedelta(hours=1))}
         book = _book(tmp_path, prices)
-        book.open_positions["USD_JPY"] = _short_jpy()
+        book.open_positions["USD_JPY"] = _short_jpy(hours_ago=6.0)
         trigger = datetime.now(UTC) - timedelta(hours=1)
-        prices["USD_JPY"] = fresh(150.0, age=timedelta(hours=1))
         book.check_exits(lambda _s: 156.5585, trigger, broker_positions=[_HELD])
+        assert book.pending_exits["USD_JPY"].exit_conversion is not None
         prices["USD_JPY"] = fresh(156.76)
         records = book.confirm_exits([], datetime.now(UTC))
+        assert records[0].pnl_account is None
+        assert book.realized_pnl == 0.0
+        assert len(book.unconverted_closes) == 1
+
+    def test_confirmation_within_window_uses_trigger_rate(self, tmp_path: Path) -> None:
+        prices: dict[str, Any] = {"USD_JPY": fresh(156.76)}
+        book = _book(tmp_path, prices)
+        book.open_positions["USD_JPY"] = _short_jpy()
+        trigger = datetime.now(UTC)
+        book.check_exits(lambda _s: 156.5585, trigger, broker_positions=[_HELD])
+        prices["USD_JPY"] = fresh(150.0)  # moved; trigger-time rate stands
+        records = book.confirm_exits([], trigger + timedelta(minutes=5))
         assert records[0].pnl_account == pytest.approx(44.289 / 156.76)
+
+    def test_projected_total_unknown_while_earlier_close_unconverted(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        book = _book(tmp_path, {"USD_JPY": fresh(156.76)})
+        book.unconverted_closes.append(
+            {
+                "symbol": "EUR_JPY",
+                "quote_ccy": "JPY",
+                "pnl_quote": -160_000.0,
+                "closed_at": datetime.now(UTC).isoformat(),
+            }
+        )
+        book.open_positions["USD_JPY"] = _short_jpy()
+        now = datetime.now(UTC)
+        book.check_exits(lambda _s: 156.5585, now, broker_positions=[_HELD])
+        records = book.confirm_exits([], now)
+        assert records[0].pnl_account == pytest.approx(44.289 / 156.76)
+        assert records[0].book_realized_pnl is None
 
     def test_unconverted_loss_blocks_strategy_entries(self, tmp_path: Path) -> None:
         strat = make_strat(tmp_path)
@@ -450,6 +485,21 @@ class TestLegacyState:
         intents, _, skipped = enter(strat, "EUR_USD", {"EURUSD": fresh(1.1)}, "long")
         assert intents == []
         assert skipped == [("EUR_USD", "legacy_pnl_unreconciled")]
+
+    def test_flat_v1_book_reconciles_via_documented_procedure(self, tmp_path: Path) -> None:
+        # Flat book (no legs) → nothing else would ever save; the migration
+        # must persist at load so the operator can edit the v2 field.
+        _write(tmp_path, {"version": 1, "realized_pnl": 48.38, "closed_trades": 7})
+        assert _book(tmp_path, {}).legacy_unreconciled()
+        state = json.loads((tmp_path / "book.json").read_text())
+        assert state["version"] == 2
+        assert state["legacy_mixed_currency_pnl"] == pytest.approx(48.38)
+        assert state["legacy_closed_trades"] == 7
+        state["legacy_reconciled_account_pnl"] = -12.0  # from broker records
+        (tmp_path / "book.json").write_text(json.dumps(state))
+        book = _book(tmp_path, {})
+        assert book.loss_cap_unknown_reason() is None
+        assert book.loss_cap_consumed() == pytest.approx(12.0)
 
     def test_empty_v1_history_does_not_block(self, tmp_path: Path) -> None:
         _write(tmp_path, {"version": 1, "realized_pnl": 0.0, "closed_trades": 0})

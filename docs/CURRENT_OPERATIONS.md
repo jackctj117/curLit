@@ -56,7 +56,8 @@ Everything is PAPER. No real money moves anywhere.
   mixed-currency** — e.g. that leg's "+44.29" was ¥44.29 ≈ $0.28. The
   event book state (`data/event_book_state.json`, now version 2) keeps the
   old aggregate verbatim as `legacy_mixed_currency_pnl` and restarts
-  `realized_pnl` (account currency) at 0 on first load. The legacy
+  `realized_pnl` (account currency) at 0 on first load (the v2 file is
+  written immediately at that load). The legacy
   figure's USD value is UNKNOWN, so **new event entries are BLOCKED
   (`legacy_pnl_unreconciled`) after deploy until the operator reconciles
   it**: with the engine stopped, set `legacy_reconciled_account_pnl` in
@@ -64,8 +65,9 @@ Everything is PAPER. No real money moves anywhere.
   event trades (from OANDA transaction history). Loss-cap consumed is then
   `-realized_pnl - legacy_reconciled_account_pnl` (the migration does not
   reset the budget). An empty v1 history (0 trades, 0.0) does not block.
-  A close whose exit rate is unavailable — or only stale (> 15 min) at
-  broker confirmation — is held in `unconverted_closes` (quote amount
+  A close whose exit rate is unavailable, or whose broker-flat
+  confirmation came > 15 min after the trigger (fill-time rate unknown),
+  is held in `unconverted_closes` (quote amount
   only) and, if a loss, blocks new entries (`unconverted_realized_loss`)
   until the operator sets that row's `reconciled_pnl_account`; a later
   rate is never back-filled. Exits are never blocked. Exit P&L is still
