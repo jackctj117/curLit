@@ -28,11 +28,17 @@ CREATE TABLE IF NOT EXISTS idea_research_status (
     recorded_at            TIMESTAMPTZ NOT NULL
 );
 
--- Immutability: an UPDATE of a recorded status is silently discarded, so no
--- later writer (executor, operator script, replay) can promote a row. A
--- plpgsql trigger cannot be used because migrations/run.py splits statements
--- on semicolons; a single-statement rule has the same effect. DELETE is left
--- possible on purpose: removing a row can only make an idea NON-executable.
--- Postgres-only statement: sqlite test shims skip it (see the test helpers).
+-- Immutability: an UPDATE or DELETE of a recorded status is silently
+-- discarded, so no later writer (executor, operator script, replay) can
+-- promote a row in place OR delete it and insert a different one for the same
+-- idea_id. A plpgsql trigger cannot be used because migrations/run.py splits
+-- statements on semicolons; single-statement rules have the same effect.
+-- (They also mean INSERT ... ON CONFLICT is rejected on this table; the writer
+-- in src/events/research_status.py uses a plain INSERT.) Revoking an idea's
+-- execution eligibility is done on trade_ideas.status, not here.
+-- Postgres-only statements: sqlite test shims emulate them (see test helpers).
 CREATE OR REPLACE RULE idea_research_status_no_update AS
     ON UPDATE TO idea_research_status DO INSTEAD NOTHING;
+
+CREATE OR REPLACE RULE idea_research_status_no_delete AS
+    ON DELETE TO idea_research_status DO INSTEAD NOTHING;

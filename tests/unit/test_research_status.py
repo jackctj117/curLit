@@ -228,6 +228,36 @@ def test_status_rows_are_write_once(engine: Any, caplog: Any) -> None:
     assert _status_rows(engine) == before
 
 
+def test_status_cannot_be_updated_or_deleted_and_replaced(engine: Any) -> None:
+    """Codex r1 (CL-7kuu): with only UPDATE blocked, a writer could DELETE a
+    recorded status and INSERT a different one. Both are discarded (sqlite
+    emulation of migration 025's rules), so the original row survives and an
+    ineligible idea cannot be swapped to eligible or vice versa."""
+    assessment: dict[str, Any] = {"trade_ideas": []}
+    sink = _merge(assessment, [_eligible_idea()])
+    persist_ideas(engine, EVENT_ID, assessment, research_status=sink)
+    idea_id = make_idea_id(EVENT_ID, "FRO", "buy_calls")
+    before = _status_rows(engine)
+    with engine.begin() as conn:
+        conn.execute(
+            text("UPDATE idea_research_status SET review_status='contradicted'"),
+        )
+        conn.execute(text("DELETE FROM idea_research_status WHERE idea_id = :i"), {"i": idea_id})
+    assert _status_rows(engine) == before
+    forged = ResearchStatus(
+        discovery_status="completed",
+        evidence_status="source_backed",
+        review_status="supported",
+        liquidity_status="sufficient",
+        research_eligible=True,
+        source_hashes=("f" * 64,),
+        score_version="forged",
+    )
+    with engine.begin() as conn:
+        assert insert_research_status(conn, idea_id, forged) is False
+    assert _status_rows(engine) == before
+
+
 def test_end_to_end_only_validated_niche_idea_is_executable(engine: Any) -> None:
     impact = _impact_idea()  # notes carry both legacy words
     assessment: dict[str, Any] = {"trade_ideas": [impact]}
@@ -249,11 +279,12 @@ def test_migration_is_additive_and_declares_no_update_rule() -> None:
     heads = [" ".join(s.split()).upper() for s in statements]
     assert heads[0].startswith("CREATE TABLE IF NOT EXISTS IDEA_RESEARCH_STATUS")
     assert "REFERENCES TRADE_IDEAS (IDEA_ID)" in heads[0]
-    assert any(
-        h.startswith("CREATE OR REPLACE RULE")
-        and "ON UPDATE TO IDEA_RESEARCH_STATUS DO INSTEAD NOTHING" in h
-        for h in heads
-    )
+    for verb in ("UPDATE", "DELETE"):  # no in-place edit, no delete-and-replace
+        assert any(
+            h.startswith("CREATE OR REPLACE RULE")
+            and f"ON {verb} TO IDEA_RESEARCH_STATUS DO INSTEAD NOTHING" in h
+            for h in heads
+        ), verb
     for h in heads:
         assert not h.startswith(("DROP", "ALTER", "UPDATE", "DELETE")), h
     # Postgres rejects INSERT ... ON CONFLICT on a table with an UPDATE rule;
