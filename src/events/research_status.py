@@ -186,7 +186,8 @@ def executable_research_predicate(
     if require_red_team:
         conds.append(f"rs.review_status = '{REVIEW_OK}'")
     return [
-        "EXISTS (SELECT 1 FROM idea_research_status rs WHERE " + " AND ".join(conds) + ")",
+        # Conditions are module constants, never caller input.
+        "EXISTS (SELECT 1 FROM idea_research_status rs WHERE " + " AND ".join(conds) + ")",  # nosec B608
     ]
 
 
