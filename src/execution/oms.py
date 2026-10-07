@@ -15,7 +15,6 @@ journal is optional so unit tests and ad-hoc usage don't require a DB.
 """
 
 import asyncio
-import collections
 import enum
 import logging
 import threading
@@ -176,7 +175,7 @@ class OrderManager:
         self._seen_fills: set[str] = set()
         # Insertion order of _seen_fills, so the cap evicts the OLDEST ids
         # (CL-pksi: a replay overlaps the live stream by recent ids only).
-        self._seen_order: collections.deque[str] = collections.deque()
+        self._seen_order: dict[str, None] = {}
         # CL-pksi catch-up: fills whose ORDER_FILLED journal append FAILED.
         # Their ids are NOT kept in ``_seen_fills`` (so a replay from the
         # durable stream checkpoint can journal them again); the resolved
@@ -556,6 +555,7 @@ class OrderManager:
         attempt = 1
         size_fraction = 1.0
         while True:
+            sync_owns_fill = True
             if attempt > 1:
                 # CL-a13q (P1): a TRANSIENT retry may follow a fill-then-timeout
                 # — the order actually filled at OANDA but the HTTP read timed
@@ -684,10 +684,21 @@ class OrderManager:
                         # redelivered on the transaction stream is deduped by
                         # on_fill and never double-journaled.
                         if placed.order_id:
-                            self._remember_fill_locked(placed.order_id)
-                            # Claimed until ORDER_FILLED below is journaled, so
-                            # a streamed duplicate is not reported durable early.
-                            self._fills_journaling.add(placed.order_id)
+                            if placed.order_id in self._seen_fills:
+                                # The streamed / replayed copy of this fill was
+                                # claimed (and is journaled or being journaled)
+                                # before this response returned: it owns the
+                                # ORDER_FILLED row.
+                                sync_owns_fill = False
+                            else:
+                                # A failed earlier claim hands ownership to
+                                # this path (its listeners already ran).
+                                self._unjournaled_fills.pop(placed.order_id, None)
+                                self._remember_fill_locked(placed.order_id)
+                                # Claimed until ORDER_FILLED below is journaled,
+                                # so a streamed duplicate is not reported
+                                # durable early.
+                                self._fills_journaling.add(placed.order_id)
                         self._bump_symbol_version_locked(intent.symbol)
                     else:
                         self._pending[intent.intent_id] = [placed]
@@ -717,7 +728,14 @@ class OrderManager:
                 # Synchronous fill (PaperBroker) — emit ORDER_FILLED now. For
                 # OANDA, fills arrive via stream and would need a separate
                 # fill-stream wiring; ORDER_PLACED is all OMS sees here.
-                if placed.status == OrderStatus.FILLED:
+                if placed.status == OrderStatus.FILLED and not sync_owns_fill:
+                    logger.info(
+                        "sync fill %s for intent %s already journaled from the "
+                        "transaction stream — not journaling it twice",
+                        placed.order_id,
+                        intent.intent_id,
+                    )
+                elif placed.status == OrderStatus.FILLED:
                     sync_journaled = self._journal_event(
                         EventType.ORDER_FILLED,
                         intent=intent,
@@ -737,7 +755,7 @@ class OrderManager:
                             if not sync_journaled:
                                 # Let the streamed / replayed copy journal it
                                 # (its listeners never fired for a sync fill).
-                                self._seen_fills.discard(placed.order_id)
+                                self._forget_fill_locked(placed.order_id)
                                 self._unjournaled_fills[placed.order_id] = intent
                 return SubmissionResult(
                     intent.intent_id,
@@ -937,7 +955,7 @@ class OrderManager:
                     if not journaled:
                         # Not durable: forget the id so a replay can journal
                         # it, and keep the intent for that retry.
-                        self._seen_fills.discard(fill_id)
+                        self._forget_fill_locked(fill_id)
                         if len(self._unjournaled_fills) < _SEEN_FILLS_CAP:
                             self._unjournaled_fills[fill_id] = intent
         if not journaled:
@@ -997,9 +1015,18 @@ class OrderManager:
         if fill_id in self._seen_fills:
             return
         self._seen_fills.add(fill_id)
-        self._seen_order.append(fill_id)
+        self._seen_order.pop(fill_id, None)
+        self._seen_order[fill_id] = None  # (re)insert as newest
         while len(self._seen_fills) > _SEEN_FILLS_CAP and self._seen_order:
-            self._seen_fills.discard(self._seen_order.popleft())
+            oldest = next(iter(self._seen_order))
+            del self._seen_order[oldest]
+            self._seen_fills.discard(oldest)
+
+    def _forget_fill_locked(self, fill_id: str) -> None:
+        """Drop a fill id from the dedup set AND its eviction order (caller
+        holds ``_lock``), so a later retry is ordered as a fresh entry."""
+        self._seen_fills.discard(fill_id)
+        self._seen_order.pop(fill_id, None)
 
     def _bump_symbol_version_locked(self, symbol: str) -> None:
         """CL-80tv: record a state change for ``symbol`` (caller holds _lock)."""

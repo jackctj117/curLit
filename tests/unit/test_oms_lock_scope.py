@@ -359,3 +359,46 @@ class TestFillExactlyOnce:
         )
         assert not out.newly_processed
         assert len(journal.fills()) == 1
+
+
+class TestReviewRound2:
+    def test_stream_fill_before_sync_response_is_journaled_once(self) -> None:
+        """Replay/stream delivers the fill while place_order is still in flight;
+        the late synchronous FILLED response must not journal it again."""
+        journal = _Journal()
+        broker = _Broker()
+        oms = OrderManager(broker, journal=journal)  # type: ignore[arg-type]
+        intent = OrderIntent(strategy_id="s", symbol="EURUSD", target_position=1000.0)
+
+        def place(order: Order) -> Order:
+            t, box = _run("stream", lambda: oms.on_fill(_fill("fx-1", client=intent.intent_id)))
+            t.join(_NOT_BLOCKED_SEC)
+            assert box["result"] is True
+            order.status = OrderStatus.FILLED
+            order.order_id = "fx-1"
+            order.filled_quantity = order.quantity
+            return order
+
+        broker.place_order = place  # type: ignore[method-assign]
+        res = oms.submit_intent_result(intent)
+        assert res.status is SubmissionStatus.FILLED
+        rows = [r for r in journal.fills() if r.payload.get("fill_id") == "fx-1"]
+        assert len(rows) == 1
+
+    def test_retried_fill_survives_rollover_eviction(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import src.execution.oms as oms_mod
+
+        monkeypatch.setattr(oms_mod, "_SEEN_FILLS_CAP", 3)
+        journal = _Journal(fail_times=1)
+        oms = OrderManager(_Broker(), journal=journal)  # type: ignore[arg-type]
+        seen: list[dict[str, Any]] = []
+        oms.add_fill_listener(seen.append)
+        assert not oms.process_fill(_fill("A", client=None)).durable  # journal down
+        for fid in ("B", "C", "D"):
+            oms.on_fill(_fill(fid, client=None))
+        assert oms.process_fill(_fill("A", client=None)).durable  # retry succeeds
+        oms.on_fill(_fill("E", client=None))
+        # A is among the 3 newest ids: a redelivery must still be deduped.
+        assert oms.on_fill(_fill("A", client=None)) is False
+        assert [r.payload["fill_id"] for r in journal.fills()].count("A") == 1
+        assert [f["transaction_id"] for f in seen].count("A") == 1
