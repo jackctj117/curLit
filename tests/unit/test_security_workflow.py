@@ -107,27 +107,23 @@ def test_secret_exception_cannot_allow_other_values_paths_or_rules() -> None:
     assert re.search(pattern, "configs/polymarket_markets.yaml")
     assert not re.search(pattern, "configs/credentials.yaml")
     assert not re.search(pattern, "configs/polymarket_markets.yaml.bak")
-    # CL-esh6: one exact historical comment line naming withheld env variables.
+    # CL-esh6: two vendor names captured after "passwords," in a comment about
+    # withheld env variables (and in this test's earlier revision quoting it).
     assert comment_allow["condition"] == "AND"
-    assert comment_allow["regexTarget"] == "line"
-    assert comment_allow["regexes"] == [
-        "^#: passwords, Telegram/Moonshot tokens, WEB_API_SECRET, all loaded from$"
-    ]
+    assert comment_allow["regexTarget"] == "secret"
+    assert comment_allow["regexes"] == ["^Telegram/Moonshot$"]
     assert "commits" not in comment_allow
     assert "stopwords" not in comment_allow
     (comment_pattern,) = comment_allow["paths"]
     assert re.search(comment_pattern, "src/research/llm/claude_code.py")
+    assert re.search(comment_pattern, "tests/unit/test_security_workflow.py")
     assert not re.search(comment_pattern, "src/research/llm/claude_code.py.bak")
     assert not re.search(comment_pattern, "tests/research/llm/claude_code.py")
     assert not re.search(comment_pattern, "src/research/llm/client.py")
-    (line_regex,) = comment_allow["regexes"]
-    assert re.search(
-        line_regex, "#: passwords, Telegram/Moonshot tokens, WEB_API_SECRET, all loaded from"
-    )
-    assert not re.search(line_regex, "WEB_API_SECRET=abc123")
-    assert not re.search(
-        line_regex, "#: passwords, Telegram/Moonshot tokens, WEB_API_SECRET, all loaded from .env"
-    )
+    (secret_regex,) = comment_allow["regexes"]
+    assert re.search(secret_regex, "Telegram/Moonshot")
+    assert not re.search(secret_regex, "Telegram/Moonshot-live")
+    assert not re.search(secret_regex, "sk-ant-Telegram/Moonshot")
 
 
 def test_private_root_exclusion_preserves_all_third_party_audit_inputs(
