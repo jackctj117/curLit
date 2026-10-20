@@ -21,7 +21,9 @@ by repeating that company. Raw responses remain in the audit trace. Source
 documents precede optional profile text in the bounded prompt. Seed hypotheses
 have no trading eligibility merely because a ticker exists. Retrieval failure,
 unsupported claims, unknown liquidity and failed review still prevent merging.
-The prompt version is `niche-claude-refinement-v1`.
+The prompt version is `niche-claude-refinement-v2`. CL-a7xg makes the canonical
+`passage` JSON field explicit with a parser-tested example; `exact_passage`
+remains invalid. Provenance and semantic evidence requirements are unchanged.
 
 ### Billing safeguards and operator activation
 
@@ -185,8 +187,9 @@ That update requires both `status = ASSESSED` and an unchanged original JSONB
 assessment. A status or assessment race leaves the independent audit committed
 but skips the merge. An audit failure blocks the niche merge. DB exceptions and
 commit failures cannot leak uncommitted niche ideas into the later ledger step.
-This does not add a durable retry queue for database outages or crashes before
-the audit commit, nor reconstruct the three previously lost reports.
+The original audit change did not add retries or reconstruct the three lost
+reports. CL-ut1d now adds the bounded recent-event queue described above;
+historical missing reports remain unreconstructed.
 
 Discovery distinguishes `completed`, `abstained`, `partial`, `invalid_output`,
 `unavailable`, and `budget_exhausted`. Empty valid JSON is abstention; malformed

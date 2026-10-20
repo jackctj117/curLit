@@ -24,7 +24,7 @@ from src.events.research_status import ResearchStatus, research_key
 
 logger = logging.getLogger(__name__)
 # Version pins provider, prompt, retrieval and review policy in event_pipeline.
-POLICY_VERSION = "claude-subscription-refinement-v1"
+POLICY_VERSION = "claude-subscription-refinement-v2"
 # Research on yesterday's event is not automatically a fresh trading thesis.
 MAX_EVENT_AGE = timedelta(hours=24)
 # Bounded per-event quota: initial attempt, 15-minute retry, then one-hour retry.

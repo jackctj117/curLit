@@ -540,7 +540,7 @@ class NicheAgent:
         grounding: list[str] = []
         cycles_run = 0
         outcome = outcome if outcome is not None else DiscoveryOutcome("unavailable")
-        outcome.prompt_version = "niche-claude-refinement-v1"
+        outcome.prompt_version = "niche-claude-refinement-v2"
         for cycle in range(1, self.max_cycles + 1):
             cycles_run = cycle
             user = (

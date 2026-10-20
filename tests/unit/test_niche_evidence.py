@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, replace
 from datetime import UTC, datetime, tzinfo
@@ -29,6 +30,21 @@ from src.events.niche_shadow import (
 )
 from src.events.research_evidence import DiscoveryOutcome, RelationshipClaim, SourceDocument
 from src.events.research_tools import ResearchTools
+
+
+def test_claim_prompt_example_matches_strict_parser_contract() -> None:
+    """CL-a7xg: model-facing example must use the parser's actual field names."""
+    from src.events.research_evidence import EVIDENCE_INSTRUCTIONS, parse_claims
+
+    example = re.search(r"```json\n(.*?)\n```", EVIDENCE_INSTRUCTIONS, re.DOTALL)
+    assert example is not None, "Provide an explicit JSON claim object, not ambiguous prose."
+    raw = json.loads(example.group(1))
+    assert set(raw) == {"kind", "role", "statement", "source_id", "passage"}
+    assert len(parse_claims([raw])) == 1
+    # The real canary used this wrong key. Do not loosen parsing to accept it.
+    raw["exact_passage"] = raw.pop("passage")
+    assert parse_claims([raw]) == []
+
 
 NOW = datetime(2026, 9, 8, 18, tzinfo=UTC)
 
