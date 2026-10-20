@@ -1,5 +1,66 @@
 # Development checks (CL-0deu.5.1)
 
+## Local offline container checks (CL-i6ke)
+
+When host isolation blocks fixture Unix sockets, do not skip the vault tests or
+weaken the sandbox. Use a disposable development container instead:
+
+```bash
+.venv/bin/python scripts/test_isolated.py \
+  --context desktop-linux --image curlit-review-tests:oct6 --check vault
+.venv/bin/python scripts/test_isolated.py \
+  --context desktop-linux --image curlit-review-tests:oct6 --check unit
+.venv/bin/python scripts/test_isolated.py \
+  --context desktop-linux --image curlit-review-tests:oct6 --check lint
+.venv/bin/python scripts/test_isolated.py \
+  --context desktop-linux --image curlit-review-tests:oct6 --check typecheck
+```
+
+The context/image names above identify the existing local development image,
+not a published dependency lock or an instruction to use the production image.
+Use an explicitly selected **credential-free test image**, prepared separately
+with Python, Git, and the core/dev/audio/Polymarket test dependencies.
+The runner never builds, downloads, upgrades, or starts a trading image command.
+It resolves the local image to an immutable ID and prints that ID, the source
+archive hash, and the check's actual exit code.
+
+Only an explicit source/fixture allowlist is archived, including current tracked
+edits and non-ignored new Python files/documentation. New data/report exports are
+not included automatically; fixtures of other types must be explicitly tracked.
+Deleted files remain deleted. Private
+environment files, runtime `data/`, logs, Git/Dolt stores, nested worktrees, and
+host dependency directories are excluded. Symlinks and special files are refused.
+The archive is streamed into a fresh container-private `/tmp`; **no host directory,
+Docker socket, broker volume, or credential is mounted**. The process runs as a
+non-root UID with dropped capabilities, no-new-privileges, no external network,
+a read-only image filesystem, resource limits, and a cleared test environment.
+Image entrypoint/command and healthchecks are overridden. Real AF_UNIX sockets
+inside that container remain usable. Test failure is propagated, not suppressed.
+
+The private temporary filesystem remains **noexec**. PyTensor therefore uses its
+supported Python implementation (`PYTENSOR_FLAGS=...,cxx=`), which still runs the
+Bayesian fitting and numerical assertions; this is printed before each check.
+See [PyTensor's compiler configuration](https://pytensor.readthedocs.io/en/latest/library/config.html#config.cxx).
+No tests are skipped to achieve this. The run does **not** certify the C++ backend;
+validate that separately in an approved environment with native compilation.
+Do not change runtime model configuration to match this test-only choice.
+
+**Observed October 20, 2026:** all 29 vault tests pass in this container. The
+Python-only Bayesian sampler exceeds the existing 120-second test deadline
+(confirmed on `TestFit.test_returns_per_pair_betas`); the full container suite
+is therefore **not green**. The same 15 Bayesian tests pass with native
+compilation in the unchanged credential-free macOS sandbox. That host sandbox
+still denies the 13 vault socket-bind cases. CL-i6ke retains this verification
+gap pending operator approval for a container-private executable compiler cache.
+Neither the timeout nor the filesystem restriction has been weakened.
+
+The source allowlist and container arguments have regression tests in
+`test_isolated_runner.py`. This boundary does not inspect arbitrary image contents
+for secrets: vet the image before use. It also does not make dependencies locked,
+certify macOS-specific behavior, or establish hosted CI/branch protection.
+
+## Hosted checks
+
 `.github/workflows/ci.yml` defines credential-free hosted checks for all pull
 requests, pushes to `main`, merge queues, and manual dispatch. It does not publish,
 deploy, operate trading services, or invoke coding/research models. The jobs use

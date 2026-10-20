@@ -134,6 +134,23 @@ def _newest_x_event(engine) -> datetime | None:  # noqa: ANN001
         return None
 
 
+def _assessment_backlog(engine: Any) -> tuple[bool, datetime | None]:
+    """A failed read is unknown, not an empty research queue."""
+    from sqlalchemy import text  # noqa: PLC0415
+
+    try:
+        with engine.connect() as conn:
+            oldest = conn.execute(text(
+                "SELECT MIN(seen_at) FROM geo_events WHERE status = 'NEW'"
+            )).scalar()
+        if oldest is not None and (not isinstance(oldest, datetime) or oldest.tzinfo is None):
+            raise ValueError("invalid assessment backlog timestamp")
+        return True, oldest
+    except Exception:
+        logger.warning("health watch: assessment backlog unknown", exc_info=True)
+        return False, None
+
+
 def run_once(
     now: datetime | None = None,
     *,
@@ -150,6 +167,10 @@ def run_once(
 
     from src.data.db_env import build_db_url  # noqa: PLC0415
     from src.events._util import atomic_write_json  # noqa: PLC0415
+    from src.monitoring.assessment_health import (  # noqa: PLC0415
+        decide_assessment_alert,
+        read_assessment_health,
+    )
     from src.monitoring.fleet_watch import (  # noqa: PLC0415
         DEFAULT_X_STALE_HOURS,
         decide_fleet_alerts,
@@ -225,6 +246,7 @@ def run_once(
     engine = create_engine(build_db_url())
     try:
         newest_x = _newest_x_event(engine)
+        backlog_known, oldest_pending = _assessment_backlog(engine)
     finally:
         engine.dispose()
     msg, is_stale = decide_x_staleness_alert(
@@ -236,6 +258,12 @@ def run_once(
     if msg:
         messages.append(msg)
     state["x_stale"] = is_stale
+    assessment_page, state["assessment_incident"] = decide_assessment_alert(
+        read_assessment_health(), oldest_pending, backlog_known,
+        dict(state.get("assessment_incident") or {}), now,
+    )
+    if assessment_page:
+        messages.append(assessment_page)
 
     # Engine halt / kill-switch page (CL-fmqp extension): the safety layer
     # can halt trading — a bug OR a legit VIX/drawdown/desync trip — and

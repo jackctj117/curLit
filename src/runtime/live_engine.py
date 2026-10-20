@@ -452,6 +452,13 @@ class LiveEngine:
                 report = await asyncio.to_thread(
                     self.cold_start_reconciler.check_alignment,
                 )
+            except SnapshotUnavailableError as exc:
+                # CL-ann4: unreadable internal ownership must never look like
+                # flat or permit new exposure while the periodic task lives on.
+                self._note_reconciliation("alignment", "unavailable", exc.reason, at=exc.at)
+                self._startup_halt("internal_snapshot_unavailable")
+                logger.error("Alignment ownership unavailable — entries blocked: %s", exc.reason)
+                continue
             except Exception as exc:
                 logger.exception("Alignment check error")
                 self._note_reconciliation("alignment", "failed", type(exc).__name__)

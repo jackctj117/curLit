@@ -52,6 +52,12 @@ logger = logging.getLogger(__name__)
 _DEFAULT_AGREEMENT_QUORUM: int = 2
 
 
+def _validate_quorum(quorum: int) -> None:
+    """CL-qwrv: the three available signals permit only 1/2/3-vote quorums."""
+    if isinstance(quorum, bool) or not isinstance(quorum, int) or not 1 <= quorum <= 3:
+        raise ValueError("agreement quorum must be an integer from 1 to 3")
+
+
 @dataclass
 class AggressiveShortFXConfig:
     """Per-strategy config. Most values flow through from the active
@@ -85,26 +91,38 @@ class AggressiveShortFXConfig:
     # construction for backtest sweeps.
     risk_profile: RiskProfile | None = field(default=None)
 
+    def __post_init__(self) -> None:
+        _validate_quorum(self.agreement_quorum)
+
 
 @dataclass
 class _SignalTriplet:
     """One bar's three signal readings, all in {-1, 0, +1}.
-    -1 = short, 0 = neutral, +1 = long. The strategy sums these and
+    -1 = short, 0 = neutral, +1 = long. The strategy counts these and
     applies the bias multiplier before deciding to enter."""
 
     rate_diff: int = 0
     sentiment: int = 0
     poly: int = 0
 
-    def agreement(self) -> int:
-        """Returns the dominant direction: -1, 0, or +1.
-        Tie or no signal → 0. 2-of-3 short → -1. 2-of-3 long → +1."""
-        s = self.rate_diff + self.sentiment + self.poly
-        # Treat poly_disabled (=0) as silent. With a 0 contribution,
-        # 2-of-2 still counts: rate_diff + sentiment summing to ±2 wins.
-        if s <= -2:
+    def agreement(self, quorum: int = _DEFAULT_AGREEMENT_QUORUM) -> int:
+        """CL-qwrv: majority reaching the configured quorum; ties stay neutral.
+
+        Count supporting votes, not their signed sum: two matching votes beat
+        one opposing vote at the default two-of-three quorum. A disabled signal
+        is silent and never reduces the explicitly configured quorum.
+        """
+        _validate_quorum(quorum)
+        votes = (self.rate_diff, self.sentiment, self.poly)
+        if any(
+            isinstance(v, bool) or not isinstance(v, int) or v not in (-1, 0, 1)
+            for v in votes
+        ):
+            raise ValueError("signal directions must be integers -1, 0 or 1")
+        shorts, longs = votes.count(-1), votes.count(1)
+        if shorts >= quorum and shorts > longs:
             return -1
-        if s >= 2:
+        if longs >= quorum and longs > shorts:
             return 1
         return 0
 
@@ -245,7 +263,7 @@ class AggressiveShortFXStrategy:
                 sentiment=int(sn_signal.iat[i]) if i < len(sn_signal) else 0,
                 poly=int(poly_signal.iat[i]) if i < len(poly_signal) else 0,
             )
-            agree = triplet.agreement()
+            agree = triplet.agreement(self.config.agreement_quorum)
 
             # Apply bias multiplier. Long is filtered to 0 under
             # aggressive_short. Short is passed through scaled.

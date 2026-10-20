@@ -23,6 +23,7 @@ engagement with each cited claim.
 from __future__ import annotations
 
 import logging
+import math
 import re
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -200,8 +201,48 @@ def evaluate_threshold(
     rhs_literal = _parse_literal(m.group(3))
 
     actual, found = _resolve_path(report, path)
-    if not found:
+    if not found or actual is None:
         return False, True, None
+
+    # CL-7ys8: NaN != 0 and None not in ['STRONG', 'MODERATE'] must not
+    # turn unavailable evidence into a successful quantitative gate.
+    if isinstance(actual, float) and not math.isfinite(actual):
+        return False, True, actual
+    if isinstance(rhs_literal, bool):
+        if not isinstance(actual, bool):
+            return False, True, actual
+    elif isinstance(rhs_literal, (int, float)) and (
+        isinstance(actual, bool) or not isinstance(actual, (int, float))
+    ):
+        return False, True, actual
+    if path == "decay_severity" and actual not in ("NONE", "MODERATE", "STRONG"):
+        return False, True, actual
+
+    root = path.split(".")[0]
+    evidence = report.get("_metric_evidence", {})
+    if not isinstance(evidence, dict):
+        return False, True, actual
+    record = evidence.get(path, evidence.get(root))
+    if path in evidence or root in evidence:
+        if not isinstance(record, dict) or record.get("status") != "measured":
+            return False, True, actual
+        count = record.get("observation_count")
+        method = record.get("method")
+        if (
+            type(count) is not int
+            or count <= 0
+            or not isinstance(method, str)
+            or not method.strip()
+        ):
+            return False, True, actual
+    # Older runner reports only have human-readable provenance. Preserve that
+    # warning as a gate, rather than ignoring a known proxy during replay.
+    provenance = report.get("_metrics_provenance", {})
+    if not isinstance(provenance, dict):
+        return False, True, actual
+    note = provenance.get(path, provenance.get(root, ""))
+    if isinstance(note, str) and note.strip().upper().startswith("PROXY"):
+        return False, True, actual
 
     try:
         if op == ">=":
@@ -298,7 +339,11 @@ def compute_verdict(
                 passed=passed,
                 missing=missing,
                 actual_value=actual,
-                detail=("missing metric at path" if missing else f"actual={actual!r}"),
+                detail=(
+                    "missing, malformed, or non-measured evidence"
+                    if missing
+                    else f"actual={actual!r}"
+                ),
             )
         )
         if missing:
@@ -325,7 +370,7 @@ def compute_verdict(
     if any_missing:
         return VerdictResult(
             verdict=Verdict.ESCALATE,
-            reason="Required metric(s) missing or malformed in candidate report",
+            reason="Required metric(s) missing, malformed, or not measured in candidate report",
             rule_evaluations=evaluations,
             bull_position=bull_position,
             bear_position=bear_position,

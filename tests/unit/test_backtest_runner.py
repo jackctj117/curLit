@@ -172,11 +172,12 @@ class TestReadSymbols:
 
         assert _read_symbols(A) == ["EURUSD", "USDJPY"]
 
-    def test_default_when_missing(self) -> None:
+    def test_missing_symbols_is_contract_error(self) -> None:
         class B:
             pass
 
-        assert _read_symbols(B) == ["EURUSD"]
+        with pytest.raises(ValueError, match="symbols must"):
+            _read_symbols(B)
 
 
 class TestReadExecutionSymbol:
@@ -189,22 +190,24 @@ class TestReadExecutionSymbol:
 
         assert _read_execution_symbol(A, A.symbols) == "EURUSD"
 
-    def test_defaults_to_first_symbol(self) -> None:
+    def test_ambiguous_execution_target_is_contract_error(self) -> None:
         from src.research.backtest_runner import _read_execution_symbol
 
         class A:
             symbols = ["EURUSD", "USDJPY"]
 
-        assert _read_execution_symbol(A, A.symbols) == "EURUSD"
+        with pytest.raises(ValueError, match="explicit execution_symbol"):
+            _read_execution_symbol(A, A.symbols)
 
-    def test_invalid_execution_symbol_falls_back(self) -> None:
+    def test_invalid_execution_symbol_is_contract_error(self) -> None:
         from src.research.backtest_runner import _read_execution_symbol
 
         class A:
             symbols = ["EURUSD"]
             execution_symbol = "GBPUSD"  # not in symbols
 
-        assert _read_execution_symbol(A, A.symbols) == "EURUSD"
+        with pytest.raises(ValueError, match="declared symbols"):
+            _read_execution_symbol(A, A.symbols)
 
 
 # ---------------------------------------------------------------------- #
@@ -225,9 +228,9 @@ class TestEdgeConcentration:
         fm = pd.DataFrame({"test_sharpe": [0.5, 0.5, 0.5, 0.5]})
         assert _compute_edge_concentration(fm) == pytest.approx(0.25)
 
-    def test_too_few_folds_returns_default(self) -> None:
+    def test_too_few_folds_returns_unknown(self) -> None:
         fm = pd.DataFrame({"test_sharpe": [1.0]})
-        assert _compute_edge_concentration(fm) == 0.50
+        assert _compute_edge_concentration(fm) is None
 
 
 class TestRegimeDiversified:
@@ -239,9 +242,9 @@ class TestRegimeDiversified:
         fm = pd.DataFrame({"test_sharpe": [0.5, -0.2, -0.7, -0.1]})
         assert _compute_regime_diversified(fm) is False
 
-    def test_too_few_folds_defaults_true(self) -> None:
+    def test_too_few_folds_returns_unknown(self) -> None:
         fm = pd.DataFrame({"test_sharpe": [0.5]})
-        assert _compute_regime_diversified(fm) is True
+        assert _compute_regime_diversified(fm) is None
 
 
 class TestDecaySeverity:
@@ -301,7 +304,7 @@ class TestDecaySeverity:
 
     def test_too_few_folds(self) -> None:
         fm = pd.DataFrame({"test_sharpe": [1.0, 0.5]})
-        assert _compute_decay_severity(fm) == "NONE"
+        assert _compute_decay_severity(fm) is None
 
 
 # ---------------------------------------------------------------------- #
@@ -345,6 +348,37 @@ class TestRunnerEndToEnd:
         # Provenance documents what's a proxy
         assert "_metrics_provenance" in metrics
         assert "PROXY" in metrics["_metrics_provenance"]["edge_concentration"]
+        assert metrics["_metric_evidence"]["edge_concentration"]["status"] == "proxy"
+        assert metrics["_metric_evidence"]["sharpe_ci_95"]["status"] == "measured"
+
+    def test_bootstrap_failure_keeps_unknown_not_point_estimate(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import json
+
+        from src.research.verdict import evaluate_threshold
+
+        def unavailable(*args: object, **kwargs: object) -> tuple[float, float]:
+            raise RuntimeError("fixture: bootstrap unavailable")
+
+        monkeypatch.setattr(
+            "src.research.backtest_runner.stationary_bootstrap_sharpe_ci", unavailable
+        )
+        path = _write_strategy(tmp_path, _VALID_STRATEGY, name="stub_ci_failure")
+        runner = make_backtest_runner(
+            data_provider=_FakeProvider(data=_synth_ohlcv(n=1500)),  # type: ignore[arg-type]
+        )
+        report = runner(path)
+        assert report["sharpe_ci_95"] == {"low": None, "high": None}
+        assert report["_metric_evidence"]["sharpe_ci_95"]["status"] == "insufficient"
+        # Match the report writer's date serialization; unknown metrics must
+        # stay JSON null, never the numeric point estimate or a NaN token.
+        restored = json.loads(json.dumps(report, default=str, allow_nan=False))
+        assert evaluate_threshold("sharpe_ci_95.low > 0", restored) == (False, True, None)
+        passed, missing, _ = evaluate_threshold("edge_concentration <= 0.60", restored)
+        assert (passed, missing) == (False, True)
 
     def test_raises_on_no_data(self, tmp_path: Path) -> None:
         strat_path = _write_strategy(tmp_path, _VALID_STRATEGY, name="stub_nodata")

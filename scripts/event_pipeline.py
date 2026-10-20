@@ -245,7 +245,23 @@ def _niche_step(engine: object, results: list, min_urgency: int) -> int:
 
     universe = SymbolUniverse(engine)  # type: ignore[arg-type]
     playbooks = load_playbooks("configs/event_playbooks.yaml")
-    agent = NicheAgent(universe=universe)
+    # CL-zhkg: production discovery is subscription Claude, not an environment
+    # selected metered fallback. Two calls permit seed -> filing -> refinement;
+    # the existing two-entity bound limits retrieval. Legacy NICHE_* flags may
+    # still configure standalone/shadow agents, never this production policy.
+    agent = NicheAgent(
+        universe=universe,
+        max_cycles=2,
+        tools_enabled=True,
+        tools_max_entities=2,
+        tool_agent_enabled=False,
+        critic_enabled=True,
+        subscription_only=True,
+    )
+    logger.info(
+        "niche policy: provider=claude-code subscription_only=true cycles=2 "
+        "grounded_entities=2 critic=required paid_fallback=disabled"
+    )
 
     # Warm the SymbolUniverse in-memory cache ONCE up front, so the concurrent
     # verify_ideas reads below are pure in-memory (no N cold DB loads / no
@@ -524,14 +540,21 @@ def _cycle(args: argparse.Namespace) -> None:
         # fresh X post (recent seen_at) naturally jumps ahead of any
         # GDELT backlog — no separate path, same impact agent.
         results = agent.assess_new_events(limit=args.limit)
+        from src.monitoring.assessment_health import record_assessment_health  # noqa: PLC0415
+
+        try:
+            record_assessment_health(results)
+        except Exception:
+            logger.exception("Assessment health write failed; watchdog cannot infer recovery")
         for result in results:
             logger.info("%s", result.summary_line())
         assessed = sum(1 for r in results if r.status == "ASSESSED")
         logger.info(
-            "assess: %d processed (%d assessed, %d dismissed)",
+            "assess: %d processed (%d assessed, %d dismissed, %d queued for retry)",
             len(results),
             assessed,
-            len(results) - assessed,
+            sum(1 for r in results if r.status == "DISMISSED"),
+            sum(1 for r in results if r.status == "NEW"),
         )
 
         # Multi-hop niche/asymmetry pass (CL-u2ph) BEFORE enrichment so

@@ -103,6 +103,54 @@ MAX_OUTPUT_TOKENS_ENV = "CLAUDE_CODE_MAX_OUTPUT_TOKENS"
 #: caller budgets are calibrated on representative workloads.
 ENFORCE_CAP_ENV = "CURLIT_CLAUDE_ENFORCE_OUTPUT_CAP"
 
+# CL-zhkg: CLI auth does not expose/disable account-level paid overflow. The
+# operator must verify that setting before enabling included-usage research.
+INCLUDED_USAGE_CONFIRMATION_ENV = "CURLIT_CLAUDE_INCLUDED_USAGE_CONFIRMED"
+# Pin this rollout to its existing Sonnet baseline. A model override must not
+# silently select a credits-only tier; additions require explicit review plus
+# the same account-level included-usage attestation.
+_INCLUDED_RESEARCH_MODELS = frozenset({"claude-sonnet-4-6"})
+# A local auth query should not hang for the generation timeout (15 minutes).
+_AUTH_TIMEOUT_SEC = 15
+_SUBSCRIPTION_FLAGS = [
+    "--setting-sources", "",
+    "--settings", '{"disableAllHooks":true,"forceLoginMethod":"claudeai"}',
+    "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
+]
+
+
+class ClaudeSubscriptionError(RuntimeError):
+    """Stable, non-secret failure reason for research audits (CL-zhkg)."""
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+        super().__init__(reason)
+
+
+class ClaudeAuthenticationError(RuntimeError):
+    """Machine-readable authentication failure, also outside strict billing mode."""
+
+    reason = "subscription_auth_unavailable"
+
+
+def _raise_if_auth_failure(payload: object, stderr: str = "") -> None:
+    if _subscription_failure(payload, stderr) == "subscription_auth_unavailable":
+        raise ClaudeAuthenticationError("Claude CLI login expired or unavailable")
+
+
+def _subscription_failure(payload: object, stderr: str = "") -> str:
+    """Classify provider failures without logging credentials or raw output."""
+    details = payload if isinstance(payload, dict) else {}
+    message = (str(details.get("result", "")) + " " + stderr).lower()
+    if details.get("api_error_status") == 429 or any(
+        phrase in message for phrase in ("usage limit", "rate limit", "quota", "hit your limit")
+    ):
+        return "subscription_quota_exhausted"
+    if any(phrase in message for phrase in ("authenticate", "authentication", "oauth", "login")):
+        logger.error("claude-code: Claude CLI login expired or unavailable (authentication failure)")
+        return "subscription_auth_unavailable"
+    return "subscription_call_failed"
+
 
 def _cap_enforcement_enabled() -> bool:
     return os.environ.get(ENFORCE_CAP_ENV, "").strip().lower() in ("1", "true", "yes", "on")
@@ -300,6 +348,29 @@ class ClaudeCodeDriver(Driver):
             ignore_errors=True,
         )
 
+    def _require_subscription(self, env: dict[str, str]) -> None:
+        """Check local auth only; never log in, buy credits or call a model."""
+        if os.environ.get(INCLUDED_USAGE_CONFIRMATION_ENV) != "1":
+            raise ClaudeSubscriptionError("included_usage_not_confirmed")
+        logger.info("claude-code: checking subscription authentication before research call")
+        try:
+            status = subprocess.run(
+                [self._bin, *_SUBSCRIPTION_FLAGS, "auth", "status"],
+                capture_output=True, text=True, stdin=subprocess.DEVNULL,
+                timeout=_AUTH_TIMEOUT_SEC, env=env, cwd=self._workdir, check=False,
+            )
+            payload = json.loads(status.stdout)
+        except (OSError, subprocess.TimeoutExpired, ValueError) as exc:
+            raise ClaudeSubscriptionError("subscription_auth_unavailable") from exc
+        # Fail closed for API keys/helpers, Console, third parties, and unknown
+        # CLI output. An opaque oauth_token alone does not prove a subscription.
+        if (
+            status.returncode != 0 or not isinstance(payload, dict)
+            or payload.get("loggedIn") is not True
+            or payload.get("authMethod") != "claude.ai"
+        ):
+            raise ClaudeSubscriptionError("subscription_auth_unverified")
+
     def complete(
         self,
         messages: list[Message],
@@ -307,8 +378,11 @@ class ClaudeCodeDriver(Driver):
         max_tokens: int = 4096,
         temperature: float = 0.0,
         no_tools: bool = False,
+        subscription_only: bool = False,
         **kwargs: Any,
     ) -> LLMResponse:
+        if subscription_only and model not in _INCLUDED_RESEARCH_MODELS:
+            raise ClaudeSubscriptionError("subscription_model_not_approved")
         # The cap is forwarded to the CLI below; a non-positive / non-int
         # value would be ignored by the CLI (falls back to its default),
         # i.e. silently uncapped — refuse it instead.
@@ -345,6 +419,9 @@ class ClaudeCodeDriver(Driver):
             "json",
             "--exclude-dynamic-system-prompt-sections",
         ]
+        if subscription_only:
+            cmd += [*_SUBSCRIPTION_FLAGS, "--disallowedTools", "mcp__*"]
+            no_tools = True
         # no_tools (CL-u5cq): single-shot text→JSON callers must strip the
         # built-in toolset. With tools available, the headless session may
         # RESEARCH the prompt (web fetches on hot news events) until the
@@ -363,6 +440,8 @@ class ClaudeCodeDriver(Driver):
         # it OFF an inherited cap passes through and the requested one is
         # reported unenforced.
         env = build_cli_env(os.environ, enforce_cap=enforce_cap, max_tokens=max_tokens)
+        if subscription_only:
+            self._require_subscription(env)
         logger.debug("claude-code: subprocess env keys=%s", sorted(env))
         if not self._warned_unenforced:
             self._warned_unenforced = True
@@ -402,7 +481,23 @@ class ClaudeCodeDriver(Driver):
                 check=False,
             )
         elapsed = time.time() - t0
+        if subscription_only:
+            try:
+                result = json.loads(proc.stdout)
+            except ValueError as exc:
+                raise ClaudeSubscriptionError("subscription_invalid_output") from exc
+            if (
+                proc.returncode != 0 or not isinstance(result, dict)
+                or result.get("is_error") or result.get("subtype") != "success"
+            ):
+                # No retry, model change or alternate provider on any failure.
+                raise ClaudeSubscriptionError(_subscription_failure(result, proc.stderr or ""))
         if proc.returncode != 0:
+            try:
+                error_payload = json.loads(proc.stdout)
+            except ValueError:
+                error_payload = {"result": proc.stdout}
+            _raise_if_auth_failure(error_payload, proc.stderr or "")
             # Prefer stderr; else mine the JSON payload for the ERROR fields
             # (CL-hm2k) — the raw tail is the end of the usage block, which
             # made the Aug 4-6 1080-failure outage undiagnosable from logs.
@@ -426,6 +521,7 @@ class ClaudeCodeDriver(Driver):
             msg = f"claude -p returned non-JSON output: {proc.stdout[:300]}"
             raise RuntimeError(msg) from exc
         if payload.get("is_error") or payload.get("subtype") != "success":
+            _raise_if_auth_failure(payload)
             msg = (
                 f"claude -p error (subtype={payload.get('subtype')!r}): "
                 f"{str(payload.get('result'))[:500]}"

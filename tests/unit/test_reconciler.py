@@ -14,6 +14,7 @@ from src.portfolio.reconciler import (
     PositionReconciler,
     ReconciliationPolicy,
     ReconciliationStatus,
+    SnapshotUnavailableError,
 )
 
 # =============================================================================
@@ -150,7 +151,7 @@ class TestReconciliationOutcomes:
         recon = PositionReconciler(
             broker,
             oms,
-            None,
+            _FakeStateStore({}),  # Explicitly readable/empty, not an unavailable store.
             strategies=[strat],  # type: ignore[arg-type]
         )
         report = recon.reconcile()
@@ -398,7 +399,7 @@ class TestPolicyActions:
 
 
 class TestRobustness:
-    def test_state_exception_on_one_strategy_does_not_stop_others(self) -> None:
+    def test_state_exception_cannot_flatten_an_unattributed_position(self) -> None:
         class _RaisingState:
             def get_current_position(self, sid: str) -> dict[str, Any] | None:
                 if sid == "broken":
@@ -410,16 +411,21 @@ class TestRobustness:
                 Position(symbol="EURUSD", quantity=1000.0, avg_price=1.10),
             ]
         )
+        oms = _RecordingOMS()
         recon = PositionReconciler(
             broker,
-            _RecordingOMS(),
+            oms,
             _RaisingState(),  # type: ignore[arg-type]
             strategies=[_StrategyDouble("broken"), _StrategyDouble("good")],
         )
-        # Should still produce a report (broker positions visible).
-        report = recon.reconcile()
-        # EURUSD shows up as orphaned_broker because no good state record.
-        assert any(e.symbol == "EURUSD" for e in report.entries)
+        # CL-ann4 intentionally replaces the old fail-open expectation: the
+        # broken strategy may own EURUSD, so no strategy's orphan policy is safe.
+        with pytest.raises(SnapshotUnavailableError, match="internal.*broken"):
+            recon.reconcile()
+        assert oms.submitted == []
+        with pytest.raises(SnapshotUnavailableError, match="internal.*broken"):
+            recon.check_alignment()
+        assert oms.submitted == []
 
     def test_broker_exception_preserves_unknown_instead_of_flat(self) -> None:
         class _BrokenBroker:

@@ -25,6 +25,7 @@ from src.events._util import ThreadLocalClient, env_flag
 from src.events.impact_agent import extract_json_object
 from src.events.research_evidence import SourceDocument, digest
 from src.research.llm import Message
+from src.research.llm.claude_code import ClaudeSubscriptionError
 from src.research.llm.client import LLMClient
 
 logger = logging.getLogger(__name__)
@@ -84,6 +85,7 @@ class AdversarialCritic:
         model: str | None = None,
         enabled: bool | None = None,
         max_tokens: int = 1200,
+        subscription_only: bool = False,
     ) -> None:
         # Per-thread client when we own the default (CL-818b): apply() runs
         # INSIDE the niche fan-out worker thread, so a single shared
@@ -99,6 +101,7 @@ class AdversarialCritic:
             enabled if enabled is not None else env_flag("NICHE_CRITIC_ENABLED", default=False)
         )
         self.max_tokens = max_tokens
+        self.subscription_only = subscription_only
 
     def _user_prompt(
         self,
@@ -144,6 +147,7 @@ class AdversarialCritic:
                 model=self.model,
                 max_tokens=self.max_tokens,
                 no_tools=True,
+                **({"subscription_only": True} if self.subscription_only else {}),
             )
             payload = extract_json_object(resp.text)
         except Exception as exc:
@@ -152,6 +156,13 @@ class AdversarialCritic:
                 len(ideas),
                 type(exc).__name__,
             )
+            if isinstance(exc, ClaudeSubscriptionError):
+                return {
+                    idea.ticker.upper(): CritiqueVerdict(
+                        idea.ticker.upper(), "review_unavailable", exc.reason, None, True,
+                    )
+                    for idea in ideas
+                }
             return {}
 
         raw = payload.get("verdicts")

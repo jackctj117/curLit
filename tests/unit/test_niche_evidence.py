@@ -475,6 +475,101 @@ def test_parse_cannot_accept_model_claimed_verification() -> None:
     assert parsed.review_status == "not_requested" and not parsed.research_eligible
 
 
+def test_claude_refines_existing_lead_with_retrieved_evidence() -> None:
+    """CL-zhkg: a retrieved filing must be usable to revise the SAME company."""
+    seed = json.loads(final_text())
+    seed["niche_ideas"][0]["claims"] = []
+
+    class Universe(FrozenTools):
+        def get_cik(self, ticker: str) -> int:
+            return 1
+
+    class Tools:
+        def enrich(self, candidates: Any, universe: Any) -> list[str]:
+            return []
+
+        def filing_documents(self, cik: int, ticker: str) -> list[SourceDocument]:
+            return [SOURCE]
+
+    class Client:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, Any]] = []
+
+        def complete(self, **kwargs: Any) -> SimpleNamespace:
+            self.calls.append(kwargs)
+            if len(self.calls) == 2:
+                assert SOURCE.source_id in kwargs["messages"][1].content
+                assert PASSAGE in kwargs["messages"][1].content
+            return SimpleNamespace(text=json.dumps(seed) if len(self.calls) == 1 else final_text())
+
+    client = Client()
+    agent = NicheAgent(
+        Universe(snapshot()), client=client, tools=Tools(), max_cycles=2,
+        tool_agent_enabled=False, market_data_fn=lambda _: copy.deepcopy(MARKET),
+        critic=AdversarialCritic(client=CriticClient(), enabled=True),
+    )
+    report = agent.run_report({"id": 1, "headline": "Beta orders pumps"})
+    assert len(client.calls) == 2
+    assert len(report.candidates) == 1  # Revision, not a second position/candidate.
+    assert report.candidates[0].claims == idea().claims
+    assert len(report.eligible) == 1
+
+
+@pytest.mark.parametrize("after_seed", [False, True])
+def test_claude_quota_failure_never_falls_back_or_approves(
+    monkeypatch: pytest.MonkeyPatch, after_seed: bool,
+) -> None:
+    from unittest.mock import Mock
+
+    from src.research.llm.claude_code import ClaudeSubscriptionError
+
+    forbidden_kimi = Mock(side_effect=AssertionError("paid fallback forbidden"))
+    monkeypatch.setattr("src.events.kimi_tool_agent.KimiToolAgent", forbidden_kimi)
+    monkeypatch.setenv("NICHE_TOOL_AGENT_ENABLED", "1")
+    client = Mock()
+    failure = ClaudeSubscriptionError("subscription_quota_exhausted")
+    client.complete.side_effect = (
+        [SimpleNamespace(text=final_text()), failure] if after_seed else [failure]
+    )
+    critic = Mock()
+    agent = NicheAgent(
+        FrozenTools(snapshot()), client=client, max_cycles=2, tools_enabled=False,
+        tool_agent_enabled=False, subscription_only=True, critic=critic,
+        market_data_fn=lambda _: copy.deepcopy(MARKET),
+    )
+    report = agent.run_report({"id": 1, "headline": "Beta orders pumps"})
+    assert report.discovery.status == ("partial" if after_seed else "unavailable")
+    assert report.discovery.reason == "subscription_quota_exhausted"
+    assert report.eligible == []
+    assert client.complete.call_count == (2 if after_seed else 1)
+    assert all(call.kwargs["subscription_only"] for call in client.complete.call_args_list)
+    forbidden_kimi.assert_not_called()
+    critic.apply.assert_not_called()
+    if after_seed:
+        assert report.candidates[0].review_status == "review_unavailable"
+
+
+def test_claude_critic_keeps_subscription_failure_reason() -> None:
+    from unittest.mock import Mock
+
+    from src.research.llm.claude_code import ClaudeSubscriptionError
+
+    client = Mock()
+    client.complete.side_effect = ClaudeSubscriptionError("subscription_quota_exhausted")
+    agent = NicheAgent(
+        FrozenTools(snapshot()), client=client, tool_agent_enabled=False,
+        critic_enabled=True, subscription_only=True,
+    )
+    candidate = idea()
+    evidence_score(candidate, MARKET, NOW)
+    agent.critic.apply([candidate], {"headline": "Beta orders pumps"})
+    assert client.complete.call_count == 1
+    assert client.complete.call_args.kwargs["subscription_only"] is True
+    assert candidate.review_status == "review_unavailable"
+    assert candidate.review_reason == "subscription_quota_exhausted"
+    assert not candidate.research_eligible
+
+
 def test_complete_pipeline_requires_evidence_review_before_merge() -> None:
     class Provider:
         def discover_result(self, row: dict[str, Any], playbook: Any) -> DiscoveryOutcome:

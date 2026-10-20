@@ -12,6 +12,7 @@ import asyncio
 import json
 import logging
 import math
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
@@ -20,6 +21,7 @@ import pytest
 import sqlalchemy as sa
 from sqlalchemy import text
 
+from src.events.playbooks import load_playbooks
 from src.execution.oms import OrderIntent, Urgency
 from src.risk.currency import AccountCurrencyConverter
 from src.risk.liquidity_window import LiquidityProfile
@@ -1703,11 +1705,23 @@ class TestCrossAssetLine:
             )
             return int(conn.execute(text("SELECT max(id) FROM geo_events")).scalar())
 
-    def test_confirmed_alert_shows_cross_asset_confirms(
+    @pytest.mark.parametrize("review_age_days", [0, 90, 91])
+    def test_cross_asset_alert_respects_evidence_freshness(
         self,
         tmp_path: Any,
         sent_alerts: list[tuple[str, str, int]],
+        monkeypatch: pytest.MonkeyPatch,
+        review_age_days: int,
     ) -> None:
+        # CL-vdqb: a display test must not depend on how old the repository's
+        # real evidence has become. Exercise both sides of the unchanged
+        # 90-day guard using a test-only review date, not a disabled guard.
+        playbooks = load_playbooks()
+        playbooks["energy_chokepoint"] = replace(
+            playbooks["energy_chokepoint"],
+            last_reviewed=(datetime.now(UTC) - timedelta(days=review_age_days)).date(),
+        )
+        monkeypatch.setattr("src.strategies.event_driven.load_playbooks", lambda _: playbooks)
         db = make_db()
         self._insert_energy(db)
         cutoff = datetime.now(UTC) - timedelta(minutes=30)
@@ -1716,7 +1730,11 @@ class TestCrossAssetLine:
             db=db,
             provider=_CrossAssetProvider(0.99, 1.0, cutoff),
         )
-        run(strat, CONFIRM_PRICES)  # USD_CAD live tick 1.0 confirms Gate B
+        intents = run(strat, CONFIRM_PRICES)  # USD_CAD live tick 1.0 confirms Gate B
+        if review_age_days > 90:
+            assert intents == []
+            assert not any(title == "Event confirmed" for title, _, _ in sent_alerts)
+            return
         message = next(m for t, m, _ in sent_alerts if t == "Event confirmed")
         assert "Cross-asset:" in message
         assert "BCO_USD" in message

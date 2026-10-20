@@ -19,6 +19,8 @@ from unittest.mock import Mock
 
 import pytest
 from fastapi.testclient import TestClient
+from hypothesis import given
+from hypothesis import strategies as st
 
 import src.web.api as api
 from src.execution.broker import Position
@@ -34,6 +36,12 @@ pytestmark = pytest.mark.unit
 
 SECRET = "a-real-secret-value"
 AUTH = {"X-API-Key": SECRET}
+
+
+@pytest.fixture(autouse=True)
+def isolated_runtime_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Relative engine state must never read/write the operational checkout."""
+    monkeypatch.chdir(tmp_path)
 
 
 class _Strategy:
@@ -282,6 +290,81 @@ def test_api_system_unwired_reason_fields_are_none(wired: None) -> None:
     assert body["halt_causes"] is None
     assert body["account_read_failures"] is None
     assert body["last_reconciliation"] is None
+
+
+@pytest.mark.parametrize("position", [
+    {}, {"symbol": "USD_CAD"}, {"symbol": None, "quantity": 2},
+    {"symbol": "USD_CAD", "quantity": float("nan")},
+    {"symbol": "USD_CAD", "quantity": True}, [],
+])
+def test_internal_malformed_record_never_authorizes_orphan_flatten(position: Any) -> None:
+    broker, state, oms = Mock(), Mock(), Mock()
+    broker.get_positions.return_value = [Position("USD_CAD", 2.0, 1.3)]
+    state.get_current_position.return_value = position
+    recon = PositionReconciler(broker, oms, state, [SimpleNamespace(id="broken")])
+    with pytest.raises(SnapshotUnavailableError, match="internal_snapshot_unavailable:broken"):
+        recon.reconcile()
+    oms.submit_intent.assert_not_called()
+
+
+def test_internal_lookup_failure_halts_and_surfaces_reason(wired: None) -> None:
+    mgr, oms, broker = _mgr()
+    broker.get_positions.return_value = [Position("USD_CAD", 2.0, 1.3)]
+    state = Mock()
+    state.get_current_position.side_effect = OSError("unreadable state")
+    recon = PositionReconciler(broker, oms, state, [SimpleNamespace(id="broken")])
+    engine = LiveEngine([], oms, broker, cold_start_reconciler=recon, kill_switch_manager=mgr)
+    engine._reconcile_startup()
+    assert oms.is_halted
+    broker.place_order.assert_not_called()
+    api.set_runtime(broker, oms, [], kill_switch_manager=mgr, safety_status=engine.safety_status)
+    result = TestClient(api.app).get("/api/system", headers=AUTH).json()
+    assert result["last_reconciliation"]["status"] == "unavailable"
+    assert result["last_reconciliation"]["reason"] == "internal_snapshot_unavailable:broken:lookup_failed"
+
+
+@pytest.mark.parametrize("book", [
+    [], {"USD_CAD": SimpleNamespace()},
+    {"USD_CAD": SimpleNamespace(quantity=float("inf"))},
+    {"USD_CAD": SimpleNamespace(quantity=1), "USDCAD": SimpleNamespace(quantity=1)},
+])
+def test_malformed_owned_book_aborts_alignment(book: Any) -> None:
+    broker, state, oms = Mock(), Mock(), Mock()
+    broker.get_positions.return_value = [Position("USD_CAD", 2.0, 1.3)]
+    state.get_current_position.return_value = None
+    recon = PositionReconciler(
+        broker, oms, state, [SimpleNamespace(id="broken", open_positions=book)]
+    )
+    with pytest.raises(SnapshotUnavailableError, match="internal_snapshot_unavailable:broken"):
+        recon.check_alignment()
+    oms.submit_intent.assert_not_called()
+
+
+@given(st.floats(allow_nan=False, allow_infinity=False))
+def test_valid_owned_quantity_preserves_signed_units(quantity: float) -> None:
+    assert PositionReconciler._validated_internal_quantity("s", "USDJPY", quantity) == quantity
+
+
+@pytest.mark.asyncio
+async def test_periodic_internal_failure_halts_without_clearing_prior_books(monkeypatch: Any) -> None:
+    mgr, oms, broker = _mgr()
+    recon = Mock()
+    engine = LiveEngine([], oms, broker, cold_start_reconciler=recon, kill_switch_manager=mgr)
+    engine.running = True
+
+    def fail() -> None:
+        engine.running = False
+        raise SnapshotUnavailableError("internal_snapshot_unavailable:broken:lookup_failed")
+
+    async def no_wait(_: float) -> None:
+        return None
+
+    recon.check_alignment.side_effect = fail
+    monkeypatch.setattr("src.runtime.live_engine.asyncio.sleep", no_wait)
+    await engine._reconciliation_task()
+    assert oms.is_halted
+    assert "external:internal_snapshot_unavailable" in mgr.active_halt_causes()
+    assert engine.safety_status()["last_reconciliation"]["status"] == "unavailable"
 
 
 def test_account_read_halt_needs_operator_resume_after_recovery(wired: None) -> None:

@@ -4,13 +4,19 @@ Algorithmic FX trading system: pulls live ticker values for currencies, cryptocu
 
 ## Status
 
-**Live paper trading on two venues** — the full event→idea→execution→scorecard
-loop runs unattended across ~13 daemons (12 on Linux; the macOS keep-awake is
-skipped there): OANDA practice machine-trades FX legs of
-confirmed geopolitical events; Alpaca paper auto-buys the top options ideas
-daily; every surfaced idea's forward return is scored into a track record that
-a weekly reflective review will tune the system from. 140+ tracked issues
-closed. **Operational ground truth: [`docs/CURRENT_OPERATIONS.md`](docs/CURRENT_OPERATIONS.md) · fresh-device setup: [`docs/BOOTSTRAP.md`](docs/BOOTSTRAP.md) · fleet: `./scripts/daemons.sh start`.**
+**Paper-trading system with execution and research hardening in progress.**
+The repository contains OANDA practice and Alpaca paper execution paths.
+Entry restrictions, release identities and verification dates are recorded in
+[`docs/CURRENT_OPERATIONS.md`](docs/CURRENT_OPERATIONS.md); those records are not
+a fresh broker or process-health check. The platform-dependent fleet roster is
+defined in [`scripts/daemons.sh`](scripts/daemons.sh), including macOS-only
+`keep_awake`. Roster membership does not prove a daemon is running.
+
+Signal-direction outcomes are not executed option returns or proof of an edge.
+Reflective research proposes changes for operator approval, never automatic
+production tuning. Rollout and recovery remain tracked under CL-koeg.
+Fresh-device setup: [`docs/BOOTSTRAP.md`](docs/BOOTSTRAP.md). Fleet operations
+require separate operator approval; never start a competing execution writer.
 
 ## Development workflow
 
@@ -25,16 +31,16 @@ research models or authorize access to the paper-trading installation.
 - **Autonomous research pipeline**: multi-source ingest (arXiv preprints + quant substacks + Polymarket prediction markets) → idea agent → operator GATE 1 → implementer → walk-forward backtest → Bull/Bear debate → verdict engine → operator GATE 2 → paper-shadow registration (allocation=0). All LLM roles run on headless Claude Code (`claude-fable-5`) via the operator's subscription — the Grok/DeepSeek drivers are kept only for the provider-comparison harness. Daily cron, full transcripts, Telegram alerts. Transient LLM failures (timeouts/rate limits) retry with an attempt cap instead of wedging. See [`docs/research/RUNBOOK.md`](docs/research/RUNBOOK.md).
 - **Telegram gate approvals**: research gates are approved by replying `approve <id>` / `reject <id>` in the alert chat (chat-id locked bot, `scripts/telegram_approval_bot.py`); notifications carry a `Trades:` line listing the instruments each candidate would touch
 - **Current-events pipeline**: GDELT (16 themed playbooks incl. Iran/Israel, Hormuz, Russia-Ukraine, Africa minerals, Taiwan semis, pharma APIs) + a 44-account X watchlist feed `geo_events` → **Haiku batch triage** (cheap relevance pre-filter, fail-open) → Sonnet impact agent (playbook-grounded assessment with concrete stops/targets/triggers) → **intraday market-confirmation gate** (real OANDA quotes, 30–120 min window) + **cross-asset entry gate** (contradictory related-asset moves veto machine legs) → `EventDrivenStrategy` paper-trades the FX legs with tight risk caps, concentration/haven caps, and a persistent event-book loss freeze
-- **Niche opportunity stack**: Kimi tool-based discovery with ticker verification, dated SEC 10-K/10-Q/8-K passages, separate factual and inferred relationship claims, evidence-coverage scoring and an evidence-aware Claude critic. Missing discovery/review/liquidity stays explicit; incomplete leads remain research-only. An isolated captured-input harness compares providers with equivalent tools before any model switch. See [research evidence and shadow comparisons](docs/NICHE_RESEARCH_EVIDENCE.md); this describes source behavior, not a completed deployment or profitability result.
+- **Niche opportunity stack**: the CL-zhkg development patch selects Claude discovery/refinement with captured evidence and an evidence-aware Claude critic; activation is separately tracked in CL-cdov. Kimi remains available for explicit research/shadow comparisons, not an automatic fallback. Ticker identity, dated sources, factual versus inferred claims, review and liquidity status stay explicit; incomplete leads remain research-only. See [research evidence and shadow comparisons](docs/NICHE_RESEARCH_EVIDENCE.md). Source changes are not deployment or profitability evidence.
 - **Idea grounding**: every candidate is grounded in computed facts — SEC filing excerpts, **computed technical context** (trend vs 20/50d SMA, swing support/resistance in dollars, breakout/approaching states, level-test counts — deliberately no pattern-name vocabulary), and **free options-activity snapshots** (put/call volume skew, volume vs self-built baseline, ATM IV)
-- **Two-venue paper execution**: OANDA practice (FX event legs, max 3 concurrent, restart-safe reconciliation) + **Alpaca paper options executor** (top-5 ideas/day by confidence, 1 contract each, $500 premium cap, market-hours aware, technical-alignment gate, idea-level dedup)
+- **Paper execution infrastructure**: OANDA practice plus Alpaca options/equities. Entry restrictions take precedence over historical entry policies. Source knobs and dated rollout evidence are documented in [`docs/CURRENT_OPERATIONS.md`](docs/CURRENT_OPERATIONS.md); README defaults do not establish effective settings.
 - **Closed learning loop**: a daily outcome tracker scores every surfaced idea's signed forward return (MFE/MAE, win/loss/flat at horizon, denormalised by theme/action/hop/confidence/niche/red-team) and a **reflective reviewer** aggregates the finalised record and proposes conservative, data-cited config tuning for operator approval — never auto-applied
 - **Multi-source data ingestion**: FRED (US macro, yields), **Bundesbank/ECB daily foreign rates** (German 2Y, €STR — feeding US2Y_MINUS_DE2Y, OIS carry legs, a realized-vol CVIX proxy), ECB/BoJ/BoE, Yahoo Finance (FX spot, commodities, indices, option chains), **OANDA intraday quotes + daily candles** (19 event instruments), CFTC COT (positioning), CME SOFR futures, GDELT (news events), Polymarket (prediction-market probabilities); a **startup data-health preflight** makes any starved series a loud banner instead of a silently dormant strategy
 - **Rate differential models**: Rolling OLS regression on yield spreads for FX pair fair-value estimation, with carry/momentum/vol-regime entry filters
 - **NLP pipeline**: Fine-tuned FinBERT on central bank statements — hawkish/dovish sentiment scoring and diff analysis (Fed, ECB, BoE, BoJ, BoC)
 - **OIS curve construction**: Bootstrapped discount factors and forward rates from futures prices
 - **Walk-forward backtesting**: Non-overlapping IS/OOS windows with bootstrap confidence intervals, per-pair spreads, and overnight funding costs
-- **Risk management**: Volatility-targeted sizing, regime-aware position adjustment, 11 automatic kill switches (incl. equity trailing stop + open-position correlation) wired into the live engine's health tick; risk profiles switchable via `CURLIT_RISK_PROFILE`
+- **Risk management**: configured sizing, concentration limits and kill switches; verify the armed startup set and effective profile, not a static README count. Cross-path controls and remaining gaps are tracked in CL-0deu.2.
 - **Live trading engine**: Async event loop with price streaming, signal generation, OMS, reconciliation
 - **Research tooling**: Optuna walk-forward hyperopt (`scripts/hyperopt_rate_model.py`), weekly Streamlit scorecard (`scripts/scorecard.py`), paper-triage dashboard (`research/dashboard.py`)
 - **Observability**: Prometheus + Grafana + Loki + Alertmanager (Telegram alerts)
@@ -80,6 +86,10 @@ fx-system/
 - 8GB+ RAM
 
 ### 1. Clone and configure
+
+This operational quick start requires a separately authorized installation.
+Coding agents use a credential-free development environment instead; never copy
+the running installation's environment, account credentials or databases.
 
 ```bash
 git clone https://github.com/jackctj117/curLit.git
@@ -146,10 +156,26 @@ The engine runs the live event loop — strategies evaluate signals, manage posi
 
 ### 7. View dashboards
 
-- **Web UI**: `http://localhost:8200/api/account?secret=curlit-dev` (JSON REST — positions, signals, P&L, manual trades)
+- **Web API**: `http://localhost:8200/api/account` requires the `X-API-Key`
+  header matching a strong, operator-configured `WEB_API_SECRET`. Missing and
+  default secrets are rejected; query-string authentication is unsupported.
 - **Grafana Glance**: `http://localhost:3000` → "curLit — Glance"
 - **Airflow**: `http://localhost:8080`
 - **Soak dashboard**: `http://127.0.0.1:8201/` (see below — must be launched separately)
+
+For an authorized local read, with the secret already supplied securely:
+
+```bash
+curl --fail --header "X-API-Key: ${WEB_API_SECRET:?set a strong API secret}" \
+  http://127.0.0.1:8200/api/account
+```
+
+Startup configuration evidence is recorded by
+[`src/runtime/release_manifest.py`](src/runtime/release_manifest.py) in ignored
+`data/runtime_manifests/`. Missing fields stay unknown. The checkout's current
+Git hash does not identify code already loaded by a running process. Complete
+per-path effective configuration and baseline verification remain CL-0deu.12
+and CL-0deu.14; reading this README does not satisfy those gates.
 
 ### Soak-test dashboard
 
@@ -194,8 +220,11 @@ Verdict thresholds: **RED** if engine is dead, monitor stale >25min, or memory h
 | `OANDA_API_KEY` | [oanda.com](https://developer.oanda.com) | For live trading (paper mode works without) |
 | `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID` | [@BotFather](https://t.me/BotFather) | For alerts + interactive research-gate approvals |
 
-The research pipeline and event impact agent need no API key — they run
-on the local `claude` CLI logged into the operator's subscription.
+General research roles and the impact agent use the local authenticated Claude
+CLI. CLI authentication alone does not establish zero cost. The pending niche
+switch requires subscription verification and an operator attestation that paid
+overflow is disabled; quota/auth failures do not fall back to a paid provider.
+The standalone Kimi comparison path still requires a funded Moonshot account.
 
 ## Testing
 
@@ -209,7 +238,10 @@ make typecheck     # Mypy type checker
 
 ## Issue Tracking
 
-This project uses [`bd` (beads)](https://github.com/steveyegge/beads) for issue tracking with Dolt-backed version control. Run `bd ready` to see available work.
+This project uses [`bd` (beads)](https://github.com/steveyegge/beads) for all issue
+tracking. Run `bd --sandbox ready --json` to see available work. Close only
+completed acceptance criteria; unfinished implementation, external approvals,
+unverified rollouts and forward studies must remain visible.
 
 ## License
 

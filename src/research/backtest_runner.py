@@ -49,9 +49,12 @@ from __future__ import annotations
 
 import importlib.util
 import logging
+import math
+import re
 import sys
 from collections.abc import Callable
 from datetime import datetime
+from numbers import Real
 from pathlib import Path
 from typing import Any
 
@@ -60,6 +63,7 @@ import pandas as pd
 from src.backtest.analytics import PerformanceAnalytics
 from src.backtest.bootstrap import stationary_bootstrap_sharpe_ci
 from src.backtest.cost_model import CostModel
+from src.backtest.instrument_metadata import DEFAULT_REGISTRY
 from src.backtest.walkforward import WalkForwardConfig, WalkForwardRunner
 from src.data.provider import DataProvider
 
@@ -142,31 +146,25 @@ def _find_strategy_class(module: Any) -> type:
 
 
 def _read_symbols(strategy_cls: type) -> list[str]:
-    """Extract the strategy's ``symbols`` attribute. Class-level or via
-    instantiating with no args — the Implementer prompt requires
-    class-level, but tolerate both. Defaults to ``EURUSD`` if absent so
-    the runner produces *some* metrics rather than refusing to run."""
+    """Read an explicit, nonempty symbol sequence; never invent EURUSD.
+
+    Symbols are data identifiers, including signal-only inputs. Exact spelling
+    matters: malformed identifiers are rejected, not silently normalized.
+    """
     syms = getattr(strategy_cls, "symbols", None)
-    if syms is None:
+    if syms is None or isinstance(syms, property):
         try:
             inst = strategy_cls()
             syms = getattr(inst, "symbols", None)
-        except Exception:
-            # Broad by design: generated strategy code can raise anything
-            # on __init__ — fall through to the EURUSD default below.
-            logger.debug(
-                "instantiating %s to read symbols failed",
-                strategy_cls.__name__,
-                exc_info=True,
-            )
-            syms = None
-    if not syms:
-        logger.warning(
-            "strategy %s has no symbols attribute; defaulting to ['EURUSD']",
-            strategy_cls.__name__,
-        )
-        return ["EURUSD"]
-    return list(syms) if isinstance(syms, (list, tuple)) else [str(syms)]
+        except Exception as exc:
+            raise ValueError("strategy construction failed while reading symbols") from exc
+    if not isinstance(syms, (list, tuple)) or not syms:
+        raise ValueError("symbols must be an explicit nonempty list or tuple")
+    if any(not isinstance(s, str) or not re.fullmatch(r"[A-Z][A-Z0-9_:.=-]*", s) for s in syms):
+        raise ValueError("symbols contains a malformed data identifier")
+    if len(set(syms)) != len(syms):
+        raise ValueError("symbols contains duplicate identifiers")
+    return list(syms)
 
 
 def _read_execution_symbol(strategy_cls: type, symbols: list[str]) -> str:
@@ -174,20 +172,27 @@ def _read_execution_symbol(strategy_cls: type, symbols: list[str]) -> str:
     Strategies can declare ``execution_symbol`` to use cross-symbol
     signals to trade a single pair (e.g. ``symbols = ['DXY', 'EURUSD']``,
     ``execution_symbol = 'EURUSD'`` — DXY informs but EURUSD trades).
-    Defaults to ``symbols[0]`` if not declared. CL-40n2 v1."""
-    exec_sym = getattr(strategy_cls, "execution_symbol", None)
-    if not exec_sym:
-        return symbols[0]
-    if exec_sym not in symbols:
-        logger.warning(
-            "strategy %s declares execution_symbol=%r but it's not in "
-            "symbols=%r; falling back to symbols[0]",
-            strategy_cls.__name__,
-            exec_sym,
-            symbols,
-        )
-        return symbols[0]
-    return str(exec_sym)
+    An omitted target is inferred only for a single declared symbol. Unknown
+    execution instruments cannot borrow a default instrument's metrics. The
+    existing registry is a supported-instrument contract, not proof of actual
+    venue availability or historical liquidity (those remain separate gates).
+    """
+    if not symbols:
+        raise ValueError("execution requires declared symbols")
+    if hasattr(strategy_cls, "execution_symbols"):
+        raise ValueError("this runner supports one execution_symbol, not a basket")
+    if hasattr(strategy_cls, "execution_symbol"):
+        exec_sym = strategy_cls.execution_symbol
+    elif len(symbols) == 1:
+        exec_sym = symbols[0]
+    else:
+        raise ValueError("multiple input symbols require an explicit execution_symbol")
+    if not isinstance(exec_sym, str) or not exec_sym or exec_sym not in symbols:
+        raise ValueError("execution_symbol must name one of the declared symbols")
+    meta = DEFAULT_REGISTRY.get(exec_sym)
+    if meta is None or meta.last_tradable_date == meta.first_tradable_date:
+        raise ValueError(f"execution_symbol {exec_sym!r} is not a supported trading instrument")
+    return exec_sym
 
 
 # ---------------------------------------------------------------------- #
@@ -195,47 +200,65 @@ def _read_execution_symbol(strategy_cls: type, symbols: list[str]) -> str:
 # ---------------------------------------------------------------------- #
 
 
-def _compute_edge_concentration(fold_metrics: pd.DataFrame) -> float:
+def _fold_sharpes(fold_metrics: pd.DataFrame, minimum: int) -> list[float] | None:
+    """CL-7ys8: no implicit pandas NaN skipping or successful all-zero evidence."""
+    if "test_sharpe" not in fold_metrics.columns or len(fold_metrics) < minimum:
+        return None
+    raw = list(fold_metrics["test_sharpe"])
+    if any(isinstance(value, bool) or not isinstance(value, Real) for value in raw):
+        return None
+    values = [float(value) for value in raw]
+    if not all(math.isfinite(value) for value in values) or not any(values):
+        return None
+    return values
+
+
+def _compute_edge_concentration(fold_metrics: pd.DataFrame) -> float | None:
     """Crude proxy for rule B.1 (G5 feature attribution): how much of
     the realized edge sits in a single fold? max|fold_sharpe| / sum
     |fold_sharpe|. 1.0 = all edge in one fold; 1/n_folds = perfectly
     diversified across folds. The real G5 attribution looks at feature
-    contributions, not folds — so this is a temporal proxy. Falls back
-    to the rule's pass-threshold (0.50) when there are too few folds
-    to measure."""
-    if "test_sharpe" not in fold_metrics.columns or len(fold_metrics) < 2:
-        return 0.50
-    abs_sharpes = fold_metrics["test_sharpe"].abs()
-    total = float(abs_sharpes.sum())
-    if total <= 0:
-        return 0.50
-    return float(abs_sharpes.max() / total)
+    contributions, not folds — so this is a temporal proxy, never sufficient
+    promotion evidence. At least two folds are needed to define concentration
+    across folds; missing/invalid evidence remains unknown."""
+    sharpes = _fold_sharpes(fold_metrics, minimum=2)
+    if sharpes is None:
+        return None
+    # Scale first to avoid overflow in the sum for large finite diagnostics.
+    largest = max(abs(value) for value in sharpes)
+    scaled_sum = math.fsum(abs(value) / largest for value in sharpes)
+    return 1.0 / scaled_sum
 
 
-def _compute_regime_diversified(fold_metrics: pd.DataFrame) -> bool:
+def _compute_regime_diversified(fold_metrics: pd.DataFrame) -> bool | None:
     """Crude proxy for rule B.2 (G6 regime decomposition): does the
     edge appear across multiple folds, or only one? True when at least
-    2 folds have positive Sharpe AND not every fold is positive (so
-    the edge isn't a uniform regime artifact). Defaults True when
-    there's too little data to claim concentration."""
-    if "test_sharpe" not in fold_metrics.columns or len(fold_metrics) < 3:
-        return True
-    sharpes = fold_metrics["test_sharpe"]
-    n_pos = int((sharpes > 0).sum())
+    2 folds have positive Sharpe out of at least 3 folds. This describes
+    time folds, not measured regimes; all-positive folds aren't automatically
+    evidence of a regime artifact. Insufficient evidence is unknown."""
+    sharpes = _fold_sharpes(fold_metrics, minimum=3)
+    if sharpes is None:
+        return None
+    n_pos = sum(value > 0 for value in sharpes)
     return n_pos >= 2
 
 
-def _compute_decay_severity(fold_metrics: pd.DataFrame) -> str:
+def _compute_decay_severity(fold_metrics: pd.DataFrame) -> str | None:
     """Crude proxy for rule B.3 (active decay): split fold metrics
     chronologically into thirds; compare oldest-third Sharpe to
     newest-third Sharpe. STRONG: newest < -50% of oldest;
     MODERATE: newest sign-flipped from oldest; NONE: otherwise."""
-    if "test_sharpe" not in fold_metrics.columns or len(fold_metrics) < 6:
-        return "NONE"
-    n = len(fold_metrics)
-    third = max(1, n // 3)
-    oldest = fold_metrics["test_sharpe"].iloc[:third].mean()
-    newest = fold_metrics["test_sharpe"].iloc[-third:].mean()
+    # Six folds provide at least two observations per compared third; this is
+    # a diagnostic minimum, not a claim of statistical power or measured decay.
+    sharpes = _fold_sharpes(fold_metrics, minimum=6)
+    if sharpes is None:
+        return None
+    third = len(sharpes) // 3
+    scale = max(abs(value) for value in sharpes)
+    oldest = math.fsum(value / scale / third for value in sharpes[:third])
+    newest = math.fsum(value / scale / third for value in sharpes[-third:])
+    if oldest <= 0:
+        return None  # No positive baseline edge to evaluate decay against.
     if oldest > 0 and newest < -0.5 * oldest:
         return "STRONG"
     if oldest > 0 and newest < 0:
@@ -350,18 +373,24 @@ def make_backtest_runner(
         )
         oos_sharpe = float(full.get("sharpe", 0.0))
         is_oos_ratio = abs(is_sharpe / oos_sharpe) if oos_sharpe != 0 else 0.0
+        ci_low: float | None
+        ci_high: float | None
+        ci_reason = ""
         try:
             ci_low, ci_high = stationary_bootstrap_sharpe_ci(
                 oos,
                 n_bootstrap=bootstrap_n,
             )
+            if not math.isfinite(ci_low) or not math.isfinite(ci_high) or ci_low > ci_high:
+                raise ValueError("bootstrap returned invalid confidence bounds")
         except Exception as exc:
             logger.warning(
-                "bootstrap CI failed: %s: %s — using point estimate",
+                "bootstrap CI failed: %s: %s — confidence interval unavailable",
                 type(exc).__name__,
                 exc,
             )
-            ci_low, ci_high = oos_sharpe, oos_sharpe
+            ci_low, ci_high = None, None
+            ci_reason = "bootstrap_unavailable"
 
         # 5) B-rule proxies.
         edge_conc = _compute_edge_concentration(result.fold_metrics)
@@ -391,12 +420,35 @@ def make_backtest_runner(
             "regime_diversified": regime_div,
             "decay_severity": decay_sev,
             "fold_metrics": result.fold_metrics.to_dict(orient="records"),
+            "_metric_evidence": {
+                **{
+                    name: {
+                        "status": "insufficient" if value is None else "proxy",
+                        "observation_count": len(result.fold_metrics),
+                        "method": method,
+                        "reason": "insufficient_or_invalid_folds"
+                        if value is None
+                        else "not_measured_gate_evidence",
+                    }
+                    for name, value, method in (
+                        ("edge_concentration", edge_conc, "fold_sharpe_concentration"),
+                        ("regime_diversified", regime_div, "positive_fold_count"),
+                        ("decay_severity", decay_sev, "first_last_third_comparison"),
+                    )
+                },
+                "sharpe_ci_95": {
+                    "status": "insufficient" if ci_reason else "measured",
+                    "observation_count": len(oos),
+                    "method": f"stationary_bootstrap_n={bootstrap_n}",
+                    "reason": ci_reason,
+                },
+            },
             "_metrics_provenance": {
                 "oos_metrics": "computed from PerformanceAnalytics on walk-forward OOS returns",
-                "sharpe_ci_95": f"stationary bootstrap, n={bootstrap_n}",
+                "sharpe_ci_95": ci_reason or f"stationary bootstrap, n={bootstrap_n}",
                 "is_oos_sharpe_ratio": "mean(train_sharpe) / oos_sharpe across folds",
                 "edge_concentration": "PROXY: max|fold_sharpe|/sum|fold_sharpe| across folds, not feature-attribution G5",
-                "regime_diversified": "PROXY: ≥2 folds positive AND not all folds positive — not regime-decomposed G6",
+                "regime_diversified": "PROXY: ≥2 folds positive out of ≥3 — not regime-decomposed G6",
                 "decay_severity": "PROXY: oldest-third vs newest-third fold-Sharpe comparison — not full decay test",
             },
         }

@@ -14,7 +14,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.research.llm.claude_code import ClaudeCodeDriver
+from src.research.llm.claude_code import (
+    INCLUDED_USAGE_CONFIRMATION_ENV,
+    ClaudeAuthenticationError,
+    ClaudeCodeDriver,
+    ClaudeSubscriptionError,
+)
 from src.research.llm.client import Message, get_client
 
 _OK_PAYLOAD = {
@@ -49,6 +54,90 @@ def _proc(stdout: str, returncode: int = 0, stderr: str = "") -> MagicMock:
 def _driver() -> ClaudeCodeDriver:
     with patch("shutil.which", return_value="/fake/claude"):
         return ClaudeCodeDriver()
+
+
+class TestIncludedUsageOnly:
+    """CL-zhkg: no generation without positive local subscription evidence."""
+
+    def test_model_override_cannot_select_a_paid_tier(self, monkeypatch: Any) -> None:
+        monkeypatch.setenv(INCLUDED_USAGE_CONFIRMATION_ENV, "1")
+        driver = _driver()
+        with patch("subprocess.run") as run, pytest.raises(
+            ClaudeSubscriptionError, match="subscription_model_not_approved"
+        ):
+            driver.complete([Message("user", "research")], "claude-fable-5", subscription_only=True)
+        run.assert_not_called()
+
+    def test_unconfirmed_billing_settings_block_even_auth_query(self, monkeypatch: Any) -> None:
+        monkeypatch.delenv(INCLUDED_USAGE_CONFIRMATION_ENV, raising=False)
+        driver = _driver()
+        with patch("subprocess.run") as run, pytest.raises(
+            ClaudeSubscriptionError, match="included_usage_not_confirmed"
+        ):
+            driver.complete([Message("user", "research")], "claude-sonnet-4-6", subscription_only=True)
+        run.assert_not_called()
+
+    @pytest.mark.parametrize("method", ["api_key", "api_key_helper", "third_party", "none", "oauth_token", None])
+    def test_non_subscription_auth_cannot_generate(self, monkeypatch: Any, method: Any) -> None:
+        monkeypatch.setenv(INCLUDED_USAGE_CONFIRMATION_ENV, "1")
+        driver = _driver()
+        with patch("subprocess.run", return_value=_proc(json.dumps({
+            "loggedIn": True, "authMethod": method,
+        }))) as run, pytest.raises(ClaudeSubscriptionError, match="subscription_auth_unverified"):
+            driver.complete([Message("user", "research")], "claude-sonnet-4-6", subscription_only=True)
+        assert run.call_count == 1
+        assert run.call_args.args[0][-2:] == ["auth", "status"]
+
+    @pytest.mark.parametrize("raw,code", [("garbage", 0), ("[]", 0), ('{"loggedIn":false}', 1)])
+    def test_unreadable_auth_fails_closed(self, monkeypatch: Any, raw: str, code: int) -> None:
+        monkeypatch.setenv(INCLUDED_USAGE_CONFIRMATION_ENV, "1")
+        driver = _driver()
+        with patch("subprocess.run", return_value=_proc(raw, code)) as run, pytest.raises(
+            ClaudeSubscriptionError
+        ):
+            driver.complete([Message("user", "research")], "claude-sonnet-4-6", subscription_only=True)
+        assert run.call_count == 1
+
+    @pytest.mark.parametrize("exit_code", [0, 1])
+    def test_quota_failure_is_typed_and_never_retried(self, monkeypatch: Any, exit_code: int) -> None:
+        monkeypatch.setenv(INCLUDED_USAGE_CONFIRMATION_ENV, "1")
+        driver = _driver()
+        results = [
+            _proc('{"loggedIn":true,"authMethod":"claude.ai"}'),
+            _proc(json.dumps({"is_error": True, "api_error_status": 429,
+                              "result": "You've hit your limit"}), exit_code),
+        ]
+        with patch("subprocess.run", side_effect=results) as run, pytest.raises(
+            ClaudeSubscriptionError, match="subscription_quota_exhausted"
+        ):
+            driver.complete([Message("user", "research")], "claude-sonnet-4-6", subscription_only=True)
+        assert run.call_count == 2  # One local status query + ONE model invocation.
+
+    def test_subscription_request_isolated_from_metered_settings(self, monkeypatch: Any) -> None:
+        monkeypatch.setenv(INCLUDED_USAGE_CONFIRMATION_ENV, "1")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-api-key")
+        monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "test-token")
+        monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+        driver = _driver()
+        with patch("subprocess.run", side_effect=[
+            _proc('{"loggedIn":true,"authMethod":"claude.ai"}'), _proc(json.dumps(_OK_PAYLOAD)),
+        ]) as run:
+            response = driver.complete(
+                [Message("user", "research")], "claude-sonnet-4-6", subscription_only=True,
+            )
+        assert run.call_count == 2
+        for call in run.call_args_list:
+            command = call.args[0]
+            assert command[command.index("--setting-sources") + 1] == ""
+            assert "--strict-mcp-config" in command
+            assert "ANTHROPIC_API_KEY" not in call.kwargs["env"]
+            assert "ANTHROPIC_AUTH_TOKEN" not in call.kwargs["env"]
+            assert "CLAUDE_CODE_USE_BEDROCK" not in call.kwargs["env"]
+        command = run.call_args.args[0]
+        assert command[command.index("--tools") + 1] == ""
+        assert command[command.index("--disallowedTools") + 1] == "mcp__*"
+        assert "--bare" not in command  # Bare mode requires API credentials.
+        assert response.usd_cost is None
 
 
 def _capture_stdin(captured: list[str]) -> Callable[..., MagicMock]:
@@ -223,6 +312,22 @@ class TestComplete:
             pytest.raises(RuntimeError, match="boom: real reason"),
         ):
             drv.complete([Message("user", "hi")], model="claude-fable-5")
+
+    @pytest.mark.parametrize("returncode", [0, 1])
+    def test_auth_expiry_has_stable_category_and_distinct_log(
+        self, returncode: int, caplog: Any,
+    ) -> None:
+        raw = json.dumps({
+            "subtype": "error_during_execution", "is_error": True,
+            "result": "Failed to authenticate: OAuth session expired and could not be refreshed",
+        })
+        with (
+            patch("subprocess.run", return_value=_proc(raw, returncode=returncode)),
+            pytest.raises(ClaudeAuthenticationError) as exc,
+        ):
+            _driver().complete([Message("user", "hi")], model="claude-sonnet-4-6")
+        assert exc.value.reason == "subscription_auth_unavailable"
+        assert "Claude CLI login expired" in caplog.text
 
     def test_no_tools_strips_the_builtin_toolset(self) -> None:
         # CL-u5cq: single-shot JSON callers pass no_tools=True; the CLI gets

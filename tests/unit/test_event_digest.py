@@ -1234,7 +1234,12 @@ class TestPipelineNicheWiring:
 
         class _FakeNicheAgent:
             def __init__(self, **_kw: Any) -> None:
-                pass
+                assert _kw["tool_agent_enabled"] is False
+                assert _kw["subscription_only"] is True
+                assert _kw["max_cycles"] == 2
+                assert _kw["tools_enabled"] is True
+                assert _kw["tools_max_entities"] == 2
+                assert _kw["critic_enabled"] is True
 
             def run_report(self, row: dict[str, Any], playbook: Any = None) -> Any:
                 ran_on.append(int(row["id"]))
@@ -1270,6 +1275,18 @@ class TestPipelineNicheWiring:
             [_res(event_id=1, urgency=8)],
         )
         assert ran == [1]
+
+    def test_legacy_kimi_environment_cannot_select_paid_provider(
+        self, pipeline_mod: Any, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("NICHE_TOOL_AGENT_ENABLED", "1")
+        monkeypatch.setenv("MOONSHOT_API_KEY", "test-only")
+        monkeypatch.setenv("NICHE_MAX_CYCLES", "1")
+        monkeypatch.setenv("NICHE_TOOLS_ENABLED", "0")
+        monkeypatch.setenv("NICHE_CRITIC_ENABLED", "0")
+        assert self._run_niche_step(
+            pipeline_mod, monkeypatch, [_res(event_id=1, urgency=8)],
+        ) == [1]
 
     def test_niche_skips_low_urgency(
         self,

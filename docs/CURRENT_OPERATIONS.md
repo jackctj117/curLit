@@ -1,5 +1,25 @@
 # CURRENT OPERATIONS — what curLit is practicing right now
 
+**Development change — October 20, 2026 (CL-qwrv), NOT deployed:** the standalone
+`AggressiveShortFXStrategy` now honors its configured 1/2/3-vote agreement quorum.
+The default two-of-three rule counts matching votes rather than canceling a
+majority with an opposing third vote. Invalid quorums/directions reject.
+Deterministic train/holdout tests exercise real entries, long-bias filtering,
+and exact holding-period closes; the former no-entry skip is gone.
+No live portfolio registration, configuration value, holding limit, or daemon
+was changed. This corrects an implementation contract, not evidence of an edge.
+
+**Development change — October 19, 2026 (CL-zhkg), NOT deployed:** the event
+pipeline now explicitly constructs subscription-only Claude niche discovery:
+two discovery/refinement calls at most, filing retrieval for two companies, and
+a required evidence critic. Legacy `NICHE_TOOL_AGENT_ENABLED=1` cannot select
+Kimi on this path. This changes source code, not the running process or `.env`.
+Niche calls remain unavailable until the operator confirms paid overflow/usage
+credits are disabled using `CURLIT_CLAUDE_INCLUDED_USAGE_CONFIRMED=1`, and the
+CLI reports a verified `claude.ai` login. See
+[billing safeguards and rollout](NICHE_RESEARCH_EVIDENCE.md#subscription-only-claude-pipeline-cl-zhkg).
+Existing trading halts/close-only policy and research gates are unchanged.
+
 **Latest recovery verification — September 9, 2026, 21:54 UTC:** code release
 `634e1d2` is deployed. Alpaca remains **close-only** (options PID 93628, equities
 93630); FX PID 93632 remains **entry-paused**, with unchanged aggressive risk
@@ -927,6 +947,17 @@ CLI (Claude Code 2.1.287), not assumed:
 
 ## 6. Monitoring & manual controls
 
+- **Assessment progress watchdog (CL-x40b, development only):** the event
+  pipeline atomically writes timestamps to `data/assessment_health.json`
+  (`ASSESSMENT_HEALTH_STATE` overrides the path in both processes). The fleet
+  watchdog pages once for a Claude authentication failure, or when an existing
+  `NEW` backlog has had no successful assessment for two hours. Quiet queues
+  do not page. Recovery requires a subsequent successful assessment; an empty
+  batch, failed database read, missing status file or running PID is not
+  recovery. No prompts, headlines or provider output go into this status file.
+  An operator must restore CLI authentication and verify assessment progress;
+  the watchdog never logs in, changes providers, or resumes trading.
+
 - Web API (engine-embedded, port 8200): `/health` (open), `/docs`, and
   authenticated `/api/{account,positions,pnl,signals,system}` — auth is the
   `X-API-Key: <WEB_API_SECRET>` HEADER only (the legacy `?secret=` query
@@ -967,6 +998,11 @@ CLI (Claude Code 2.1.287), not assumed:
     Alpaca daemons open no entries at all and acknowledge any halt at the
     top of each ledger cycle.
 - **Broker/account-read interlock (CL-oqos — development, not yet deployed).**
+  **Internal ownership extension (CL-ann4, development only):** failed state
+  lookups or malformed strategy books abort the entire reconciliation pass
+  before orphan classification. Cold-start and periodic alignment halt new
+  entries and expose `internal_snapshot_unavailable:<strategy>:<reason>` in
+  `/api/system`; recovering the read does not automatically resume entries.
   An unknown broker snapshot is never treated as flat:
   - Cold start: if `get_positions()` fails or returns a malformed snapshot
     (not a list, nonfinite/bool quantity, empty/blank/non-string symbol, two rows for one

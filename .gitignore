@@ -1,5 +1,7 @@
 # Secrets & environment
 .env
+.env.*
+!.env.example
 *.pem
 *.key
 credentials*.json
@@ -7,6 +9,7 @@ service-account*.json
 
 # Personal Claude permissions/model selection; share the example, not approvals.
 .claude/settings.local.json
+.claude/worktrees/
 
 # Beads / Dolt files (added by bd init)
 .dolt/

@@ -44,6 +44,7 @@ from src.events.research_evidence import EVIDENCE_INSTRUCTIONS, DiscoveryOutcome
 from src.events.research_status import ResearchStatus, research_key, status_from_niche_idea
 from src.monitoring.logging_setup import LogContext
 from src.research.llm import Message
+from src.research.llm.claude_code import ClaudeSubscriptionError
 from src.research.llm.client import LLMClient
 
 __all__ = [
@@ -210,6 +211,7 @@ class NicheAgent:
         tool_agent_enabled: bool | None = None,
         critic: Any = None,
         critic_enabled: bool | None = None,
+        subscription_only: bool = False,
     ) -> None:
         # ``universe`` is a SymbolUniverse (or any object exposing
         # exists/get/resolve_name/robinhood_tradeable).
@@ -225,6 +227,7 @@ class NicheAgent:
         self._client_holder = ThreadLocalClient(client)
         self.client: LLMClient = self._client_holder.get()
         self.model = model
+        self.subscription_only = subscription_only
         self.market_data_fn: MarketDataFn = market_data_fn or yfinance_market_data
         self.config = config or AsymmetryConfig()
         self.max_tokens = max_tokens
@@ -299,6 +302,7 @@ class NicheAgent:
             self.critic = AdversarialCritic(
                 client=None if self._client_holder.is_default else self.client,
                 enabled=True,
+                subscription_only=subscription_only,
             )
         else:
             self.critic = None
@@ -376,11 +380,13 @@ class NicheAgent:
             f"EVENT: {event_row.get('headline')}\n"
             f"THEME: {event_row.get('theme') or 'unmatched'}\n\n"
             f"{self._playbook_context(playbook)}\n\n"
-            "Entities discovered SO FAR (do NOT repeat these — go DEEPER and "
-            "WIDER, further out the chain):\n"
+            "Research leads discovered SO FAR (not verified theses):\n"
             f"{found}\n"
             f"{ground_block}\n"
-            "Research ADDITIONAL supported, economically meaningful exposure connected "
+            "FIRST revise these same companies using the retrieved evidence: return "
+            "a complete replacement record with sourced claims, or leave claims empty "
+            "when unsupported. A revision is not a new discovery. THEN consider "
+            "additional supported, economically meaningful exposure connected "
             "to this event and to those entities, exploring EACH branch:\n"
             "  A. Upstream — deeper-tier suppliers, raw inputs, sole-source "
             "components.\n"
@@ -389,7 +395,7 @@ class NicheAgent:
             "  D. Financial / secondary — insurers, shippers, royalty & "
             "streaming holders, lenders/creditors, equipment lessors levered to "
             "this chain.\n"
-            "Prefer supported exposure NOT already listed. Do not add links just "
+            "Prefer evidence-backed revisions over extra names. Do not add links just "
             "to increase hop_count. Same JSON schema; abstention is valid."
         )
 
@@ -479,7 +485,10 @@ class NicheAgent:
         # CL-hzrb: review all verified research leads; only the final eligible
         # set counts as surfaced. Missing review never grants approval.
         gated = len(surviving)
-        if self.critic is not None and getattr(self.critic, "enabled", True) and verified:
+        if outcome.reason.startswith(("subscription_", "included_usage_")):
+            for idea in verified:
+                idea.review_status, idea.review_reason = "review_unavailable", outcome.reason
+        elif self.critic is not None and getattr(self.critic, "enabled", True) and verified:
             try:
                 self.critic.apply(verified, event_row)
             except Exception:
@@ -531,6 +540,7 @@ class NicheAgent:
         grounding: list[str] = []
         cycles_run = 0
         outcome = outcome if outcome is not None else DiscoveryOutcome("unavailable")
+        outcome.prompt_version = "niche-claude-refinement-v1"
         for cycle in range(1, self.max_cycles + 1):
             cycles_run = cycle
             user = (
@@ -548,7 +558,17 @@ class NicheAgent:
                 # niche fan-out worker; see ThreadLocalClient.
                 resp = self._client_holder.get().complete(
                     messages=[
-                        Message(role="system", content=_SYSTEM_PROMPT),
+                        Message(
+                            role="system",
+                            content=_SYSTEM_PROMPT + (
+                                "\nThis first pass selects provisional research leads for "
+                                "code-controlled filing retrieval. You may propose hypotheses "
+                                "with EMPTY claims; these are not verified or trade-eligible. "
+                                "Do not fabricate citations. Return no leads if none are useful."
+                                if cycle == 1 and self.tools is not None and self.max_cycles > 1
+                                else ""
+                            ),
+                        ),
                         Message(role="user", content=user),
                     ],
                     model=self.model,
@@ -556,6 +576,7 @@ class NicheAgent:
                     # Text-protocol cycles over injected grounding; sanctioned
                     # tool use lives in kimi_tool_agent, not here (CL-scup).
                     no_tools=True,
+                    **({"subscription_only": True} if self.subscription_only else {}),
                 )
             except Exception as exc:
                 logger.warning(
@@ -565,7 +586,9 @@ class NicheAgent:
                     type(exc).__name__,
                 )
                 outcome.status = "partial" if raw_accum else "unavailable"
-                outcome.reason = type(exc).__name__
+                outcome.reason = (
+                    exc.reason if isinstance(exc, ClaudeSubscriptionError) else type(exc).__name__
+                )
                 if cycle == 1:
                     return []
                 break  # keep what earlier cycles found
@@ -580,15 +603,24 @@ class NicheAgent:
                 break
             outcome.status = "completed" if envelope or raw_accum else "abstained"
             parsed = parse_niche_ideas(resp.text)
-            fresh = [i for i in parsed if _idea_key(i) not in seen]
-            for idea in fresh:
-                seen.add(_idea_key(idea))
-            raw_accum.extend(fresh)
+            # CL-zhkg: preserve one candidate per company, but let a later
+            # evidence-grounded pass replace an unsupported seed. Raw responses
+            # remain in trace; all replacements face the unchanged gates below.
+            by_key = {_idea_key(i): i for i in raw_accum}
+            fresh = []
+            for idea in parsed:
+                key = _idea_key(idea)
+                if key not in seen:
+                    fresh.append(idea)
+                    seen.add(key)
+                by_key[key] = idea
+            raw_accum = list(by_key.values())
             if cycle == 1 and not parsed:
                 break  # nothing to deepen
             if cycle > 1 and not fresh:
                 logger.info(
-                    "niche agent: cycle %d added no new names — stopping (event id=%s)",
+                    "niche agent: cycle %d refined existing leads; no new names — "
+                    "stopping (event id=%s)",
                     cycle,
                     event_row.get("id"),
                 )
@@ -601,7 +633,6 @@ class NicheAgent:
                 ]
                 if candidates:
                     try:
-                        grounding.extend(self.tools.enrich(candidates, self.universe))
                         if callable(getattr(self.tools, "filing_documents", None)):
                             for candidate in candidates:
                                 cik = self.universe.get_cik(candidate.ticker)
@@ -609,6 +640,9 @@ class NicheAgent:
                                     docs = self.tools.filing_documents(cik, candidate.ticker)
                                     outcome.sources.extend(docs)
                                     grounding.extend(json.dumps(d.to_dict()) for d in docs)
+                        # Put captured sources BEFORE optional profiles so the
+                        # bounded follow-up prompt cannot truncate all citations.
+                        grounding.extend(self.tools.enrich(candidates, self.universe))
                     except Exception:
                         logger.warning(
                             "niche tools: enrichment failed for event id=%s; "

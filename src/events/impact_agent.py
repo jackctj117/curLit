@@ -290,13 +290,19 @@ class AssessmentResult:
     event_id: int
     headline: str
     theme: str | None
-    status: str  # ASSESSED | DISMISSED
+    status: str  # ASSESSED | DISMISSED | NEW (transport unavailable)
     assessment: dict[str, Any]
     #: CL-7kuu: (ticker, action) -> write-once ResearchStatus snapshots the
     #: niche merge attached to ideas it added; the idea ledger persists them.
     niche_research_status: dict[tuple[str, str], ResearchStatus] = field(default_factory=dict)
+    failure_reason: str | None = None
 
     def summary_line(self) -> str:
+        if self.status == "NEW":
+            return (
+                f"event id={self.event_id} NEW (queued: {self.failure_reason or 'transport_failed'})"
+                f" | {self.headline[:70]}"
+            )
         if self.status != "ASSESSED":
             reason = self.assessment.get("rationale", "")
             return f"event id={self.event_id} DISMISSED ({reason[:80]}) | {self.headline[:70]}"
@@ -813,6 +819,11 @@ class EventImpactAgent:
                 theme=theme,
                 assessment={},
                 status="NEW",  # no-op transition — row stays queued
+                failure_reason=(
+                    "subscription_auth_unavailable"
+                    if getattr(exc, "reason", None) == "subscription_auth_unavailable"
+                    else "transport_failed"
+                ),
             )
         try:
             payload = extract_json_object(resp.text)

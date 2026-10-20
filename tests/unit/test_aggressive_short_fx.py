@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+from itertools import permutations
+
 import numpy as np
 import pandas as pd
 import pytest
+from hypothesis import given
+from hypothesis import strategies as st
 
 from src.risk.risk_profile import (
     BiasConfig,
@@ -66,91 +70,100 @@ class TestSignalTriplet:
         assert _SignalTriplet(1, 1, 1).agreement() == 1
 
 
-def _synthetic_fx_panel(
-    n: int = 300,
-    seed: int = 7,
-    drift: float = 0.0,
-) -> pd.DataFrame:
-    """Build a (date-indexed) FX panel with EURUSD vs a rate-spread.
-    Slight drift parameter forces the price away from fair value, so
-    the rate-diff signal fires deterministically."""
-    rng = np.random.default_rng(seed)
-    idx = pd.date_range("2024-01-01", periods=n, freq="D")
-    spread = rng.normal(0, 0.5, n).cumsum() / 50  # slow-walking spread
-    # True relationship: EURUSD = 1.10 + 0.05 * spread + noise
-    fx = 1.10 + 0.05 * spread + rng.normal(0, 0.005, n) + drift
-    return pd.DataFrame(
-        {"EURUSD": fx, "US10Y_MINUS_DE10Y": spread},
-        index=idx,
+def _entry_fixture(
+    profile: RiskProfile, *, direction: int, bars: int,
+) -> tuple[AggressiveShortFXStrategy, pd.DataFrame]:
+    """CL-qwrv: fit a known line, then evaluate separate daily observations.
+
+    A constant offset in the training set gets absorbed by the OLS intercept;
+    it cannot force an out-of-sample signal. This residual pattern instead has
+    zero sum and zero dot product with the linear spread, so the fitted fair
+    value is 1.10 + .05 * spread. 120 rows exceed the 100-row fit minimum.
+    """
+    spread = np.linspace(-1, 1, 120)
+    residual = np.tile([0.005, -0.005, -0.005, 0.005], 30)
+    train = pd.DataFrame({
+        "EURUSD": 1.10 + 0.05 * spread + residual,
+        "US10Y_MINUS_DE10Y": spread,
+    }, index=pd.date_range("2024-01-01", periods=120, freq="D"))
+    strategy = AggressiveShortFXStrategy(AggressiveShortFXConfig(
+        risk_profile=profile, poly_symbol=None, agreement_quorum=1,
+    ))
+    strategy.fit(train)
+    # Residual magnitude ~1 sigma: above the .5 entry threshold but below
+    # its 1.25-sigma stop and outside the .3 exit threshold.
+    holdout = pd.DataFrame({
+        "EURUSD": np.full(bars, 1.10 - direction * 0.005),
+        "US10Y_MINUS_DE10Y": np.zeros(bars),
+    }, index=pd.date_range("2024-05-01", periods=bars, freq="D"))
+    return strategy, holdout
+
+
+@pytest.mark.parametrize(("votes", "expected"), [
+    ((-1, -1, -1), (-1, -1, -1)),
+    ((-1, -1, 0), (-1, -1, 0)),
+    ((-1, -1, 1), (-1, -1, 0)),
+    ((-1, 0, 0), (-1, 0, 0)),
+    ((-1, 0, 1), (0, 0, 0)),
+    ((-1, 1, 1), (1, 1, 0)),
+    ((0, 0, 0), (0, 0, 0)),
+    ((0, 0, 1), (1, 0, 0)),
+    ((0, 1, 1), (1, 1, 0)),
+    ((1, 1, 1), (1, 1, 1)),
+])
+def test_quorum_truth_table(
+    votes: tuple[int, int, int], expected: tuple[int, int, int],
+) -> None:
+    """Explicit oracle for all 27 signal triples and all three quorums."""
+    for ordering in set(permutations(votes)):
+        for quorum, decision in enumerate(expected, start=1):
+            assert _SignalTriplet(*ordering).agreement(quorum) == decision
+
+
+@given(
+    st.tuples(*(st.integers(-1, 1) for _ in range(3))),
+    st.integers(1, 3),
+)
+def test_quorum_sign_symmetry(votes: tuple[int, int, int], quorum: int) -> None:
+    result = _SignalTriplet(*votes).agreement(quorum)
+    assert result in (-1, 0, 1)
+    assert _SignalTriplet(*(-v for v in votes)).agreement(quorum) == -result
+    assert _SignalTriplet(*reversed(votes)).agreement(quorum) == result
+
+
+@pytest.mark.parametrize("quorum", [0, 4, -1, True, 1.5])
+def test_invalid_quorum_rejected(quorum: int) -> None:
+    with pytest.raises(ValueError, match="quorum"):
+        AggressiveShortFXConfig(agreement_quorum=quorum)
+    with pytest.raises(ValueError, match="quorum"):
+        _SignalTriplet(-1, 0, 0).agreement(quorum)
+
+
+@pytest.mark.parametrize("signal", [2, -2, True, 0.5])
+def test_invalid_direction_rejected(signal: int) -> None:
+    with pytest.raises(ValueError, match="signal"):
+        _SignalTriplet(signal, 0, 0).agreement()
+
+
+@pytest.mark.parametrize("long_multiplier", [0.0, 1.0])
+def test_long_bias_applies_to_an_actual_entry(long_multiplier: float) -> None:
+    strategy, panel = _entry_fixture(
+        _profile(long_mult=long_multiplier, entry_z=0.5),
+        direction=1, bars=4,
     )
+    assert strategy.generate_signals(panel).tolist() == [long_multiplier] * 4
 
 
-class TestBiasFiltering:
-    """Verify the aggressive_short bias actually drops long signals."""
-
-    def test_aggressive_short_no_long_positions(self) -> None:
-        # Drift-down panel: FX falls below fair value → z negative
-        # → rate-diff signal says LONG. Under aggressive_short bias
-        # (long_multiplier=0), the long signal must be filtered to 0.
-        panel = _synthetic_fx_panel(n=500, drift=-0.02)
-        cfg = AggressiveShortFXConfig(
-            risk_profile=_profile(long_mult=0.0, short_mult=1.0),
-            poly_symbol=None,  # 2-of-2 quorum
-        )
-        strategy = AggressiveShortFXStrategy(config=cfg)
-        positions = strategy.generate_signals(panel)
-        # No position should ever be positive.
-        assert (positions > 0).sum() == 0, (
-            "long_signal_multiplier=0 must produce zero long positions"
-        )
-
-    def test_conservative_profile_allows_long(self) -> None:
-        # Under a conservative-style profile (both multipliers 1.0),
-        # the same panel should produce some long positions.
-        panel = _synthetic_fx_panel(n=500, drift=-0.02)
-        cfg = AggressiveShortFXConfig(
-            risk_profile=_profile(long_mult=1.0, short_mult=1.0),
-            poly_symbol=None,
-        )
-        strategy = AggressiveShortFXStrategy(config=cfg)
-        positions = strategy.generate_signals(panel)
-        # We're not validating the size — just that the bias filter
-        # ISN'T active. (May still be zero if the signals don't reach
-        # quorum, but we'll engineer one that does.)
-        # With heavy downward drift, rate-diff says LONG persistently;
-        # sentiment is 0 (no NLP); poly disabled → quorum is 2-of-2.
-        # Rate-diff long alone = 1 of 2 → no entry. So conservative
-        # also produces 0 here. Adjust to use sentiment signal too.
-        # For now just verify shape.
-        assert positions.shape == (len(panel),)
-
-
-class TestMaxHolding:
-    def test_position_closes_after_max_holding(self) -> None:
-        # Set max_hold=3 and verify positions are flat 4 bars after
-        # entry regardless of z reverting.
-        panel = _synthetic_fx_panel(n=300, drift=0.04)  # z > 0 → short
-        cfg = AggressiveShortFXConfig(
-            risk_profile=_profile(
-                long_mult=0.0,
-                short_mult=1.0,
-                entry_z=0.5,
-                max_hold=3,
-            ),
-            poly_symbol=None,
-            agreement_quorum=1,  # so single rate-diff signal triggers
-        )
-        strategy = AggressiveShortFXStrategy(config=cfg)
-        positions = strategy.generate_signals(panel)
-        # Find the first non-zero (entry) bar.
-        entries = [i for i, v in enumerate(positions) if v != 0]
-        if not entries:
-            pytest.skip("no entries — rate-diff signal didn't fire")
-        first = entries[0]
-        # By bar first+4 (5th bar held), position must be flat.
-        assert positions.iloc[first + 4] == 0, (
-            f"expected flat by bar {first + 4} (max_hold=3), got {positions.iloc[first + 4]}"
-        )
+@pytest.mark.parametrize("max_hold", [1, 3, 5])
+def test_position_closes_at_max_holding(max_hold: int) -> None:
+    strategy, panel = _entry_fixture(
+        _profile(entry_z=0.5, max_hold=max_hold),
+        direction=-1, bars=2 * (max_hold + 1),
+    )
+    # Entry at day zero; flatten exactly max_hold days later. A still-valid
+    # signal may open a NEW position on the following day, not on the close bar.
+    expected = ([-1.0] * max_hold + [0.0]) * 2
+    assert strategy.generate_signals(panel).tolist() == expected
 
 
 class TestRSquaredGate:

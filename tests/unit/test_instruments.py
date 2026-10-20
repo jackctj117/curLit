@@ -122,19 +122,19 @@ class TestExtractCandidateInstruments:
         code = _write(tmp_path / "cand.py", CANDIDATE_ANNOTATED_STYLE)
         assert extract_candidate_instruments(code) == ["EURUSD"]
 
-    def test_no_symbols_attr_uses_backtest_default(
+    def test_no_symbols_attr_reports_unknown_instead_of_inventing_eurusd(
         self,
         tmp_path: Path,
     ) -> None:
-        # _read_symbols fail-opens to EURUSD; the notification must
-        # show what the backtest would actually have traded.
+        # The strict backtest contract rejects missing symbols. Notification
+        # extraction must agree: unknown, never a fabricated execution target.
         code = _write(
             tmp_path / "cand.py",
             "class Strategy:\n"
             "    def fit(self, data):\n        return self\n"
             "    def generate_signals(self, data):\n        return None\n",
         )
-        assert extract_candidate_instruments(code) == ["EURUSD"]
+        assert extract_candidate_instruments(code) == []
 
     def test_missing_file_returns_empty_with_warning(
         self,

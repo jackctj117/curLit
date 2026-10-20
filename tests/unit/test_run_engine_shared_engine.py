@@ -14,6 +14,7 @@ per-operation, so a single shared engine is the correct primitive here.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -56,6 +57,7 @@ def test_build_shared_db_engine_fails_open_to_none(
 
 def test_run_engine_threads_one_engine_to_every_builder(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     """The regression guard: run_engine builds the shared engine ONCE and
     hands the SAME object to journal / snapshot / strategies / coordinator /
@@ -118,6 +120,20 @@ def test_run_engine_threads_one_engine_to_every_builder(
     monkeypatch.setattr(re, "build_blackout_evaluator", lambda config: None)
     monkeypatch.setattr(re, "build_cold_start_reconciler", lambda *a, **k: None)
 
+    # Manifest persistence is an external boundary, not part of DB wiring.
+    # Do not write into the checkout or require its Git metadata in this test.
+    from src.runtime import release_manifest
+
+    manifest_calls: list[tuple[str, str]] = []
+
+    def fake_manifest(
+        root: Path, *, role: str, broker_mode: str, config: dict[str, Any]
+    ) -> Path:
+        manifest_calls.append((role, broker_mode))
+        return tmp_path / "engine-manifest.json"
+
+    monkeypatch.setattr(release_manifest, "write_release_manifest", fake_manifest)
+
     class _StopEngine:
         def __init__(self, *a: Any, **k: Any) -> None:
             pass
@@ -152,6 +168,7 @@ def test_run_engine_threads_one_engine_to_every_builder(
     assert seen_engines["strategies"] is shared
     assert seen_engines["coordinator"] is shared
     assert seen_engines["killswitch"] is shared
+    assert manifest_calls == [("engine", "paper")]
 
 
 def test_builders_fall_back_to_local_engine_when_none(

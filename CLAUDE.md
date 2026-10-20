@@ -52,6 +52,14 @@ Key configs: `configs/live_portfolio.yaml` (strategy registry), `configs/risk_pr
 
 ## Niche evidence revision (CL-eh28)
 
+CL-zhkg (development, not yet deployed): `scripts/event_pipeline.py` explicitly
+selects subscription-only Claude discovery and criticism, two discovery cycles
+and two-company filing retrieval. Legacy `NICHE_TOOL_AGENT_ENABLED` cannot
+select Kimi in that pipeline. Included-usage account confirmation and verified
+CLI subscription auth are required before calls; no metered fallback is used.
+See `docs/NICHE_RESEARCH_EVIDENCE.md` for activation and limitations. Historical
+Kimi descriptions above apply to the retained standalone/shadow path.
+
 The older niche summary above describes the historical scoring path. Current
 code uses dated 10-K/10-Q/8-K passages, fact/inference claims, evidence coverage
 (not hop/keyword bonuses), explicit discovery/review/liquidity statuses, and

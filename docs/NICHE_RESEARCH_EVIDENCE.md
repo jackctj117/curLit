@@ -5,6 +5,74 @@ source claims (.2), criticism/scoring (.3), and shadow comparison (.4).
 Beads remains the only task tracker. This document describes the code, not a
 completed provider benchmark or a deployment approval.
 
+## Subscription-only Claude pipeline (CL-zhkg)
+
+Development change, **not deployment evidence**. `scripts/event_pipeline.py`
+now chooses the existing Claude Code transport explicitly, regardless of a
+legacy `NICHE_TOOL_AGENT_ENABLED=1`. It makes at most two discovery calls:
+provisional leads, then revision using captured filings for up to two verified
+tickers. The evidence critic is required and uses the same subscription-only
+transport policy. All identity/evidence/liquidity/review gates remain intact.
+Two calls are not two relationship hops; `hop_count` remains descriptive.
+
+The second pass may replace an earlier company's unsupported hypothesis with
+claims tied to the retrieved documents; it cannot create a duplicate candidate
+by repeating that company. Raw responses remain in the audit trace. Source
+documents precede optional profile text in the bounded prompt. Seed hypotheses
+have no trading eligibility merely because a ticker exists. Retrieval failure,
+unsupported claims, unknown liquidity and failed review still prevent merging.
+The prompt version is `niche-claude-refinement-v1`.
+
+### Billing safeguards and operator activation
+
+This is cloud inference through a subscription CLI, not a free local model.
+Before activation, the operator must verify included-plan access and disable
+paid overflow/usage credits and automatic top-ups in the Claude account.
+Only after that verification set `CURLIT_CLAUDE_INCLUDED_USAGE_CONFIRMED=1` in
+the pipeline's environment. This flag records an **operator attestation**, not
+an automated billing-settings check. Without it, no auth or model subprocess
+is invoked for niche discovery (`unavailable/included_usage_not_confirmed`).
+No production environment or account settings were changed by this patch.
+
+Each strict invocation checks `claude auth status` with the same sanitized
+environment and setting-source restrictions used for generation. Only
+`loggedIn=true, authMethod=claude.ai` passes. API keys/helpers, third-party
+providers, unknown/malformed status and opaque `oauth_token` auth are blocked;
+use a normal Claude subscription login for this path. No login, key extraction,
+credit purchase or fallback happens automatically. User/project/local settings
+are excluded; hooks and built-in/MCP tools are disabled for generation.
+Managed policy still applies: the operational host must not inject a competing
+provider. CLI version/flag incompatibility fails closed and needs operator review.
+The strict path pins the existing `claude-sonnet-4-6` baseline: other model
+overrides, including a credits-only tier selected through `NICHE_CRITIC_MODEL`,
+are blocked as `subscription_model_not_approved` before any subprocess. Adding
+another model needs review and confirmation of included-plan eligibility.
+
+Quota failures are `subscription_quota_exhausted`, never abstention or approval.
+A failed second call retains the first pass only as partial research; no critic
+call follows a subscription failure. There are no curLit retries or metered
+fallbacks within that invocation. The existing audit records the event; this
+patch does **not** add a durable retry queue or reconstruct missed discoveries.
+Replay after quota recovery requires a separate operator-controlled operation.
+Requested token limits retain the driver's existing enforcement policy; the
+two-call bound is not a guaranteed token or dollar ceiling. Cost stays unknown,
+not fabricated as zero.
+
+Operator rollout requires reviewing the patch, verifying billing/login and CLI
+flags on the intended account, then a captured-input/no-order canary that checks
+source-backed refinement, failures, and critic behavior. Only then restart the
+event pipeline through its approved runbook. Preserve trading pauses and do not
+restart executors or FX as part of this switch. Rolling back to older pipeline
+code can re-enable Kimi if the old flag/key remain present: keep
+`NICHE_TOOL_AGENT_ENABLED=0` during rollback. Standalone Kimi/shadow tools remain
+available only for separately authorized experiments; they are not fallbacks.
+
+This changes the discovery workflow, not just the model, and makes no claim
+that Claude is more accurate or profitable. Research-quality evaluation remains
+separate from transport tests. Authentication and settings behavior follow the
+[Claude CLI reference](https://code.claude.com/docs/en/cli-reference) and
+[subscription billing guidance](https://support.claude.com/en/articles/11145838-use-claude-code-with-your-pro-or-max-plan).
+
 ## Outcomes, leads, and the trading feed
 
 `NicheAgent.run_report()` returns an invocation-local discovery outcome and all

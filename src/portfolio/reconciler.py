@@ -167,11 +167,11 @@ class StrategyStateLike(Protocol):
 
 
 class SnapshotUnavailableError(RuntimeError):
-    """CL-oqos: the broker position snapshot is UNKNOWN — never "flat".
+    """CL-oqos/CL-ann4: broker or internal exposure is UNKNOWN — never flat.
 
-    Raised by :meth:`PositionReconciler.reconcile` (before any book, policy
-    or journal action) when ``broker.get_positions()`` fails or returns a
-    malformed snapshot. Carries a short ``reason`` and the UTC ``at``
+    Broker failures abort before any book action; internal ownership failures
+    abort before classification or policy actions in reconcile/check_alignment.
+    Carries a short ``reason`` and the UTC ``at``
     timestamp so the engine can surface WHY entries are blocked
     (``/api/system`` ``last_reconciliation``). Subclasses ``RuntimeError``
     so pre-existing ``except RuntimeError`` callers keep catching it.
@@ -581,20 +581,22 @@ class PositionReconciler:
             recorded_in_store = False
             try:
                 pos = self.state.get_current_position(sid)
-            except Exception:
+            except Exception as exc:
                 logger.exception(
                     "Reconciliation: get_current_position(%s) failed",
                     sid,
                 )
-                pos = None
+                raise SnapshotUnavailableError(
+                    f"internal_snapshot_unavailable:{sid}:lookup_failed"
+                ) from exc
             if pos is not None:
+                if not isinstance(pos, dict):
+                    raise SnapshotUnavailableError(f"internal_snapshot_unavailable:{sid}:not_mapping")
                 symbol = pos.get("symbol")
                 qty = pos.get("size") if "size" in pos else pos.get("quantity")
                 if symbol is None or qty is None:
-                    logger.warning(
-                        "Strategy %s position record missing symbol/size: %s",
-                        sid,
-                        pos,
+                    raise SnapshotUnavailableError(
+                        f"internal_snapshot_unavailable:{sid}:missing_symbol_or_quantity"
                     )
                 else:
                     recorded_in_store = True
@@ -604,11 +606,12 @@ class PositionReconciler:
                     # restart-flatten for store-writing strategies.
                     from src.execution.broker import canonical_symbol  # noqa: PLC0415
 
-                    symbol = canonical_symbol(symbol)
+                    symbol = canonical_symbol(symbol) if isinstance(symbol, str) else ""
+                    quantity = self._validated_internal_quantity(sid, symbol, qty)
                     per_symbol.setdefault(symbol, []).append(
                         {
                             "strategy_id": sid,
-                            "quantity": float(qty),
+                            "quantity": quantity,
                             "raw": pos,
                         }
                     )
@@ -616,25 +619,58 @@ class PositionReconciler:
             # carries this strategy's position, to avoid double counting.
             if recorded_in_store:
                 continue
-            book = getattr(strategy, "open_positions", None)
-            if not isinstance(book, dict) or not book:
+            try:
+                book = getattr(strategy, "open_positions", None)
+            except Exception as exc:
+                raise SnapshotUnavailableError(
+                    f"internal_snapshot_unavailable:{sid}:book_read_failed"
+                ) from exc
+            if book is None:
                 continue
+            if not isinstance(book, dict):
+                raise SnapshotUnavailableError(f"internal_snapshot_unavailable:{sid}:invalid_book")
+            seen: set[str] = set()
             for raw_symbol, bpos in book.items():
-                qty_val = getattr(bpos, "quantity", None)
-                if qty_val is None:
-                    continue
+                try:
+                    qty_val = getattr(bpos, "quantity", None)
+                except Exception as exc:
+                    raise SnapshotUnavailableError(
+                        f"internal_snapshot_unavailable:{sid}:quantity_read_failed"
+                    ) from exc
                 from src.execution.broker import canonical_symbol  # noqa: PLC0415
 
-                norm = canonical_symbol(raw_symbol)
+                norm = canonical_symbol(raw_symbol) if isinstance(raw_symbol, str) else ""
+                quantity = self._validated_internal_quantity(sid, norm, qty_val)
+                if norm in seen:
+                    raise SnapshotUnavailableError(
+                        f"internal_snapshot_unavailable:{sid}:duplicate_symbol"
+                    )
+                seen.add(norm)
                 per_symbol.setdefault(norm, []).append(
                     {
                         "strategy_id": sid,
-                        "quantity": float(qty_val),
+                        "quantity": quantity,
                         "raw": {
                             "symbol": norm,
-                            "quantity": float(qty_val),
+                            "quantity": quantity,
                             "source": "open_positions",
                         },
                     }
                 )
         return per_symbol
+
+    @staticmethod
+    def _validated_internal_quantity(sid: str, symbol: str, qty: Any) -> float:
+        """Reject incomplete ownership records before any orphan classification."""
+        try:
+            quantity = float(qty)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise SnapshotUnavailableError(
+                f"internal_snapshot_unavailable:{sid}:invalid_quantity"
+            ) from exc
+        if (
+            not symbol or any(c.isspace() for c in symbol)
+            or isinstance(qty, bool) or not math.isfinite(quantity)
+        ):
+            raise SnapshotUnavailableError(f"internal_snapshot_unavailable:{sid}:invalid_record")
+        return quantity

@@ -133,7 +133,7 @@ class TestEvaluateThreshold:
         assert actual is None
 
     def test_not_in(self) -> None:
-        report = {"decay_severity": "NO"}
+        report = {"decay_severity": "NONE"}
         passed, _, _ = evaluate_threshold(
             "decay_severity not in ['STRONG', 'MODERATE']",
             report,
@@ -251,7 +251,7 @@ def _make_passing_report() -> dict[str, Any]:
         "is_oos_sharpe_ratio": 1.4,
         "edge_concentration": 0.45,
         "regime_diversified": True,
-        "decay_severity": "NO",
+        "decay_severity": "NONE",
     }
 
 
