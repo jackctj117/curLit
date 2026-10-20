@@ -27,6 +27,96 @@ The prompt version is `niche-claude-refinement-v2`. CL-a7xg makes the canonical
 `passage` JSON field explicit with a parser-tested example; `exact_passage`
 remains invalid. Provenance and semantic evidence requirements are unchanged.
 
+### Critic/extraction revision (CL-5hj5 / CL-4knt)
+
+Deployment status is recorded in `CURRENT_OPERATIONS.md` under CL-2m1c;
+the checks below do not by themselves establish deployment. Subscription criticism requests
+the JSON Schema generated from `ReviewBatch`, then validates the response using
+that same strict model. Required fields, types, finite confidence, and an exact
+one-verdict-per-requested-ticker set are checked locally. There is no substring
+salvage, quote rewriting, favorable duplicate selection, or plain-text fallback
+when the CLI omits `structured_output`. Unknown sources and changed quotations
+still fail the existing exact-source checks; valid JSON is not thesis approval.
+
+The installed CLI 2.1.304 exposes `--json-schema`; its result field is documented
+in [programmatic structured output](https://code.claude.com/docs/en/headless#get-structured-output).
+The driver reads the dedicated `structured_output` object and retains the raw
+envelope. The critic records the failed response and actual model where
+available. Transport errors without a response stay explicitly unknown. Review
+provenance records `niche-review-v2` and the schema hash. Queue retries caused by
+unavailable review now say `review_unavailable`, not discovery `completed`.
+
+One curLit critic invocation remains one CLI generation subprocess. Schema calls
+set `--max-turns 2` and `MAX_STRUCTURED_OUTPUT_RETRIES=1` (recognized by installed
+CLI 2.1.304), retain the existing wall-clock ceiling, disable external tools,
+and retain subscription authentication and paid-fallback restrictions. These
+are turn/retry limits, **not guaranteed token or dollar limits**. Missing output
+fails closed. Do not enable API auth or external tools to make structured output
+succeed.
+
+The authorized no-order canary completed at **20:37 UTC October 20** on CLI
+2.1.304 with serving model `claude-sonnet-4-6`. Both calls returned structured
+objects in two agent turns with no permission denials. The captured AVAV/PLTR
+evidence was judged insufficient; a clearly supported synthetic claim was
+recognized, while the source-free control remained insufficient. All four
+candidates remained ineligible because liquidity was unknown. Calls took
+55.2/27.0 seconds and reported 2,879/1,581 output tokens; the requested 1,200
+token cap remains explicitly unenforced. Cost was subscription-unmetered, not
+reported as zero. This validates the output path, not useful live research.
+
+The first canary attempt encountered an exclusive-file-write error in the
+private audit helper after its model call. That attempt was preserved as failed,
+not counted as a pass. Unique result filenames fixed the helper; the replacement
+was bounded to two calls. Private artifacts live in
+`data/deployments/2026-10-20_critic_schema_v2/`; no source retrieval, database,
+broker, order, or trading-service action was part of these canaries.
+
+Filing normalization now removes inline-XBRL headers/hidden metadata, contexts,
+units, and explicitly hidden HTML nodes before choosing excerpts. Visible inline
+facts remain. New locators refer to the cleaned, whitespace-normalized text;
+historical source hashes/passages are not rewritten. This is not a full CSS
+renderer and does not solve primary-document truncation, missing exhibit
+retrieval, irrelevant annual-meeting notices, or semantic evidence coverage.
+
+The proposed job policy is `claude-subscription-review-schema-v3`. A rollout can
+create a new bounded attempt series for still-recent events under that policy;
+review its quota impact before activation. Older audits keep their prior policy.
+Useful-source evaluation, slow refinement calls and completed-result persistence
+behind slow peer jobs remain in CL-uofe. Cleaner excerpts and passing mocks do
+not demonstrate that the live pipeline will produce eligible research.
+
+Development verification on October 20, 2026 used a network-denied macOS
+sandbox that denied home/credential reads and checkout writes. The shell
+environment was cleared with `env -i`; Python bytecode was disabled and pytest,
+Hypothesis and mypy caches used a disposable `/tmp` directory. Commands inside
+that sandbox were:
+
+```sh
+.venv/bin/python -m pytest \
+  tests/unit/test_claude_code_driver.py tests/unit/test_niche_jobs.py \
+  tests/unit/test_morning_digest.py tests/unit/test_niche_evidence.py \
+  tests/unit/test_event_niche_agent.py tests/unit/test_adversarial_critic.py \
+  tests/unit/test_idea_ledger.py tests/unit/test_research_status.py \
+  tests/unit/test_niche_audit.py tests/unit/test_event_digest.py \
+  tests/unit/test_niche_quality_export.py tests/unit/test_niche_hopgraph_shadow.py \
+  tests/unit/test_critic_structured_output.py tests/unit/test_research_tools.py \
+  -o addopts='' -q -p no:cacheprovider
+.venv/bin/ruff check src/ tests/ scripts/event_pipeline.py scripts/morning_digest.py --no-cache
+make typecheck
+.venv/bin/bandit -q -ll src/events/critic_contract.py src/events/adversarial_critic.py \
+  src/events/research_tools.py src/events/niche_jobs.py src/research/llm/claude_code.py
+```
+
+All exited **0**: **450 tests passed**, Ruff clean, mypy checked **252 source
+files**, and no medium/high Bandit findings in the listed files. This was not
+a full-suite run. Pytest emitted the existing `Unknown config option: timeout`
+warning: the host environment lacks pytest-timeout. `-o addopts=''` made that
+existing configuration mismatch non-fatal; it did not install or verify the
+timeout plugin. Full isolated-environment limitations remain tracked in CL-i6ke.
+Mypy also reported existing unused override sections. The new regressions were
+observed failing before their code fixes: 16 critic/transport cases, one queue
+reason case, and two extraction cases. No live model or trading service was used.
+
 ### Billing safeguards and operator activation
 
 This is cloud inference through a subscription CLI, not a free local model.

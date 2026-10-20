@@ -56,6 +56,42 @@ def _driver() -> ClaudeCodeDriver:
         return ClaudeCodeDriver()
 
 
+def test_structured_output_uses_dedicated_payload_and_bounded_no_tools_call(monkeypatch):
+    monkeypatch.setenv(INCLUDED_USAGE_CONFIRMATION_ENV, "1")
+    schema = {"type": "object", "properties": {"passage": {"type": "string"}},
+              "required": ["passage"], "additionalProperties": False}
+    structured = {"passage": 'The "Company" supplies drones.'}
+    result = {**_OK_PAYLOAD, "structured_output": structured, "result": "Not the verdict"}
+    driver = _driver()
+    with patch("subprocess.run", side_effect=[
+        _proc('{"loggedIn":true,"authMethod":"claude.ai"}'), _proc(json.dumps(result)),
+    ]) as run:
+        response = driver.complete([Message("user", "review")], "claude-sonnet-4-6",
+                                   subscription_only=True, json_schema=schema)
+    assert json.loads(response.text) == structured
+    assert response.raw == result  # Preserve original envelope, including text.
+    assert "json_schema" not in response.unenforced_params
+    command = run.call_args.args[0]
+    assert json.loads(command[command.index("--json-schema") + 1]) == schema
+    assert command[command.index("--tools") + 1] == ""
+    assert command[command.index("--max-turns") + 1] == "2"
+    assert run.call_args.kwargs["env"]["MAX_STRUCTURED_OUTPUT_RETRIES"] == "1"
+    assert "--fallback-model" not in command
+    assert run.call_count == 2  # Auth plus one generation, no fallback.
+
+
+@pytest.mark.parametrize("structured", [None, "{}", [], True])
+def test_missing_or_invalid_structured_output_cannot_fall_back_to_text(structured):
+    driver = _driver()
+    result = {**_OK_PAYLOAD, "structured_output": structured, "result": '{"approved":true}'}
+    with patch("subprocess.run", return_value=_proc(json.dumps(result))), pytest.raises(
+        RuntimeError, match="structured_output_unavailable"
+    ) as error:
+        driver.complete([Message("user", "review")], "claude-sonnet-4-6",
+                        json_schema={"type": "object"}, no_tools=True)
+    assert error.value.response_text == result["result"]
+
+
 class TestIncludedUsageOnly:
     """CL-zhkg: no generation without positive local subscription evidence."""
 

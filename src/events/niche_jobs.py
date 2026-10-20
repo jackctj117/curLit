@@ -24,7 +24,7 @@ from src.events.research_status import ResearchStatus, research_key
 
 logger = logging.getLogger(__name__)
 # Version pins provider, prompt, retrieval and review policy in event_pipeline.
-POLICY_VERSION = "claude-subscription-refinement-v2"
+POLICY_VERSION = "claude-subscription-review-schema-v3"
 # Research on yesterday's event is not automatically a fresh trading thesis.
 MAX_EVENT_AGE = timedelta(hours=24)
 # Bounded per-event quota: initial attempt, 15-minute retry, then one-hour retry.
@@ -350,6 +350,10 @@ class NicheJobs:
                 else "failed"
             )
             reason = str(report["discovery"].get("reason") or report["discovery"]["status"])
+            if retry and report["discovery"]["status"] in {"completed", "abstained"}:
+                # CL-5hj5: discovery completion is not review completion. The
+                # detailed per-candidate failure remains in the linked audit.
+                reason = "review_unavailable"
             delay = RETRY_DELAYS[min(job.attempts - 1, len(RETRY_DELAYS) - 1)]
             self._state(conn, job, state, reason, tick, tick + delay)
         logger.info(

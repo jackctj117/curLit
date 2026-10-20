@@ -3,7 +3,10 @@
 One assigned Beads issue → Claude patch → checks → independent Codex review →
 corrections and repeated checks/review → operator approval. Fable is an optional,
 task-specific escalation, not a scheduled agent. No orchestration framework or
-automatic publishing is configured.
+automatic publishing hook is configured. On October 20, 2026 the operator gave
+standing authorization to commit, push and deploy each verified fix. See the
+scoped publishing policy in AGENTS.md: failed checks still stop rollout, and
+review-only sessions remain read-only.
 
 ## Prepare a credential-free environment
 
@@ -138,8 +141,11 @@ the Git diff and need a separate local operator inspection.
 Send concrete findings back to the implementer; repeat checks and review after
 corrections. Hand off changed files, behavior rationale, exact verification,
 unresolved concerns, and local Beads status. Closing an implementation bead is not
-approval to merge. The operator publishes, approves merging, and separately decides
-deployment. Neither passing tests nor a review with no findings is sufficient alone.
+approval to merge. Under the operator's standing request, publish verified fixes
+and deploy only the affected services through their runbooks; record remote SHA
+and post-cutover evidence. Stop on unresolved rollout blockers. Merging, trading
+parameter changes and destructive operations remain separately authorized.
+Neither passing tests nor a review with no findings is sufficient alone.
 
 ## Escalate only when needed
 

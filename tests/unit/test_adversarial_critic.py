@@ -158,14 +158,18 @@ def test_critique_empty_ideas_no_call():
     assert client.calls == []
 
 
-def test_critique_fail_open_on_transport():
+def test_critique_transport_failure_is_explicit():
     critic = AdversarialCritic(client=MockLLMClient("", raises=True), enabled=True)
-    assert critic.critique([_idea("AAA")], _event()) == {}
+    result = critic.critique([_idea("AAA")], _event())["AAA"]
+    assert result.verdict == "review_unavailable"
+    assert result.strongest_attack == "review_transport_failed"
 
 
-def test_critique_fail_open_on_garbage():
+def test_critique_garbage_is_retained_as_unavailable():
     critic = AdversarialCritic(client=MockLLMClient("not json"), enabled=True)
-    assert critic.critique([_idea("AAA")], _event()) == {}
+    result = critic.critique([_idea("AAA")], _event())["AAA"]
+    assert result.verdict == "review_unavailable"
+    assert result.response_text == "not json"  # CL-5hj5: no longer discard failed evidence.
 
 
 # --------------------------------------------------------------------------- #

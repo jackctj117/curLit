@@ -2,7 +2,8 @@
 
 AGENTS.md is the shared development policy. Use Beads for all issue tracking;
 do not create markdown TODO lists or a second tracker. Work only on the issue
-assigned by the operator. Runtime and broker access are out of scope.
+assigned by the operator. Development remains credential-free; operational
+publishing follows the scoped authorization in AGENTS.md, not Beads defaults.
 
 ## Implementer commands
 
@@ -17,7 +18,9 @@ bd --sandbox close <id> --reason "Implemented and verified; awaiting operator re
 ```
 
 Claim only assigned work. Keep incomplete work open with an accurate status.
-Local issue completion is not merge, deployment, or trading authorization.
+Local issue completion alone is not merge, deployment, or trading authorization.
+The operator's October 20 standing request authorizes commit/push/targeted deploy
+after verified fixes; failed checks or unresolved rollout blockers stop deployment.
 
 ## Reviewer commands
 
@@ -32,7 +35,10 @@ bd --sandbox --readonly ready --json
 
 Report the patch summary, exact check commands and exit codes, baseline versus
 new failures, and remaining concerns. Stop edits before independent review.
-Publishing, merging, deployment, and remote issue synchronization belong to the
-operator. Do not push, rebase, deploy, clear stashes, or prune branches as part of
-completion. Do not access broker accounts, operational databases, or trading
-daemons. A model approval never replaces tests or operator approval.
+After verified assigned fixes, commit, push without force, and deploy affected
+services under the operator's standing request in AGENTS.md. Record remote SHA,
+runtime verification and Beads status. Never bypass safety/rollout gates; no
+unrelated service restart or trading-policy change. Merging, destructive cleanup
+and remote issue synchronization still need separate authorization. Do not use
+operational access for development tests. A model approval never replaces tests
+or the operator's authority.

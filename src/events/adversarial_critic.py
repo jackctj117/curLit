@@ -22,10 +22,11 @@ from datetime import UTC, datetime
 from typing import Any
 
 from src.events._util import ThreadLocalClient, env_flag
+from src.events.critic_contract import REVIEW_PROMPT_VERSION, ReviewBatch
 from src.events.impact_agent import extract_json_object
 from src.events.research_evidence import SourceDocument, digest
 from src.research.llm import Message
-from src.research.llm.claude_code import ClaudeSubscriptionError
+from src.research.llm.claude_code import ClaudeStructuredOutputError, ClaudeSubscriptionError
 from src.research.llm.client import LLMClient
 
 logger = logging.getLogger(__name__)
@@ -131,12 +132,19 @@ class AdversarialCritic:
     ) -> dict[str, CritiqueVerdict]:
         """One batched red-team call → ``{ticker: CritiqueVerdict}``.
 
-        A transport/parse failure returns no verdict; apply() explicitly marks
-        review_unavailable while retaining the unapproved research lead.
+        A transport/parse failure returns explicit unavailable verdicts; apply()
+        retains the unapproved lead and the failed response for audit.
         """
         if not ideas:
             return {}
+        response_text = ""
+        actual_model = None
         try:
+            logger.info(
+                "red-team: starting event=%s candidates=%d subscription_only=%s schema=%s",
+                event_row.get("id"), len(ideas), self.subscription_only,
+                REVIEW_PROMPT_VERSION if self.subscription_only else "legacy",
+            )
             # Per-thread client (CL-818b) — apply() runs inside a niche
             # fan-out worker; see ThreadLocalClient.
             resp = self._client_holder.get().complete(
@@ -147,23 +155,44 @@ class AdversarialCritic:
                 model=self.model,
                 max_tokens=self.max_tokens,
                 no_tools=True,
-                **({"subscription_only": True} if self.subscription_only else {}),
+                **({"subscription_only": True, "json_schema": ReviewBatch.model_json_schema()}
+                   if self.subscription_only else {}),
             )
-            payload = extract_json_object(resp.text)
+            response_text = resp.text
+            actual_model = getattr(resp, "model", None)
+            if self.subscription_only:
+                # Use the same model for provider schema and local validation.
+                # Do not extract a convenient JSON substring or repair quotes.
+                batch = ReviewBatch.model_validate_json(response_text)
+                tickers = [v.ticker.strip().upper() for v in batch.verdicts]
+                expected = {idea.ticker.upper() for idea in ideas}
+                if len(tickers) != len(set(tickers)) or set(tickers) != expected:
+                    raise ValueError("review ticker set must match exactly, without duplicates")
+                payload = batch.model_dump()
+            else:
+                payload = extract_json_object(response_text)
         except Exception as exc:
             logger.warning(
                 "red-team critic unavailable — retaining %d research leads, NOT approving: %s",
                 len(ideas),
                 type(exc).__name__,
             )
-            if isinstance(exc, ClaudeSubscriptionError):
-                return {
-                    idea.ticker.upper(): CritiqueVerdict(
-                        idea.ticker.upper(), "review_unavailable", exc.reason, None, True,
-                    )
-                    for idea in ideas
-                }
-            return {}
+            if isinstance(exc, ClaudeStructuredOutputError):
+                response_text, actual_model = exc.response_text, exc.actual_model
+            reason = (
+                exc.reason
+                if isinstance(exc, (ClaudeSubscriptionError, ClaudeStructuredOutputError))
+                else "invalid_review_output" if response_text else "review_transport_failed"
+            )
+            # Keep the actual failed reply in the audit, never the logs. A
+            # missing verdict must not hide the model or its malformed output.
+            return {
+                idea.ticker.upper(): CritiqueVerdict(
+                    idea.ticker.upper(), "review_unavailable", reason, None, True,
+                    actual_model=actual_model, response_text=response_text,
+                )
+                for idea in ideas
+            }
 
         raw = payload.get("verdicts")
         if not isinstance(raw, list):
@@ -237,7 +266,8 @@ class AdversarialCritic:
             idea.review_provenance = {
                 "requested_model": self.model,
                 "actual_model": None,
-                "prompt_version": "niche-review-v1",
+                "prompt_version": REVIEW_PROMPT_VERSION if self.subscription_only else "niche-review-v1",
+                "schema_hash": digest(ReviewBatch.model_json_schema()) if self.subscription_only else None,
                 "system_prompt_hash": digest(_SYSTEM_PROMPT),
                 "reviewed_at": datetime.now(UTC).isoformat(),
                 "evidence_cutoff": as_of.isoformat(),
@@ -321,4 +351,4 @@ class AdversarialCritic:
                 }
             },
         )
-        return ideas if not verdicts else survivors
+        return ideas if len(survivors) == len(ideas) else survivors

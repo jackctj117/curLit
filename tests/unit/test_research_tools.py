@@ -9,6 +9,7 @@ no live SEC / yfinance / network.
 from __future__ import annotations
 
 import json
+import re
 from types import SimpleNamespace
 
 from src.events.research_tools import (
@@ -74,6 +75,41 @@ def test_html_to_text_strips_and_unescapes():
     assert "<" not in out and ">" not in out
     assert "ignored()" not in out  # script content dropped
     assert "color:red" not in out  # style dropped
+
+
+def test_inline_xbrl_metadata_cannot_masquerade_as_evidence() -> None:
+    body = (
+        '<html><body><ix:header><ix:hidden>avav:USGovernmentMember</ix:hidden>'
+        '<ix:resources><xbrli:context>0001368622 2026-05-01</xbrli:context>'
+        '</ix:resources></ix:header><xbrli:unit>iso4217:USD</xbrli:unit>'
+        '<div style="DISPLAY : none !important">hidden supplier</div>'
+        '<span hidden>hidden customer</span><p style="visibility:hidden">hidden revenue</p>'
+        '<p>Our customers include Acme. Revenue was '
+        '<ix:nonFraction contextRef="c1">$40 million</ix:nonFraction>.</p>'
+        '<p><ix:nonNumeric>Beta</ix:nonNumeric> supplies pumps.</p></body></html>'
+    )
+    assert html_to_text(body) == (
+        "Our customers include Acme. Revenue was $40 million . Beta supplies pumps."
+    )
+
+
+def test_filing_capture_offsets_reproduce_clean_visible_excerpt() -> None:
+    body = (
+        '<html><body><ix:header><ix:hidden>Beta metadata only</ix:hidden></ix:header>'
+        '<p>Our business relies on Beta for pumps. Beta contributes 40% of revenue. '
+        + "Delivery commitments begin next quarter. " * 12 + '</p></body></html>'
+    )
+    submissions = json.loads(_SUBMISSIONS)
+    submissions["filings"]["recent"]["filingDate"] = ["2026-10-19"] * 3
+    tools = ResearchTools(sec_http_get=_fake_sec(json.dumps(submissions), body))
+    documents = tools.filing_documents(123, "ACME", "Beta", limit=1)
+    assert len(documents) == 1
+    doc = documents[0]
+    assert "metadata" not in doc.text
+    match = re.search(r"normalized-text chars (\d+):(\d+)", doc.locator)
+    assert match is not None
+    assert html_to_text(body)[int(match[1]):int(match[2])] == doc.text
+    assert doc.published_at == "2026-10-19T23:59:59+00:00"
 
 
 def test_anchored_excerpt_starts_at_anchor():

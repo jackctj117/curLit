@@ -26,11 +26,14 @@ See [the setup and handoff guide](docs/AI_DEVELOPMENT_WORKFLOW.md).
 - Work in a credential-free development environment. A checkout and virtualenv
   are not security isolation; use a container, VM, or separate OS account without
   access to trading credentials, production state, or operational service sockets.
-- Do not access broker accounts or production databases, including paper accounts.
-- Do not start, stop, or restart trading daemons. Operational runbooks below are
-  architecture context, not authorization to operate services.
-- Do not push, merge, deploy, or perform destructive Git cleanup (including stash
-  deletion and branch pruning). Leave publishing and deployment to the operator.
+- Development tests must not access broker accounts or production databases,
+  including paper accounts. Authorized deployment verification is a separate,
+  scoped operational step; do not expose credentials to coding/research agents.
+- Service operations require the deployment authority below and the relevant
+  runbook. Restart only affected services, preserve trading controls, and verify
+  the old writer is gone before starting its replacement.
+- Do not merge, force-push, or perform destructive Git cleanup (including stash
+  deletion and branch pruning) without separate explicit authorization.
 - Do not change trading parameters or runtime model providers unless assigned.
 - Do not hide a failed check, skip it silently, or relax permissions to bypass it.
 - Reviewer commands must be read-only; do not claim/close Beads, run auto-fix
@@ -51,9 +54,27 @@ and optional improvements. Do not invent findings to fill a quota.
 
 Provide the patch summary, exact test evidence, unresolved concerns, and Beads
 status. The implementer files follow-up issues and updates local issue state;
-the reviewer reports findings without mutations. Leave a stable patch for review
-and leave publishing, merging, and deployment to the operator. Do not run Git or
-Dolt pushes as a session-completion step.
+the reviewer reports findings without mutations. Leave a stable patch for review.
+
+### Operator-authorized publishing after fixes
+
+On October 20, 2026 the operator requested: **commit, push and deploy after every
+completed fix**. This is standing authorization for the assigned work, not a
+requirement to publish unfinished or unsafe changes. After the relevant tests,
+lint, typecheck, security and rollout checks pass, commit the scoped fix, push
+without force, and deploy only its affected services through their verified
+owners. Verify remote commit identity and post-deployment health; record the
+result in Beads and the operational documentation. Documentation-only changes
+do not require daemon restarts.
+
+A failed check, unresolved safety blocker, ambiguous service ownership, or
+required destructive/migration action outside the approved runbook stops
+deployment and must be reported. Do not lower gates, enable paid model fallback,
+change trading parameters, enable real-money execution, or unpause entries to
+complete a rollout. Research canaries must remain no-order and within the
+approved subscription/budget policy. Publishing is an explicit operator-requested
+step after a verified fix, never a generic end-of-session ritual. Dolt remote
+synchronization and merges remain separately authorized.
 
 ## Project
 curLit is an algorithmic FX trading system: pull live ticker values for currencies, cryptocurrencies, and rare metals, then use AI (NLP + quantitative models) to analyze treasury bond ETFs/trusts (e.g. FXY, TLT) against news/world events and recommend short/put positions.

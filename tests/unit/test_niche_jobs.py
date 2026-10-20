@@ -216,6 +216,17 @@ def test_review_failure_retries_but_unsupported_evidence_does_not() -> None:
     assert not retryable(report)
 
 
+def test_completed_discovery_with_failed_review_records_review_retry_reason(engine: Any) -> None:
+    queue = NicheJobs(engine)
+    queue.seed(7, NOW)
+    report = _report("completed")
+    report["candidates"] = [{"research": {"review_status": "review_unavailable"}}]
+    assert _finish(queue, queue.claim(NOW, 1)[0], report, NOW)
+    with engine.connect() as conn:
+        row = conn.execute(text("SELECT state, reason FROM niche_jobs")).one()
+        assert tuple(row) == ("retry", "review_unavailable")
+
+
 def test_pipeline_retries_with_no_new_assessments(
     engine: Any,
     monkeypatch: pytest.MonkeyPatch,

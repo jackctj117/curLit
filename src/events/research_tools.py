@@ -22,7 +22,6 @@ overridable via ``SEC_EDGAR_USER_AGENT`` (same knob as CL-9xha).
 
 from __future__ import annotations
 
-import html as _html
 import json
 import logging
 import os
@@ -32,6 +31,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 import httpx
+from bs4 import BeautifulSoup
 
 from src.events.research_evidence import SourceDocument
 
@@ -85,16 +85,31 @@ def yfinance_profile(ticker: str) -> dict[str, Any] | None:
 
 
 def html_to_text(raw_html: str) -> str:
-    """Strip an HTML filing to whitespace-collapsed plain text."""
-    stripped = re.sub(
-        r"<(script|style)[^>]*>.*?</\1>",
-        " ",
-        raw_html,
-        flags=re.I | re.S,
-    )
-    stripped = re.sub(r"<[^>]+>", " ", stripped)
-    stripped = _html.unescape(stripped)
-    return re.sub(r"\s+", " ", stripped).strip()
+    """Normalize visible filing text, excluding inline-XBRL metadata (CL-4knt).
+
+    The old tag regex exposed hidden context/member values as evidence. This
+    is a bounded HTML extraction, not a browser/CSS renderer. Preserve visible
+    ix:nonFraction/nonNumeric values; never remove all ix:* nodes indiscriminately.
+    Offsets in newly captured SourceDocuments refer to this normalized text.
+    """
+    soup = BeautifulSoup(raw_html, "html.parser")
+    metadata_tags = {
+        "head", "script", "style", "template", "noscript",
+        "ix:header", "ix:hidden", "ix:references", "ix:resources",
+        "xbrli:context", "xbrli:unit", "context", "unit",
+    }
+    for node in soup.find_all(True):
+        # Decomposing a parent also destroys children already in find_all().
+        if node.decomposed:
+            continue
+        hidden_style = re.search(
+            r"(?:^|;)\s*(?:display\s*:\s*none|visibility\s*:\s*(?:hidden|collapse))"
+            r"\s*(?:!important\s*)?(?:;|$)",
+            str(node.get("style", "")), re.IGNORECASE,
+        )
+        if node.name.lower() in metadata_tags or node.has_attr("hidden") or hidden_style:
+            node.decompose()
+    return re.sub(r"\s+", " ", soup.get_text(" ")).strip()
 
 
 def _prose_score(window: str) -> int:

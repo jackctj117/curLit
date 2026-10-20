@@ -263,9 +263,10 @@ def test_liquidity_floor_has_independent_numeric_oracle(adv: float) -> None:
     assert 0 <= candidate.asymmetry_score <= 1
 
 
-def test_critic_gets_sources_measurements_and_no_external_tools() -> None:
+@pytest.mark.parametrize("subscription_only", [False, True])
+def test_critic_gets_sources_measurements_and_no_external_tools(subscription_only: bool) -> None:
     client = CriticClient()
-    critic = AdversarialCritic(client=client, enabled=True)
+    critic = AdversarialCritic(client=client, enabled=True, subscription_only=subscription_only)
     candidate = evidence_score(idea(), MARKET, NOW)
     critic.apply([candidate], {"headline": "order"}, as_of=NOW)
     assert candidate.review_status == "supported" and candidate.research_eligible
@@ -285,9 +286,12 @@ def test_unsourced_verdict_cannot_approve_or_remove_lead(verdict: str) -> None:
     assert not candidate.red_team_verdict and not candidate.research_eligible
 
 
-def test_contradiction_requires_an_actual_passage() -> None:
+@pytest.mark.parametrize("subscription_only", [False, True])
+def test_contradiction_requires_an_actual_passage(subscription_only: bool) -> None:
     candidate = evidence_score(idea(), MARKET, NOW)
-    critic = AdversarialCritic(client=CriticClient("contradicted"), enabled=True)
+    critic = AdversarialCritic(
+        client=CriticClient("contradicted"), enabled=True, subscription_only=subscription_only,
+    )
     assert critic.apply([candidate], {}, as_of=NOW) == []
     assert candidate.review_status == "contradicted"
     assert candidate.dropped_reason == "evidence_contradicted"

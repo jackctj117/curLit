@@ -135,6 +135,17 @@ class ClaudeAuthenticationError(RuntimeError):
     reason = "subscription_auth_unavailable"
 
 
+class ClaudeStructuredOutputError(RuntimeError):
+    """Missing structured result must not fall back to unvalidated prose (CL-5hj5)."""
+
+    reason = "structured_output_unavailable"
+
+    def __init__(self, response_text: str, actual_model: str) -> None:
+        self.response_text = response_text
+        self.actual_model = actual_model
+        super().__init__(self.reason)
+
+
 def _raise_if_auth_failure(payload: object, stderr: str = "") -> None:
     if _subscription_failure(payload, stderr) == "subscription_auth_unavailable":
         raise ClaudeAuthenticationError("Claude CLI login expired or unavailable")
@@ -381,6 +392,7 @@ class ClaudeCodeDriver(Driver):
         temperature: float = 0.0,
         no_tools: bool = False,
         subscription_only: bool = False,
+        json_schema: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> LLMResponse:
         if subscription_only and model not in _INCLUDED_RESEARCH_MODELS:
@@ -421,6 +433,13 @@ class ClaudeCodeDriver(Driver):
             "json",
             "--exclude-dynamic-system-prompt-sections",
         ]
+        if json_schema is not None:
+            # CLI 2.1.304 --json-schema produces structured_output, not result.
+            # Limit agent turns to two, not an open-ended formatting loop.
+            # CLI schema failures are also bounded below. Actual behavior with
+            # no tools must be checked in the rollout canary, not assumed.
+            # Local callers must validate the same schema before using data.
+            cmd += ["--json-schema", json.dumps(json_schema, allow_nan=False), "--max-turns", "2"]
         if subscription_only:
             cmd += [*_SUBSCRIPTION_FLAGS, "--disallowedTools", "mcp__*"]
             no_tools = True
@@ -442,6 +461,10 @@ class ClaudeCodeDriver(Driver):
         # it OFF an inherited cap passes through and the requested one is
         # reported unenforced.
         env = build_cli_env(os.environ, enforce_cap=enforce_cap, max_tokens=max_tokens)
+        if json_schema is not None:
+            # Verified in CLI 2.1.304. Override, never inherit a larger retry
+            # budget. Existing wall-clock ceiling and paid-fallback ban remain.
+            env["MAX_STRUCTURED_OUTPUT_RETRIES"] = "1"
         if subscription_only:
             self._require_subscription(env)
         logger.debug("claude-code: subprocess env keys=%s", sorted(env))
@@ -522,6 +545,8 @@ class ClaudeCodeDriver(Driver):
         except json.JSONDecodeError as exc:
             msg = f"claude -p returned non-JSON output: {proc.stdout[:300]}"
             raise RuntimeError(msg) from exc
+        if not isinstance(payload, dict):
+            raise RuntimeError("claude -p returned a non-object result")
         if payload.get("is_error") or payload.get("subtype") != "success":
             _raise_if_auth_failure(payload)
             msg = (
@@ -543,6 +568,15 @@ class ClaudeCodeDriver(Driver):
             )
         nominal = _nominal_cost(payload.get("total_cost_usd"))
         served = _resolve_served_model(payload.get("modelUsage"), model)
+        response_text = str(payload.get("result", ""))
+        if json_schema is not None:
+            structured = payload.get("structured_output")
+            if not isinstance(structured, dict):
+                raise ClaudeStructuredOutputError(response_text, served)
+            try:
+                response_text = json.dumps(structured, allow_nan=False)
+            except (TypeError, ValueError) as exc:
+                raise ClaudeStructuredOutputError(response_text, served) from exc
         if served == UNVERIFIED_MODEL:
             model_usage = payload.get("modelUsage")
             logger.warning(
@@ -563,7 +597,7 @@ class ClaudeCodeDriver(Driver):
             elapsed,
         )
         return LLMResponse(
-            text=str(payload.get("result", "")),
+            text=response_text,
             model=served,
             provider=self.name,
             input_tokens=in_tok,
