@@ -31,6 +31,7 @@ import hashlib
 import json
 import logging
 from collections.abc import Mapping
+from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -202,6 +203,8 @@ def persist_ideas(
     prices: Mapping[str, Mapping[str, Any]] | None = None,
     now: datetime | None = None,
     research_status: Mapping[tuple[str, str], ResearchStatus] | None = None,
+    *,
+    connection: Any = None,
 ) -> int:
     """Upsert one assessment's ``trade_ideas`` rows; returns how many
     rows were actually INSERTED (conflicts dedup silently to 0-cost
@@ -232,7 +235,9 @@ def persist_ideas(
     statuses = research_status or {}
     inserted = 0
     recorded = 0
-    with engine.begin() as conn:
+    # CL-ut1d: the durable niche worker owns the event/job/ledger transaction.
+    # Ordinary callers retain the existing standalone atomic insert.
+    with (nullcontext(connection) if connection is not None else engine.begin()) as conn:
         for p, is_niche in rows:  # per-row so rowcount attributes cleanly
             result = conn.execute(_INSERT_SQL, p)
             fresh = max(0, result.rowcount or 0)

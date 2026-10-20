@@ -219,7 +219,7 @@ def _fetch_unsellable(engine) -> list[dict]:  # noqa: ANN001
         return []
 
 
-def _fetch_bullish_ideas(engine) -> list[dict]:  # noqa: ANN001
+def _fetch_bullish_ideas(engine) -> list[dict] | None:  # noqa: ANN001
     from sqlalchemy import text  # noqa: PLC0415
 
     try:
@@ -228,18 +228,66 @@ def _fetch_bullish_ideas(engine) -> list[dict]:  # noqa: ANN001
                 dict(r._mapping)
                 for r in conn.execute(
                     text("""
-                SELECT ticker, action, confidence, preferred_instrument,
-                       rationale
-                FROM trade_ideas
-                WHERE status = 'pending'
-                  AND (direction = 'bullish'
-                       OR action IN ('buy_calls', 'long'))
+                SELECT ti.idea_id, ti.geo_event_id, ti.ticker, ti.action,
+                       ti.confidence, ti.preferred_instrument, ti.rationale,
+                       ti.created_at, ge.seen_at AS event_seen_at,
+                       rs.research_invocation_id, rs.discovery_status,
+                       rs.evidence_status, rs.review_status,
+                       rs.liquidity_status, rs.research_eligible
+                FROM trade_ideas ti
+                LEFT JOIN geo_events ge ON ge.id = ti.geo_event_id
+                LEFT JOIN idea_research_status rs ON rs.idea_id = ti.idea_id
+                WHERE ti.status = 'pending'
+                  AND (ti.direction = 'bullish'
+                       OR ti.action IN ('buy_calls', 'long'))
             """)
                 )
             ]
     except Exception:
         logger.warning("morning digest: bullish ideas unavailable", exc_info=True)
-        return []
+        return None
+
+
+def _fetch_niche_activity(engine, now: datetime) -> list[dict] | None:  # noqa: ANN001
+    """Independent audit includes failed/abstained runs, not just merged ideas."""
+    from sqlalchemy import text  # noqa: PLC0415
+
+    try:
+        with engine.connect() as conn:
+            rows = [
+                dict(row._mapping)
+                for row in conn.execute(
+                    text("""
+                    SELECT a.invocation_id, a.recorded_at, a.report,
+                           j.state AS job_state,
+                           (SELECT count(*) FROM idea_research_status rs
+                            WHERE rs.research_invocation_id = a.invocation_id) AS published_count
+                    FROM niche_research_audit a
+                    LEFT JOIN niche_jobs j ON j.invocation_id = a.invocation_id
+                    WHERE a.recorded_at >= :cutoff AND a.recorded_at <= :now
+                    ORDER BY a.recorded_at DESC, a.invocation_id
+                """),
+                    {"cutoff": now - timedelta(hours=24), "now": now},
+                )
+            ]
+        for row in rows:
+            report = row.pop("report")
+            report = json.loads(report) if isinstance(report, str) else report
+            discovery = report.get("discovery") or {}
+            row.update(
+                discovery_status=discovery.get("status", "unknown"),
+                reason=discovery.get("reason", ""),
+                eligible_count=report.get("eligible_count"),
+            )
+            reviews: dict[str, int] = {}
+            for candidate in report.get("candidates", []):
+                status = str((candidate.get("research") or {}).get("review_status", "unknown"))
+                reviews[status] = reviews.get(status, 0) + 1
+            row["reviews"] = reviews
+        return rows
+    except Exception:
+        logger.warning("morning digest: niche audit unavailable", exc_info=True)
+        return None
 
 
 def _resolve_idea_names(engine, ideas: list[dict]) -> dict[str, str]:  # noqa: ANN001
@@ -300,7 +348,8 @@ def run_once(now: datetime | None = None, *, force: bool = False) -> bool:
     ideas_body = build_long_ideas_digest(
         bullish_ideas,
         now,
-        names=_resolve_idea_names(engine, bullish_ideas),
+        names=_resolve_idea_names(engine, bullish_ideas or []),
+        research=_fetch_niche_activity(engine, now),
     )
 
     r1 = notify_operator("☀️ Morning positions", positions_body, html=True)

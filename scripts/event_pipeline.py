@@ -206,7 +206,13 @@ def _niche_max_concurrency() -> int:
     return max(1, min(_MAX_NICHE_CONCURRENCY, value))
 
 
-def _niche_step(engine: object, results: list, min_urgency: int) -> int:
+def _niche_step(
+    engine: object,
+    results: list,
+    min_urgency: int,
+    *,
+    durable: bool = False,
+) -> int:
     """CL-u2ph: multi-hop niche/asymmetry pass on high-urgency ASSESSED
     events only (bounded extra research per qualifying event).
     Surviving VERIFIED, liquidity-gated niche ideas are MERGED
@@ -227,6 +233,7 @@ def _niche_step(engine: object, results: list, min_urgency: int) -> int:
     from src.data.symbols import SymbolUniverse  # noqa: PLC0415
     from src.events.niche_agent import NicheAgent, NicheReport  # noqa: PLC0415
     from src.events.niche_audit import persist_niche_audit  # noqa: PLC0415
+    from src.events.niche_jobs import NicheJobs, retryable  # noqa: PLC0415
     from src.events.playbooks import load_playbooks  # noqa: PLC0415
     from src.events.research_evidence import DiscoveryOutcome  # noqa: PLC0415
 
@@ -236,11 +243,40 @@ def _niche_step(engine: object, results: list, min_urgency: int) -> int:
         except (TypeError, ValueError):
             return 0
 
-    qualifying = [
-        r for r in results if getattr(r, "status", "") == "ASSESSED" and _urgency(r) >= min_urgency
-    ]
+    jobs = {}
+    queue = NicheJobs(engine)
+    if durable:
+        from src.events.impact_agent import AssessmentResult  # noqa: PLC0415
+
+        now = datetime.now(UTC)
+        queue.seed(min_urgency, now)
+        # Bounded per-cycle work, independent of how many NEW events assessed.
+        # Claim one concurrent batch so leases do not expire waiting in a pool.
+        claimed = queue.claim(now, _niche_max_concurrency())
+        for job in claimed:
+            jobs[job.event_id] = job
+        qualifying = [
+            AssessmentResult(
+                event_id=job.event_id,
+                headline=job.input_snapshot["headline"],
+                theme=job.input_snapshot["theme"],
+                status="ASSESSED",
+                assessment=copy.deepcopy(job.input_snapshot["assessment"]),
+            )
+            for job in claimed
+        ]
+    else:
+        qualifying = [
+            r
+            for r in results
+            if getattr(r, "status", "") == "ASSESSED" and _urgency(r) >= min_urgency
+        ]
     if not qualifying:
-        logger.info("niche: no ASSESSED events at urgency >= %d; skipped", min_urgency)
+        logger.info(
+            "niche: no due jobs (check deferred/expired/failed state); urgency >= %d"
+            if durable else "niche: no ASSESSED events at urgency >= %d; skipped",
+            min_urgency,
+        )
         return 0
 
     universe = SymbolUniverse(engine)  # type: ignore[arg-type]
@@ -249,15 +285,19 @@ def _niche_step(engine: object, results: list, min_urgency: int) -> int:
     # selected metered fallback. Two calls permit seed -> filing -> refinement;
     # the existing two-entity bound limits retrieval. Legacy NICHE_* flags may
     # still configure standalone/shadow agents, never this production policy.
-    agent = NicheAgent(
-        universe=universe,
-        max_cycles=2,
-        tools_enabled=True,
-        tools_max_entities=2,
-        tool_agent_enabled=False,
-        critic_enabled=True,
-        subscription_only=True,
-    )
+    try:
+        agent = NicheAgent(
+            universe=universe,
+            max_cycles=2,
+            tools_enabled=True,
+            tools_max_entities=2,
+            tool_agent_enabled=False,
+            critic_enabled=True,
+            subscription_only=True,
+        )
+    except Exception:
+        logger.exception("niche agent initialization unavailable; recording failed attempts")
+        agent = None
     logger.info(
         "niche policy: provider=claude-code subscription_only=true cycles=2 "
         "grounded_entities=2 critic=required paid_fallback=disabled"
@@ -274,16 +314,23 @@ def _niche_step(engine: object, results: list, min_urgency: int) -> int:
 
     def _discover(r: Any) -> tuple[Any, NicheReport, str, dict[str, Any]]:
         """Thread body — DISCOVERY ONLY (thread-safe: verify reads the warmed
-        in-memory universe; the Kimi/yfinance/critic calls are independent
+        in-memory universe; the Claude/retrieval/critic calls are independent
         blocking I/O). Merge + DB persist stay on the caller thread. Fail-soft
         per event so one bad event never sinks the batch."""
-        invocation_id = str(uuid4())
+        invocation_id = jobs[r.event_id].invocation_id if durable else str(uuid4())
         row = {
             "id": r.event_id,
             "headline": r.headline,
             "theme": r.theme,
             "assessment": copy.deepcopy(r.assessment),
         }
+        if agent is None:
+            return (
+                r,
+                NicheReport(DiscoveryOutcome("unavailable", "agent_initialization_failed"), []),
+                invocation_id,
+                row,
+            )
         try:
             report = agent.run_report(copy.deepcopy(row), playbooks.get(r.theme or ""))
         except Exception:
@@ -303,10 +350,8 @@ def _niche_step(engine: object, results: list, min_urgency: int) -> int:
 
     surfaced = 0
     for r, report, invocation_id, snapshot in discovered:
-        # Fail-soft PER EVENT: a transient DB blip on one event must not drop
-        # the merges/writes for the events after it — they are already
-        # ASSESSED, so the next cycle will NOT retry them and their niche
-        # ideas would be lost for good.
+        # Fail-soft PER EVENT. Durable attempts retain their lease after failed
+        # persistence and become claimable again; no event is reset to NEW.
         try:
             report_data = report.to_dict()
             # Independent transaction: a later event-status race or merge
@@ -317,34 +362,58 @@ def _niche_step(engine: object, results: list, min_urgency: int) -> int:
             # CL-7kuu: in-process research-status snapshots for the ideas the
             # merge actually added; the ledger writes them with the idea rows.
             research_sink: dict[Any, Any] = {}
-            added = agent.merge_into_assessment(
-                enriched,
-                report.eligible,
-                research_sink=research_sink,
-                invocation_id=invocation_id,
-            )
-            # Persist even empty/failed outcomes; absence is not approval.
-            with engine.begin() as conn:  # type: ignore[attr-defined]
-                written = conn.execute(
-                    text(
-                        "UPDATE geo_events SET assessment = :a "
-                        "WHERE id = :id AND status = 'ASSESSED' "
-                        "AND assessment = CAST(:original AS jsonb)",
-                    ),
-                    {
-                        "a": _json.dumps(enriched), "id": r.event_id,
-                        "original": _json.dumps(snapshot["assessment"]),
-                    },
+            added = 0
+            if agent is not None:
+                added = agent.merge_into_assessment(
+                    enriched,
+                    [] if durable and retryable(report_data) else report.eligible,
+                    research_sink=research_sink,
+                    invocation_id=invocation_id,
                 )
-                if written.rowcount != 1:
-                    logger.warning(
-                        "niche audit preserved but merge skipped: event or assessment changed "
-                        "event=%s invocation=%s",
-                        r.event_id, invocation_id,
-                    )
+            # Durable worker commits job, assessment, idea and status together.
+            if durable:
+                if not queue.finish(
+                    jobs[r.event_id],
+                    enriched,
+                    report_data,
+                    research_sink,
+                    datetime.now(UTC),
+                ):
                     continue
+            else:
+                # Direct legacy/test entrypoint; production always requests durable.
+                with engine.begin() as conn:  # type: ignore[attr-defined]
+                    written = conn.execute(
+                        text(
+                            "UPDATE geo_events SET assessment = :a "
+                            "WHERE id = :id AND status = 'ASSESSED' "
+                            "AND assessment = CAST(:original AS jsonb)",
+                        ),
+                        {
+                            "a": _json.dumps(enriched),
+                            "id": r.event_id,
+                            "original": _json.dumps(snapshot["assessment"]),
+                        },
+                    )
+                    if written.rowcount != 1:
+                        logger.warning(
+                            "niche audit preserved but merge skipped: event or assessment changed "
+                            "event=%s invocation=%s",
+                            r.event_id,
+                            invocation_id,
+                        )
+                        continue
             r.assessment = enriched  # Only committed ideas may reach the later ledger step.
             r.niche_research_status = research_sink
+            if durable:
+                # Downstream enrichment/digest sees committed retries even when
+                # no event was newly assessed this cycle.
+                existing = next((item for item in results if item.event_id == r.event_id), None)
+                if existing is None:
+                    results.append(r)
+                else:
+                    existing.assessment = enriched
+                    existing.niche_research_status = research_sink
             surfaced += added
         except Exception:
             logger.exception(
@@ -566,7 +635,7 @@ def _cycle(args: argparse.Namespace) -> None:
                 niche_min = getattr(args, "niche_min_urgency", None)
                 if niche_min is None:
                     niche_min = _resolve_niche_min_urgency()
-                _niche_step(engine, results, niche_min)
+                _niche_step(engine, results, niche_min, durable=True)
             except Exception:
                 logger.exception("niche step failed; continuing")
             _phase_ms["niche"] = (time.monotonic() - _t_niche) * 1000.0

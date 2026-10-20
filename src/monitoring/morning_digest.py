@@ -5,10 +5,9 @@ Two messages at the start of each trading day:
 1. **POSITIONS** — everything actually HELD, long AND short, both venues,
    each FX pair with its economic reading (short USD_CHF = long CHF),
    plus what closed in the last 24h with realized P&L, plus balances.
-2. **LONG IDEAS** — what the event pipeline currently wants to be LONG
-   (pending bullish trade ideas, deduped by ticker, top-N by
-   confidence). This is the desk's shopping list, independent of what
-   the executors have bought; the auto-buy takes the top 5 each open.
+2. **LONG IDEAS** — dated research and pending backlog (CL-ayd8).
+   Fresh verified niche ideas precede other fresh ideas and older backlog.
+   A report timestamp is never substituted for a discovery timestamp.
 
 Pure builders + clock gate live here; the daemon script owns venue I/O.
 """
@@ -18,7 +17,7 @@ from __future__ import annotations
 import logging
 import re
 from collections.abc import Mapping
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -169,49 +168,113 @@ def build_position_digest(
 _MAX_NAME_LEN = 28
 
 
+def _timestamp(value: Any) -> datetime | None:
+    """Unknown/naive dates stay unknown; do not silently invent a timezone."""
+    try:
+        parsed = value if isinstance(value, datetime) else datetime.fromisoformat(str(value))
+        return parsed.astimezone(UTC) if parsed.tzinfo is not None else None
+    except (ValueError, TypeError):
+        return None
+
+
+def _verified_niche(idea: Mapping[str, Any]) -> bool:
+    """Only joined write-once status, never LLM notes, identifies verified niche."""
+    return (
+        idea.get("research_eligible") in (True, 1)
+        and bool(idea.get("research_invocation_id"))
+        and idea.get("discovery_status") == "completed"
+        and idea.get("evidence_status") == "source_backed"
+        and idea.get("review_status") == "supported"
+        and idea.get("liquidity_status") == "sufficient"
+    )
+
+
 def build_long_ideas_digest(
-    ideas: list[Mapping[str, Any]],
+    ideas: list[Mapping[str, Any]] | None,
     now: datetime | None = None,
     limit: int = 12,
     names: dict[str, str] | None = None,
+    research: list[Mapping[str, Any]] | None = None,
 ) -> str:
-    """Telegram-HTML body for "what the desk wants to be LONG".
+    """CL-ayd8: last-24h is a DISPLAY window, not trading eligibility.
 
-    ``ideas``: pending BULLISH trade-idea rows (ticker, action,
-    confidence, preferred_instrument, rationale) — the pipeline's view of
-    what deserves long exposure, independent of execution. Deduped by
-    ticker keeping the highest-confidence row, sorted by confidence,
-    capped at ``limit`` with an honest "of N" so a cap never reads as the
-    whole pool.
-
-    ``names``: optional ticker→company-name map (CL-ikz2). When a ticker
-    resolves, its line reads ``<b>VG</b> (Venture Global, Inc.) …`` so the
-    operator doesn't have to look the ticker up; the name is html-escaped
-    and truncated. A missing/empty name degrades to the bare ticker
-    exactly as before (fail-soft) — FX/CFD tickers never resolve and stay
-    bare. The map is keyed by the UPPER-cased ticker (matching the dedup
-    key) so the caller can resolve once for the whole pool.
+    None means a failed read, [] a successful empty read. Keep historical rows,
+    expose references and ages, and never infer research success from a backlog.
+    Within a category/ticker show the newest record and references to duplicates.
     """
     now = now or datetime.now(UTC)
-    best: dict[str, Mapping[str, Any]] = {}
-    for idea in ideas:
-        t = str(idea.get("ticker") or "").upper()
-        if not t:
-            continue
-        conf = float(idea.get("confidence") or 0.0)
-        if t not in best or conf > float(best[t].get("confidence") or 0.0):
-            best[t] = idea
+    if now.tzinfo is None or limit < 1:
+        raise ValueError("aware now and positive limit required")
+    cutoff = now - timedelta(hours=24)  # One daily digest window; not an expiry policy.
+    labels = (
+        "New verified niche (last 24h)",
+        "Other new pending ideas (last 24h)",
+        "Older pending backlog",
+        "Unknown/invalid idea date",
+    )
+    groups: list[list[Mapping[str, Any]]] = [[], [], [], []]
+    for idea in ideas or []:
+        created = _timestamp(idea.get("created_at"))
+        category = (
+            3
+            if created is None or created > now
+            else 2
+            if created < cutoff
+            else 0
+            if _verified_niche(idea)
+            else 1
+        )
+        groups[category].append(idea)
+    best: dict[tuple[int, str], Mapping[str, Any]] = {}
+    duplicates: dict[tuple[int, str], list[str]] = {}
+    for category, group in enumerate(groups):
+        for idea in group:
+            t = str(idea.get("ticker") or "").upper()
+            if not t:
+                continue
+            key = category, t
+            duplicates.setdefault(key, []).append(str(idea.get("idea_id") or "unknown"))
+
+            def rank(row: Mapping[str, Any]) -> tuple[datetime, float]:
+                return (
+                    _timestamp(row.get("created_at")) or datetime.min.replace(tzinfo=UTC),
+                    float(row.get("confidence") or 0.0),
+                )
+
+            if key not in best or rank(idea) > rank(best[key]):
+                best[key] = idea
     ranked = sorted(
-        best.values(),
-        key=lambda i: float(i.get("confidence") or 0.0),
-        reverse=True,
+        best.items(),
+        key=lambda item: (item[0][0], -float(item[1].get("confidence") or 0.0), item[0][1]),
     )
 
-    lines: list[str] = []
-    lines.append("<b>What the desk wants to be LONG (event-driven)</b>")
-    if not ranked:
+    lines = ["<b>Research ideas — freshness and pending backlog</b>"]
+    if research is None:
+        lines.append("  research status unavailable — freshness cannot be confirmed")
+    elif not research:
+        lines.append("  No niche research attempts recorded in the last 24h")
+    else:
+        lines.append(f"  Niche attempts last 24h: {len(research)}")
+        # Latest three diagnoses keep the daily Telegram payload phone-readable.
+        for run in research[:3]:
+            lines.append(
+                html_escape(
+                    f"  {run.get('recorded_at')} — {run.get('discovery_status', 'unknown')}"
+                    f": {run.get('reason') or 'no failure reason'}"
+                    f" [run {run.get('invocation_id')}; eligible {run.get('eligible_count', 'unknown')}]"
+                    f" published: {run.get('published_count', 'unknown')};"
+                    f" job: {run.get('job_state') or 'legacy/prior attempt'};"
+                    f" reviews: {run.get('reviews') or 'none recorded'}"
+                )
+            )
+    lines.extend(f"{label}: {len(group)}" for label, group in zip(labels, groups, strict=True))
+    if not groups[0]:
+        lines.append("  No new verified niche ideas in this pending feed")
+    if ideas is None:
+        lines.append("  pending ideas unavailable — not an empty book")
+    elif not ranked:
         lines.append("  no pending bullish ideas")
-    for idea in ranked[:limit]:
+    for key, idea in ranked[:limit]:
         conf = float(idea.get("confidence") or 0.0)
         pref = str(idea.get("preferred_instrument") or "").strip()
         rat = str(idea.get("rationale") or "").strip()
@@ -228,10 +291,27 @@ def build_long_ideas_digest(
             f"  <b>{html_escape(ticker)}</b>{name_part} "
             f"{conf:.2f}{html_escape(via)}{html_escape(tail)}"
         )
+        created = _timestamp(idea.get("created_at"))
+        stamp = created.isoformat() if created is not None and created <= now else "unknown/invalid"
+        provenance = (
+            f"verified niche; run {idea.get('research_invocation_id')}"
+            if _verified_niche(idea)
+            else "provenance unverified (not a verified niche idea)"
+        )
+        refs = duplicates[key]
+        lines.append(
+            html_escape(
+                f"    {labels[key[0]]}; idea {stamp}; event {idea.get('geo_event_id', 'unknown')}"
+                f" seen {idea.get('event_seen_at') or 'unknown'}; {provenance}"
+                f"; IDs {', '.join(refs[:5])}"
+                + (f" (+{len(refs) - 5} more records)" if len(refs) > 5 else "")
+            )
+        )
     lines.append("")
     lines.append(
         f"<i>Top {min(limit, len(ranked))} of {len(ranked)} tickers — "
-        f"the auto-buy takes the top 5 at ~9:45 ET</i>"
+        f"grouped by freshness; Pending records: {len(ideas or [])}. "
+        "Research only; this report does not authorize orders.</i>"
     )
     lines.append(f"<i>{now.astimezone(_NY).strftime('%Y-%m-%d %H:%M ET')}</i>")
     return "\n".join(lines)

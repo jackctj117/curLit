@@ -1,5 +1,16 @@
 # CURRENT OPERATIONS — what curLit is practicing right now
 
+**Development change — October 20, 2026 (CL-ut1d / CL-ayd8), NOT deployed:**
+niche research has a durable, bounded retry queue independent of new assessment
+results, with lease fencing, current-input checks and atomic niche ledger/status
+publication. Telegram distinguishes fresh verified niche ideas from older
+pending backlog and displays dates, references, failures and actual publication
+counts. Requires additive migration **029** before the pipeline/digest rollout.
+No operational DB, broker, environment flag, trading policy or daemon was changed.
+Claude activation remains open under CL-cdov pending the operator's billing
+attestation, account canary and separately approved targeted rollout. See
+[research workflow](NICHE_RESEARCH_EVIDENCE.md#durable-research-and-honest-telegram-freshness-cl-ut1d--cl-ayd8).
+
 **Development change — October 20, 2026 (CL-qwrv), NOT deployed:** the standalone
 `AggressiveShortFXStrategy` now honors its configured 1/2/3-vote agreement quorum.
 The default two-of-three rule counts matching votes rather than canceling a

@@ -52,6 +52,12 @@ Key configs: `configs/live_portfolio.yaml` (strategy registry), `configs/risk_pr
 
 ## Niche evidence revision (CL-eh28)
 
+CL-ut1d / CL-ayd8 (development, not deployed): migration 029 adds durable
+recent-event niche jobs with bounded retries and fenced atomic publication.
+The morning Telegram ideas report separates fresh verified niche discoveries
+from old pending backlog and reports audit/review failures, not just tickers.
+See `docs/NICHE_RESEARCH_EVIDENCE.md`; activation remains CL-cdov.
+
 CL-zhkg (development, not yet deployed): `scripts/event_pipeline.py` explicitly
 selects subscription-only Claude discovery and criticism, two discovery cycles
 and two-company filing retrieval. Legacy `NICHE_TOOL_AGENT_ENABLED` cannot

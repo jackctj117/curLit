@@ -51,9 +51,8 @@ another model needs review and confirmation of included-plan eligibility.
 Quota failures are `subscription_quota_exhausted`, never abstention or approval.
 A failed second call retains the first pass only as partial research; no critic
 call follows a subscription failure. There are no curLit retries or metered
-fallbacks within that invocation. The existing audit records the event; this
-patch does **not** add a durable retry queue or reconstruct missed discoveries.
-Replay after quota recovery requires a separate operator-controlled operation.
+fallbacks within that invocation. CL-ut1d adds the bounded durable retry queue
+described below; it does not replay weeks-old events or bypass the billing gate.
 Requested token limits retain the driver's existing enforcement policy; the
 two-call bound is not a guaranteed token or dollar ceiling. Cost stays unknown,
 not fabricated as zero.
@@ -72,6 +71,102 @@ that Claude is more accurate or profitable. Research-quality evaluation remains
 separate from transport tests. Authentication and settings behavior follow the
 [Claude CLI reference](https://code.claude.com/docs/en/cli-reference) and
 [subscription billing guidance](https://support.claude.com/en/articles/11145838-use-claude-code-with-your-pro-or-max-plan).
+
+## Durable research and honest Telegram freshness (CL-ut1d / CL-ayd8)
+
+Development implementation, **not activated deployment**. Apply additive
+migration `029_niche_jobs.sql` before using the revised event pipeline and
+morning digest. No migration or operational record was changed during development.
+
+The pipeline seeds jobs from the database's recent, still-`ASSESSED` events,
+independently of this cycle's newly assessed results. This closes the crash
+gap between assessment and niche scheduling. Immutable event/input/policy hashes
+deduplicate jobs; failed research does not reset events to `NEW`.
+
+Research policy is deliberately bounded:
+
+- Only events seen in the preceding **24 hours** qualify for automatic research
+  or publication. This is a new-research freshness limit, not a trading parameter.
+  Historical backfill needs its own reviewed plan; weeks-old headlines are not
+  turned into fresh trading ideas.
+- At most **three attempts per input/policy version**, with delays of 15 minutes
+  and then one hour. Quota/auth/transport/partial-refinement and unavailable-review
+  outcomes retry. Completed abstentions, unsupported evidence, and malformed output
+  do not repeatedly consume quota. Exhaustion remains explicitly failed.
+- Each cycle claims one bounded concurrency batch with a **one-hour lease**.
+  A crashed worker can be reclaimed after that lease, but its late completion
+  cannot publish. No database transaction remains open during model/retrieval calls.
+- Before claiming and again before committing, current event status and input
+  must match. Changed/confirmed/dismissed events supersede the old job; an age
+  limit expires it. Research evidence survives independently in the audit.
+- The event merge, fresh niche idea insertion, write-once research status and
+  job completion commit in **one transaction**. A ledger failure rolls all
+  of those back. Audit persistence occurs first in its own transaction.
+  Retriable incomplete batches publish no partial subset; all gates still apply.
+- Niche rows are now inserted before optional downstream price enrichment.
+  Missing signal marks remain unknown; no current quote is fabricated. Ordinary
+  impact ideas retain their existing enrichment path.
+
+Telegram's morning ideas message distinguishes verified niche ideas created in
+the last 24 hours, other fresh pending ideas, older pending backlog, and unknown
+dates. This is a **display grouping**, not an expiry or execution policy.
+Verified niche labels come from `idea_research_status`, never note substrings.
+Shown rows carry idea/event dates and IDs; niche rows also carry invocation IDs.
+Duplicate ticker records retain references within their freshness category.
+Counts include the full pending pool even when display rows are capped.
+
+The message separately shows recent audit outcomes, review statuses, queue state
+and the number of ideas actually published from each invocation. Unavailable
+queries are labeled unavailable, not empty/successful. An unchanged backlog or
+current report timestamp no longer implies a new successful discovery. The
+hardcoded automatic-buy promise is removed; the digest never authorizes orders.
+
+Activation still requires the operator's included-usage billing confirmation,
+verified Claude subscription login, a captured-input no-order canary, and an
+approved migration/targeted pipeline + morning-digest rollout. Keep all trading
+halts and executor/FX processes unchanged. Observe a new audit/job/ledger result
+and rendered Telegram output before declaring niche restored. Apply migration
+first; rollback leaves the additive queue/audit tables intact and must not
+re-enable a metered provider.
+
+### Development verification, October 20
+
+The following pytest command ran in the credential-free test image
+`sha256:31caaf834c784ae039588cf3031bcf752ee63a3e313b73eb45a4623b7a24f35c`,
+against a source-only snapshot and disposable PostgreSQL 16: **416 passed,
+exit 0**. The database had no host ports or mounts and `network=none`; the
+test container shared only that isolated network namespace. No operational
+database was connected. Both disposable containers were removed after testing.
+
+```sh
+python -m pytest \
+  tests/unit/test_niche_jobs.py tests/unit/test_morning_digest.py \
+  tests/unit/test_event_digest.py tests/unit/test_idea_ledger.py \
+  tests/unit/test_research_status.py tests/unit/test_niche_evidence.py \
+  tests/unit/test_claude_code_driver.py tests/unit/test_event_niche_agent.py \
+  tests/unit/test_adversarial_critic.py tests/unit/test_niche_audit.py \
+  tests/unit/test_niche_quality_export.py tests/unit/test_niche_hopgraph_shadow.py \
+  tests/integration/test_niche_jobs_postgres.py \
+  tests/integration/test_niche_audit_postgres.py -q -o addopts= --tb=short
+```
+
+Additional commands ran with cleared environments and filesystem/network
+sandboxing; all exited 0:
+
+```sh
+.venv/bin/mypy src/
+.venv/bin/ruff check src/ tests/ scripts/event_pipeline.py scripts/morning_digest.py --no-cache
+.venv/bin/python -m bandit -r src/events/niche_jobs.py src/events/idea_ledger.py \
+  src/monitoring/morning_digest.py -ll -q
+git diff --check
+```
+
+Mypy checked 251 source files. The initial four freshness regressions failed
+against the old implementation before the fix. Two new SQL fixture binding
+mistakes were corrected during development; no test was weakened or skipped.
+This is targeted verification, not a new full-repository green claim
+(the separate full-suite environment work remains CL-i6ke), and not evidence
+that the operator's Claude account or running pipeline has been activated.
 
 ## Outcomes, leads, and the trading feed
 

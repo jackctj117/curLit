@@ -115,7 +115,9 @@ _AUTH_TIMEOUT_SEC = 15
 _SUBSCRIPTION_FLAGS = [
     "--setting-sources", "",
     "--settings", '{"disableAllHooks":true,"forceLoginMethod":"claudeai"}',
-    "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
+    # CL-foln: --mcp-config is variadic. A following option terminates its
+    # values; otherwise it consumes the auth/status subcommand as file paths.
+    "--mcp-config", '{"mcpServers":{}}', "--strict-mcp-config",
 ]
 
 

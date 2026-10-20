@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from src.execution.broker import Position
 from src.monitoring.morning_digest import (
@@ -117,6 +117,71 @@ def test_ideas_truncates_rationale_and_escapes():
 def test_ideas_empty_state():
     body = build_long_ideas_digest([], now=NOW)
     assert "no pending bullish ideas" in body
+
+
+def test_fresh_niche_not_hidden_by_old_high_confidence_backlog():
+    old = {**_idea("OLD", 0.99), "created_at": NOW - timedelta(days=30)}
+    fresh = {
+        **_idea("NEW", 0.65),
+        "created_at": NOW - timedelta(hours=1),
+        "research_invocation_id": "run-1",
+        "discovery_status": "completed",
+        "evidence_status": "source_backed",
+        "review_status": "supported",
+        "liquidity_status": "sufficient",
+        "research_eligible": True,
+        "idea_id": "idea-1",
+        "geo_event_id": 42,
+        "event_seen_at": NOW - timedelta(hours=2),
+    }
+    body = build_long_ideas_digest([old, fresh], now=NOW, limit=1, research=[])
+    assert "<b>NEW</b>" in body
+    assert "<b>OLD</b>" not in body
+    assert "New verified niche (last 24h): 1" in body
+    assert "Older pending backlog: 1" in body
+    assert "run-1" in body and "idea-1" in body and "42" in body
+    assert "auto-buy" not in body
+
+
+def test_unknown_future_dates_and_note_markers_do_not_become_fresh_niche():
+    rows = [
+        {**_idea("FAKE"), "notes": "[niche] red-team"},
+        {**_idea("FUTURE"), "created_at": NOW + timedelta(days=1)},
+    ]
+    body = build_long_ideas_digest(rows, now=NOW, research=None)
+    assert "New verified niche (last 24h): 0" in body
+    assert "Unknown/invalid idea date: 2" in body
+    assert "research status unavailable" in body
+    assert "provenance unverified" in body
+
+
+def test_research_failures_not_presented_as_successful_empty_research():
+    body = build_long_ideas_digest(
+        [],
+        now=NOW,
+        research=[
+            {
+                "invocation_id": "failed-run",
+                "recorded_at": NOW,
+                "discovery_status": "unavailable",
+                "reason": "subscription_auth_unverified",
+                "eligible_count": 0,
+            }
+        ],
+    )
+    assert "unavailable" in body and "subscription_auth_unverified" in body
+    assert "No new verified niche ideas" in body
+    assert "failed-run" in body
+
+
+def test_same_ticker_retains_fresh_and_old_record_references():
+    rows = [
+        {**_idea("SAME", 0.9), "idea_id": "old-id", "created_at": NOW - timedelta(days=30)},
+        {**_idea("SAME", 0.7), "idea_id": "new-id", "created_at": NOW},
+    ]
+    body = build_long_ideas_digest(rows, now=NOW, research=[])
+    assert "old-id" in body and "new-id" in body
+    assert "Pending records: 2" in body
 
 
 # --------------------------------------------------------------------------- #

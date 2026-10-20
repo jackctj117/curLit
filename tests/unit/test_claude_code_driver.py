@@ -59,6 +59,24 @@ def _driver() -> ClaudeCodeDriver:
 class TestIncludedUsageOnly:
     """CL-zhkg: no generation without positive local subscription evidence."""
 
+    def test_variadic_mcp_option_cannot_swallow_auth_subcommand(self, monkeypatch: Any) -> None:
+        """CL-foln: CLI 2.1.304 consumes MCP values up to the next option."""
+        monkeypatch.setenv(INCLUDED_USAGE_CONFIRMATION_ENV, "1")
+        driver = _driver()
+        with patch("subprocess.run", return_value=_proc(
+            '{"loggedIn":true,"authMethod":"claude.ai"}',
+        )) as run:
+            driver._require_subscription({})
+        command = run.call_args.args[0]
+        values = []
+        for token in command[command.index("--mcp-config") + 1:]:
+            if token.startswith("--"):
+                break
+            values.append(token)
+        assert values == ['{"mcpServers":{}}']
+        assert command[-2:] == ["auth", "status"]
+        assert "--strict-mcp-config" in command
+
     def test_model_override_cannot_select_a_paid_tier(self, monkeypatch: Any) -> None:
         monkeypatch.setenv(INCLUDED_USAGE_CONFIRMATION_ENV, "1")
         driver = _driver()
