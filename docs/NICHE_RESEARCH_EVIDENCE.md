@@ -7,7 +7,9 @@ completed provider benchmark or a deployment approval.
 
 ## Subscription-only Claude pipeline (CL-zhkg)
 
-Development change, **not deployment evidence**. `scripts/event_pipeline.py`
+Implemented in `scripts/event_pipeline.py`; the targeted October 20 deployment
+and its limitations are recorded in [current operations](CURRENT_OPERATIONS.md).
+Code alone is **not deployment or research-quality evidence**. The pipeline
 now chooses the existing Claude Code transport explicitly, regardless of a
 legacy `NICHE_TOOL_AGENT_ENABLED=1`. It makes at most two discovery calls:
 provisional leads, then revision using captured filings for up to two verified
@@ -34,7 +36,9 @@ Only after that verification set `CURLIT_CLAUDE_INCLUDED_USAGE_CONFIRMED=1` in
 the pipeline's environment. This flag records an **operator attestation**, not
 an automated billing-settings check. Without it, no auth or model subprocess
 is invoked for niche discovery (`unavailable/included_usage_not_confirmed`).
-No production environment or account settings were changed by this patch.
+The development patch did not alter account settings. The October 20 authorized
+rollout set the attestation and disabled the legacy Kimi selector; the operator,
+not this flag, confirmed the account billing settings.
 
 Each strict invocation checks `claude auth status` with the same sanitized
 environment and setting-source restrictions used for generation. Only
@@ -76,9 +80,10 @@ separate from transport tests. Authentication and settings behavior follow the
 
 ## Durable research and honest Telegram freshness (CL-ut1d / CL-ayd8)
 
-Development implementation, **not activated deployment**. Apply additive
-migration `029_niche_jobs.sql` before using the revised event pipeline and
-morning digest. No migration or operational record was changed during development.
+The October 20 targeted rollout applied additive migration `029_niche_jobs.sql`
+before restarting the revised event pipeline and morning digest. See the dated
+operational record for backup, process and runtime verification. No migration
+or operational record was changed during the preceding development phase.
 
 The pipeline seeds jobs from the database's recent, still-`ASSESSED` events,
 independently of this cycle's newly assessed results. This closes the crash
@@ -169,6 +174,47 @@ mistakes were corrected during development; no test was weakened or skipped.
 This is targeted verification, not a new full-repository green claim
 (the separate full-suite environment work remains CL-i6ke), and not evidence
 that the operator's Claude account or running pipeline has been activated.
+
+### Deployment preflight, October 20 (CL-cdov / CL-foln / CL-a7xg)
+
+The installed CLI was 2.1.304. Its variadic `--mcp-config` option originally
+consumed the following `auth status` tokens. Placing the existing boolean
+`--strict-mcp-config` after the MCP JSON fixed the boundary without removing
+settings, hook or tool isolation. Actual auth returned `claude.ai` / Max.
+An initial cleared-environment canary omitted `USER`, which macOS Keychain
+lookup needs, and correctly failed `subscription_auth_unverified`; restoring
+the non-secret OS username allowed the subscription calls. No login or
+credential copying was performed.
+
+Two three-call captured-input runs used historical event 14500, nine original
+filing excerpts, a finite captured identity universe, and deliberately missing
+current market observations. The second run used the explicit claim example:
+four claims parsed and matched their captured passages. This is provenance
+matching, not semantic approval. Its critic emitted invalid JSON, so both leads
+remained `review_unavailable`; no ideas were published. Raw reports and failures
+were preserved privately. Low-information filing excerpts and robust review
+output remain CL-uofe; neither run is a provider-quality benchmark.
+
+After both regression fixes, this command passed **412 tests**, exit 0, under
+the cleared-environment filesystem/network sandbox:
+
+```sh
+.venv/bin/python -m pytest \
+  tests/unit/test_claude_code_driver.py tests/unit/test_niche_jobs.py \
+  tests/unit/test_morning_digest.py tests/unit/test_niche_evidence.py \
+  tests/unit/test_event_niche_agent.py tests/unit/test_adversarial_critic.py \
+  tests/unit/test_idea_ledger.py tests/unit/test_research_status.py \
+  tests/unit/test_niche_audit.py tests/unit/test_event_digest.py \
+  tests/unit/test_niche_quality_export.py tests/unit/test_niche_hopgraph_shadow.py \
+  -o addopts='' -q -p no:cacheprovider
+```
+
+The two new tests each failed against their pre-fix implementation. The native
+environment still warns that its pytest timeout option is unknown; it was not
+silenced or worked around by skipping tests. `make typecheck`, Ruff, targeted
+Bandit and diff/secret scans passed. The source release is `3962f56`; the
+authorized rollout applied only migration 029 and restarted only the launchd
+pipeline/digest jobs. See current operations for actual post-cutover results.
 
 ## Outcomes, leads, and the trading feed
 

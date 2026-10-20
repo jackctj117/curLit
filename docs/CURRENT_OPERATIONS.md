@@ -1,15 +1,66 @@
 # CURRENT OPERATIONS — what curLit is practicing right now
 
-**Development change — October 20, 2026 (CL-ut1d / CL-ayd8), NOT deployed:**
-niche research has a durable, bounded retry queue independent of new assessment
-results, with lease fencing, current-input checks and atomic niche ledger/status
-publication. Telegram distinguishes fresh verified niche ideas from older
-pending backlog and displays dates, references, failures and actual publication
-counts. Requires additive migration **029** before the pipeline/digest rollout.
-No operational DB, broker, environment flag, trading policy or daemon was changed.
-Claude activation remains open under CL-cdov pending the operator's billing
-attestation, account canary and separately approved targeted rollout. See
+**Targeted deployment — October 20, 2026, 18:30 UTC (CL-cdov):**
+runtime source release **`3962f56`** is now running in launchd-owned event pipeline
+**53064** and morning digest **53066**. Old PIDs 9852/5612 are gone; one process
+of each was verified. FX **71293**, options **9894**, and equities **9912** were
+not restarted. Portfolio/risk configuration hashes are unchanged. No broker
+operations, trading-parameter changes, or historical accounting corrections
+were performed as part of this rollout.
+
+Migration **029 only** was applied after an encrypted database backup and a full
+restore into an isolated disposable Timescale instance; all 52 public-table
+counts matched the consistent source snapshot. Only two environment flags changed:
+`NICHE_TOOL_AGENT_ENABLED=0` and `CURLIT_CLAUDE_INCLUDED_USAGE_CONFIRMED=1`.
+The operator confirmed paid extra usage and automatic top-ups disabled; this is
+an attestation, not an independent billing-console inspection. Claude Code
+2.1.304 verified a `claude.ai` Max login. Paid-provider fallback remains disabled.
+
+The pipeline now uses the durable recent-event niche queue, bounded retries,
+lease fencing and atomic publication. Telegram distinguishes fresh verified niche
+ideas from old pending backlog, with actual audit/publication counts.
+Two captured-input canaries completed three Sonnet calls each with zero eligible
+ideas. The first exposed the ambiguous claim field fixed in CL-a7xg; the revised
+run parsed four AVAV claims but its critic emitted malformed JSON, correctly
+leaving review unavailable. Weak filing excerpts and useful research quality
+remain **open in CL-uofe**, with critic-output reliability isolated in
+**CL-5hj5**. Startup and model transport are not evidence of research eligibility
+or profitable trading.
+
+**Post-cutover verification, 18:54 UTC:** the first full cycle completed at
+18:52:55 UTC (1,346.984 seconds, including 1,047.984 seconds of niche work).
+It assessed 12 events and dismissed eight. Four independent Claude v2 audits
+persisted: **three completed discoveries, one partial 15-minute timeout**.
+There were 21 candidates, 14 verified identities, 16 parsed claims and no claim
+schema errors, but **zero eligible or published niche ideas**. Reviews were
+six insufficient-evidence, eight unavailable, and seven not requested for
+unverified identities. Three jobs were safely superseded when events expired;
+one review failure entered bounded retry. Three other pending jobs already had
+expired events and remain subject to the claim-time fence. The retry row's
+reason currently says `completed` (discovery status), despite its `retry` state;
+review-specific reason reporting is recorded under CL-uofe.
+
+The ideas-only Telegram report was successfully delivered at **18:54:18 UTC**,
+showing 3,443 pending bullish records with dated freshness/backlog groups and
+92 last-24-hour audits, explicitly including pre-switch Kimi failures. No
+positions/broker query or morning-send schedule reset was used for that check.
+All runtime source hashes still matched the cutover snapshot; FX/Alpaca PIDs
+remained unchanged. **CL-cdov activation is complete; research yield is not
+healthy or proven.** No Git or Dolt push was performed.
+
+Private artifacts: `data/deployments/2026-10-20_niche_claude/` contains encrypted
+backup/environment rollback material, capture, raw canary reports, migration
+proof, complete production audits, Telegram delivery result and `verified.json`.
+Tests: 412 focused unit tests passed on the final
+revision; the preceding 416-test isolated run included six PostgreSQL integration
+tests. Ruff, Bandit and `make typecheck` (251 files) passed. Full-suite environment
+limitations remain CL-i6ke. See
 [research workflow](NICHE_RESEARCH_EVIDENCE.md#durable-research-and-honest-telegram-freshness-cl-ut1d--cl-ayd8).
+
+If this research rollout needs to be stopped, use its verified launchd owner;
+do not start a second pipeline or restart the trading fleet. Preserve the
+additive queue/audit schema and evidence, and keep Kimi disabled during rollback.
+Database restoration and historical corrections require their own reviewed plan.
 
 **Development change — October 20, 2026 (CL-qwrv), NOT deployed:** the standalone
 `AggressiveShortFXStrategy` now honors its configured 1/2/3-vote agreement quorum.
