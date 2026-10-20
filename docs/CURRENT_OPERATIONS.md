@@ -1,5 +1,50 @@
 # CURRENT OPERATIONS — what curLit is practicing right now
 
+**Targeted deployment — October 20, 2026, 20:38 UTC (CL-2m1c):**
+source release **`63fb4a3`** was committed and pushed to `origin/main`, including
+the three previously unpublished commits. The verified idle event pipeline
+**53064** was stopped through launchd and confirmed gone before replacement
+**45289** started. Exactly one pipeline writer was verified. FX **71293**,
+options **9894**, equities **9912**, and morning digest **53066** were unchanged.
+Source hashes, `.env`, portfolio/risk settings and the pipeline launch manifest
+matched the cutover baseline. No migration, historical correction, broker call,
+order operation or trading-control change was performed by this rollout.
+
+The deployed fixes add schema-constrained Claude criticism with strict local
+validation and retained failure diagnostics, accurate unavailable-review retry
+reasons, and removal of hidden SEC/XBRL metadata from newly captured excerpts.
+The job policy is `claude-subscription-review-schema-v3`; historical audits and
+source passages were not rewritten. Subscription-only niche calls and the
+operator's disabled extra-usage/top-up policy remain unchanged.
+
+Two replacement no-order canary calls completed at **20:37 UTC**: weak captured
+AVAV/PLTR evidence stayed insufficient, a synthetic supported case was recognized,
+and the source-free control stayed insufficient. All candidates remained
+ineligible because liquidity was unknown. Both calls returned structured objects
+with no permission denials. The initial audit-helper file-write failure was
+preserved separately, not counted as a model pass. Details and limitations:
+[niche evidence revision](NICHE_RESEARCH_EVIDENCE.md#criticextraction-revision-cl-5hj5--cl-4knt).
+
+The first deployed cycle completed at **20:41:06 UTC**, taking **176.719 seconds**:
+20 events processed, nine assessed, 11 dismissed, zero assessment retries.
+There were **no due niche jobs and no new niche audit/ticker** in this cycle.
+This proves the process and assessment cycle recovered, not useful niche yield.
+The old v2 inventory still showed one timeout retry and eight superseded jobs;
+it is not evidence that v3 criticism ran on production candidates yet. Broader
+source quality, long refinement calls and useful discovery remain **CL-uofe**.
+
+Local verification: **450 research tests + 9 workflow tests passed**, Ruff,
+`make typecheck` (252 files), targeted Bandit and staged/history secret scans
+passed. Existing host pytest-timeout warning remains documented. Hosted
+[CI](https://github.com/jackctj117/curLit/actions/runs/39493644618) completed
+successfully at **20:44 UTC**: **4,708 tests passed, two skipped, one warning**
+in 246.44 seconds; lint, typecheck and recovery-integration checks also passed.
+[Security scanning](https://github.com/jackctj117/curLit/actions/runs/39493644568)
+passed for dependencies, Bandit and secrets. Private canary/cutover evidence is under
+`data/deployments/2026-10-20_critic_schema_v2/`. The operator's standing instruction
+to commit, push and deploy verified fixes is now in AGENTS.md and Beads PRIME;
+failed safety checks still stop rollout and do not authorize changing trading policy.
+
 **Targeted deployment — October 20, 2026, 18:30 UTC (CL-cdov):**
 runtime source release **`3962f56`** is now running in launchd-owned event pipeline
 **53064** and morning digest **53066**. Old PIDs 9852/5612 are gone; one process
