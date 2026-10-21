@@ -460,7 +460,7 @@ def test_parallel_reports_do_not_share_failure_state() -> None:
     assert reports[0].discovery is not reports[1].discovery
 
 
-def test_recent_targeted_filings_do_not_prefer_old_annual() -> None:
+def test_targeted_filings_preserve_annual_quarterly_coverage() -> None:
     index = {
         "filings": {
             "recent": {
@@ -483,9 +483,11 @@ def test_recent_targeted_filings_do_not_prefer_old_annual() -> None:
 
     docs = ResearchTools(sec_http_get=fetch).filing_documents(1, "ACME", "Beta", limit=2)
     assert len(docs) == 2
-    assert [d.url.rsplit("/", 1)[1] for d in docs] == ["news.htm", "quarter.htm"]
+    # CL-mkqq intentionally replaces newest-only selection with latest-per-form
+    # coverage. A two-document request prioritizes annual plus quarterly.
+    assert [d.url.rsplit("/", 1)[1] for d in docs] == ["annual.htm", "quarter.htm"]
     assert all("Beta" in d.text and "normalized-text chars" in d.locator for d in docs)
-    assert len(calls) == 3  # Index and two requested documents; no annual preference.
+    assert len(calls) == 3  # Index and two requested documents; unchanged fetch budget.
 
 
 def test_parse_cannot_accept_model_claimed_verification() -> None:
@@ -508,7 +510,8 @@ def test_claude_refines_existing_lead_with_retrieved_evidence() -> None:
         def enrich(self, candidates: Any, universe: Any) -> list[str]:
             return []
 
-        def filing_documents(self, cik: int, ticker: str) -> list[SourceDocument]:
+        def filing_documents(self, cik: int, ticker: str, query: str = "") -> list[SourceDocument]:
+            assert query  # Candidate hints reach the retrieval boundary.
             return [SOURCE]
 
     class Client:

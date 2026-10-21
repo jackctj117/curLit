@@ -13,16 +13,16 @@ to publish ideas. Those limitations remain explicit in the comparison report.
 
 Model calls happen ONLY when an operator passes --allow-model-calls. The
 hop-graph traversal, entailment and the shared critic all go through
-get_client("claude-code") with no_tools=True (subscription CLI: usd_cost is
-reported unknown, not zero). The optional baseline arm uses the existing
-equivalent-tool harness with an API model (MOONSHOT_API_KEY or
-ANTHROPIC_API_KEY must already be in the environment).
+strict subscription transport with no_tools=True (usd_cost remains unknown,
+not zero). The optional equivalent-tool baseline uses the same approved Sonnet
+model. All roles share one hard per-event invocation budget. API baselines and
+unapproved model overrides are rejected before calls.
 
 Example (operator, research-only environment):
 
     .venv/bin/python scripts/niche_hopgraph_shadow.py \
         --captures /path/to/captures/ --output /path/to/report.json \
-        --baseline moonshot --baseline-model YOUR_KIMI_MODEL \
+        --baseline claude-subscription --max-model-calls-per-event 3 \
         --memory-sqlite /path/to/hopgraph_memory.sqlite --allow-model-calls
 """
 
@@ -31,7 +31,6 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -39,12 +38,15 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from src.events.adversarial_critic import AdversarialCritic  # noqa: E402
-from src.events.hop_graph import default_traversal_model  # noqa: E402
+from src.events._util import ThreadLocalClient  # noqa: E402
 from src.events.hop_graph_memory import NicheEdgeMemory  # noqa: E402
 from src.events.hop_graph_shadow import compare_events, validate_capture_cohort  # noqa: E402
-from src.events.hop_graph_verify import default_entailment_model  # noqa: E402
 from src.events.niche_shadow import CapturedInput, ResearchModel  # noqa: E402
+from src.events.subscription_shadow_budget import (  # noqa: E402
+    DEFAULT_EVENT_CALL_LIMIT,
+    SUBSCRIPTION_MODEL,
+    SubscriptionResearchModel,
+)
 
 logger = logging.getLogger("scripts.niche_hopgraph_shadow")
 
@@ -86,24 +88,13 @@ def sqlite_memory(path: Path) -> NicheEdgeMemory:
 
 
 def _live_clients(args: argparse.Namespace) -> ShadowClients:  # pragma: no cover - operator only
-    from src.research.llm.client import get_client  # noqa: PLC0415
-
     baseline: ResearchModel | None = None
-    if args.baseline == "moonshot":
-        from src.events.niche_shadow import MoonshotResearchModel  # noqa: PLC0415
-
-        key = os.environ.get("MOONSHOT_API_KEY")
-        if not key:
-            raise SystemExit("MOONSHOT_API_KEY missing; do not copy production .env")
-        baseline = MoonshotResearchModel(args.baseline_model, key)
-    elif args.baseline == "claude":
-        from src.events.niche_shadow import ClaudeResearchModel  # noqa: PLC0415
-
-        baseline = ClaudeResearchModel(args.baseline_model)
+    if args.baseline == "claude-subscription":
+        baseline = SubscriptionResearchModel(ThreadLocalClient())
     return ShadowClients(
-        traversal=get_client("claude-code"),
-        entailment=get_client("claude-code"),
-        critic=get_client("claude-code"),
+        traversal=ThreadLocalClient(),
+        entailment=ThreadLocalClient(),
+        critic=ThreadLocalClient(),
         baseline=baseline,
     )
 
@@ -116,8 +107,14 @@ def main(argv: list[str] | None = None, *, clients: ShadowClients | None = None)
     parser.add_argument("--entailment-model", default=None)
     parser.add_argument("--critic-model", default=None)
     parser.add_argument("--no-critic", action="store_true", help="Leaves every lead unapproved")
-    parser.add_argument("--baseline", choices=("none", "moonshot", "claude"), default="none")
+    parser.add_argument("--baseline", choices=("none", "claude-subscription"), default="none")
     parser.add_argument("--baseline-model", default=None)
+    parser.add_argument(
+        "--max-model-calls-per-event",
+        type=int,
+        default=DEFAULT_EVENT_CALL_LIMIT,
+        help="Hard shared CLI invocation limit across both arms and every role",
+    )
     parser.add_argument("--memory-sqlite", type=Path, default=None)
     parser.add_argument("--playbooks", type=Path, default=None)
     parser.add_argument(
@@ -128,9 +125,19 @@ def main(argv: list[str] | None = None, *, clients: ShadowClients | None = None)
     parser.add_argument(
         "--allow-model-calls",
         action="store_true",
-        help="Explicitly allow model calls (subscription CLI and, for a baseline, a billed API)",
+        help="Explicitly allow approved subscription-only CLI calls; no API fallback",
     )
     args = parser.parse_args(argv)
+    for model in (
+        args.traversal_model,
+        args.entailment_model,
+        args.critic_model,
+        args.baseline_model,
+    ):
+        if model not in (None, SUBSCRIPTION_MODEL):
+            parser.error(f"subscription-only shadow requires {SUBSCRIPTION_MODEL}")
+    if args.max_model_calls_per_event <= 0:
+        parser.error("--max-model-calls-per-event must be positive")
     captures = load_captures(args.captures)
     if args.output.exists():
         parser.error("refusing to overwrite an existing report")
@@ -146,8 +153,6 @@ def main(argv: list[str] | None = None, *, clients: ShadowClients | None = None)
         with args.output.open("x") as stream:
             json.dump(validation, stream, indent=2, allow_nan=False)
         return 0
-    if args.baseline != "none" and not args.baseline_model:
-        parser.error("--baseline-model is required with a baseline arm")
     if not args.allow_model_calls:
         parser.error(
             f"{len(captures)} capture(s) validated; --allow-model-calls is required to run"
@@ -156,14 +161,9 @@ def main(argv: list[str] | None = None, *, clients: ShadowClients | None = None)
     from src.events.playbooks import load_playbooks  # noqa: PLC0415
 
     playbooks = load_playbooks(args.playbooks) if args.playbooks else load_playbooks()
-    critic = (
-        None
-        if args.no_critic
-        else AdversarialCritic(client=clients.critic, model=args.critic_model, enabled=True)
-    )
     memory = sqlite_memory(args.memory_sqlite) if args.memory_sqlite else None
-    traversal_model = args.traversal_model or default_traversal_model()
-    entailment_model = args.entailment_model or default_entailment_model()
+    traversal_model = SUBSCRIPTION_MODEL
+    entailment_model = SUBSCRIPTION_MODEL
     logger.info(
         "hop-graph shadow: %d captures traversal=%s entailment=%s baseline=%s",
         len(captures),
@@ -176,11 +176,13 @@ def main(argv: list[str] | None = None, *, clients: ShadowClients | None = None)
         traversal_client=clients.traversal,
         entailment_client=clients.entailment,
         baseline_model=clients.baseline if args.baseline != "none" else None,
-        critic=critic,
+        critic=None,
         traversal_model=traversal_model,
         entailment_model=entailment_model,
         memory=memory,
         playbooks=playbooks,
+        subscription_call_limit=args.max_model_calls_per_event,
+        subscription_critic_client=None if args.no_critic else clients.critic,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open("x") as stream:

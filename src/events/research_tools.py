@@ -56,6 +56,41 @@ _EXCERPT_ANCHORS = (
     "competition",
 )
 
+# Generic thesis prose is not a useful filing search target. Keep this lexical
+# filter deterministic; selected text remains evidence to review, not proof.
+_QUERY_STOP_WORDS = frozenset(
+    [
+        "this",
+        "that",
+        "with",
+        "from",
+        "their",
+        "they",
+        "company",
+        "companies",
+        "could",
+        "would",
+        "should",
+        "because",
+        "which",
+        "when",
+        "where",
+        "have",
+        "will",
+        "been",
+        "into",
+        "more",
+        "than",
+        "also",
+        "relationship",
+        "exposure",
+        "catalyst",
+        "documented",
+        "fact",
+        "inference",
+    ]
+)
+
 #: Injectable transports so unit tests feed canned bodies (no live network).
 SecHttpGet = Callable[[str, dict[str, str]], str]
 ProfileFn = Callable[[str], dict[str, Any] | None]
@@ -148,6 +183,34 @@ def anchored_excerpt(text: str, max_chars: int) -> str | None:
     return text[:max_chars]
 
 
+def _targeted_start(text: str, terms: list[str], max_chars: int) -> int | None:
+    """Prefer multi-term body prose over the first title/TOC hit.
+
+    Scores only retrieval relevance, never factual support. All candidates are
+    exact normalized-text slices; bounded hits keep repeated boilerplate cheap.
+    """
+    low = text.lower()
+    patterns = [re.compile(r"\b" + re.escape(term) + r"\b") for term in terms]
+    starts = set()
+    for pattern in patterns:
+        for index, match in enumerate(pattern.finditer(low)):
+            if index >= 64:  # Bound repeated mentions per one of twelve query terms.
+                break
+            starts.add(max(0, match.start() - 200))  # Preserve preceding sentence context.
+    if not starts:
+        return None
+
+    def rank(start: int) -> tuple[int, int, int]:
+        window = text[start : start + max_chars]
+        return (
+            sum(bool(pattern.search(window.lower())) for pattern in patterns),
+            _prose_score(window),
+            -start,  # Deterministic earliest location on an otherwise equal score.
+        )
+
+    return max(starts, key=rank)
+
+
 class ResearchTools:
     """Grounds niche ideas in real SEC filings + company profiles."""
 
@@ -189,7 +252,7 @@ class ResearchTools:
         query: str = "",
         limit: int = 3,
     ) -> list[SourceDocument]:
-        """Dated recent annual/quarterly/current reports, newest first.
+        """Latest annual/quarterly/current coverage within three documents.
 
         Current reports (8-K) include company announcements. Capture exact
         normalized-text offsets and source identity; never fetch a model URL.
@@ -206,11 +269,25 @@ class ResearchTools:
                 recent.get("filingDate", []),
                 strict=False,
             )
-            selected = sorted(
-                (r for r in rows if r[0] in ("10-K", "10-Q", "8-K")),
-                key=lambda r: r[3],
+            recent_rows = sorted(
+                (r for r in rows if r[0] in ("10-K", "20-F", "40-F", "10-Q", "8-K", "6-K")),
+                key=lambda r: (r[3], r[1], r[2]),
                 reverse=True,
-            )[: max(0, min(limit, 3))]  # Three documents bounds per-tool network work.
+            )
+            # A burst of current reports must not crowd out business/exposure
+            # coverage. Missing categories use newest remaining unique filings.
+            preferred = [
+                next((r for r in recent_rows if r[0] in forms), None)
+                for forms in (("10-K", "20-F", "40-F"), ("10-Q",), ("8-K", "6-K"))
+            ]
+            selected = []
+            identities = set()
+            for row in [r for r in preferred if r is not None] + recent_rows:
+                identity = (row[1], row[2])
+                if identity not in identities:
+                    selected.append(row)
+                    identities.add(identity)
+            selected = selected[: max(0, min(limit, 3))]  # Existing network-work bound.
         except Exception:
             logger.warning("research: filing index unavailable for %s", symbol)
             return []
@@ -225,10 +302,18 @@ class ResearchTools:
             try:
                 body = self._sec_http_get(url, self._headers())
                 text = html_to_text(body[: self.max_doc_process_chars])
-                terms = re.findall(r"[A-Za-z]{4,}", query.lower())[:12]
-                hits = [text.lower().find(t) for t in terms if t in text.lower()]
-                if hits:
-                    start = max(0, min(hits) - 200)  # Retain preceding sentence context.
+                # Bound supplied model prose before extracting at most twelve
+                # unique lexical targets; no model URL or executable query.
+                terms = list(
+                    dict.fromkeys(
+                        t
+                        for t in re.findall(r"[A-Za-z]{4,}", query[:1200].lower())
+                        if t not in _QUERY_STOP_WORDS
+                    )
+                )[:12]
+                targeted = _targeted_start(text, terms, self.max_excerpt_chars)
+                if targeted is not None:
+                    start = targeted
                     passage = text[start : start + self.max_excerpt_chars]
                 else:
                     passage = anchored_excerpt(text, self.max_excerpt_chars) or ""

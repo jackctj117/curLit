@@ -1,5 +1,39 @@
 # CURRENT OPERATIONS — what curLit is practicing right now
 
+**Published development work — October 21, 2026, NOT deployed:** hardening
+commit `cfc8557` is on `origin/main`. Hosted
+[CI](https://github.com/jackctj117/curLit/actions/runs/39628490916) passed:
+**4,840 unit tests, two skipped, one warning**, plus lint, typecheck and
+disposable recovery integration. Hosted
+[security](https://github.com/jackctj117/curLit/actions/runs/39628490920) passed
+Bandit and secrets but failed dependency audit: resolved Pillow 12.3.0 has
+eight findings fixed in 13.0.0, while current Streamlit excludes Pillow 13.
+**CL-esnh blocks deployment**; findings were not suppressed and the operational
+environment was not upgraded. Separating optional Streamlit tooling from the
+research installation requires an explicit packaging decision.
+
+The event pipeline remains the October 20 process **45289** (read-only owner
+verification), not the new checkout release. No service, broker order, trading
+control, or operational record was changed during this work. Its two Claude
+discovery/refinement passes are not proof of two verified relationship hops.
+Recent inspected audits still contained insufficient-evidence candidates, not
+fresh eligible multi-hop ideas.
+
+Development fixes **CL-mkqq/CL-cnwz** target annual/foreign filing coverage and
+strict subscription-only, shared-budget graph research. A no-model public-source
+capture retrieved 30 documents across ten predetermined companies for one
+engineering event. This is not a blind discovery result or quality acceptance;
+the typed graph remains shadow-only with no publication/order path. Existing
+evidence, liquidity and critic gates remain unchanged.
+
+For these two niche fixes, the source-only offline container passed **250
+focused tests**, Ruff, and `make typecheck` across **254 source files**.
+Sandboxed `bandit -r src -ll -q` passed with existing suppression-comment
+warnings. Independent reviews found no confirmed blocker (132 retrieval tests,
+107 graph/budget tests). A one-event no-order shadow experiment has a shared
+12-generation ceiling and no baseline arm; it is not the required broader
+quality comparison. Security deployment gating remains blocked as above.
+
 **Targeted deployment — October 20, 2026, 20:38 UTC (CL-2m1c):**
 source release **`63fb4a3`** was committed and pushed to `origin/main`, including
 the three previously unpublished commits. The verified idle event pipeline

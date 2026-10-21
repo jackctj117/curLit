@@ -637,7 +637,27 @@ class NicheAgent:
                             for candidate in candidates:
                                 cik = self.universe.get_cik(candidate.ticker)
                                 if cik:
-                                    docs = self.tools.filing_documents(cik, candidate.ticker)
+                                    # Retrieval hints are unverified hypotheses,
+                                    # never source evidence. Bound each field so
+                                    # a verbose relationship cannot erase the
+                                    # exposure/catalyst and rationale hints.
+                                    hints = [
+                                        next(
+                                            (
+                                                c.statement
+                                                for c in candidate.claims
+                                                if c.role == role
+                                            ),
+                                            "",
+                                        )[:240]
+                                        for role in ("relationship", "exposure", "catalyst")
+                                    ]
+                                    hints.extend(
+                                        [candidate.rationale[:240], candidate.torque_reason[:240]]
+                                    )
+                                    docs = self.tools.filing_documents(
+                                        cik, candidate.ticker, query=" ".join(hints)[:1200]
+                                    )
                                     outcome.sources.extend(docs)
                                     grounding.extend(json.dumps(d.to_dict()) for d in docs)
                         # Put captured sources BEFORE optional profiles so the

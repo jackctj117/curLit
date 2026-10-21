@@ -743,6 +743,53 @@ class TestToolAugmentedHopping:
         assert "grounded REAL" in followup
         assert "REAL RESEARCH DATA" in followup
 
+    def test_filing_queries_include_bounded_candidate_hypotheses(self) -> None:
+        class QueryTools(FakeTools):
+            def __init__(self) -> None:
+                super().__init__()
+                self.queries: list[tuple[int, str, str]] = []
+
+            def filing_documents(self, cik: int, symbol: str, query: str = "") -> list[Any]:
+                self.queries.append((cik, symbol, query))
+                return []  # Retrieval absence remains absence, not fabricated evidence.
+
+        claims = [
+            {
+                "kind": "inference",
+                "role": role,
+                "statement": word + " detail" * 100,
+                "source_id": "",
+                "passage": "",
+            }
+            for role, word in (
+                ("relationship", "supplier"),
+                ("exposure", "refinery"),
+                ("catalyst", "embargo"),
+            )
+        ]
+        tools = QueryTools()
+        client = MultiResponseClient(
+            [
+                _payload(_idea_dict(claims=claims, rationale="cobalt", torque_reason="capacity")),
+                _payload(),
+            ]
+        )
+        agent = NicheAgent(
+            universe=FakeUniverse(),
+            client=client,
+            market_data_fn=_liquid_md,
+            max_cycles=2,
+            tools=tools,
+        )
+        assert agent.run(self._event()) == []  # Unsupported hypotheses never clear the gate.
+        assert len(tools.queries) == 1
+        cik, symbol, query = tools.queries[0]
+        assert (cik, symbol) == (111, "REAL")
+        assert len(query) <= 1200
+        assert all(
+            term in query for term in ("supplier", "refinery", "embargo", "cobalt", "capacity")
+        )
+
     def test_tools_respect_max_entities(self) -> None:
         c1 = _payload(
             _idea_dict(ticker="REAL", company_name="Real Co Inc"),

@@ -475,10 +475,14 @@ judge whether a passage supports the proposition and whether the inferred
 economic benefit follows. **Substring matching and model agreement do not
 prove truth.** Human evaluation remains necessary.
 
-Research retrieval selects up to three recent 10-K/10-Q/8-K primary documents
-by filing date, instead of always preferring an annual report. An optional
-query locates relevant text; normalized-text offsets and accession identify
-the passage. This includes current-report announcements, not an exhaustive
+Research retrieval (CL-mkqq) selects the latest annual (10-K/20-F/40-F),
+quarterly (10-Q), and current (8-K/6-K) primary documents, up to the existing
+three-document limit. Missing categories use the newest remaining unique
+filings. Current-report bursts cannot crowd out annual business coverage.
+Bounded candidate claims/rationale supply unverified search hints; deterministic
+multi-term relevance and prose ranking locate exact normalized-text slices.
+Offsets and accession identify the passage. This is retrieval relevance, not
+proof of the claim, and includes current-report announcements, not an exhaustive
 search of investor-relations releases, exhibits or every historical filing.
 Day-only SEC publication dates are conservatively represented at end of day;
 a same-day document can remain unavailable until that cutoff passes.
@@ -697,12 +701,20 @@ Unverifiable edges carry no evidence and are not stored. A memory outage or
 corrupt row means "no memory", never evidence. The memory never supplies a
 trade direction.
 
-**Models** (all through `get_client("claude-code")`, injectable in tests):
-- `NICHE_HOPGRAPH_TRAVERSAL_MODEL` defaults to `niche_agent.DEFAULT_MODEL`.
-- `NICHE_HOPGRAPH_ENTAILMENT_MODEL` defaults to `claude-haiku-4-5-20251001`.
+**Operator CLI models (CL-cnwz):** traversal, entailment, criticism and the
+optional baseline all use strict subscription-only `claude-sonnet-4-6`, with
+tools disabled. API baselines and other model overrides are rejected before
+calls. Component-level injectable defaults do not override this CLI policy.
+Authentication and included-usage attestation remain mandatory; no paid
+fallback is enabled. USD cost is unknown (`subscription_unmetered`), never $0.
 
-No particular new model is assumed. Subscription CLI calls report USD cost as
-unknown (`subscription_unmetered`), never $0.
+Every role shares one thread-safe per-event CLI invocation budget, default
+three. An operator can explicitly set a bounded experiment allowance. Quota,
+authentication, transport and budget failures stop subsequent reservations and
+invalidate eligibility for that event; already in-flight calls can finish.
+The cap counts CLI generations, not internal turns, tokens or dollars. Graph
+work runs first, so a shared cap is **not equal allocation between arms** and
+does not establish an equivalent-budget comparison.
 
 **Shadow comparison** (`scripts/niche_hopgraph_shadow.py`,
 `src/events/hop_graph_shadow.py`). The script replays captured events (the
@@ -720,7 +732,7 @@ Unit tests run it end to end on fakes only. An operator runs it like this:
 ```sh
 .venv/bin/python scripts/niche_hopgraph_shadow.py \
   --captures /path/to/captures/ --output /path/to/new-report.json \
-  --baseline moonshot --baseline-model YOUR_AVAILABLE_KIMI_MODEL \
+  --baseline claude-subscription --max-model-calls-per-event 3 \
   --memory-sqlite /path/to/hopgraph-memory.sqlite --allow-model-calls
 ```
 
@@ -728,8 +740,12 @@ Without `--allow-model-calls` the script validates the captures and stops.
 The script refuses to overwrite a report. Edge memory goes only to a local
 sqlite file. The production `.env` and database are never read.
 
-Pre-registered acceptance (bead): at least 20 captured events, comparing for
-the hop graph and the Kimi baseline under identical gates:
+The original CL-ynuh acceptance called for at least 20 captured events and a
+Kimi comparison. That API arm is no longer allowed by the subscription-only
+operator policy. A Claude baseline can support engineering evaluation, but
+does not fulfill the original model comparison. Quality evaluation still needs
+adequate independent captured events, comparable budgets and human evidence
+review, measuring:
 - eligible ideas per event;
 - hop-depth distribution;
 - gate pass rate;

@@ -24,12 +24,14 @@ from src.events.hop_graph_shadow import (
     validate_capture_cohort,
 )
 from src.events.niche_shadow import CapturedInput, ModelReply
+from src.events.subscription_shadow_budget import SUBSCRIPTION_MODEL, SubscriptionResearchModel
 from tests.unit._hop_graph_fixtures import (
     ACME_10K,
     REL_PASSAGE,
     FakeTraversal,
     SupportiveCritic,
     capture_payload,
+    reply,
     world_edges,
     world_entailment,
 )
@@ -56,12 +58,43 @@ def _write_capture(tmp_path: Path) -> Path:
     return captures
 
 
+class StrictFixtureClient:
+    """Assert transport policy, then adapt the existing synthetic world fixture."""
+
+    def __init__(self, inner: Any) -> None:
+        self.inner = inner
+
+    @property
+    def calls(self) -> Any:
+        return self.inner.calls
+
+    def complete(self, **kwargs: Any) -> Any:
+        assert kwargs.pop("subscription_only") is True
+        assert kwargs["no_tools"] is True
+        assert kwargs["model"] == SUBSCRIPTION_MODEL
+        kwargs.pop("json_schema", None)
+        result = self.inner.complete(**kwargs)
+        return reply(result.text, SUBSCRIPTION_MODEL)
+
+
+class SubscriptionBaselineFixture:
+    def __init__(self, baseline: Baseline) -> None:
+        self.baseline = baseline
+
+    def complete(self, **kwargs: Any) -> Any:
+        assert kwargs["subscription_only"] is True and kwargs["no_tools"] is True
+        self.baseline.calls += 1
+        return reply('{"niche_ideas": []}', SUBSCRIPTION_MODEL)
+
+
 def _clients(baseline: Baseline | None = None) -> shadow.ShadowClients:
     return shadow.ShadowClients(
-        traversal=FakeTraversal(world_edges()),
-        entailment=world_entailment(),
-        critic=SupportiveCritic(),
-        baseline=baseline,
+        traversal=StrictFixtureClient(FakeTraversal(world_edges())),
+        entailment=StrictFixtureClient(world_entailment()),
+        critic=StrictFixtureClient(SupportiveCritic()),
+        baseline=SubscriptionResearchModel(SubscriptionBaselineFixture(baseline))
+        if baseline
+        else None,
     )
 
 
@@ -75,13 +108,11 @@ def test_shadow_script_runs_end_to_end_and_writes_report(tmp_path: Path) -> None
             "--output",
             str(out),
             "--baseline",
-            "claude",
-            "--baseline-model",
-            "scripted-v1",
+            "claude-subscription",
             "--memory-sqlite",
             str(tmp_path / "memory.sqlite"),
-            "--traversal-model",
-            "trav-x",
+            "--max-model-calls-per-event",
+            "32",  # Synthetic complete graph plus baseline, not a deployment default.
             "--allow-model-calls",
         ],
         clients=_clients(baseline),
@@ -93,8 +124,15 @@ def test_shadow_script_runs_end_to_end_and_writes_report(tmp_path: Path) -> None
     assert report["mode"] == "shadow_only" and report["baseline_run"] is True
     [event] = report["events"]
     hop = event["hop_graph"]
-    assert hop["traversal_model"] == "trav-x"
-    assert hop["entailment_model"] == "claude-haiku-4-5-20251001"
+    assert hop["traversal_model"] == SUBSCRIPTION_MODEL
+    assert hop["entailment_model"] == SUBSCRIPTION_MODEL
+    assert event["subscription_budget"]["stop_reason"] == ""
+    assert set(event["subscription_budget"]["calls_by_role"]) == {
+        "traversal",
+        "entailment",
+        "critic",
+        "baseline",
+    }
     metrics = hop["metrics"]
     assert metrics["candidates"] == 2  # FRO (hop 1) and ACME (hop 2)
     assert metrics["evidence_gate_passes"] == 1
@@ -133,6 +171,92 @@ def test_shadow_script_refuses_model_calls_without_flag(tmp_path: Path) -> None:
     assert exc.value.code == 2
     assert clients.traversal.calls == [] and clients.entailment.calls == []
     assert not (tmp_path / "r.json").exists()
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        ["--baseline", "moonshot"],
+        ["--baseline", "claude"],
+        ["--traversal-model", "other"],
+        ["--entailment-model", "other"],
+        ["--critic-model", "other"],
+        ["--baseline-model", "other"],
+        ["--max-model-calls-per-event", "0"],
+    ],
+)
+def test_shadow_cli_rejects_paid_or_unapproved_policy_before_calls(
+    tmp_path: Path, override: list[str]
+) -> None:
+    clients = _clients()
+    with pytest.raises(SystemExit):
+        shadow.main(
+            [
+                "--captures",
+                str(_write_capture(tmp_path)),
+                "--output",
+                str(tmp_path / "r.json"),
+                "--allow-model-calls",
+                *override,
+            ],
+            clients=clients,
+        )
+    assert clients.traversal.calls == [] and clients.entailment.calls == []
+    assert clients.critic.calls == 0
+
+
+def test_default_shared_budget_is_explicitly_incomplete(tmp_path: Path) -> None:
+    out = tmp_path / "r.json"
+    shadow.main(
+        ["--captures", str(_write_capture(tmp_path)), "--output", str(out), "--allow-model-calls"],
+        clients=_clients(),
+    )
+    report = json.loads(out.read_text())
+    [event] = report["events"]
+    assert event["subscription_budget"]["calls"] == 3
+    assert event["subscription_budget"]["limit"] == 3
+    arm = event["hop_graph"]
+    assert arm["discovery_status"] == "budget_exhausted"
+    assert arm["graph"]["outcome"]["status"] == "budget_exhausted"
+    assert arm["metrics"]["eligible"] == 0
+    assert not any(c["research"]["eligible"] for c in arm["candidates"])
+    assert report["evidence_coverage"]["status"] == "exploratory"
+
+
+def test_late_baseline_failure_revokes_earlier_graph_approval(tmp_path: Path) -> None:
+    class FailedBaseline:
+        def complete(self, **kwargs: Any) -> Any:
+            raise RuntimeError("synthetic transport unavailable")
+
+    clients = _clients()
+    clients.baseline = SubscriptionResearchModel(FailedBaseline())
+    out = tmp_path / "r.json"
+    shadow.main(
+        [
+            "--captures",
+            str(_write_capture(tmp_path)),
+            "--output",
+            str(out),
+            "--allow-model-calls",
+            "--baseline",
+            "claude-subscription",
+            "--max-model-calls-per-event",
+            "32",
+        ],
+        clients=clients,
+    )
+    [event] = json.loads(out.read_text())["events"]
+    graph = event["hop_graph"]
+    # The independent synthetic world supports ACME, but the paired experiment
+    # cannot retain approval after its shared event transport fails.
+    assert graph["metrics"]["evidence_gate_passes"] == 1
+    assert graph["graph"]["component_outcome_before_shared_budget"]["status"] == "completed"
+    assert graph["graph"]["paths"]
+    for arm in (graph, event["baseline"]):
+        assert arm["discovery_status"] == "unavailable"
+        assert arm["metrics"]["eligible"] == 0
+        assert arm["comparable"] is False
+        assert not any(c["research"]["eligible"] for c in arm["candidates"])
 
 
 def test_shadow_script_refuses_to_overwrite(tmp_path: Path) -> None:
@@ -176,6 +300,8 @@ def test_shadow_memory_carries_edges_across_events(tmp_path: Path) -> None:
             "--memory-sqlite",
             str(tmp_path / "m.sqlite"),
             "--allow-model-calls",
+            "--max-model-calls-per-event",
+            "32",  # Explicit synthetic fixture allocation.
         ],
         clients=_clients(),
     )
@@ -232,7 +358,8 @@ def test_duplicate_event_ids_fail_before_any_model_call(alias: Any) -> None:
     second = capture_payload()
     second["event"]["id"] = alias
     second["event"]["headline"] = "Changed content does not change the event identity"
-    clients = _clients(Baseline())
+    baseline = Baseline()
+    clients = _clients(baseline)
     with pytest.raises(ValueError, match="duplicate event identity"):
         compare_events(
             [first, CapturedInput.capture(second)],
@@ -243,7 +370,7 @@ def test_duplicate_event_ids_fail_before_any_model_call(alias: Any) -> None:
         )
     assert clients.traversal.calls == []
     assert clients.entailment.calls == []
-    assert clients.baseline.calls == 0  # type: ignore[union-attr]
+    assert baseline.calls == 0
 
 
 def test_copied_event_with_new_id_is_not_a_distinct_observation() -> None:

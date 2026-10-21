@@ -12,6 +12,8 @@ import json
 import re
 from types import SimpleNamespace
 
+import pytest
+
 from src.events.research_tools import (
     ResearchTools,
     anchored_excerpt,
@@ -110,6 +112,78 @@ def test_filing_capture_offsets_reproduce_clean_visible_excerpt() -> None:
     assert match is not None
     assert html_to_text(body)[int(match[1]):int(match[2])] == doc.text
     assert doc.published_at == "2026-10-19T23:59:59+00:00"
+
+
+def test_filing_mix_preserves_annual_and_quarterly_under_current_report_burst() -> None:
+    recent = {
+        "form": ["8-K", "8-K", "8-K", "10-Q", "10-K"],
+        "accessionNumber": [f"0000000123-26-{i:06d}" for i in range(5)],
+        "primaryDocument": ["current.htm", "other.htm", "third.htm", "quarter.htm", "annual.htm"],
+        "filingDate": ["2026-10-20", "2026-10-19", "2026-10-18", "2026-08-01", "2026-02-01"],
+    }
+    requested: list[str] = []
+
+    def fetch(url: str, headers: dict[str, str]) -> str:
+        if "submissions" in url:
+            return json.dumps({"filings": {"recent": recent}})
+        requested.append(url.rsplit("/", 1)[-1])
+        return _DOC_HTML
+
+    docs = ResearchTools(sec_http_get=fetch).filing_documents(123, "ACME")
+    assert set(requested) == {"annual.htm", "quarter.htm", "current.htm"}
+    assert len(requested) == len(docs) == 3
+
+
+@pytest.mark.parametrize("annual", ["20-F", "40-F"])
+@pytest.mark.parametrize(
+    "limit,expected", [
+        (1, ["annual.htm"]), (3, ["annual.htm", "new.htm", "old.htm"]),
+        (99, ["annual.htm", "new.htm", "old.htm"]),
+    ]
+)
+def test_foreign_issuer_coverage_and_missing_quarterly_fill(
+    annual: str, limit: int, expected: list[str]
+) -> None:
+    recent = {
+        "form": ["6-K", "6-K", "6-K", annual],
+        "accessionNumber": ["123-26-1", "123-26-1", "123-26-2", "123-26-3"],
+        "primaryDocument": ["new.htm", "new.htm", "old.htm", "annual.htm"],
+        "filingDate": ["2026-10-20", "2026-10-20", "2026-10-19", "2026-02-01"],
+    }
+    requests: list[str] = []
+
+    def fetch(url: str, headers: dict[str, str]) -> str:
+        if "submissions" in url:
+            return json.dumps({"filings": {"recent": recent}})
+        requests.append(url.rsplit("/", 1)[-1])
+        return _DOC_HTML
+
+    docs = ResearchTools(sec_http_get=fetch).filing_documents(123, "FRO", limit=limit)
+    assert requests == expected
+    assert len(docs) == len(expected)
+    assert docs[0].locator.startswith(annual)
+
+
+def test_targeted_excerpt_prefers_relationship_body_to_toc_and_preserves_provenance() -> None:
+    toc = "Company Revenue 10 11 12 Cobalt 14 Refinery 20 Customers 30 "
+    body = (
+        toc
+        + "Cover information. " * 100
+        + "Our cobalt refinery supplies Acme customers under multi-year contracts. " * 12
+    )
+    submissions = json.loads(_SUBMISSIONS)
+    submissions["filings"]["recent"]["filingDate"] = ["2026-10-19"] * 3
+    tools = ResearchTools(
+        sec_http_get=_fake_sec(json.dumps(submissions), body), max_excerpt_chars=500
+    )
+    doc = tools.filing_documents(123, "ACME", "company cobalt refinery customers", limit=1)[0]
+    assert "multi-year contracts" in doc.text
+    assert "Revenue 10" not in doc.text
+    match = re.search(r"normalized-text chars (\d+):(\d+)", doc.locator)
+    assert match is not None
+    assert body[int(match[1]) : int(match[2])] == doc.text
+    assert doc.published_at == "2026-10-19T23:59:59+00:00"
+    assert doc.to_dict()["source_id"] == doc.source_id
 
 
 def test_anchored_excerpt_starts_at_anchor():

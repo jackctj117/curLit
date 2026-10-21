@@ -27,7 +27,7 @@ import logging
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime
-from typing import Any
+from typing import Any, cast
 
 from src.events.adversarial_critic import AdversarialCritic
 from src.events.hop_graph import EdgeMemory, HopGraphTraversal
@@ -43,7 +43,13 @@ from src.events.niche_shadow import (
 )
 from src.events.playbooks import Playbook
 from src.events.research_evidence import SourceDocument, digest, timestamp
-from src.research.llm.client import sum_or_unknown
+from src.events.subscription_shadow_budget import (
+    SUBSCRIPTION_MODEL,
+    EventCallBudget,
+    SubscriptionBudgetClient,
+    SubscriptionResearchModel,
+)
+from src.research.llm.client import LLMClient, sum_or_unknown
 
 logger = logging.getLogger(__name__)
 
@@ -362,33 +368,102 @@ def compare_events(
     memory: EdgeMemory | None = None,
     playbooks: Mapping[str, Playbook] | None = None,
     budget: ResearchBudget | None = None,
+    subscription_call_limit: int | None = None,
+    subscription_critic_client: Any = None,
 ) -> dict[str, Any]:
     """Replay in capture-time order (memory is point-in-time by ``as_of``)."""
     cohort = validate_capture_cohort(captures)
+    if subscription_call_limit is not None:
+        EventCallBudget(subscription_call_limit)  # Validate before any role runs.
+        if any(
+            model not in (None, SUBSCRIPTION_MODEL) for model in (traversal_model, entailment_model)
+        ):
+            raise ValueError("subscription_model_not_approved")
+        if baseline_model is not None and not isinstance(baseline_model, SubscriptionResearchModel):
+            raise ValueError("subscription_only_baseline_required")
+        if critic is not None:
+            raise ValueError("strict shadow requires an explicit subscription critic client")
+        traversal_model = entailment_model = SUBSCRIPTION_MODEL
     ordered = sorted(captures, key=lambda c: (str(c.payload()["captured_at"]), c.input_hash))
     events = []
     for capture in ordered:
         payload = capture.payload()
+        event_budget = (
+            EventCallBudget(subscription_call_limit)
+            if subscription_call_limit is not None
+            else None
+        )
+        event_traversal, event_entailment = traversal_client, entailment_client
+        event_critic, event_baseline = critic, baseline_model
+        if event_budget is not None:
+            event_traversal = SubscriptionBudgetClient(traversal_client, event_budget, "traversal")
+            event_entailment = SubscriptionBudgetClient(
+                entailment_client, event_budget, "entailment"
+            )
+            if subscription_critic_client is not None:
+                event_critic = AdversarialCritic(
+                    # Critic consumes only complete(); its nominal LLMClient
+                    # annotation predates this transparent policy decorator.
+                    client=cast(
+                        LLMClient,
+                        SubscriptionBudgetClient(
+                            subscription_critic_client, event_budget, "critic"
+                        ),
+                    ),
+                    model=SUBSCRIPTION_MODEL,
+                    enabled=True,
+                    subscription_only=True,
+                )
+            if isinstance(baseline_model, SubscriptionResearchModel):
+                event_baseline = baseline_model.bound(event_budget)
         row: dict[str, Any] = {
             "event_id": payload["event"].get("id"),
             "captured_at": payload["captured_at"],
             "input_hash": capture.input_hash,
             "hop_graph": run_hopgraph_arm(
                 capture,
-                traversal_client=traversal_client,
-                entailment_client=entailment_client,
+                traversal_client=event_traversal,
+                entailment_client=event_entailment,
                 traversal_model=traversal_model,
                 entailment_model=entailment_model,
-                critic=critic,
+                critic=event_critic,
                 memory=memory,
                 playbooks=playbooks,
             ),
             "baseline": None,
         }
-        if baseline_model is not None:
+        if event_baseline is not None:
             row["baseline"] = run_baseline_arm(
-                capture, baseline_model, critic=critic, budget=budget
+                capture, event_baseline, critic=event_critic, budget=budget
             )
+        if event_budget is not None:
+            row["subscription_budget"] = event_budget.report()
+            reason = row["subscription_budget"]["stop_reason"]
+            if reason:
+                # Components intentionally catch failures. Their partial paths
+                # must never turn a shared event-budget failure into approval.
+                for arm in (row["hop_graph"], row["baseline"]):
+                    if arm is None:
+                        continue
+                    arm["discovery_status"] = (
+                        "budget_exhausted" if reason == "event_model_call_limit" else "unavailable"
+                    )
+                    arm["discovery_reason"] = reason
+                    arm["comparable"] = False
+                    arm["metrics"]["eligible"] = 0
+                    arm["metrics"]["hop_depth_eligible"] = {}
+                    if "graph" in arm:
+                        graph = arm["graph"]
+                        graph["component_outcome_before_shared_budget"] = dict(graph["outcome"])
+                        graph["outcome"].update(status=arm["discovery_status"], reason=reason)
+                    for candidate in arm["candidates"]:
+                        record = candidate.setdefault("research", {})
+                        record.update(
+                            discovery_status=arm["discovery_status"],
+                            eligible=False,
+                            review_status="review_unavailable",
+                            review_reason=reason,
+                        )
         events.append(row)
     hop_rows = [e["hop_graph"] for e in events]
     base_rows = [e["baseline"] for e in events if e["baseline"] is not None]
@@ -397,10 +472,20 @@ def compare_events(
         "report_version": REPORT_VERSION,
         "evaluation_kind": "engineering_only_not_profitability_or_point_in_time_proof",
         "identical_gates": "verify_ideas -> evidence_score -> same critic instance",
-        "critic_model": critic.model if critic is not None else None,
+        "critic_model": SUBSCRIPTION_MODEL
+        if subscription_critic_client is not None
+        else critic.model
+        if critic is not None
+        else None,
         "baseline_run": baseline_model is not None,
         "cohort": cohort,
-        "evidence_coverage": _comparison_coverage(events, critic_present=critic is not None),
+        "evidence_coverage": _comparison_coverage(
+            events, critic_present=critic is not None or subscription_critic_client is not None
+        ),
+        "subscription_only": subscription_call_limit is not None,
+        "budget_scope": "shared_per_event_both_arms_graph_first"
+        if subscription_call_limit is not None
+        else "component_local",
         "events": events,
         "summary": {
             "hop_graph": _summary(hop_rows),
