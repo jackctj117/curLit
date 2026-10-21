@@ -34,6 +34,33 @@ warnings. Independent reviews found no confirmed blocker (132 retrieval tests,
 12-generation ceiling and no baseline arm; it is not the required broader
 quality comparison. Security deployment gating remains blocked as above.
 
+Both niche fixes were pushed as **`b78fd69`**; their
+[hosted CI](https://github.com/jackctj117/curLit/actions/runs/39630263988)
+passed. The corresponding security scan again failed on the same eight Pillow
+findings. **CL-cnwz and CL-mkqq are code-complete**, not deployed; rollout and
+quality acceptance remain separate open work.
+
+The one-event experiment ended after the existing **900-second** transport
+timeout: one traversal invocation, zero edges, paths, candidates or eligible
+ideas, and unknown cost. No later model call, publication or order followed the
+failure. A proposed ten-minute outer deadline was not implemented/enforced;
+900 seconds is the actual bound that applied. This does not demonstrate useful
+multi-hop discovery. Capture SHA256:
+`7870ea612fca209169c197aad8dc9d2a651c62eb0f5393000dc957104281209f`.
+Hash-verified private capture/report copies are preserved under
+`data/deployments/2026-10-21_niche_graph/` (ignored, owner-only access).
+Report SHA256:
+`6426ef8cccd707d52d886f6bbbbf3271e25e0d36353b494bb32e000a1d1f627d`.
+
+**CL-ho6v is code-complete, not deployed:** malformed graph output now stays
+invalid/partial rather than appearing as successful abstention. Provider and
+local validation share a schema; optional blank facts reject the whole batch,
+and the strict budget wrapper preserves typed failure while revoking approval.
+Final offline checks passed: **270 focused tests**, `make typecheck` (254 files),
+Ruff and medium/high Bandit. Independent re-review passed 127 tests and cleared
+both findings. No model call ran on this revision. End-to-end shadow wall-time
+enforcement is separately tracked in **CL-ek1d**; useful quality remains open.
+
 **Targeted deployment — October 20, 2026, 20:38 UTC (CL-2m1c):**
 source release **`63fb4a3`** was committed and pushed to `origin/main`, including
 the three previously unpublished commits. The verified idle event pipeline

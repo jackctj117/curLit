@@ -169,7 +169,16 @@ class FakeTraversal:
         self.calls: list[dict[str, Any]] = []
         self._lock = threading.Lock()
 
-    def complete(self, *, messages: Any, model: str, max_tokens: int, no_tools: bool) -> Any:
+    def complete(
+        self,
+        *,
+        messages: Any,
+        model: str,
+        max_tokens: int,
+        no_tools: bool,
+        json_schema: dict[str, Any],
+    ) -> Any:
+        assert json_schema["properties"]["edges"]["type"] == "array"
         payload = json.loads(messages[1].content)
         with self._lock:
             self.calls.append({"payload": payload, "no_tools": no_tools, "model": model})

@@ -445,17 +445,29 @@ def compare_events(
                 for arm in (row["hop_graph"], row["baseline"]):
                     if arm is None:
                         continue
-                    arm["discovery_status"] = (
-                        "budget_exhausted" if reason == "event_model_call_limit" else "unavailable"
-                    )
-                    arm["discovery_reason"] = reason
+                    arm["shared_stop_reason"] = reason
+                    # Keep the component's specific malformed/partial outcome
+                    # when the shared transport stop is its consequence. A
+                    # true shared call-limit exhaustion remains explicit.
+                    if reason == "event_model_call_limit" or arm["discovery_status"] not in (
+                        "invalid_output",
+                        "partial",
+                    ):
+                        arm["discovery_status"] = (
+                            "budget_exhausted"
+                            if reason == "event_model_call_limit"
+                            else "unavailable"
+                        )
+                        arm["discovery_reason"] = reason
                     arm["comparable"] = False
                     arm["metrics"]["eligible"] = 0
                     arm["metrics"]["hop_depth_eligible"] = {}
                     if "graph" in arm:
                         graph = arm["graph"]
                         graph["component_outcome_before_shared_budget"] = dict(graph["outcome"])
-                        graph["outcome"].update(status=arm["discovery_status"], reason=reason)
+                        graph["outcome"].update(
+                            status=arm["discovery_status"], reason=arm["discovery_reason"]
+                        )
                     for candidate in arm["candidates"]:
                         record = candidate.setdefault("research", {})
                         record.update(

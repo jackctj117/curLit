@@ -392,7 +392,15 @@ class _Explosive:
         self.fanout = fanout
         self.calls = 0
 
-    def complete(self, *, messages: Any, model: str, max_tokens: int, no_tools: bool) -> Any:
+    def complete(
+        self,
+        *,
+        messages: Any,
+        model: str,
+        max_tokens: int,
+        no_tools: bool,
+        json_schema: dict[str, Any],
+    ) -> Any:
         self.calls += 1
         payload = json.loads(messages[1].content)
         edges = []
@@ -465,14 +473,113 @@ def test_parse_caps_edges_per_node_in_reply_order() -> None:
             "dst": {"kind": "company", "name": f"C{i}", "ticker": f"C{i}"},
             "relation": "depends_on_route",
             "claim": f"claim {i}",
+            "where_to_look": {"ticker": f"C{i}", "section": "", "keywords": []},
         }
         for i in range(7)
     ]
-    items.insert(0, {"src": "company:NOTFRONTIER", "dst": {}, "relation": "x", "claim": "y"})
+    # Malformed records now invalidate a batch (CL-ho6v); this fixture isolates
+    # the unchanged per-node cap using only well-formed optional-hint-free edges.
     edges, _, _, status = parse_edges(json.dumps({"edges": items}), [src], 1, MAX_EDGES_PER_NODE)
     assert status == "ok"
     assert [e.dst.ticker for e in edges] == ["C0", "C1", "C2", "C3"]
     assert parse_edges("not json", [src], 1, 4)[3] == "invalid_output"
+
+
+@pytest.mark.parametrize("malformed", [{}, None, {"src": "outside-frontier"}])
+@pytest.mark.parametrize("mixed", [False, True])
+def test_malformed_nonempty_traversal_is_not_abstention(malformed: Any, mixed: bool) -> None:
+    frontier = [Node.make("route", "Strait of Hormuz")]
+    valid = world_edges()[frontier[0].node_id]
+    batch = [*valid, malformed] if mixed else [malformed]
+    edges, facts, hints, status = parse_edges(json.dumps({"edges": batch}), frontier, 1, 4)
+    assert status == "invalid_output"
+    assert edges == [] and facts == [] and hints == {}
+
+
+def test_empty_traversal_is_a_valid_abstention() -> None:
+    result = parse_edges('{"edges": []}', [Node.make("route", "synthetic route")], 1, 4)
+    assert result == ([], [], {}, "ok")
+
+
+@pytest.mark.parametrize("role", ["exposure", "catalyst"])
+@pytest.mark.parametrize("beyond_cap", [False, True])
+def test_whitespace_fact_invalidates_whole_batch_even_beyond_cap(
+    role: str, beyond_cap: bool
+) -> None:
+    frontier = [Node.make("route", "Strait of Hormuz")]
+    valid = world_edges()[frontier[0].node_id][0]
+    malformed = {**valid, role: {"claim": " \t\n", "where_to_look": valid["where_to_look"]}}
+    batch = [valid] * MAX_EDGES_PER_NODE if beyond_cap else []
+    result = parse_edges(json.dumps({"edges": [*batch, malformed]}), frontier, 1, 4)
+    assert result == ([], [], {}, "invalid_output")
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("src", "route:not-in-frontier"),
+        ("where_to_look", None),
+        ("claim", " "),
+        ("direction", "invented-direction"),
+    ],
+)
+def test_structurally_or_semantically_invalid_edge_is_rejected(field: str, value: Any) -> None:
+    frontier = [Node.make("route", "Strait of Hormuz")]
+    edge = dict(world_edges()[frontier[0].node_id][0])
+    edge[field] = value
+    assert parse_edges(json.dumps({"edges": [edge]}), frontier, 1, 4)[3] == "invalid_output"
+
+
+def test_first_invalid_batch_is_recorded_as_invalid_not_abstained() -> None:
+    class InvalidFirst:
+        def complete(self, **kwargs: Any) -> Any:
+            from src.events.hop_graph import TraversalBatch
+
+            assert kwargs["json_schema"] == TraversalBatch.model_json_schema()
+            return reply('{"edges": [{}]}', kwargs["model"])
+
+    result = HopGraphTraversal(_SourceAll(), client=InvalidFirst(), model="m").run(
+        world_event(), None, as_of=NOW
+    )
+    assert result.outcome.status == "invalid_output"
+    assert result.outcome.reason == "invalid_traversal_output"
+    assert result.model_calls[0]["response"] == '{"edges": [{}]}'
+    assert result.candidates == []
+
+
+def test_provider_schema_failure_preserves_raw_response() -> None:
+    from src.research.llm.claude_code import ClaudeStructuredOutputError
+
+    class SchemaFailure:
+        def complete(self, **kwargs: Any) -> Any:
+            raise ClaudeStructuredOutputError("unstructured failed reply", "served-model")
+
+    result = HopGraphTraversal(_SourceAll(), client=SchemaFailure(), model="m").run(
+        world_event(), None, as_of=NOW
+    )
+    assert result.outcome.status == "invalid_output"
+    assert result.model_calls[0]["response"] == "unstructured failed reply"
+    assert result.model_calls[0]["actual_model"] == "served-model"
+    assert result.candidates == []
+
+
+def test_prior_valid_batch_cannot_hide_later_invalid_traversal() -> None:
+    class InvalidSecond(FakeTraversal):
+        def complete(self, **kwargs: Any) -> Any:
+            if self.calls:
+                return reply('{"edges": [{}]}', kwargs["model"])
+            return super().complete(**kwargs)
+
+    verifier = EdgeVerifier(Retriever(), NOW, EntailmentChecker(world_entailment(), "h"))
+    result = HopGraphTraversal(verifier, client=InvalidSecond(world_edges()), model="m").run(
+        world_event(), None, as_of=NOW
+    )
+    assert result.outcome.status == "partial"
+    assert result.outcome.reason == "invalid_traversal_output"
+    assert result.model_calls[-1]["response"] == '{"edges": [{}]}'
+    assert result.model_calls[-1]["parse_status"] == "invalid_output"
+    assert not any(i.research_eligible for i in result.candidates)
+    assert all(i.discovery_status == "partial" for i in result.candidates)
 
 
 def test_traversal_is_deterministic_given_replies() -> None:

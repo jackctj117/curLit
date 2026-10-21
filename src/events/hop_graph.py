@@ -50,10 +50,11 @@ import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from src.events._util import ThreadLocalClient
-from src.events.impact_agent import extract_json_object
 from src.events.niche_scoring import (
     MAX_NICHE_IDEAS,
     AsymmetryConfig,
@@ -68,10 +69,11 @@ from src.events.research_evidence import (
     SourceDocument,
 )
 from src.research.llm import Message
+from src.research.llm.claude_code import ClaudeStructuredOutputError
 
 logger = logging.getLogger(__name__)
 
-PROMPT_VERSION = "hop-graph-v1"
+PROMPT_VERSION = "hop-graph-v2"
 
 NODE_KINDS = ("commodity", "route", "company", "product", "country")
 RELATIONS = (
@@ -446,6 +448,54 @@ def seed_nodes(event_row: Mapping[str, Any], playbook: Playbook | None) -> list[
     return [seeds[k] for k in sorted(seeds)]
 
 
+class _TraversalRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True, allow_inf_nan=False)
+
+
+class TraversalPointer(_TraversalRecord):
+    ticker: str | None = None
+    section: str = Field(default="", max_length=80)  # Existing persisted pointer bound.
+    keywords: list[str] = Field(default_factory=list, max_length=_MAX_KEYWORDS)
+
+
+class TraversalNode(_TraversalRecord):
+    kind: Literal["commodity", "route", "company", "product", "country"]
+    name: str = Field(max_length=_MAX_LABEL_CHARS)
+    ticker: str | None = None
+
+
+class TraversalFact(_TraversalRecord):
+    # The shared provider/local validator requires actual content, including
+    # optional terminal facts and records beyond the per-node retention cap.
+    claim: str = Field(min_length=1, max_length=_MAX_CLAIM_CHARS, pattern=r"\S")
+    where_to_look: TraversalPointer
+
+
+class TraversalEdge(TraversalFact):
+    src: str = Field(min_length=1)
+    dst: TraversalNode
+    relation: Literal[
+        "supplies",
+        "buys_from",
+        "competes_with",
+        "substitutes_for",
+        "depends_on_route",
+        "hedged_by",
+        "priced_off",
+    ]
+    direction: Literal["bullish", "bearish"] | None = None
+    torque_reason: str | None = Field(default=None, max_length=_MAX_CLAIM_CHARS)
+    exposure: TraversalFact | None = None
+    catalyst: TraversalFact | None = None
+
+
+class TraversalBatch(_TraversalRecord):
+    """Shared provider/local shape; provenance and semantic gates remain separate."""
+
+    # Largest supported chunk; the existing per-source cap is applied below.
+    edges: list[TraversalEdge] = Field(max_length=MAX_FRONTIER_NODES * MAX_EDGES_PER_NODE)
+
+
 _SYSTEM_PROMPT = """You map how a news event propagates through an economic exposure graph.
 You are NOT asked to hold or quote evidence. Propose FALSIFIABLE edges that an SEC filing
 could confirm or refute, each with a pointer to where that evidence would be written.
@@ -536,9 +586,10 @@ def parse_edges(
 ) -> tuple[list[Edge], list[NodeFact], dict[str, dict[str, str]], str]:
     """Defensive parse of one traversal reply. Returns (edges, facts, hints,
     status) where status is ``ok`` or ``invalid_output``. Edges beyond the
-    per-node cap are dropped in reply order; malformed entries never raise."""
+    per-node cap are dropped in reply order. A malformed entry invalidates the
+    whole batch, not a successful abstention or a conveniently repaired subset."""
     try:
-        payload = extract_json_object(text)
+        payload = TraversalBatch.model_validate_json(text).model_dump()
     except ValueError:
         return [], [], {}, "invalid_output"
     raw_edges = payload.get("edges")
@@ -551,15 +602,15 @@ def parse_edges(
     hints: dict[str, dict[str, str]] = {}
     for item in raw_edges:
         if not isinstance(item, Mapping):
-            continue
+            return [], [], {}, "invalid_output"
         src = by_id.get(str(item.get("src", "")))
         dst = _parse_dst(item.get("dst"))
         relation = item.get("relation")
         claim = item.get("claim")
         if src is None or dst is None or relation not in RELATIONS:
-            continue
+            return [], [], {}, "invalid_output"
         if not isinstance(claim, str) or not claim.strip() or dst.node_id == src.node_id:
-            continue
+            return [], [], {}, "invalid_output"
         if per_node.get(src.node_id, 0) >= max_edges_per_node:
             continue
         per_node[src.node_id] = per_node.get(src.node_id, 0) + 1
@@ -908,11 +959,20 @@ class HopGraphTraversal:
                         model=self.model,
                         max_tokens=self.max_tokens,
                         no_tools=True,
+                        json_schema=TraversalBatch.model_json_schema(),
                     )
                 except Exception as exc:
                     logger.warning("hop-graph: traversal call failed: %s", type(exc).__name__)
                     record.update(error=type(exc).__name__)
-                    failure = type(exc).__name__
+                    if isinstance(exc, ClaudeStructuredOutputError):
+                        record.update(
+                            response=exc.response_text,
+                            actual_model=exc.actual_model,
+                            parse_status="invalid_output",
+                        )
+                        failure = "invalid_traversal_output"
+                    else:
+                        failure = type(exc).__name__
                     break
                 record.update(_usage_record(resp, self.model, len(prompt)))
                 record["response"] = resp.text
@@ -923,7 +983,9 @@ class HopGraphTraversal:
                 )
                 record["parse_status"] = status
                 if status != "ok":
-                    continue
+                    failure = "invalid_traversal_output"
+                    logger.warning("hop-graph: malformed traversal batch; research incomplete")
+                    break
                 any_ok = True
                 for node_id, hint in hints.items():
                     merged = graph.hints.setdefault(node_id, {})
@@ -994,7 +1056,13 @@ class HopGraphTraversal:
             except Exception as exc:
                 logger.warning("hop-graph memory upsert failed: %s", type(exc).__name__)
         if failure is not None:
-            outcome.status = "partial" if any_ok else "unavailable"
+            outcome.status = (
+                "partial"
+                if any_ok
+                else "invalid_output"
+                if failure == "invalid_traversal_output"
+                else "unavailable"
+            )
             outcome.reason = failure
         elif not any_ok and calls:
             outcome.status, outcome.reason = "invalid_output", "no_valid_traversal_reply"

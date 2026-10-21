@@ -716,6 +716,32 @@ The cap counts CLI generations, not internal turns, tokens or dollars. Graph
 work runs first, so a shared cap is **not equal allocation between arms** and
 does not establish an equivalent-budget comparison.
 
+Traversal output (CL-ho6v) uses a versioned, shared provider/local schema.
+An explicitly empty edge list is valid abstention; malformed nonempty records
+invalidate the batch, including malformed optional facts. A failed later batch
+leaves discovery partial, not completed. Raw failed replies remain in the
+research record, and incomplete discovery cannot become eligible through a
+positive critic response. Structured output is a format safeguard, not evidence
+of source support or a guarantee of lower latency.
+
+October 21 verification for CL-ho6v used the source-only, network-disabled
+container snapshot `dc882b51da780023cf92a1878f4e6a398524fdf40e596ca9d07e198c57d29416`.
+The following command passed **270 tests**, exit 0:
+
+```sh
+python -m pytest tests/unit/test_research_tools.py \
+  tests/unit/test_event_niche_agent.py tests/unit/test_niche_evidence.py \
+  tests/unit/test_niche_hopgraph_shadow.py tests/unit/test_subscription_shadow_budget.py \
+  tests/unit/test_hop_graph.py tests/unit/test_hop_graph_memory.py \
+  tests/unit/test_adversarial_critic.py -q -o addopts=
+```
+
+Independent re-review passed 127 graph/budget tests and cleared the whitespace
+claim and strict-wrapper status findings. These fixture results do not replace
+the captured-input experiment: the preceding published revision timed out on
+its first generation, producing zero verified paths/candidates. See
+[October 21 operational evidence](CURRENT_OPERATIONS.md).
+
 **Shadow comparison** (`scripts/niche_hopgraph_shadow.py`,
 `src/events/hop_graph_shadow.py`). The script replays captured events (the
 `CapturedInput` format above) through the hop graph and, optionally, the

@@ -72,7 +72,8 @@ class StrictFixtureClient:
         assert kwargs.pop("subscription_only") is True
         assert kwargs["no_tools"] is True
         assert kwargs["model"] == SUBSCRIPTION_MODEL
-        kwargs.pop("json_schema", None)
+        if not isinstance(self.inner, FakeTraversal):
+            kwargs.pop("json_schema", None)
         result = self.inner.complete(**kwargs)
         return reply(result.text, SUBSCRIPTION_MODEL)
 
@@ -257,6 +258,52 @@ def test_late_baseline_failure_revokes_earlier_graph_approval(tmp_path: Path) ->
         assert arm["metrics"]["eligible"] == 0
         assert arm["comparable"] is False
         assert not any(c["research"]["eligible"] for c in arm["candidates"])
+
+
+@pytest.mark.parametrize("after_valid_batch", [False, True])
+def test_strict_shadow_preserves_typed_schema_failure(
+    tmp_path: Path, after_valid_batch: bool
+) -> None:
+    from src.research.llm.claude_code import ClaudeStructuredOutputError
+
+    class FailedSchema(FakeTraversal):
+        def complete(self, **kwargs: Any) -> Any:
+            if not after_valid_batch or self.calls:
+                raise ClaudeStructuredOutputError("raw failed schema reply", SUBSCRIPTION_MODEL)
+            return super().complete(**kwargs)
+
+    clients = _clients()
+    clients.traversal = StrictFixtureClient(FailedSchema(world_edges()))
+    clients.baseline = SubscriptionResearchModel(SubscriptionBaselineFixture(Baseline()))
+    out = tmp_path / "r.json"
+    shadow.main(
+        [
+            "--captures",
+            str(_write_capture(tmp_path)),
+            "--output",
+            str(out),
+            "--allow-model-calls",
+            "--baseline",
+            "claude-subscription",
+            "--max-model-calls-per-event",
+            "32",
+        ],
+        clients=clients,
+    )
+    [event] = json.loads(out.read_text())["events"]
+    arm = event["hop_graph"]
+    expected = "partial" if after_valid_batch else "invalid_output"
+    assert arm["discovery_status"] == expected
+    assert arm["discovery_reason"] == "invalid_traversal_output"
+    assert arm["graph"]["outcome"]["status"] == expected
+    assert arm["graph"]["outcome"]["reason"] == "invalid_traversal_output"
+    assert arm["graph"]["model_calls"][-1]["response"] == "raw failed schema reply"
+    assert arm["shared_stop_reason"] == "structured_output_unavailable"
+    assert event["subscription_budget"]["stop_reason"] == "structured_output_unavailable"
+    for result in (arm, event["baseline"]):
+        assert result["metrics"]["eligible"] == 0
+        assert result["comparable"] is False
+        assert not any(c["research"]["eligible"] for c in result["candidates"])
 
 
 def test_shadow_script_refuses_to_overwrite(tmp_path: Path) -> None:
