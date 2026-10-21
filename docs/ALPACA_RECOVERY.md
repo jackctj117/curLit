@@ -6,6 +6,43 @@ as historical evidence; the operational cutover section records what actually
 changed. CL-koeg remains open for staged verification, and CL-0deu.3 is not a
 claim of complete accounting or new-entry readiness.
 
+## October 20 development verification (not a new operational cutover)
+
+CL-libk adds private startup manifests to both Alpaca entrypoints before client
+or database initialization. They contain resolved entry/exit settings, exit
+enablement, close-only mode and loop interval. Library and Python entrypoint
+hashes are captured together; nested token/account/private-key fields are
+redacted, and unsupported objects are never stringified. Existing running
+processes are not retroactively certified by these files. Migration versions,
+account identity/reconciliation and export coverage remain independently
+verified facts, not inferred from a source hash.
+
+The new working-order checks under CL-0deu.1 count remaining quantities in
+addition to positions and block unavailable/malformed/truncated order snapshots.
+Pending closes do not free capacity. A separate, **not activated** ledger
+reservation primitive now commits capacity, intent, attempt and a recovery stub
+in one transaction. Unknown submissions retain capacity; competing stale ledger
+versions fail closed. Snapshot validity must be supplied explicitly: this patch
+does not choose a production freshness window. Legacy entry writers still need
+integration with this primitive and verified management of newly filled
+allocations before entry rollout. Existing close-only restrictions remain necessary.
+The local version fence does not make separate broker reads atomic. The primitive
+conservatively blocks working orders with any cumulative fill instead of assuming
+those fills already appear in positions. Terminal fills still require inventory
+reconciliation before the caller may present a new risk snapshot.
+
+Account-scoped recovery includes reserved entries only when the matching ledger
+intent exists. A reservation alone proves neither a fill nor ownership. The
+pre-migration capture path remains usable and explicitly reports missing ledger
+coverage; unattributed reserved rows prevent an accounting projection. Replay
+does not automatically enable management of newly discovered allocations.
+
+The 27 passing hosted PostgreSQL recovery tests and historical September backup
+restores are distinct evidence. They do not establish every CL-0deu.18 scenario:
+new-entry capacity reservation/release, all-path halt races, and a complete
+rollback rehearsal remain outstanding. Do not close CL-koeg or unpause entries
+because a development patch passes its focused checks.
+
 ## Initial September 9 inventory (before the approved repair)
 
 GET/SELECT capture at 15:50:47–15:50:50 UTC exhausted the API-visible order and

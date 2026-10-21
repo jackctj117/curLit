@@ -172,10 +172,18 @@ curl --fail --header "X-API-Key: ${WEB_API_SECRET:?set a strong API secret}" \
 
 Startup configuration evidence is recorded by
 [`src/runtime/release_manifest.py`](src/runtime/release_manifest.py) in ignored
-`data/runtime_manifests/`. Missing fields stay unknown. The checkout's current
-Git hash does not identify code already loaded by a running process. Complete
-per-path effective configuration and baseline verification remain CL-0deu.12
-and CL-0deu.14; reading this README does not satisfy those gates.
+`data/runtime_manifests/`. The FX startup records resolved portfolio/risk/strategy
+settings; both Alpaca entrypoints now record resolved entry/exit dataclasses,
+close-only mode, exit enablement and loop interval before database/client startup.
+These are startup snapshots, not a live readiness endpoint. This source change
+does not create artifacts for already-running processes. Source hashes include
+Python entrypoints as well as library code and configuration. Credential/account
+fields are redacted; unknown object types are not stringified.
+
+Migration version, account reconciliation and broker-history coverage require
+independent evidence under CL-0deu.14. Missing fields stay unknown. The checkout's
+current Git hash does not identify code already loaded by a running process;
+reading this README does not satisfy deployment or account-readiness gates.
 
 ### Soak-test dashboard
 

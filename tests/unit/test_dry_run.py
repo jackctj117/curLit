@@ -155,13 +155,15 @@ class TestStubBacktestRunner:
         ):
             assert top in metrics
 
-    def test_metrics_pass_real_review_rules(
+    def test_synthetic_metrics_cannot_pass_real_review_rules(
         self,
         tmp_path: Path,
     ) -> None:
-        """Sanity: the stub metrics should produce no rule failures
-        when fed through the real REVIEW_RULES.md verdict engine.
-        Otherwise the dry-run wouldn't end in PROMOTE."""
+        """Synthetic dry-run returns intentionally cannot satisfy promotion.
+
+        The old PROMOTE expectation incorrectly treated invented numbers as
+        measured performance. Keep testing the real gate, not a bypass.
+        """
         from src.research.agents.reviewer import Position
 
         metrics = stub_backtest_runner(tmp_path / "stub.py")
@@ -175,13 +177,9 @@ class TestStubBacktestRunner:
             bull_position=Position.PROMOTE,
             bear_position=Position.PROMOTE,
         )
-        assert verdict.verdict.value == "PROMOTE", (
-            f"dry-run stub metrics didn't PROMOTE: {verdict.reason} | "
-            + "; ".join(
-                f"{e.rule_id}={'pass' if e.passed else 'FAIL'}"
-                for e in verdict.rule_evaluations
-                if not e.passed or e.missing
-            )
+        assert verdict.verdict.value == "ESCALATE"
+        assert all(
+            e.missing and not e.passed for e in verdict.rule_evaluations if e.rule_id[0] in "AB"
         )
 
 

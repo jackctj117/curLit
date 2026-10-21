@@ -252,6 +252,21 @@ def _make_passing_report() -> dict[str, Any]:
         "edge_concentration": 0.45,
         "regime_diversified": True,
         "decay_severity": "NONE",
+        "_metric_evidence": {
+            name: {
+                "status": "measured",
+                "observation_count": 100,
+                "method": "independent_synthetic_decision_table",
+            }
+            for name in (
+                "oos_metrics",
+                "sharpe_ci_95",
+                "is_oos_sharpe_ratio",
+                "edge_concentration",
+                "regime_diversified",
+                "decay_severity",
+            )
+        },
     }
 
 
@@ -260,6 +275,56 @@ def _make_rules() -> list[ParsedRule]:
 
 
 class TestVerdictOutcomes:
+    @pytest.mark.parametrize("rules", [[], [ParsedRule("C.1", "qualitative", None)]])
+    def test_no_quantitative_rules_cannot_promote(self, rules: list[ParsedRule]) -> None:
+        result = compute_verdict(_make_passing_report(), rules, Position.PROMOTE, Position.PROMOTE)
+        assert result.verdict == Verdict.ESCALATE
+
+    @pytest.mark.parametrize("rule_id", ["A.2", "B.1"])
+    def test_missing_quantitative_threshold_is_not_agent_approval(self, rule_id: str) -> None:
+        rules = [
+            ParsedRule("A.1", "sharpe", "oos_metrics.sharpe >= 0.5"),
+            ParsedRule(rule_id, "broken threshold", None),
+        ]
+        result = compute_verdict(_make_passing_report(), rules, Position.PROMOTE, Position.PROMOTE)
+        assert result.verdict == Verdict.ESCALATE
+        assert result.rule_evaluations[-1].missing
+
+    def test_legacy_bare_scalars_cannot_promote(self) -> None:
+        report = _make_passing_report()
+        del report["_metric_evidence"]
+        result = compute_verdict(report, _make_rules(), Position.PROMOTE, Position.PROMOTE)
+        assert result.verdict == Verdict.ESCALATE
+        assert all(e.missing for e in result.rule_evaluations if e.rule_id[0] in "AB")
+
+    @pytest.mark.parametrize(
+        "missing_path",
+        [
+            "oos_metrics",
+            "sharpe_ci_95",
+            "is_oos_sharpe_ratio",
+            "edge_concentration",
+            "regime_diversified",
+            "decay_severity",
+        ],
+    )
+    def test_partial_manifest_cannot_promote(self, missing_path: str) -> None:
+        report = _make_passing_report()
+        del report["_metric_evidence"][missing_path]
+        result = compute_verdict(report, _make_rules(), Position.PROMOTE, Position.PROMOTE)
+        assert result.verdict == Verdict.ESCALATE
+
+    def test_field_proxy_overrides_measured_group(self) -> None:
+        report = _make_passing_report()
+        report["_metric_evidence"]["oos_metrics.n_trades"] = {
+            "status": "proxy",
+            "observation_count": 100,
+            "method": "position_changes",
+        }
+        result = compute_verdict(report, _make_rules(), Position.PROMOTE, Position.PROMOTE)
+        assert result.verdict == Verdict.ESCALATE
+        assert next(e for e in result.rule_evaluations if e.rule_id == "A.3").missing
+
     def test_promote_when_all_pass_and_both_agree(self) -> None:
         result = compute_verdict(
             candidate_report=_make_passing_report(),

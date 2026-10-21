@@ -26,8 +26,33 @@ The old favorable-default tests intentionally changed to assert unknowns or
 contract errors. Independent numerical vectors, property tests and strict JSON
 roundtrips cover the new requirements; tests are not skipped to hide defects.
 
-This is not full promotion or research-isolation completion. CL-0deu.6 remains
-open for a mandatory complete measured-evidence manifest on every promotion
-path. Bare legacy scalar reports still follow the threshold contract. Artifact-
-bound approvals and isolated generated-code execution remain CL-0deu.11.
-No strategy was promoted or evaluated against operational data for this patch.
+CL-0deu.6 now requires `_metric_evidence` for every quantitative threshold in
+promotion decisions, including legacy reports. Records require measured status,
+a positive integer observation count and a nonempty calculation method. A
+field-specific record overrides its parent record: the runner's position-change
+count remains a proxy for completed trade lifecycles, even though its other OOS
+return diagnostics are measured. Missing metadata is inconclusive, never a pass.
+The standalone arithmetic evaluator remains useful for diagnostic legacy reads;
+`compute_verdict` always requires evidence.
+An empty quantitative rule set, or an A/B rule whose threshold is absent,
+is inconclusive rather than a vacuous pass. C/D qualitative rules retain
+their existing reviewer-driven contract.
+
+The registrar reloads the report and current rules and repeats the quantitative
+gates before moving code, modifying portfolio configuration, or publishing. A
+missing/malformed report, empty rules document, proxy, or failed gate prevents
+all registration side effects. Report strategy identity must match the requested
+strategy. Gate 2 records the exact debated report SHA-256 and refuses changed
+reports or legacy approvals without that identity before calling the registrar.
+The registrar hashes the exact bytes it parses against that expected identity,
+so replacing the report between the loop's check and registration is rejected.
+This is necessary but not sufficient approval: binding approval to exact
+code/config/data hashes and eliminating concurrent file-change races, plus
+isolated generated-code execution remain CL-0deu.11. The manifest describes
+evidence; it cannot authenticate a dishonest producer.
+
+Dry-run synthetic diagnostics now intentionally ESCALATE rather than PROMOTE.
+They must not be relabelled measured merely to exercise the registrar. Unit
+fixtures separately test valid measured decision tables and rejected legacy,
+partial, proxy and synthetic evidence. No strategy was promoted or evaluated
+against operational data for this patch.

@@ -61,6 +61,7 @@ from src.execution.alpaca_asset_eligibility import (
 from src.execution.alpaca_equity import AlpacaEquityClient
 from src.execution.alpaca_exposure import (
     ExposureUnavailableError,
+    pending_exposure,
     position_quantity,
     require_positive_int,
     validated_positions,
@@ -544,7 +545,9 @@ def execute_pending_equities(
             # enter — recording it terminally would silently drop it.
             with LogContext(idea_id=str(idea["idea_id"]), symbol=ticker, venue="alpaca_equity"):
                 try:
+                    working = pending_exposure(client, asset_class="us_equity")
                     held = _held_ticker_qty(client, ticker)
+                    held += working.get(ticker, Decimal(0))
                 except ExposureUnavailableError as exc:
                     counts["blocked_exposure"] += 1
                     logger.warning(

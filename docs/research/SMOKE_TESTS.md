@@ -23,12 +23,16 @@ Expected output:
 ```
 DRY RUN: stubbed LLM + HTTP + backtest; outputs under /tmp/research-dry-run-XXXX
 Run done — extracts_new=1 ideas_proposed=1 declined=0 implemented=1
-  impl_rejected=0 debates=1 PROMOTE=1 REJECT=0 ESCALATE=0 errors=0
+  impl_rejected=0 debates=1 PROMOTE=0 REJECT=0 ESCALATE=1 errors=0
 ```
 
 The dry-run uses `DryRunDriver` (canned LLM responses by prompt
 fingerprint), `stub_http_get` (canned arXiv Atom XML), and
-`stub_backtest_runner` (synthetic metrics that pass every gate).
+`stub_backtest_runner` (explicitly synthetic metrics, not measured evidence).
+The deliberate ESCALATE is the correct result: invented metrics cannot satisfy
+promotion even when their numeric values look favorable. Registrar behavior is
+tested separately with isolated decision-table fixtures, not by relabelling the
+dry-run report as measured. See [evidence gates](EVIDENCE_GATES.md).
 Outputs land under a tmp dir; the production tree (`src/strategies/`,
 `configs/live_portfolio.yaml`, etc.) is never touched. Use this any
 time you change agent prompts, the loop's wiring, or sub-component

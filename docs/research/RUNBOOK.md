@@ -159,7 +159,7 @@ python -m scripts.research_approve --gate=2 --list
 # Open the transcript at the path in the alert
 open docs/research/debates/{slug}/transcript.md
 
-# Either re-promote (if you read the transcript and you're satisfied):
+# Approve only a current, evidence-complete report that passed quantitative gates:
 python -m scripts.research_approve --gate=2 --slug {slug} --action GO
 
 # Or skip with a reason:
@@ -170,6 +170,11 @@ python -m scripts.research_approve --gate=2 --slug {slug} --action SKIP \
 ESCALATE alerts dedupe automatically — a slug only enters the debate
 loop once across runs, so you won't get spammed if you defer the
 decision.
+
+Human agreement does not override missing or proxy quantitative evidence.
+Registration rechecks the current rules and the exact approved report hash.
+An insufficient-evidence report needs new measured evidence and a fresh review,
+not a manual status edit. Legacy approvals without a report hash are rejected.
 
 ## 4. Adding a new agent
 
@@ -494,7 +499,7 @@ candidates into capital.
 ## Quickstart
 
 ```bash
-# Preflight: walk every phase with stubbed LLM + HTTP + backtest, no
+# Preflight: exercise discovery through an explicit synthetic-evidence ESCALATE, no
 # creds, no network, no production-tree pollution. Outputs land under
 # /tmp/research-dry-run-XXXX. Run this any time you change agent
 # prompts or sub-component interfaces — see SMOKE_TESTS.md for what
@@ -593,10 +598,11 @@ atomic per phase).
   `data/research/runs/{ts}.json:errors` for the underlying exception.
 - **GATE 2 alert says `auto-REJECTED`** — the entry sat too long; the
   PROMOTE verdict is still in the state file under
-  `debates_completed[slug].verdict`. Re-promote by manually flipping
-  `deploy_status` back to `PENDING_DEPLOY_CONFIRMATION` and
-  re-approving, OR just delete the entry to re-run from the debate
-  phase.
+  `debates_completed[slug].verdict`. Preserve the old decision and evidence.
+  Request a fresh operator-reviewed evaluation; do not delete audit history or
+  manually change approval state to bypass expiry. Missing or changed report
+  identity and failed current evidence gates prevent registration even if the
+  old verdict said PROMOTE.
 - **Notification channels silent** — env-var gating: set
   `PUSHOVER_API_TOKEN` + `PUSHOVER_USER_KEY` and/or
   `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID`. Either channel works

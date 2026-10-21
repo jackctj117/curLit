@@ -62,6 +62,9 @@ class _FakeClient:
         # Explicit flat snapshot; missing capability is tested separately.
         return []
 
+    def list_open_orders(self) -> list[dict[str, Any]]:
+        return []
+
     def submit_option_order(
         self, occ: str, qty: int, side: str = "buy", client_order_id: str | None = None
     ) -> dict[str, Any]:
@@ -567,6 +570,84 @@ def test_underlying_match_is_root_exact_not_prefix(engine):
     same_sym, same_under = _held_contract_counts(_C(), "ASC260821C00017500", "ASC")
     assert same_sym == 0
     assert same_under == 0  # ASTL must NOT count against ASC
+
+
+@pytest.mark.parametrize("pending", [None, [{"status": "unknown"}], RuntimeError("offline")])
+def test_unknown_working_orders_block_entry(engine, pending):
+    _seed(engine, "working-order-fixture")
+
+    class Client(_FakeClient):
+        def list_open_orders(self):
+            if isinstance(pending, Exception):
+                raise pending
+            return pending
+
+    client = Client()
+    counts = execute_pending_options(engine, client, _price, now=NOW, technicals_fn=_no_tech)
+    assert counts["blocked_exposure"] == 1
+    assert client.orders == []
+
+
+def test_external_partial_working_order_blocks_second_option_entry(engine):
+    _seed(engine, "working-order-fixture")
+
+    class Client(_FakeClient):
+        def list_open_orders(self):
+            return [
+                {
+                    "id": "manual",
+                    "symbol": _CONTRACT["symbol"],
+                    "asset_class": "us_option",
+                    "qty": "2",
+                    "filled_qty": "1",
+                    "side": "buy",
+                    "status": "partially_filled",
+                }
+            ]
+
+    client = Client()
+    counts = execute_pending_options(engine, client, _price, now=NOW, technicals_fn=_no_tech)
+    assert counts["skipped_concentration"] == 1
+    assert client.orders == []
+
+
+def test_missing_working_order_capability_blocks_entry(engine, monkeypatch):
+    _seed(engine, "working-order-fixture")
+    monkeypatch.delattr(_FakeClient, "list_open_orders")
+    client = _FakeClient()
+    counts = execute_pending_options(engine, client, _price, now=NOW, technicals_fn=_no_tech)
+    assert counts["blocked_exposure"] == 1
+    assert client.orders == []
+
+
+@pytest.mark.parametrize("remaining,submitted", [(1, 1), (2, 0)])
+def test_partial_option_order_counts_remaining_once_across_underlying(engine, remaining, submitted):
+    _seed(engine, "working-order-fixture")
+
+    class Client(_PositionedClient):
+        def list_open_orders(self):
+            # One already filled contract is also in positions below. Only
+            # the unfilled remainder belongs in the pending contribution.
+            return [
+                {
+                    "id": "manual",
+                    "symbol": "RTX260821C00200000",
+                    "asset_class": "us_option",
+                    "qty": str(1 + remaining),
+                    "filled_qty": "1",
+                    "side": "buy",
+                    "status": "partially_filled",
+                }
+            ]
+
+    client = Client([_opt_pos("RTX260821C00200000")])
+    cfg = OptionsExecConfig(max_contracts_per_underlying=3)
+    counts = execute_pending_options(
+        engine, client, _price, cfg=cfg, now=NOW, technicals_fn=_no_tech
+    )
+    # Independent inventory oracle: 1 held + remaining + 1 proposed <= 3.
+    assert counts["submitted"] == submitted
+    assert len(client.orders) == submitted
 
 
 def test_position_lookup_failure_blocks_entry_and_retries(engine):

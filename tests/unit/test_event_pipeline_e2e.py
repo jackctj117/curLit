@@ -509,6 +509,11 @@ class _FakeAlpaca:
         return self.quote[1]
 
     # -- account ------------------------------------------------------- #
+    def list_open_orders(self) -> list[dict[str, Any]]:
+        # Each entry scenario starts with an explicitly empty working book;
+        # an absent API capability must now block, not imply zero exposure.
+        return []
+
     def list_option_positions(self) -> list[dict[str, Any]]:
         return list(self.positions)
 

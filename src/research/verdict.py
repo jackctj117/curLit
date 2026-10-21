@@ -182,9 +182,13 @@ def _parse_literal(s: str) -> Any:
 def evaluate_threshold(
     expr: str,
     report: dict[str, Any],
+    *,
+    require_evidence: bool = False,
 ) -> tuple[bool, bool, Any]:
     """Evaluate a threshold expression against the candidate report.
 
+    ``require_evidence`` is mandatory in promotion decisions. The default
+    supports diagnostic arithmetic on legacy reports, never promotion.
     Returns (passed, missing, actual_value). If the path doesn't exist
     in the report, returns (False, True, None) so the verdict engine
     knows to ESCALATE rather than assume PASS or FAIL.
@@ -223,6 +227,8 @@ def evaluate_threshold(
     if not isinstance(evidence, dict):
         return False, True, actual
     record = evidence.get(path, evidence.get(root))
+    if require_evidence and path not in evidence and root not in evidence:
+        return False, True, actual
     if path in evidence or root in evidence:
         if not isinstance(record, dict) or record.get("status") != "measured":
             return False, True, actual
@@ -292,6 +298,15 @@ def compute_verdict(
     """
     open_questions = open_questions or []
 
+    if not any(rule.threshold_expr for rule in rules):
+        return VerdictResult(
+            verdict=Verdict.ESCALATE,
+            reason="Required quantitative rules missing; cannot establish promotion evidence",
+            bull_position=bull_position,
+            bear_position=bear_position,
+            open_questions=open_questions,
+        )
+
     # Evaluate each rule that has a parseable threshold expression.
     # Rules without one (Section C and D) default to passed=True; they
     # only fail if an agent's debate output cited a violation, which
@@ -302,6 +317,19 @@ def compute_verdict(
     any_missing = False
     for rule in rules:
         if rule.threshold_expr is None:
+            if rule.rule_id.startswith(("A.", "B.")):
+                evaluations.append(
+                    RuleEvaluation(
+                        rule_id=rule.rule_id,
+                        description=rule.description,
+                        threshold_expr="(missing quantitative threshold)",
+                        passed=False,
+                        missing=True,
+                        detail="quantitative rule requires a threshold",
+                    )
+                )
+                any_missing = True
+                continue
             evaluations.append(
                 RuleEvaluation(
                     rule_id=rule.rule_id,
@@ -316,6 +344,7 @@ def compute_verdict(
             passed, missing, actual = evaluate_threshold(
                 rule.threshold_expr,
                 candidate_report,
+                require_evidence=True,
             )
         except ValueError as exc:
             logger.exception("rule %s threshold malformed", rule.rule_id)

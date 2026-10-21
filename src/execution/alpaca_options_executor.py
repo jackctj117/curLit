@@ -35,6 +35,7 @@ from src.events.research_status import eligibility_clauses
 from src.execution.alpaca_exposure import (
     ExposureUnavailableError,
     option_underlying,
+    pending_exposure,
     position_quantity,
     require_positive_int,
     validated_positions,
@@ -567,7 +568,15 @@ def execute_pending_options(
             # theme silently stacked size in a single name (FRO reached qty=3).
             with LogContext(idea_id=str(idea["idea_id"]), symbol=occ, venue="alpaca_options"):
                 try:
+                    # Read orders first: fills arriving during the subsequent
+                    # position read may overcount, never intentionally net away
+                    # held exposure using an unfilled closing order.
+                    working = pending_exposure(client, asset_class="us_option")
                     held_symbol, held_underlying = _held_contract_counts(client, occ, ticker)
+                    held_symbol += int(working.get(occ, 0))
+                    held_underlying += sum(
+                        int(qty) for sym, qty in working.items() if option_underlying(sym) == ticker
+                    )
                 except ExposureUnavailableError as exc:
                     counts["blocked_exposure"] += 1
                     logger.warning(

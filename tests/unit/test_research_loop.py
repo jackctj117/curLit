@@ -37,6 +37,16 @@ from src.research.loop import (
     save_state,
 )
 from src.research.orchestrator import DebateResult
+from src.research.verdict import ParsedRule
+
+
+def _workflow_fixture_rules() -> list[ParsedRule]:
+    """Only orchestration is under test here; real quantitative gates have
+    their own decision-table and integration tests. An explicit observed
+    fixture condition replaces the old unsafe empty-rule 'all pass' shortcut.
+    """
+    return [ParsedRule("A.1", "fixture code persisted", "fixture_code_persisted == True")]
+
 
 # --------------------------------------------------------------------------- #
 # Fake helpers — minimal stand-ins for the real sub-components
@@ -158,9 +168,16 @@ class _FakeImplementer:
         if status == ImplementerStatus.IMPLEMENTED:
             report_path = self.candidate_dir / f"{strategy_slug}.json"
             report_path.parent.mkdir(parents=True, exist_ok=True)
-            report_path.write_text(
-                json.dumps(spec.get("report", {"oos_metrics": {"sharpe": 0.6}})),
-            )
+            fixture_report = dict(spec.get("report", {"oos_metrics": {"sharpe": 0.6}}))
+            fixture_report["fixture_code_persisted"] = code_path.is_file()
+            fixture_report["_metric_evidence"] = {
+                "fixture_code_persisted": {
+                    "status": "measured",
+                    "observation_count": 1,
+                    "method": "test_fixture_filesystem_observation",
+                },
+            }
+            report_path.write_text(json.dumps(fixture_report))
         return ImplementerResult(
             status=status,
             strategy_slug=strategy_slug,
@@ -251,6 +268,7 @@ class _FakeRegistrar:
         candidate_report_path: Any,
         debate_transcript_path: Any,
         verdict_reason: str = "",
+        expected_report_sha256: str | None = None,
     ) -> Any:
         from src.research.promote import RegistrationResult
 
@@ -416,7 +434,7 @@ class TestFullPipelineRun:
             idea_agent=idea,  # type: ignore[arg-type]
             implementer=impl,  # type: ignore[arg-type]
             debate_orchestrator=orch,  # type: ignore[arg-type]
-            rules_loader=lambda: [],  # no threshold rules → all-pass
+            rules_loader=_workflow_fixture_rules,
             feed_configs=[],
             extract_store=store,  # type: ignore[arg-type]
             state_path=loop_paths["state"],
@@ -501,7 +519,7 @@ class TestIdempotency:
             idea_agent=idea,  # type: ignore[arg-type]
             implementer=impl,  # type: ignore[arg-type]
             debate_orchestrator=orch,  # type: ignore[arg-type]
-            rules_loader=lambda: [],
+            rules_loader=_workflow_fixture_rules,
             feed_configs=[],
             extract_store=store,  # type: ignore[arg-type]
             state_path=loop_paths["state"],
@@ -567,7 +585,7 @@ class TestErrorHandling:
             idea_agent=idea,  # type: ignore[arg-type]
             implementer=impl,  # type: ignore[arg-type]
             debate_orchestrator=orch,  # type: ignore[arg-type]
-            rules_loader=lambda: [],
+            rules_loader=_workflow_fixture_rules,
             feed_configs=[],
             extract_store=store,  # type: ignore[arg-type]
             state_path=loop_paths["state"],
@@ -614,7 +632,7 @@ class TestErrorHandling:
             idea_agent=idea,  # type: ignore[arg-type]
             implementer=impl,  # type: ignore[arg-type]
             debate_orchestrator=orch,  # type: ignore[arg-type]
-            rules_loader=lambda: [],
+            rules_loader=_workflow_fixture_rules,
             feed_configs=[],
             extract_store=store,  # type: ignore[arg-type]
             state_path=loop_paths["state"],
@@ -668,7 +686,7 @@ class TestVerdictTally:
             idea_agent=idea,  # type: ignore[arg-type]
             implementer=impl,  # type: ignore[arg-type]
             debate_orchestrator=orch,  # type: ignore[arg-type]
-            rules_loader=lambda: [],
+            rules_loader=_workflow_fixture_rules,
             feed_configs=[],
             extract_store=store,  # type: ignore[arg-type]
             state_path=loop_paths["state"],
@@ -738,7 +756,7 @@ class TestGate1:
             idea_agent=idea,  # type: ignore[arg-type]
             implementer=_FakeImplementer({}, loop_paths["candidates"]),  # type: ignore[arg-type]
             debate_orchestrator=_FakeOrchestrator({}),  # type: ignore[arg-type]
-            rules_loader=lambda: [],
+            rules_loader=_workflow_fixture_rules,
             feed_configs=[],
             extract_store=store,  # type: ignore[arg-type]
             state_path=loop_paths["state"],
@@ -793,7 +811,7 @@ class TestGate1:
             idea_agent=idea,  # type: ignore[arg-type]
             implementer=impl,  # type: ignore[arg-type]
             debate_orchestrator=_FakeOrchestrator({}),  # type: ignore[arg-type]
-            rules_loader=lambda: [],
+            rules_loader=_workflow_fixture_rules,
             feed_configs=[],
             extract_store=store,  # type: ignore[arg-type]
             state_path=loop_paths["state"],
@@ -840,7 +858,7 @@ class TestGate1:
             idea_agent=idea,  # type: ignore[arg-type]
             implementer=impl,  # type: ignore[arg-type]
             debate_orchestrator=_FakeOrchestrator({}),  # type: ignore[arg-type]
-            rules_loader=lambda: [],
+            rules_loader=_workflow_fixture_rules,
             feed_configs=[],
             extract_store=store,  # type: ignore[arg-type]
             state_path=loop_paths["state"],
@@ -895,7 +913,7 @@ class TestGate1:
             idea_agent=idea,  # type: ignore[arg-type]
             implementer=_FakeImplementer({}, loop_paths["candidates"]),  # type: ignore[arg-type]
             debate_orchestrator=_FakeOrchestrator({}),  # type: ignore[arg-type]
-            rules_loader=lambda: [],
+            rules_loader=_workflow_fixture_rules,
             feed_configs=[],
             extract_store=store,  # type: ignore[arg-type]
             state_path=loop_paths["state"],
@@ -973,7 +991,7 @@ def _build_promote_loop(
         idea_agent=idea,  # type: ignore[arg-type]
         implementer=impl,  # type: ignore[arg-type]
         debate_orchestrator=orch,  # type: ignore[arg-type]
-        rules_loader=lambda: [],
+        rules_loader=_workflow_fixture_rules,
         feed_configs=[],
         extract_store=store,  # type: ignore[arg-type]
         state_path=loop_paths["state"],
@@ -1109,6 +1127,37 @@ class TestGate2:
         assert summary.deployments_succeeded == 0
         assert summary.deployments_failed == 0
         assert registrar.calls == []
+
+    @pytest.mark.parametrize("alteration", ["changed", "legacy"])
+    def test_approved_report_identity_must_survive_until_registration(
+        self,
+        loop_paths: dict[str, Path],
+        alteration: str,
+    ) -> None:
+        loop, registrar = _build_promote_loop(loop_paths)
+        loop.run()
+        _approve_all_pending(loop_paths["state"])
+        loop.run()
+        state = load_state(loop_paths["state"])
+        entry = state.debates_completed["alpha"]
+        entry["deploy_status"] = "DEPLOY_APPROVED"
+        if alteration == "legacy":
+            del entry["candidate_report_sha256"]
+        else:
+            # Still syntactically valid and could pass quantitative rules:
+            # a different artifact requires a new review, not silent reuse.
+            report_path = Path(entry["candidate_report_path"])
+            report = json.loads(report_path.read_text())
+            report["changed_after_approval"] = True
+            report_path.write_text(json.dumps(report))
+        save_state(state, loop_paths["state"])
+        summary = loop.run()
+        assert registrar.calls == []
+        assert summary.deployments_succeeded == 0
+        assert summary.deployments_failed == 1
+        final = load_state(loop_paths["state"]).debates_completed["alpha"]
+        assert final["deploy_status"] == "DEPLOY_FAILED"
+        assert "new review required" in final["deploy_reason"]
 
     def test_auto_reject_after_timeout(
         self,
@@ -1355,7 +1404,7 @@ class TestTransientErrorRetry:
             idea_agent=idea,  # type: ignore[arg-type]
             implementer=_FakeImplementer(responses={}, candidate_dir=loop_paths["candidates"]),  # type: ignore[arg-type]
             debate_orchestrator=_FakeOrchestrator(results={}),  # type: ignore[arg-type]
-            rules_loader=lambda: [],
+            rules_loader=_workflow_fixture_rules,
             feed_configs=[],
             extract_store=store,  # type: ignore[arg-type]
             state_path=loop_paths["state"],

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import platform
 import re
@@ -14,8 +15,10 @@ from pathlib import Path
 from typing import Any
 
 SECRET_KEY = re.compile(
-    r"secret|password|credential|api.?key|authorization|access.?token|database_url|dsn", re.I
+    r"secret|password|credential|api.?key|authorization|token|database_url|dsn"
+    r"|account.?id|private.?key|cookie|session.?id|connection.?string", re.I
 )
+logger = logging.getLogger(__name__)
 
 
 def redact(value: Any) -> Any:
@@ -29,7 +32,9 @@ def redact(value: Any) -> Any:
         return [redact(v) for v in value]
     if value is None or isinstance(value, (str, bool, int, float)):
         return value
-    return str(value)
+    # Unknown objects can render credentials through __str__/__repr__. Do not
+    # execute either method at this serialization boundary.
+    return "[UNSUPPORTED TYPE]"
 
 
 def write_release_manifest(
@@ -44,7 +49,11 @@ def write_release_manifest(
         timeout=10,
         check=True,
     ).stdout.strip()
-    files = sorted([*root.joinpath("src").rglob("*.py"), *root.joinpath("configs").glob("*.yaml")])
+    files = sorted([
+        *root.joinpath("src").rglob("*.py"),
+        *root.joinpath("scripts").rglob("*.py"),
+        *root.joinpath("configs").glob("*.yaml"),
+    ])
     hashes = {str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest() for p in files}
     lock = root / "requirements.lock"
     payload = {
@@ -70,9 +79,11 @@ def write_release_manifest(
             "migration schema must be independently verified",
             "missing lock hash is unknown",
             "hashes identify source present at startup, not historical process imports",
+            "account identity, broker history coverage and reconciliation are independently verified",
         ],
     }
     directory = root / "data" / "runtime_manifests"
+    logger.info("Recording private startup manifest: role=%s broker_mode=%s", role, broker_mode)
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     path = directory / f"{role}_{os.getpid()}.json"
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)

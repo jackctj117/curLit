@@ -236,6 +236,23 @@ def _passing_metrics() -> dict[str, Any]:
         "edge_concentration": 0.45,
         "regime_diversified": True,
         "decay_severity": "NONE",
+        # Explicit fixture observations for the independent gate decision table.
+        # Production dry-run synthetic metrics are intentionally not promotable.
+        "_metric_evidence": {
+            name: {
+                "status": "measured",
+                "observation_count": 100,
+                "method": "integration_decision_table_fixture",
+            }
+            for name in (
+                "oos_metrics",
+                "sharpe_ci_95",
+                "is_oos_sharpe_ratio",
+                "edge_concentration",
+                "regime_diversified",
+                "decay_severity",
+            )
+        },
     }
 
 
@@ -484,6 +501,17 @@ def _approve_all_pending(state_path: Path) -> int:
 
 @pytest.mark.usefixtures("env")
 class TestResearchLoopIntegration:
+    def test_legacy_bare_report_cannot_promote(self, repo_paths: dict[str, Path]) -> None:
+        metrics = _passing_metrics()
+        del metrics["_metric_evidence"]
+        loop = _build_loop(repo_paths, metrics)
+        loop.run()
+        _approve_all_pending(repo_paths["state"])
+        summary = loop.run()
+        assert summary.verdicts_promote == 0
+        assert summary.verdicts_escalate == 1
+        assert summary.deployments_succeeded == 0
+
     def test_known_good_candidate_promotes(
         self,
         repo_paths: dict[str, Path],

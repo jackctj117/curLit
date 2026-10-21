@@ -40,6 +40,8 @@ def project_snapshot(snapshot: Record) -> list[Record]:
     """Offline immutable projection with explicit unresolved reasons per legacy row."""
     if not all(snapshot[k].get("exhausted") for k in ("orders", "activities")):
         raise ValueError("incomplete history cannot produce a repair projection")
+    if snapshot["internal"].get("unattributed_reserved_count", 0):
+        raise ValueError("reserved entry ownership unavailable without ledger schema")
     orders = snapshot["orders"]["records"]
     activities = snapshot["activities"]["records"]
     by_client = {}
@@ -68,6 +70,8 @@ def project_snapshot(snapshot: Record) -> list[Record]:
                 opening = by_client.get(cid)
                 if opening is None:
                     raise ValueError("original entry order absent from covered history")
+                if row.get("status") == "reserved" and quantity(opening.get("filled_qty")) == 0:
+                    raise ValueError("reserved entry has no broker fills; intent only")
                 if row.get("alpaca_order_id") not in {None, "", "recovered", opening["id"]}:
                     raise ValueError("stored entry identity conflicts with original client ID")
                 symbol = row.get("occ_symbol") if book == "options" else row.get("ticker")

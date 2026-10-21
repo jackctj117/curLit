@@ -11,13 +11,14 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 import pytest
 from migrations.run import _strip_sql_comments
 from scripts.alpaca_recovery_report import internal_snapshot
 from sqlalchemy import create_engine, text
-from sqlalchemy.engine import make_url
+from sqlalchemy.engine import Engine, make_url
 
 from src.execution.alpaca_equity_exit import EquityExitConfig
 from src.execution.alpaca_fill_ledger import Ledger
@@ -305,6 +306,150 @@ def test_lost_exit_response_reconciles_fill_without_duplicate_or_coowner_sale(
     ingest_snapshot(ledger_engine, snapshot(ledger_engine, broker_orders))
     with ledger_engine.connect() as conn:
         assert conn.execute(text("SELECT count(*) FROM alpaca_ledger_fills")).scalar() == 3
+
+
+def _durable_broker_snapshot(engine: Engine) -> dict[str, Any]:
+    """Fixture broker state lives outside the worker's application ledger."""
+    with engine.connect() as conn:
+        accepted = [
+            json.loads(value)
+            for value in conn.execute(text("SELECT broker_order FROM fixture_broker_posts")).scalars()
+        ]
+    data = snapshot(engine, [order("a", 10), order("b", 5), *accepted])
+    for fill_record in data["activities"]["records"]:
+        if fill_record["side"] == "sell":
+            fill_record["price"] = "12"
+    return data
+
+
+class _DurableBrokerEvidence:
+    def __init__(self, engine: Engine) -> None:
+        self.engine = engine
+
+    def account_scope(self) -> str:
+        return ACCOUNT
+
+    def positions(self) -> list[dict[str, Any]]:
+        return _durable_broker_snapshot(self.engine)["positions_after"]
+
+    def history(self, kind: str) -> History:
+        return History(records=_durable_broker_snapshot(self.engine)[kind]["records"], exhausted=True)
+
+    def order(self, *, client_id: str) -> dict[str, Any]:
+        matches = [
+            row for row in self.history("orders").records if row["client_order_id"] == client_id
+        ]
+        assert len(matches) == 1
+        return matches[0]
+
+
+def _worker_crashes_after_broker_acceptance() -> None:
+    """Executed only by a disposable test subprocess, never against a broker."""
+    from src.execution import alpaca_ledger_exits
+
+    engine = create_engine(
+        os.environ["TEST_URL"],
+        connect_args={"options": "-csearch_path=" + os.environ["TEST_SCHEMA"]},
+    )
+    alpaca_ledger_exits.capture = lambda *args, **kwargs: _durable_broker_snapshot(engine)
+
+    class Trading:
+        def is_market_open(self) -> bool:
+            return True
+
+        def get_stock_quote(self, symbol: str) -> tuple[int, int]:
+            return (12, 12)
+
+        def _req(self, method: str, path: str, json_body: dict[str, Any]) -> None:
+            assert method == "POST" and path == "/v2/orders"
+            assert json_body["qty"] == "10" and json_body["side"] == "sell"
+            accepted = order("a", 10, closing=True, at=AT + timedelta(days=30))
+            accepted["id"] = "fixture-accepted-exit"
+            accepted["client_order_id"] = json_body["client_order_id"]
+            # This independently committed row represents the exchange's accepted
+            # order/fill. The application never receives the response or runs its
+            # exception/finally handlers; the OS closes its advisory-lock session.
+            with engine.begin() as conn:
+                conn.execute(
+                    text("INSERT INTO fixture_broker_posts(wire,broker_order) VALUES (:w,:o)"),
+                    {"w": json.dumps(json_body), "o": json.dumps(accepted)},
+                )
+            os._exit(77)
+
+    close_only_cycle(
+        engine, _DurableBrokerEvidence(engine), Trading(),
+        book="equities", cfg=EquityExitConfig(),
+    )
+    raise AssertionError("worker never reached the broker acceptance crash boundary")
+
+
+def test_process_death_after_broker_acceptance_recovers_original_order_without_resubmission(
+    ledger_engine: Engine, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CL-0deu.18: real process death; 15 - 10 = 5 shares, $20 realized."""
+    seed(ledger_engine, "a", 10, closed_external=False)
+    seed(ledger_engine, "b", 5, closed_external=False)
+    with ledger_engine.begin() as conn:
+        conn.execute(text("CREATE TABLE fixture_broker_posts(wire TEXT,broker_order TEXT)"))
+    before = _durable_broker_snapshot(ledger_engine)
+    apply_repairs(ledger_engine, before, before, restore_equities=set())
+    with ledger_engine.begin() as conn:
+        conn.execute(text(
+            "UPDATE alpaca_ledger_allocations SET management_enabled=FALSE WHERE idea_id='b'"
+        ))
+    child = subprocess.run(
+        [sys.executable, "-c", (
+            "import runpy; runpy.run_path('tests/integration/test_alpaca_ledger_postgres.py')"
+            "['_worker_crashes_after_broker_acceptance']()"
+        )],
+        env={
+            "PATH": os.environ["PATH"],
+            "TEST_URL": os.environ["CURLIT_AUDIT_TEST_DB_URL"],
+            "TEST_SCHEMA": ledger_engine.test_schema,
+        },
+        timeout=15,  # Local SQL and fake broker; a stuck lock must fail the drill.
+        check=False,
+    )
+    assert child.returncode == 77
+    with ledger_engine.connect() as conn:
+        attempt = conn.execute(text(
+            "SELECT client_order_id,state,broker_order_id FROM alpaca_ledger_attempts "
+            "WHERE client_order_id='curlit-eq-exit-a'"
+        )).one()
+        wire = json.loads(conn.execute(text("SELECT wire FROM fixture_broker_posts")).scalar_one())
+    assert attempt.client_order_id == wire["client_order_id"]
+    assert (attempt.state, attempt.broker_order_id) == ("submission_unknown", None)
+
+    class NoResubmission:
+        def is_market_open(self) -> bool:
+            return True
+
+        def _req(self, *args: Any, **kwargs: Any) -> None:
+            pytest.fail("restart must recover the original accepted order, not submit again")
+
+    monkeypatch.setattr(
+        "src.execution.alpaca_ledger_exits.capture",
+        lambda *args, **kwargs: _durable_broker_snapshot(ledger_engine),
+    )
+    for _ in range(2):
+        result = close_only_cycle(
+            ledger_engine, _DurableBrokerEvidence(ledger_engine), NoResubmission(),
+            book="equities", cfg=EquityExitConfig(),
+        )
+        assert result["closed"] == 1 and result["submitted"] == 0
+    with ledger_engine.connect() as conn:
+        assert conn.execute(text("SELECT count(*) FROM fixture_broker_posts")).scalar_one() == 1
+        assert dict(conn.execute(text(
+            "SELECT idea_id,signed_quantity FROM alpaca_ledger_allocations"
+        )).all()) == {"a": 0, "b": 5}
+        assert conn.execute(text("SELECT count(*) FROM alpaca_ledger_fills")).scalar_one() == 3
+        restored = conn.execute(text(
+            "SELECT state,broker_order_id FROM alpaca_ledger_attempts WHERE client_order_id=:c"
+        ), {"c": wire["client_order_id"]}).one()
+        assert tuple(restored) == ("filled", "fixture-accepted-exit")
+    rows = closed_performance(ledger_engine, AT)
+    assert len(rows) == 1
+    assert rows[0]["gross_realized"] == Decimal(20)
 
 
 def test_closed_report_uses_actual_fills_and_unknown_costs_not_legacy_prices(ledger_engine):

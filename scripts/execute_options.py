@@ -26,6 +26,7 @@ import logging
 import os
 import sys
 import time
+from dataclasses import asdict
 from pathlib import Path
 
 from sqlalchemy import create_engine
@@ -186,6 +187,17 @@ def main(argv: list[str] | None = None) -> int:
     exit_enabled = _b("ALPACA_OPT_EXIT_ENABLED", default=True)
     exit_cfg = _exit_config_from_env()
     ledger_close_only = _b("ALPACA_LEDGER_CLOSE_ONLY", default=False)
+    from src.runtime.release_manifest import write_release_manifest  # noqa: PLC0415
+
+    write_release_manifest(
+        Path(__file__).resolve().parents[1], role="alpaca_options",
+        broker_mode="alpaca-paper" if paper else "alpaca-live",
+        config={
+            "entry": asdict(cfg), "exit": asdict(exit_cfg),
+            "exit_enabled": exit_enabled, "ledger_close_only": ledger_close_only,
+            "loop_seconds": args.loop,
+        },
+    )
     engine = create_engine(build_db_url())
     client = AlpacaOptionsClient(key, secret, paper=paper)
     logger.info(

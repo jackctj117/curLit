@@ -32,7 +32,7 @@ from src.monitoring.logging_setup import JSONFormatter, get_context_filter
 logger = logging.getLogger(__name__)
 
 
-def internal_snapshot(engine: Engine) -> dict[str, Any]:
+def internal_snapshot(engine: Engine, account_scope: str | None = None) -> dict[str, Any]:
     """Bounded, read-only, repeatable-read snapshot; no daemon helpers imported."""
     logger.info("Reading internal Alpaca records in read-only transaction")
     with (
@@ -42,27 +42,74 @@ def internal_snapshot(engine: Engine) -> dict[str, Any]:
         conn.execute(text("SET TRANSACTION READ ONLY"))
         # Keep a stalled audit from holding a production snapshot indefinitely.
         conn.execute(text("SET LOCAL statement_timeout = '15s'"))
+        # Pre-cutover audits must work BEFORE migration 022. Only a confirmed
+        # absent relation is absence; permissions/connection/query errors are
+        # not swallowed. A scoped report records this coverage limitation.
+        scoped_ledger = (
+            account_scope is not None
+            and conn.execute(
+                text("SELECT to_regclass('alpaca_ledger_intents') IS NOT NULL")
+            ).scalar_one()
+        )
         books = {
             "options": [
                 dict(r._mapping)
                 for r in conn.execute(
                     text(
-                        "SELECT * FROM alpaca_option_orders WHERE status = 'submitted' ORDER BY idea_id"
-                    )
+                        "SELECT o.* FROM alpaca_option_orders o WHERE status = 'submitted' OR "
+                        "(status='reserved' AND EXISTS (SELECT 1 FROM alpaca_ledger_intents i "
+                        "WHERE i.account_scope=:account AND i.book='options' AND i.purpose='entry' "
+                        "AND i.idea_id=o.idea_id AND i.symbol=o.occ_symbol)) ORDER BY idea_id"
+                        if scoped_ledger
+                        else "SELECT * FROM alpaca_option_orders WHERE status='submitted' ORDER BY idea_id"
+                    ),
+                    {"account": account_scope},
                 )
             ],
             "equities": [
                 dict(r._mapping)
                 for r in conn.execute(
                     text(
-                        "SELECT * FROM alpaca_equity_orders WHERE status = 'submitted' ORDER BY idea_id"
-                    )
+                        "SELECT o.* FROM alpaca_equity_orders o WHERE status = 'submitted' OR "
+                        "(status='reserved' AND EXISTS (SELECT 1 FROM alpaca_ledger_intents i "
+                        "WHERE i.account_scope=:account AND i.book='equities' AND i.purpose='entry' "
+                        "AND i.idea_id=o.idea_id AND i.symbol=o.ticker)) ORDER BY idea_id"
+                        if scoped_ledger
+                        else "SELECT * FROM alpaca_equity_orders WHERE status='submitted' ORDER BY idea_id"
+                    ),
+                    {"account": account_scope},
                 )
             ],
         }
         referenced = sorted({r["idea_id"] for rows in books.values() for r in rows})
+        coverage = {}
+        if account_scope is not None:
+            coverage["reservation_coverage"] = (
+                "account_scoped" if scoped_ledger else "ledger_schema_absent"
+            )
+            # A reservation belonging to another proven account is safely
+            # excluded above. A legacy stub with no matching intent anywhere
+            # has unknown ownership and must remain a visible coverage gap.
+            coverage["unattributed_reserved_count"] = conn.execute(
+                text(
+                    "SELECT (SELECT COUNT(*) FROM alpaca_option_orders o "
+                    "WHERE status='reserved' AND NOT EXISTS "
+                    "(SELECT 1 FROM alpaca_ledger_intents i WHERE i.book='options' "
+                    "AND i.purpose='entry' AND i.idea_id=o.idea_id AND i.symbol=o.occ_symbol)) + "
+                    "(SELECT COUNT(*) FROM alpaca_equity_orders o "
+                    "WHERE status='reserved' AND NOT EXISTS "
+                    "(SELECT 1 FROM alpaca_ledger_intents i WHERE i.book='equities' "
+                    "AND i.purpose='entry' AND i.idea_id=o.idea_id AND i.symbol=o.ticker))"
+                    if scoped_ledger
+                    else (
+                        "SELECT (SELECT COUNT(*) FROM alpaca_option_orders WHERE status='reserved') + "
+                        "(SELECT COUNT(*) FROM alpaca_equity_orders WHERE status='reserved')"
+                    )
+                )
+            ).scalar_one()
         return {
             **books,
+            **coverage,
             "idea_ids": [
                 r[0]
                 for r in conn.execute(
@@ -81,7 +128,7 @@ def capture(
     snapshot: dict[str, Any] = {"started_at": datetime.now(UTC).isoformat()}
     snapshot["account_scope"] = client.account_scope()
     snapshot["positions_before"] = client.positions()
-    snapshot["internal"] = internal_snapshot(engine)
+    snapshot["internal"] = internal_snapshot(engine, snapshot["account_scope"])
     snapshot["orders"] = history_dict(client.history("orders", max_pages=max_pages))
     snapshot["activities"] = history_dict(client.history("activities", max_pages=max_pages))
     if include_contracts:
@@ -111,7 +158,7 @@ def capture(
         except EvidenceError as exc:
             snapshot["exit_lookups"][row["idea_id"]] = {"error": str(exc)}
     snapshot["positions_after"] = client.positions()
-    snapshot["internal_after"] = internal_snapshot(engine)
+    snapshot["internal_after"] = internal_snapshot(engine, snapshot["account_scope"])
     snapshot["finished_at"] = datetime.now(UTC).isoformat()
     # Same canonical representation on capture and offline replay.
     result: dict[str, Any] = json.loads(json.dumps(snapshot, default=str))

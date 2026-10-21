@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -279,6 +280,7 @@ class Ledger:
         created_at: datetime,
         detail: Record,
         replay: bool = False,
+        connection: Connection | None = None,
     ) -> bool:
         """Durably record an order intent and its attempt; True only if newly inserted.
 
@@ -309,7 +311,13 @@ class Ledger:
             )
         else:
             logger.info("Persisting order intent before broker submission", extra=context)
-        with self.engine.begin() as conn:
+        if connection is not None and (
+            connection.engine is not self.engine or not connection.in_transaction()
+        ):
+            raise ValueError("caller connection must own an active ledger transaction")
+        # Reservations may supply their already-locked transaction, so capacity,
+        # intent, attempt and recovery projection commit (or roll back) together.
+        with nullcontext(connection) if connection is not None else self.engine.begin() as conn:
             conn.execute(
                 text(
                     "INSERT INTO alpaca_ledger_accounts(account_scope) VALUES (:a) "

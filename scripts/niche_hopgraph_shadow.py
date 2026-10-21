@@ -4,6 +4,13 @@ SHADOW ONLY: reads frozen capture JSON files (the niche_shadow CapturedInput
 format), writes one JSON report, and never touches trade_ideas, a ledger, a
 broker, the production database or the production .env.
 
+Use --validate-only for an offline cohort manifest without model or memory
+access. Duplicate event identities/content are rejected before any calls.
+Twenty distinct supplied events and completed paired coverage are engineering
+sample checks only: they do not establish authenticity, independent events,
+equal research budgets, semantic evidence quality, profitability or permission
+to publish ideas. Those limitations remain explicit in the comparison report.
+
 Model calls happen ONLY when an operator passes --allow-model-calls. The
 hop-graph traversal, entailment and the shared critic all go through
 get_client("claude-code") with no_tools=True (subscription CLI: usd_cost is
@@ -35,7 +42,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from src.events.adversarial_critic import AdversarialCritic  # noqa: E402
 from src.events.hop_graph import default_traversal_model  # noqa: E402
 from src.events.hop_graph_memory import NicheEdgeMemory  # noqa: E402
-from src.events.hop_graph_shadow import compare_events  # noqa: E402
+from src.events.hop_graph_shadow import compare_events, validate_capture_cohort  # noqa: E402
 from src.events.hop_graph_verify import default_entailment_model  # noqa: E402
 from src.events.niche_shadow import CapturedInput, ResearchModel  # noqa: E402
 
@@ -60,7 +67,9 @@ def load_captures(paths: list[Path]) -> list[CapturedInput]:
         files.extend(sorted(path.glob("*.json")) if path.is_dir() else [path])
     if not files:
         raise ValueError("no capture files found")
-    return [CapturedInput.capture(json.loads(f.read_text())) for f in files]
+    captures = [CapturedInput.capture(json.loads(f.read_text())) for f in files]
+    validate_capture_cohort(captures)
+    return captures
 
 
 def sqlite_memory(path: Path) -> NicheEdgeMemory:
@@ -112,20 +121,37 @@ def main(argv: list[str] | None = None, *, clients: ShadowClients | None = None)
     parser.add_argument("--memory-sqlite", type=Path, default=None)
     parser.add_argument("--playbooks", type=Path, default=None)
     parser.add_argument(
+        "--validate-only",
+        action="store_true",
+        help="Write offline cohort validation only; no model, retrieval, or memory access",
+    )
+    parser.add_argument(
         "--allow-model-calls",
         action="store_true",
         help="Explicitly allow model calls (subscription CLI and, for a baseline, a billed API)",
     )
     args = parser.parse_args(argv)
     captures = load_captures(args.captures)
+    if args.output.exists():
+        parser.error("refusing to overwrite an existing report")
+    if args.validate_only:
+        validation = {
+            "mode": "offline_capture_validation",
+            "cohort": validate_capture_cohort(captures),
+            "model_calls": 0,
+            "comparison_run": False,
+            "quality_acceptance": "not_evaluated",
+        }
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        with args.output.open("x") as stream:
+            json.dump(validation, stream, indent=2, allow_nan=False)
+        return 0
     if args.baseline != "none" and not args.baseline_model:
         parser.error("--baseline-model is required with a baseline arm")
     if not args.allow_model_calls:
         parser.error(
             f"{len(captures)} capture(s) validated; --allow-model-calls is required to run"
         )
-    if args.output.exists():
-        parser.error("refusing to overwrite an existing report")
     clients = clients or _live_clients(args)
     from src.events.playbooks import load_playbooks  # noqa: PLC0415
 

@@ -27,7 +27,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Any
 
-from src.execution.alpaca_exposure import validated_positions
+from src.execution.alpaca_exposure import OPEN_ORDER_LIMIT, validated_positions
 
 logger = logging.getLogger(__name__)
 
@@ -313,6 +313,14 @@ class AlpacaOptionsClient:
         except Exception:
             logger.warning("alpaca: option bid failed for %s", occ_symbol, exc_info=True)
             return None
+
+    def list_open_orders(self) -> object:
+        """Unfiltered working orders; exposure validation rejects a full page."""
+        return self._req(
+            "GET",
+            "/v2/orders",
+            params={"status": "open", "limit": str(OPEN_ORDER_LIMIT), "nested": "false"},
+        )
 
     def list_option_positions(self) -> list[dict[str, Any]]:
         logger.info("alpaca options: fetching position snapshot")

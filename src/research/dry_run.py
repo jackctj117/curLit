@@ -1,8 +1,8 @@
 """Dry-run scaffolding for the research loop.
 
-A ``--dry-run`` invocation of ``scripts/research_loop.py`` walks every
-phase of the pipeline (ingest → idea → GATE 1 → implementer → debate →
-verdict → GATE 2 → registrar) using stubbed LLM calls, stubbed HTTP,
+A ``--dry-run`` invocation of ``scripts/research_loop.py`` walks the
+pipeline through ESCALATE (ingest → idea → GATE 1 → implementer → debate →
+verdict) using stubbed LLM calls, stubbed HTTP,
 and stubbed backtest data. No real API calls; no real network; no
 real money risk; nothing pushed.
 
@@ -18,9 +18,8 @@ This module exposes three primitives that the CLI assembles:
     / implementer / bull_reviewer / bear_reviewer.
   * ``stub_http_get(url)`` — returns a single canned arXiv Atom feed
     with one synthetic paper, regardless of URL.
-  * ``stub_backtest_runner(code_path)`` — returns metrics that all
-    pass the threshold rules so the dry-run produces a PROMOTE
-    verdict and exercises GATE 2 + (skip-git) registrar paths.
+  * ``stub_backtest_runner(code_path)`` — returns synthetic diagnostics,
+    explicitly ineligible for measured-evidence promotion (CL-0deu.6).
 """
 
 from __future__ import annotations
@@ -225,11 +224,12 @@ def stub_http_get(_url: str) -> str:
 
 
 def stub_backtest_runner(_code_path: Path) -> dict[str, Any]:
-    """BacktestRunner stub: returns metrics that pass every threshold
-    rule, so the dry-run produces a PROMOTE verdict and exercises the
-    GATE 2 + registrar paths. The metrics are obviously synthetic
-    (round numbers, no fold detail) — the audit trail makes this
-    clear."""
+    """Synthetic diagnostics exercise the pipeline through ESCALATE.
+
+    CL-0deu.6: invented metrics are not measured evidence. A dry-run must
+    not produce promotable reports that could be replayed into registration.
+    Dedicated isolated tests exercise gate 2 using explicit fixture evidence.
+    """
     return {
         "oos_metrics": {
             "sharpe": 0.85,
@@ -243,6 +243,22 @@ def stub_backtest_runner(_code_path: Path) -> dict[str, Any]:
         "edge_concentration": 0.45,
         "regime_diversified": True,
         "decay_severity": "NONE",
+        "_metric_evidence": {
+            name: {
+                "status": "synthetic",
+                "observation_count": 0,
+                "method": "dry_run_stub",
+                "reason": "no_observed_performance",
+            }
+            for name in (
+                "oos_metrics",
+                "sharpe_ci_95",
+                "is_oos_sharpe_ratio",
+                "edge_concentration",
+                "regime_diversified",
+                "decay_severity",
+            )
+        },
         "_metrics_provenance": {
             "all": "DRY RUN — synthetic stubs from src.research.dry_run, not measured",
         },

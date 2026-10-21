@@ -34,7 +34,7 @@ from urllib.parse import quote
 import httpx
 
 from src.execution.alpaca_asset_eligibility import AssetNotFoundError
-from src.execution.alpaca_exposure import validated_positions
+from src.execution.alpaca_exposure import OPEN_ORDER_LIMIT, validated_positions
 from src.execution.alpaca_options import (
     DATA_BASE,
     LIVE_BASE,
@@ -86,6 +86,14 @@ class AlpacaEquityClient:
     def get_account(self) -> dict[str, Any]:
         result: dict[str, Any] = self._req("GET", "/v2/account")
         return result
+
+    def list_open_orders(self) -> object:
+        """Unfiltered working orders; exposure validation rejects a full page."""
+        return self._req(
+            "GET",
+            "/v2/orders",
+            params={"status": "open", "limit": str(OPEN_ORDER_LIMIT), "nested": "false"},
+        )
 
     def get_asset(self, symbol: str) -> dict[str, Any]:
         """Exact broker identity lookup. A research ticker is not eligibility."""

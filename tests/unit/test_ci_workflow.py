@@ -100,3 +100,41 @@ def test_pyarrow_is_a_declared_test_dependency_not_a_runtime_one() -> None:
     core = project["project"]["dependencies"]
     assert any(re.match(r"pyarrow\s*>=", requirement) for requirement in dev)
     assert not any(requirement.startswith("pyarrow") for requirement in core)
+
+
+def test_recovery_integration_uses_disposable_database_and_propagates_failures(
+    workflow: dict[str, Any],
+) -> None:
+    """CL-0deu.5: migration/replay checks may not use operational credentials."""
+    job = workflow["jobs"]["recovery-integration"]
+    assert job["name"] == "recovery-integration"
+    assert "needs" not in job and "if" not in job
+    assert not job.get("continue-on-error", False)
+    assert "environment" not in job
+    postgres = job["services"]["postgres"]
+    assert postgres["env"] == {
+        "POSTGRES_USER": "fixture",
+        "POSTGRES_PASSWORD": "fixture",
+        "POSTGRES_DB": "curlit_test_ci",
+    }
+    assert "volumes" not in postgres
+    for step in job["steps"]:
+        assert "if" not in step
+        assert not step.get("continue-on-error", False)
+        assert "secrets." not in str(step)
+        assert "||" not in step.get("run", "")
+        if "checkout@" in step.get("uses", ""):
+            assert step["with"]["persist-credentials"] is False
+    check = job["steps"][-1]
+    assert check["env"] == {
+        "CURLIT_AUDIT_TEST_DB_URL": (
+            "postgresql+psycopg2://fixture:fixture@127.0.0.1:5432/curlit_test_ci"
+        ),
+    }
+    assert check["run"].split() == [
+        "python", "-m", "pytest",
+        "tests/integration/test_alpaca_ledger_postgres.py",
+        "tests/integration/test_alpaca_entry_reservation_postgres.py",
+        "tests/integration/test_recovery_postgres.py",
+        "tests/integration/test_niche_audit_postgres.py", "-q", "-o", "addopts=''",
+    ]

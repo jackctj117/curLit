@@ -7,6 +7,8 @@ tmp_path-rooted experimental + production dirs + portfolio.yaml.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from pathlib import Path
 
 import pytest
@@ -17,6 +19,7 @@ from src.research.promote import (
     add_strategy_to_portfolio_yaml,
     extract_first_class_name,
 )
+from tests.unit.test_verdict import _make_passing_report
 
 # --------------------------------------------------------------------- #
 # Fixtures
@@ -49,6 +52,12 @@ def repo(tmp_path: Path) -> dict[str, Path]:
             sort_keys=False,
         )
     )
+    # Registration now revalidates measured evidence before any side effect.
+    # These are explicit synthetic decision-table values, not backtest results.
+    for name in ("r.json", "report.json"):
+        (tmp_path / name).write_text(
+            json.dumps({"strategy_slug": "alpha", **_make_passing_report()})
+        )
     return {
         "experimental": experimental,
         "production": production,
@@ -144,6 +153,35 @@ class TestAddStrategyToYaml:
 
 
 class TestRegister:
+    def test_report_replaced_between_approval_check_and_registration(
+        self,
+        repo: dict[str, Path],
+    ) -> None:
+        source = _seed_strategy(repo["experimental"], "alpha")
+        report_path = repo["tmp"] / "report.json"
+        approved_hash = hashlib.sha256(report_path.read_bytes()).hexdigest()
+        report = json.loads(report_path.read_text())
+        report["revision"] = "replacement_still_passing_metrics"
+        report_path.write_text(json.dumps(report))
+        before = repo["yaml"].read_bytes()
+        registrar = PromoteRegistrar(
+            experimental_dir=repo["experimental"],
+            production_dir=repo["production"],
+            portfolio_yaml=repo["yaml"],
+            skip_git=True,
+        )
+        result = registrar.register(
+            "alpha",
+            report_path,
+            repo["tmp"] / "t.md",
+            expected_report_sha256=approved_hash,
+        )
+        assert not result.succeeded
+        assert "approved report changed" in result.error
+        assert result.steps_completed == []
+        assert source.exists()
+        assert repo["yaml"].read_bytes() == before
+
     def test_happy_path_runs_all_steps(self, repo: dict[str, Path]) -> None:
         _seed_strategy(repo["experimental"], "alpha", class_name="AlphaStrat")
         git_calls: list[list[str]] = []
@@ -223,6 +261,9 @@ class TestRegister:
         repo: dict[str, Path],
     ) -> None:
         # No file seeded
+        (repo["tmp"] / "r.json").write_text(
+            json.dumps({"strategy_slug": "ghost", **_make_passing_report()})
+        )
         reg = PromoteRegistrar(
             experimental_dir=repo["experimental"],
             production_dir=repo["production"],
@@ -328,7 +369,7 @@ class TestRegister:
         )
         reg.register(
             strategy_slug="alpha",
-            candidate_report_path=Path("reports/candidates/alpha.json"),
+            candidate_report_path=repo["tmp"] / "report.json",
             debate_transcript_path=Path("docs/research/debates/alpha/transcript.md"),
             verdict_reason="all gates pass",
         )
@@ -339,6 +380,51 @@ class TestRegister:
         assert "allocation = 0" in body
         assert "candidate report" in body.lower()
         assert "debate transcript" in body.lower()
+
+    @pytest.mark.parametrize(
+        "failure", ["missing", "bare", "proxy", "failed", "malformed", "wrong_strategy"]
+    )
+    def test_evidence_failure_prevents_every_side_effect(
+        self,
+        repo: dict[str, Path],
+        failure: str,
+    ) -> None:
+        source = _seed_strategy(repo["experimental"], "alpha")
+        before = repo["yaml"].read_bytes()
+        report_path = repo["tmp"] / "report.json"
+        report = _make_passing_report()
+        report["strategy_slug"] = "other" if failure == "wrong_strategy" else "alpha"
+        if failure == "missing":
+            report_path = repo["tmp"] / "absent.json"
+        elif failure == "bare":
+            del report["_metric_evidence"]
+        elif failure == "proxy":
+            report["_metric_evidence"]["edge_concentration"]["status"] = "proxy"
+        elif failure == "failed":
+            report["oos_metrics"]["sharpe"] = -0.5
+        if failure != "missing":
+            report_path.write_text("{" if failure == "malformed" else json.dumps(report))
+        calls: list[list[str]] = []
+
+        def external(args: list[str]) -> str:
+            calls.append(args)
+            return ""
+
+        registrar = PromoteRegistrar(
+            experimental_dir=repo["experimental"],
+            production_dir=repo["production"],
+            portfolio_yaml=repo["yaml"],
+            git_runner=external,
+            gh_runner=external,
+        )
+        result = registrar.register("alpha", report_path, repo["tmp"] / "transcript.md")
+        assert not result.succeeded
+        assert result.error.startswith("evidence_gate:")
+        assert result.steps_completed == []
+        assert source.exists()
+        assert not (repo["production"] / "alpha.py").exists()
+        assert repo["yaml"].read_bytes() == before
+        assert calls == []
 
 
 # ---------------------------------------------------------------------- #

@@ -42,12 +42,107 @@ from src.events.niche_shadow import (
     compare_captured,
 )
 from src.events.playbooks import Playbook
-from src.events.research_evidence import SourceDocument, timestamp
+from src.events.research_evidence import SourceDocument, digest, timestamp
 from src.research.llm.client import sum_or_unknown
 
 logger = logging.getLogger(__name__)
 
-REPORT_VERSION = "hop-graph-shadow-v1"
+REPORT_VERSION = "hop-graph-shadow-v2"
+# CL-ynuh predeclared engineering sample, not a profitability/power threshold.
+MIN_COMPARISON_EVENTS = 20
+
+
+def validate_capture_cohort(captures: Sequence[CapturedInput]) -> dict[str, Any]:
+    """Reject repeated observations before they consume calls or inflate n.
+
+    A capture is already internally timestamp-validated. IDs are scoped to
+    this single event corpus; string/integer aliases are not new observations.
+    Reassigning an ID to an otherwise identical event is not a new event either.
+    This checks supplied records, not authenticity or statistical independence.
+    """
+    if not captures:
+        raise ValueError("no captures supplied")
+    identities: set[str] = set()
+    hashes: set[str] = set()
+    event_hashes: set[str] = set()
+    for capture in captures:
+        event = capture.payload()["event"]
+        raw_id = event.get("id")
+        if type(raw_id) is int and raw_id > 0:
+            identity = str(raw_id)
+        elif isinstance(raw_id, str) and raw_id.strip():
+            identity = raw_id.strip()
+            numeric_part = identity[1:] if identity.startswith(("+", "-")) else identity
+            if numeric_part.isdecimal():
+                identity = str(int(identity))
+                if int(identity) <= 0:
+                    raise ValueError("event identity must be positive")
+        else:
+            raise ValueError("capture needs an explicit nonempty event identity")
+        if identity in identities:
+            raise ValueError(f"duplicate event identity: {identity}")
+        if capture.input_hash in hashes:
+            raise ValueError("duplicate captured input")
+        event_content = {key: value for key, value in event.items() if key != "id"}
+        if not event_content:
+            raise ValueError("capture needs event content beyond its identity")
+        event_hash = digest(event_content)
+        if event_hash in event_hashes:
+            raise ValueError("duplicate event content under distinct identities")
+        identities.add(identity)
+        hashes.add(capture.input_hash)
+        event_hashes.add(event_hash)
+    logger.info("Validated shadow cohort: %d distinct supplied events", len(identities))
+    return {
+        "capture_count": len(captures),
+        "distinct_event_count": len(identities),
+        "event_ids": sorted(identities),
+        "input_hashes": sorted(hashes),
+        "minimum_engineering_events": MIN_COMPARISON_EVENTS,
+        "sample_size_met": len(identities) >= MIN_COMPARISON_EVENTS,
+        "authenticity_and_independence": "not_established_by_validation",
+    }
+
+
+def _comparison_coverage(
+    events: Sequence[Mapping[str, Any]],
+    *,
+    critic_present: bool,
+) -> dict[str, Any]:
+    """Describe completed paired coverage without claiming research success.
+
+    Failures remain in the full report and denominator. Enough completed
+    pairs is necessary engineering coverage, not equivalent compute budgets,
+    semantic source support, economic edge, or approval to wire the feed.
+    """
+    paired = [row for row in events if row.get("baseline") is not None]
+    complete = [
+        row
+        for row in paired
+        if row["hop_graph"].get("discovery_status") in ("completed", "abstained")
+        and row["baseline"].get("comparable") is True
+    ]
+    reasons = []
+    if len(events) < MIN_COMPARISON_EVENTS:
+        reasons.append("insufficient_distinct_events")
+    if len(paired) != len(events) or not paired:
+        reasons.append("missing_baseline_arm")
+    if not critic_present:
+        reasons.append("critic_not_run")
+    if len(complete) < MIN_COMPARISON_EVENTS:
+        reasons.append("insufficient_completed_pairs")
+    return {
+        "status": "exploratory" if reasons else "minimum_completed_paired_coverage",
+        "minimum_engineering_events": MIN_COMPARISON_EVENTS,
+        "distinct_events": len(events),
+        "paired_events": len(paired),
+        "completed_pairs": len(complete),
+        "incomplete_pairs": len(paired) - len(complete),
+        "reasons": reasons,
+        "budget_equivalence": "not_established",
+        "source_support_accuracy": "requires_independent_evaluation",
+        "quality_acceptance": "not_determined_by_sample_coverage",
+    }
 
 
 def captured_retriever(capture: CapturedInput) -> FilingRetriever:
@@ -269,6 +364,7 @@ def compare_events(
     budget: ResearchBudget | None = None,
 ) -> dict[str, Any]:
     """Replay in capture-time order (memory is point-in-time by ``as_of``)."""
+    cohort = validate_capture_cohort(captures)
     ordered = sorted(captures, key=lambda c: (str(c.payload()["captured_at"]), c.input_hash))
     events = []
     for capture in ordered:
@@ -303,6 +399,8 @@ def compare_events(
         "identical_gates": "verify_ideas -> evidence_score -> same critic instance",
         "critic_model": critic.model if critic is not None else None,
         "baseline_run": baseline_model is not None,
+        "cohort": cohort,
+        "evidence_coverage": _comparison_coverage(events, critic_present=critic is not None),
         "events": events,
         "summary": {
             "hop_graph": _summary(hop_rows),

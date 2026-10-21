@@ -421,6 +421,26 @@ def make_backtest_runner(
             "decay_severity": decay_sev,
             "fold_metrics": result.fold_metrics.to_dict(orient="records"),
             "_metric_evidence": {
+                "oos_metrics": {
+                    "status": "measured" if len(oos) else "insufficient",
+                    "observation_count": len(oos),
+                    "method": "PerformanceAnalytics_walk_forward_oos_returns",
+                    "reason": "" if len(oos) else "no_oos_observations",
+                },
+                "oos_metrics.n_trades": {
+                    "status": "proxy",
+                    "observation_count": len(result.trades),
+                    "method": "nonzero_position_change_count",
+                    "reason": "position_changes_are_not_completed_trade_lifecycles",
+                },
+                "is_oos_sharpe_ratio": {
+                    "status": "measured"
+                    if len(result.fold_metrics) and oos_sharpe != 0
+                    else "insufficient",
+                    "observation_count": len(result.fold_metrics),
+                    "method": "absolute_mean_train_sharpe_over_oos_sharpe",
+                    "reason": "" if oos_sharpe != 0 else "undefined_zero_oos_sharpe",
+                },
                 **{
                     name: {
                         "status": "insufficient" if value is None else "proxy",

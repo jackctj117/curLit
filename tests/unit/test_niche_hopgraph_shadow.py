@@ -13,9 +13,16 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from hypothesis import given
+from hypothesis import strategies as st
 from scripts import niche_hopgraph_shadow as shadow
 
-from src.events.hop_graph_shadow import captured_retriever
+from src.events.hop_graph_shadow import (
+    _comparison_coverage,
+    captured_retriever,
+    compare_events,
+    validate_capture_cohort,
+)
 from src.events.niche_shadow import CapturedInput, ModelReply
 from tests.unit._hop_graph_fixtures import (
     ACME_10K,
@@ -81,6 +88,8 @@ def test_shadow_script_runs_end_to_end_and_writes_report(tmp_path: Path) -> None
     )
     assert code == 0
     report = json.loads(out.read_text())
+    assert report["evidence_coverage"]["status"] == "exploratory"
+    assert report["evidence_coverage"]["completed_pairs"] == 1
     assert report["mode"] == "shadow_only" and report["baseline_run"] is True
     [event] = report["events"]
     hop = event["hop_graph"]
@@ -155,6 +164,7 @@ def test_shadow_memory_carries_edges_across_events(tmp_path: Path) -> None:
     second: dict[str, Any] = capture_payload()
     second["captured_at"] = "2026-09-09T18:00:00+00:00"
     second["event"] = {**second["event"], "id": 8}
+    second["event"]["headline"] = "New follow-up disruption event, not a copied observation"
     (captures / "event8.json").write_text(json.dumps(second))
     out = tmp_path / "r.json"
     shadow.main(
@@ -214,3 +224,128 @@ def test_failed_baseline_call_counts_as_an_attempt_with_unknown_usage() -> None:
     assert arm["cost"]["input_tokens"] is None and arm["cost"]["output_tokens"] is None
     ok = run_baseline_arm(CapturedInput.capture(capture_payload()), Baseline())
     assert ok["metrics"]["model_calls"] == 1 and ok["cost"]["input_tokens"] == 20
+
+
+@pytest.mark.parametrize("alias", [7, "7", "007", " 7 ", "+7"])
+def test_duplicate_event_ids_fail_before_any_model_call(alias: Any) -> None:
+    first = CapturedInput.capture(capture_payload())
+    second = capture_payload()
+    second["event"]["id"] = alias
+    second["event"]["headline"] = "Changed content does not change the event identity"
+    clients = _clients(Baseline())
+    with pytest.raises(ValueError, match="duplicate event identity"):
+        compare_events(
+            [first, CapturedInput.capture(second)],
+            traversal_client=clients.traversal,
+            entailment_client=clients.entailment,
+            baseline_model=clients.baseline,
+            critic=None,
+        )
+    assert clients.traversal.calls == []
+    assert clients.entailment.calls == []
+    assert clients.baseline.calls == 0  # type: ignore[union-attr]
+
+
+def test_copied_event_with_new_id_is_not_a_distinct_observation() -> None:
+    first = capture_payload()
+    second = capture_payload()
+    second["event"]["id"] = 8
+    with pytest.raises(ValueError, match="duplicate event content"):
+        validate_capture_cohort([CapturedInput.capture(first), CapturedInput.capture(second)])
+
+
+@pytest.mark.parametrize("event_id", [None, "", "  ", True, 0, -1, 7.5, "-1", "+0"])
+def test_missing_or_malformed_event_identity_is_not_counted(event_id: Any) -> None:
+    payload = capture_payload()
+    payload["event"]["id"] = event_id
+    with pytest.raises(ValueError, match="event identity"):
+        validate_capture_cohort([CapturedInput.capture(payload)])
+
+
+@pytest.mark.parametrize("event", [{}, {"id": 7}])
+def test_empty_event_record_cannot_count_toward_coverage(event: dict[str, Any]) -> None:
+    payload = capture_payload()
+    payload["event"] = event
+    with pytest.raises(ValueError, match="capture needs"):
+        validate_capture_cohort([CapturedInput.capture(payload)])
+
+
+def test_opaque_event_identity_is_preserved() -> None:
+    payload = capture_payload()
+    payload["event"]["id"] = "7f847321-d76f-4d1f-b38b-572f8acc6424"
+    manifest = validate_capture_cohort([CapturedInput.capture(payload)])
+    assert manifest["event_ids"] == [payload["event"]["id"]]
+
+
+def test_loader_rejects_same_file_supplied_twice(tmp_path: Path) -> None:
+    folder = _write_capture(tmp_path)
+    with pytest.raises(ValueError, match="duplicate event identity"):
+        shadow.load_captures([folder, folder / "event7.json"])
+
+
+def test_validate_only_never_constructs_clients_or_memory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def forbidden(*args: Any, **kwargs: Any) -> None:
+        raise AssertionError("offline validation must not construct model or memory")
+
+    monkeypatch.setattr(shadow, "_live_clients", forbidden)
+    monkeypatch.setattr(shadow, "sqlite_memory", forbidden)
+    output = tmp_path / "validation.json"
+    assert (
+        shadow.main(
+            [
+                "--captures",
+                str(_write_capture(tmp_path)),
+                "--output",
+                str(output),
+                "--validate-only",
+                "--memory-sqlite",
+                str(tmp_path / "must-not-exist.sqlite"),
+            ]
+        )
+        == 0
+    )
+    report = json.loads(output.read_text())
+    assert report["model_calls"] == 0 and report["comparison_run"] is False
+    assert report["quality_acceptance"] == "not_evaluated"
+    assert report["cohort"]["distinct_event_count"] == 1
+    assert report["cohort"]["sample_size_met"] is False
+    assert not (tmp_path / "must-not-exist.sqlite").exists()
+
+
+@given(st.integers(min_value=1, max_value=30))
+def test_paired_coverage_boundary_does_not_claim_quality_or_equal_budgets(count: int) -> None:
+    rows = [
+        {"hop_graph": {"discovery_status": "completed"}, "baseline": {"comparable": True}}
+        for _ in range(count)
+    ]
+    result = _comparison_coverage(rows, critic_present=True)
+    assert result["completed_pairs"] == count
+    assert result["status"] == (
+        "minimum_completed_paired_coverage" if count >= 20 else "exploratory"
+    )
+    assert result["quality_acceptance"] == "not_determined_by_sample_coverage"
+    assert result["budget_equivalence"] == "not_established"
+
+
+def test_twenty_rows_without_baseline_or_critic_are_exploratory() -> None:
+    rows = [{"hop_graph": {"discovery_status": "completed"}, "baseline": None}] * 20
+    result = _comparison_coverage(rows, critic_present=False)
+    assert result["status"] == "exploratory"
+    assert result["completed_pairs"] == 0
+    assert "missing_baseline_arm" in result["reasons"]
+    assert "critic_not_run" in result["reasons"]
+
+
+def test_incomplete_discovery_does_not_count_as_completed_pair() -> None:
+    rows = [
+        {"hop_graph": {"discovery_status": "completed"}, "baseline": {"comparable": True}}
+        for _ in range(20)
+    ]
+    rows[-1]["hop_graph"]["discovery_status"] = "partial"
+    result = _comparison_coverage(rows, critic_present=True)
+    assert result["status"] == "exploratory"
+    assert result["completed_pairs"] == 19
+    assert result["incomplete_pairs"] == 1

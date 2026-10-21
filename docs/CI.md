@@ -71,6 +71,7 @@ Ubuntu 24.04 and Python 3.11, the project's declared minimum version.
 | `unit-tests` | `make test-unit` |
 | `lint` | `make lint` |
 | `typecheck` | `make typecheck` |
+| `recovery-integration` | `python -m pytest tests/integration/test_alpaca_ledger_postgres.py tests/integration/test_alpaca_entry_reservation_postgres.py tests/integration/test_recovery_postgres.py tests/integration/test_niche_audit_postgres.py -q -o addopts=''` |
 
 The existing Make targets run the complete unit directory, Ruff across `src/`
 and `tests/`, and strict mypy across `src/`. The jobs run independently: a failure
@@ -84,6 +85,13 @@ is omitted. `pytest-timeout` is now declared in the dev extra so the existing
 to activate this: use a disposable development environment. The dependency lock
 is separate work (CL-0deu.10); installing the same broad requirements is not yet
 a guarantee of a bit-for-bit reproducible environment.
+
+`recovery-integration` creates a disposable PostgreSQL 15 service with public
+fixture credentials and database name `curlit_test_ci`. Its database URL is set
+only for the integration step, never read from the operational environment. The
+suite covers additive migrations, ledger replay, recovery safeguards, audit
+persistence and writer fencing. It is not a full TimescaleDB backup/restore drill
+or permission to test against an operational database.
 
 ## Blocking security checks (CL-0deu.5.2)
 
@@ -142,7 +150,7 @@ use inline `gitleaks:allow` comments; those are disabled. Do not publish raw sec
 reports or validate discovered credentials online. Real credentials require
 operator-led revocation/rotation, not merely deletion from the current file.
 
-The sole added exception matches `generic-api-key` AND the exact secret value
+One exception matches `generic-api-key` AND the exact secret value
 `PLACEHOLDER_ECB_Q3_YES` AND `configs/polymarket_markets.yaml`. Inspection of
 commit `6512b361b2dc5336a29d3a91d3510bd4c58088a0` confirms it is a literal public
 instrument-ID placeholder. Revisit the exception when the sample value, file,
@@ -150,36 +158,43 @@ or detector changes. Tests with another path and a token-shaped replacement both
 still fail. The 395-commit local history scan then reports no findings; this does
 not certify uncommitted changes, unfetched history, or remote credentials.
 
+CL-esh6 also scopes the exact comment text `Telegram/Moonshot` to
+`src/research/llm/claude_code.py` and its security-workflow test. This is a vendor
+name pair misclassified in a comment, not an actual credential. Changed values
+and other paths remain subject to scanning; regression tests cover both rules.
+
 **Bandit findings resolved (CL-u59z):** the initial scan reported 16 findings,
 not 16 confirmed exploits. Ten now have code fixes and six SQL constructions
 have narrow, evidence-backed dispositions. The medium-and-higher scan exits
 zero with no parser errors. See [individual dispositions and regression
 evidence](SECURITY_DISPOSITIONS.md). Existing model identities and persisted idea
 IDs are preserved. A vulnerable/patched pip
-fixture proves auditor failure/success, but the complete fresh hosted dependency
-environment has not yet been audited locally.
+fixture proves auditor failure/success. The complete fresh hosted dependency
+environment was audited successfully on October 20 (run linked below); this
+does not establish that the operational virtualenv has the same inventory.
 
-The workflow uses read-only repository permissions, pinned action commits, and
-checkout without persisted Git credentials. It has no deployment environment,
-database service, or broker keys. External smoke tests stay opt-in and model
+The security workflow uses read-only repository permissions, pinned action
+commits, and checkout without persisted Git credentials. It has no deployment
+environment, database service, or broker keys. External smoke tests stay opt-in and model
 downloads are disabled. These settings do not prove that arbitrary test code
 cannot use the network; credential-free hosted runners remain important.
 
 ## Operator activation
 
-The patch must be reviewed and published by the operator before GitHub can run
-it. After resolving baseline findings and obtaining successful hosted runs,
-require `unit-tests`, `lint`, `typecheck`, `security-bandit`,
+The workflows are published and running. To enforce successful checks before
+merging, require `unit-tests`, `lint`, `typecheck`, `recovery-integration`, `security-bandit`,
 `security-dependencies`, and `security-secrets` in the repository's branch
 rules/ruleset, with the GitHub Actions app
 as the expected source. Confirm the exact names in the checks UI. Require human
 PR approval and verify that a deliberately failing check prevents merging using
 a disposable branch. Model review is additional evidence, not a merge authority.
 
-Local validation does not verify a hosted Linux/Python 3.11 installation or remote
-branch protection. Do not describe merging as blocked by CI until the operator
-has verified those settings. Security findings must be resolved or explicitly
-reviewed before activation; do not bypass a failing job to merge the setup.
+**Read-only verification October 20, 2026:** the main-branch protection API
+returned `404 Branch not protected` (exit 1), and the effective branch-rules API
+returned an empty list (exit 0). Required checks and human-approval enforcement
+are therefore **not active**. No repository setting was modified. Enabling and
+testing those rules is tracked in **CL-lqor**, an operator administrative step; successful workflow
+execution is not merge enforcement. Do not bypass failing jobs to merge.
 
 ## Verification and remaining scope
 
@@ -197,8 +212,21 @@ type fixtures each produce a nonzero exit. Put these fixtures in a disposable
 directory, not in the repository suite; never commit credentials or weaken an
 existing test to exercise a failure path.
 
-The parent bead CL-0deu.5 remains open for disposable database/migration tests
-and hosted/branch-rule proof.
+**Hosted evidence, October 20, 2026, source `63fb4a399344f60a3c5ad409adbc4b6f5f890d57`:**
+[CI run 39493644618](https://github.com/jackctj117/curLit/actions/runs/39493644618)
+passed the complete unit suite (**4,708 passed, two skipped, one warning** in
+246.44 seconds), lint, typecheck, and disposable recovery integration (**27
+passed** in 7.30 seconds). The two skips are the existing opt-in alternative-data
+network test and credential-dependent Grok smoke test, not behavioral regressions
+disabled for CI. [Security run 39493644568](https://github.com/jackctj117/curLit/actions/runs/39493644568)
+passed Bandit, complete installed dependency auditing, and history secret scans
+at the same commit. Logs and conclusions were rechecked through read-only GitHub
+commands. These results do not certify later uncommitted changes.
+
+CL-0deu.5 now has hosted installation, migration and scanner evidence; required
+branch checks remain explicitly outstanding as permitted by its acceptance
+criteria. CL-i6ke separately retains the local offline-container compiler
+limitation described above; passing hosted tests does not make that runner green.
 CL-dzt6 tracks fresh-environment dependency/audit repairs. CL-6sdh records
 Linux/concurrency fixture assumptions exposed by the first full hosted suite;
 the operator authorized their correction on 2026-09-08. Four concurrent workers

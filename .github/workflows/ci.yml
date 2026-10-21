@@ -105,5 +105,6 @@ jobs:
           CURLIT_AUDIT_TEST_DB_URL: postgresql+psycopg2://fixture:fixture@127.0.0.1:5432/curlit_test_ci
         run: >-
           python -m pytest tests/integration/test_alpaca_ledger_postgres.py
+          tests/integration/test_alpaca_entry_reservation_postgres.py
           tests/integration/test_recovery_postgres.py
           tests/integration/test_niche_audit_postgres.py -q -o addopts=''

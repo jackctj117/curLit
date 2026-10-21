@@ -31,6 +31,8 @@ call, not the registrar's.
 from __future__ import annotations
 
 import ast
+import hashlib
+import json
 import logging
 import re
 import shutil
@@ -42,6 +44,9 @@ from typing import Any
 
 import yaml
 
+from src.research.agents.reviewer import Position
+from src.research.verdict import Verdict, compute_verdict, parse_rules
+
 logger = logging.getLogger(__name__)
 
 
@@ -49,6 +54,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_EXPERIMENTAL_DIR: Path = Path("src/strategies/_experimental")
 DEFAULT_PRODUCTION_DIR: Path = Path("src/strategies")
 DEFAULT_PORTFOLIO_YAML: Path = Path("configs/live_portfolio.yaml")
+DEFAULT_REVIEW_RULES: Path = Path("docs/research/REVIEW_RULES.md")
 
 
 # --------------------------------------------------------------------------- #
@@ -211,6 +217,7 @@ class PromoteRegistrar:
         gh_runner: GhRunner | None = None,
         skip_git: bool = False,
         skip_pr: bool = False,
+        review_rules_path: Path | str = DEFAULT_REVIEW_RULES,
     ) -> None:
         self.experimental_dir = Path(experimental_dir)
         self.production_dir = Path(production_dir)
@@ -223,6 +230,7 @@ class PromoteRegistrar:
         # the operator can finish manually.
         self.skip_git = skip_git
         self.skip_pr = skip_pr
+        self.review_rules_path = Path(review_rules_path)
 
     def register(
         self,
@@ -230,6 +238,7 @@ class PromoteRegistrar:
         candidate_report_path: Path | str,
         debate_transcript_path: Path | str,
         verdict_reason: str = "",
+        expected_report_sha256: str | None = None,
     ) -> RegistrationResult:
         """Run all four steps in order. Returns RegistrationResult with
         steps_completed listing exactly what ran — useful for the
@@ -238,6 +247,34 @@ class PromoteRegistrar:
             succeeded=False,
             strategy_slug=strategy_slug,
         )
+
+        # CL-0deu.6: an old approval is not evidence that today's report passes.
+        # Revalidate before moving code, editing allocation, or publishing.
+        # This is a quantitative gate, not a substitute for operator approval
+        # or artifact-bound code review (tracked separately in CL-0deu.11).
+        logger.info("Revalidating measured promotion evidence for %s", strategy_slug)
+        try:
+            report_bytes = Path(candidate_report_path).read_bytes()
+            if (
+                expected_report_sha256 is not None
+                and hashlib.sha256(report_bytes).hexdigest() != expected_report_sha256
+            ):
+                raise ValueError("approved report changed before registration")
+            report = json.loads(report_bytes)
+            if not isinstance(report, dict):
+                raise ValueError("candidate report must be an object")
+            if report.get("strategy_slug") != strategy_slug:
+                raise ValueError("candidate report strategy identity mismatch")
+            rules = parse_rules(self.review_rules_path)
+            if not any(rule.threshold_expr for rule in rules):
+                raise ValueError("promotion rules contain no quantitative gates")
+            verdict = compute_verdict(report, rules, Position.PROMOTE, Position.PROMOTE)
+            if verdict.verdict != Verdict.PROMOTE:
+                raise ValueError(f"{verdict.verdict}: {verdict.reason}")
+        except (OSError, ValueError, TypeError) as exc:
+            logger.warning("Promotion evidence rejected for %s: %s", strategy_slug, exc)
+            result.error = f"evidence_gate: {type(exc).__name__}: {exc}"
+            return result
 
         # Step 1: move the file
         try:

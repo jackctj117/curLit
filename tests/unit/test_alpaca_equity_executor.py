@@ -59,6 +59,9 @@ class _FakeClient:
     def list_equity_positions(self, **kw: Any) -> list[dict[str, Any]]:
         return self._positions
 
+    def list_open_orders(self) -> list[dict[str, Any]]:
+        return []
+
     def get_asset(self, symbol: str) -> dict[str, Any]:
         # New broker metadata boundary (CL-wtl6); existing execution-policy
         # tests still exercise their original assertions with eligible assets.
@@ -481,6 +484,54 @@ def test_allows_when_book_is_clear(engine):
     client = _FakeClient(positions=[_eq_pos("AAPL")], fill=95.0)
     counts = execute_pending_equities(engine, client, _price, now=NOW, technicals_fn=_no_tech)
     assert counts["submitted"] == 1
+
+
+@pytest.mark.parametrize("pending", [None, [{"status": "unknown"}], RuntimeError("offline")])
+def test_unknown_working_orders_block_entry(engine, pending):
+    _seed(engine, "working-order-fixture")
+
+    class Client(_FakeClient):
+        def list_open_orders(self):
+            if isinstance(pending, Exception):
+                raise pending
+            return pending
+
+    client = Client()
+    counts = execute_pending_equities(engine, client, _price, now=NOW, technicals_fn=_no_tech)
+    assert counts["blocked_exposure"] == 1
+    assert client.orders == []
+
+
+def test_external_partial_working_order_blocks_second_equity_entry(engine):
+    _seed(engine, "working-order-fixture")
+
+    class Client(_FakeClient):
+        def list_open_orders(self):
+            return [
+                {
+                    "id": "manual",
+                    "symbol": "RTX",
+                    "asset_class": "us_equity",
+                    "qty": "10",
+                    "filled_qty": "4",
+                    "side": "sell",
+                    "status": "pending_cancel",
+                }
+            ]
+
+    client = Client()
+    counts = execute_pending_equities(engine, client, _price, now=NOW, technicals_fn=_no_tech)
+    assert counts["skipped_concentration"] == 1
+    assert client.orders == []
+
+
+def test_missing_working_order_capability_blocks_entry(engine, monkeypatch):
+    _seed(engine, "working-order-fixture")
+    monkeypatch.delattr(_FakeClient, "list_open_orders")
+    client = _FakeClient()
+    counts = execute_pending_equities(engine, client, _price, now=NOW, technicals_fn=_no_tech)
+    assert counts["blocked_exposure"] == 1
+    assert client.orders == []
 
 
 def test_position_lookup_failure_blocks_entry_and_retries(engine):

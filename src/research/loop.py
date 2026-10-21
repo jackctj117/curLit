@@ -41,6 +41,7 @@ tests run with mocked components and no LLM/network/Postgres.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import logging
 import os
@@ -614,7 +615,8 @@ class ResearchLoop:
                 )
                 continue
             try:
-                candidate_report_dict = json.loads(report_path.read_text())
+                report_bytes = report_path.read_bytes()
+                candidate_report_dict = json.loads(report_bytes)
                 debate_result = self.debate_orchestrator.run_debate(
                     strategy_slug=slug,
                     candidate_report_text=json.dumps(
@@ -663,6 +665,10 @@ class ResearchLoop:
                     timespec="seconds",
                 )
                 new_entry["candidate_report_path"] = str(report_path)
+                # CL-0deu.6: gate 2 approves the debated report, not whatever
+                # later happens to occupy its path. Requiring this hash also
+                # blocks legacy approvals whose evidence identity is unknown.
+                new_entry["candidate_report_sha256"] = hashlib.sha256(report_bytes).hexdigest()
                 if self.notifier.notify_gate2(
                     slug,
                     new_entry,
@@ -766,11 +772,19 @@ class ResearchLoop:
     ) -> None:
         """Execute the PROMOTE side-effect for a DEPLOY_APPROVED entry."""
         try:
+            report_path = Path(entry.get("candidate_report_path", ""))
+            expected_hash = entry.get("candidate_report_sha256")
+            if (
+                not expected_hash
+                or hashlib.sha256(report_path.read_bytes()).hexdigest() != expected_hash
+            ):
+                raise ValueError("approved report identity missing or changed; new review required")
             result: RegistrationResult = self.registrar.register(
                 strategy_slug=slug,
                 candidate_report_path=entry.get("candidate_report_path", ""),
                 debate_transcript_path=entry.get("transcript_path", ""),
                 verdict_reason=entry.get("reason", ""),
+                expected_report_sha256=expected_hash,
             )
         except Exception as exc:
             logger.exception("registrar raised for slug %s", slug)
