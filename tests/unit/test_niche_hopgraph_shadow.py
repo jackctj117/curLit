@@ -174,6 +174,62 @@ def test_shadow_script_refuses_model_calls_without_flag(tmp_path: Path) -> None:
     assert not (tmp_path / "r.json").exists()
 
 
+def test_real_shadow_requires_explicit_wall_deadline_before_client_creation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def forbidden(args: Any) -> Any:
+        pytest.fail("no live client may be constructed without a deadline")
+
+    monkeypatch.setattr(shadow, "_live_clients", forbidden)
+    with pytest.raises(SystemExit) as exc:
+        shadow.main(
+            [
+                "--captures",
+                str(_write_capture(tmp_path)),
+                "--output",
+                str(tmp_path / "r.json"),
+                "--allow-model-calls",
+            ]
+        )
+    assert exc.value.code == 2
+    assert not (tmp_path / "r.json").exists()
+
+
+def test_shadow_supervised_cli_preserves_report_and_call_diagnostics(tmp_path: Path) -> None:
+    output = tmp_path / "r.json"
+    assert (
+        shadow.main(
+            [
+                "--captures",
+                str(_write_capture(tmp_path)),
+                "--output",
+                str(output),
+                "--allow-model-calls",
+                "--wall-timeout-seconds",
+                "10",
+                "--max-model-calls-per-event",
+                "32",
+            ],
+            clients=_clients(),
+        )
+        == 0
+    )
+    report = json.loads(output.read_text())
+    assert report["supervision"]["status"] == "completed"
+    assert report["supervision"]["worker_reaped"]
+    assert report["events"][0]["hop_graph"]["metrics"]["eligible"] == 1
+    records = [
+        json.loads(line)
+        for line in Path(report["supervision"]["diagnostics_path"]).read_text().splitlines()
+    ]
+    assert {r["role"] for r in records if r["kind"] == "call_started"} == {
+        "traversal",
+        "entailment",
+        "critic",
+    }
+
+
 @pytest.mark.parametrize(
     "override",
     [

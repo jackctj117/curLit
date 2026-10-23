@@ -23,7 +23,8 @@ Example (operator, research-only environment):
     .venv/bin/python scripts/niche_hopgraph_shadow.py \
         --captures /path/to/captures/ --output /path/to/report.json \
         --baseline claude-subscription --max-model-calls-per-event 3 \
-        --memory-sqlite /path/to/hopgraph_memory.sqlite --allow-model-calls
+        --memory-sqlite /path/to/hopgraph_memory.sqlite \
+        --wall-timeout-seconds 120 --allow-model-calls
 """
 
 from __future__ import annotations
@@ -31,6 +32,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import math
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -42,6 +44,12 @@ from src.events._util import ThreadLocalClient  # noqa: E402
 from src.events.hop_graph_memory import NicheEdgeMemory  # noqa: E402
 from src.events.hop_graph_shadow import compare_events, validate_capture_cohort  # noqa: E402
 from src.events.niche_shadow import CapturedInput, ResearchModel  # noqa: E402
+from src.events.shadow_deadline import (  # noqa: E402
+    Deadline,
+    DeadlineClient,
+    Diagnostics,
+    supervise,
+)
 from src.events.subscription_shadow_budget import (  # noqa: E402
     DEFAULT_EVENT_CALL_LIMIT,
     SUBSCRIPTION_MODEL,
@@ -115,6 +123,12 @@ def main(argv: list[str] | None = None, *, clients: ShadowClients | None = None)
         default=DEFAULT_EVENT_CALL_LIMIT,
         help="Hard shared CLI invocation limit across both arms and every role",
     )
+    parser.add_argument(
+        "--wall-timeout-seconds",
+        type=float,
+        default=None,
+        help="Required for real calls: total experiment deadline, plus bounded cleanup",
+    )
     parser.add_argument("--memory-sqlite", type=Path, default=None)
     parser.add_argument("--playbooks", type=Path, default=None)
     parser.add_argument(
@@ -138,6 +152,10 @@ def main(argv: list[str] | None = None, *, clients: ShadowClients | None = None)
             parser.error(f"subscription-only shadow requires {SUBSCRIPTION_MODEL}")
     if args.max_model_calls_per_event <= 0:
         parser.error("--max-model-calls-per-event must be positive")
+    if args.wall_timeout_seconds is not None and (
+        not math.isfinite(args.wall_timeout_seconds) or args.wall_timeout_seconds <= 0
+    ):
+        parser.error("--wall-timeout-seconds must be finite and positive")
     captures = load_captures(args.captures)
     if args.output.exists():
         parser.error("refusing to overwrite an existing report")
@@ -157,7 +175,54 @@ def main(argv: list[str] | None = None, *, clients: ShadowClients | None = None)
         parser.error(
             f"{len(captures)} capture(s) validated; --allow-model-calls is required to run"
         )
+    if clients is None and args.wall_timeout_seconds is None:
+        parser.error("--wall-timeout-seconds is required for real model calls")
+    if args.wall_timeout_seconds is not None:
+        return supervise(
+            lambda deadline, diagnostics: _run_comparison(
+                args, captures, clients, deadline, diagnostics
+            ),
+            output=args.output,
+            seconds=args.wall_timeout_seconds,
+        )
+    report = _run_comparison(args, captures, clients)
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    with args.output.open("x") as stream:
+        json.dump(report, stream, indent=2, allow_nan=False, default=str)
+    print(
+        f"Hop-graph shadow report written to {args.output}; no orders submitted, "
+        "nothing merged into trade_ideas."
+    )
+    return 0
+
+
+def _run_comparison(
+    args: argparse.Namespace,
+    captures: list[CapturedInput],
+    clients: ShadowClients | None,
+    deadline: Deadline | None = None,
+    diagnostics: Diagnostics | None = None,
+) -> dict[str, Any]:
     clients = clients or _live_clients(args)
+    if deadline is not None:
+        assert diagnostics is not None
+        diagnostics.append(
+            "captured_inputs",
+            input_hashes=[capture.input_hash for capture in captures],
+            event_ids=[capture.payload()["event"].get("id") for capture in captures],
+        )
+        clients = ShadowClients(
+            traversal=DeadlineClient(clients.traversal, deadline, diagnostics, "traversal"),
+            entailment=DeadlineClient(clients.entailment, deadline, diagnostics, "entailment"),
+            critic=DeadlineClient(clients.critic, deadline, diagnostics, "critic"),
+            baseline=(
+                SubscriptionResearchModel(
+                    DeadlineClient(clients.baseline.client, deadline, diagnostics, "baseline")
+                )
+                if isinstance(clients.baseline, SubscriptionResearchModel)
+                else clients.baseline
+            ),
+        )
     from src.events.playbooks import load_playbooks  # noqa: PLC0415
 
     playbooks = load_playbooks(args.playbooks) if args.playbooks else load_playbooks()
@@ -171,7 +236,7 @@ def main(argv: list[str] | None = None, *, clients: ShadowClients | None = None)
         entailment_model,
         args.baseline,
     )
-    report = compare_events(
+    return compare_events(
         captures,
         traversal_client=clients.traversal,
         entailment_client=clients.entailment,
@@ -184,14 +249,6 @@ def main(argv: list[str] | None = None, *, clients: ShadowClients | None = None)
         subscription_call_limit=args.max_model_calls_per_event,
         subscription_critic_client=None if args.no_critic else clients.critic,
     )
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    with args.output.open("x") as stream:
-        json.dump(report, stream, indent=2, allow_nan=False, default=str)
-    print(
-        f"Hop-graph shadow report written to {args.output}; no orders submitted, "
-        "nothing merged into trade_ideas."
-    )
-    return 0
 
 
 if __name__ == "__main__":

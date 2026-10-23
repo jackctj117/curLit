@@ -1,5 +1,35 @@
 # CURRENT OPERATIONS — what curLit is practicing right now
 
+**Research deployment preparation — October 23, 2026 (CL-esnh), not yet cut over:**
+the published source `0604f65` passed hosted CI (**4,885 tests, two skipped**) and
+[security scanning](https://github.com/jackctj117/curLit/actions/runs/39642476681).
+Streamlit 1.66.1 now permits patched Pillow 13.0.0; the October 21 upstream
+compatibility blocker no longer requires splitting or disabling the UI.
+
+A separate environment at `data/releases/research-0604f65-20261023/.venv`
+contains **142 exactly pinned, hash-verified packages**. Its complete installed
+inventory passed strict advisory auditing with no omissions, `pip check` passed,
+and **429 offline pipeline/research tests** passed using test tools outside the
+runtime environment. Native HMM/Expat checks and module-origin assertions passed.
+The exported source's 812 tracked files match Git commit `0604f65` exactly.
+The platform-specific lock and provenance are documented in
+[the research runtime guide](RESEARCH_RUNTIME.md).
+
+The old shared `.venv` remains unchanged. Its separate diagnostic audit reported
+305 advisory matches across 26 packages (not 305 demonstrated vulnerabilities),
+and strict audit cannot identify its non-PyPI `en-core-web-sm` model. Other
+services still need their own audited environments and numerical/cutover checks
+under **CL-e1nr**; this research deployment does not fix those processes.
+
+At preflight the existing launchd pipeline was still PID **45289**, with no
+child processes. Environment, portfolio, risk and research/playbook hashes were
+captured; no policy or model-provider change is planned. Only the event pipeline
+will switch interpreter/source. The prior launch manifest and hashes are retained
+in `data/deployments/2026-10-23_research_release/`. On a cutover failure, stop the
+affected writer and investigate; the preserved old vulnerable environment is not
+an automatic safety-approved rollback. No migrations or historical repairs are
+part of this deployment.
+
 **Published development work — October 21, 2026, NOT deployed:** hardening
 commit `cfc8557` is on `origin/main`. Hosted
 [CI](https://github.com/jackctj117/curLit/actions/runs/39628490916) passed:

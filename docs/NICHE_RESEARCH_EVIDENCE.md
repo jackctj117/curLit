@@ -759,12 +759,29 @@ Unit tests run it end to end on fakes only. An operator runs it like this:
 .venv/bin/python scripts/niche_hopgraph_shadow.py \
   --captures /path/to/captures/ --output /path/to/new-report.json \
   --baseline claude-subscription --max-model-calls-per-event 3 \
-  --memory-sqlite /path/to/hopgraph-memory.sqlite --allow-model-calls
+  --memory-sqlite /path/to/hopgraph-memory.sqlite \
+  --wall-timeout-seconds 120 --allow-model-calls
 ```
 
 Without `--allow-model-calls` the script validates the captures and stops.
 The script refuses to overwrite a report. Edge memory goes only to a local
 sqlite file. The production `.env` and database are never read.
+
+CL-ek1d requires an explicit finite positive wall deadline for real CLI calls.
+After offline capture validation, a POSIX supervisor starts an owned worker in
+a separate process group; client construction, memory access and every role
+consume the same deadline. No operational process is discovered or signaled.
+All terminating signals precede reaping the owned leader, preventing PID reuse
+from exposing another group to a later signal. A separate two-second cleanup
+allowance is reported; inability to verify cleanup is a failure, never success.
+Linux requires a functioning init/reaper for orphaned descendants.
+
+The supervisor creates an incomplete report before work, records fsync'd
+per-call diagnostics, and atomically publishes the final result only after
+verified cleanup. Deadline expiry exits 124; interruption/cleanup failure is
+nonzero. Interrupted JSONL tails remain preserved and explicitly flagged, with
+the complete prefix still usable. Costs remain unknown. The deadline bounds
+research, not a promise of useful multi-hop candidates or equivalent arm budgets.
 
 The original CL-ynuh acceptance called for at least 20 captured events and a
 Kimi comparison. That API arm is no longer allowed by the subscription-only
