@@ -1,5 +1,40 @@
 # CURRENT OPERATIONS — what curLit is practicing right now
 
+**GDELT validation deployment — October 23, 2026, 19:23 UTC (CL-gt84):**
+immutable source **ccfea0e** runs as pipeline PID **71508**, replacing **69511**
+through the same launchd owner after its cycle completed and the old writer was
+verified gone. It reuses the unchanged audited 142-package research environment
+described below. Source export, singleton, mapped library origins, configuration
+hashes and unaffected FX/Alpaca/digest process identities passed verification.
+
+Malformed/blank required article fields now reject the entire batch before
+persistence or coverage advancement. Bounded response-shape diagnostics record
+the failing field without article content, URLs or query text. No scheduling,
+cursor-reset, provider, trading-control or dependency changes were included.
+[CI](https://github.com/jackctj117/curLit/actions/runs/40010131471) passed
+**4,913 unit tests, two skipped, four warnings**, 35 recovery integration tests,
+lint and typecheck (255 files); [security](https://github.com/jackctj117/curLit/actions/runs/40010131689)
+passed. The staged runtime passed 63 focused offline tests; independent review
+passed 51 isolated tests. Evidence is retained in
+`data/deployments/2026-10-23_gdelt_diagnostics/`.
+
+The first full cycle completed at **19:28:18 UTC** in **299.205 seconds**:
+20 events processed (11 assessed, nine dismissed, zero assessment retries),
+21 ordinary ideas persisted, two stale ideas expired, and Telegram delivered.
+There were no due niche jobs. Ingestion deferred in 76 ms under the preserved
+cooldown, with no HTTP attempt. Protected settings and other trading process
+identities remained unchanged after the cycle. **CL-gt84 is closed** for its
+validated code/deployment; the unresolved freshness issue stays open.
+
+Read-only snapshots at 19:23–19:24 UTC show recent GDELT records do exist:
+the newest is dated **15:00 UTC today**, with 4,572 records in the last seven
+days. Past-24-hour events were 288 dismissed and 188 expired, including 24
+urgency-seven-plus expired events. There were no pending/running/retry niche
+jobs. Old themed coverage gaps and repeated invalid/rate-limited responses
+remain unresolved under **CL-evzy**. The source cooldown is preserved until
+**20:05:09 UTC / 14:05 Denver**; no new HTTP response was observed at startup.
+The diagnostic fix alone does not establish restored ingestion or niche yield.
+
 **Verified research deployment — October 23, 2026 (CL-esnh):**
 the published source `0604f65` passed hosted CI (**4,885 tests, two skipped**) and
 [security scanning](https://github.com/jackctj117/curLit/actions/runs/39642476681).
@@ -23,7 +58,7 @@ under **CL-e1nr**; this research deployment does not fix those processes.
 
 At **19:04:56 UTC**, launchd owner `gui/501/com.curlit.paper.event-pipeline`
 replaced PID **45289** with **69511**, after verifying the old writer was gone.
-Exactly one pipeline writer runs immutable source **0604f65** in the new audited
+At that checkpoint, one pipeline writer ran immutable source **0604f65** in the new audited
 environment. Environment, portfolio, risk and research/playbook hashes remained
 unchanged. FX **71293**, options **9894**, equities **9912** and digest **53066**
 retained their original start times. No migration, manual record repair, broker

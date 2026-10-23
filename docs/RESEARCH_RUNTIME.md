@@ -1,18 +1,27 @@
 # Isolated research runtime (CL-esnh / CL-e1nr)
 
-The October 23 staging environment is for the event pipeline only. It does not
+The October 23 audited environment is for the event pipeline only. It does not
 replace the shared trading `.venv`, change risk controls, or activate the
 shadow-only hop graph. Read CURRENT_OPERATIONS.md for the actual cutover state.
 
 ## Artifact identity
 
-- Application source: immutable Git export of `0604f65247de4b9612c1fa09642fb02d1917cde7`.
+- Initial application source: immutable Git export of `0604f65247de4b9612c1fa09642fb02d1917cde7`.
 - Interpreter: existing CPython 3.14.6, macOS arm64; no system Python upgrade.
 - Package lock: [research-macos-cp314.lock](../requirements/research-macos-cp314.lock).
 - Lock SHA256: `4ded5744b517a29a051f8de745af6704f9017f6dbe5df1f2302c64b453b869ca`.
 - 141 core packages resolve at the exact versions from passing CI run 39642476681;
   the installed bootstrap `wheel==0.46.3` is also pinned/audited, making 142 total.
 - Installed audit SHA256: `121dd6101ff11a09697dd5fca88f081c635baa01c449218ebe5e92b52b750a31`.
+
+The subsequent **ccfea0e** GDELT fix uses its own immutable source directory,
+`data/releases/research-ccfea0e-20261023/`, with the same unchanged interpreter
+under `research-0604f65-20261023/.venv`. Source and runtime identities are
+recorded separately. All 142 installed versions still match the audited lock;
+63 focused tests verified the newer source against that runtime with operational
+credentials and network denied. The launch manifest changes only the script
+path for this second cutover. CURRENT_OPERATIONS.md records actual process and
+cycle verification.
 
 This is a platform-specific artifact lock, not a universal deployment profile.
 All ordinary wheels came from PyPI. `hmmlearn==0.3.3` lacks a CPython 3.14 Mac
