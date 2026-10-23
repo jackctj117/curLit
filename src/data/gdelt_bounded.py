@@ -43,6 +43,8 @@ class GdeltRead:
     status: str
     articles: list[dict[str, Any]] = field(default_factory=list)
     retry_after: float = 0.0
+    # Fixed response-shape fields only: never article content, URLs or query text.
+    diagnostics: dict[str, str | int] = field(default_factory=dict)
 
 
 async def fetch_once(
@@ -64,6 +66,18 @@ async def fetch_once(
                 },
                 timeout=timeout,
             )
+        media = response.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+        diagnostics: dict[str, str | int] = {
+            "http_status": response.status_code,
+            "response_bytes": len(response.content),
+            "content_type": (
+                media
+                if media in {"application/json", "text/plain", "text/html"}
+                else "other"
+                if media
+                else "missing"
+            ),
+        }
         if response.status_code == 429:
             raw = response.headers.get("Retry-After", "")
             retry = MIN_BACKOFF_SECONDS
@@ -77,26 +91,52 @@ async def fetch_once(
                 retry_after=max(
                     MIN_BACKOFF_SECONDS, retry if math.isfinite(retry) else MIN_BACKOFF_SECONDS
                 ),
+                diagnostics=diagnostics,
             )
         if response.status_code != 200:
-            return GdeltRead(f"http_{response.status_code}")
+            return GdeltRead(f"http_{response.status_code}", diagnostics=diagnostics)
         try:
             payload = response.json()
         except ValueError:
-            return GdeltRead("invalid_json")
+            return GdeltRead("invalid_json", diagnostics=diagnostics)
+        diagnostics["payload_type"] = type(payload).__name__
         articles = payload.get("articles") if isinstance(payload, dict) else None
-        if not isinstance(articles, list) or any(
-            not isinstance(a, dict)
-            or any(not isinstance(a.get(k), str) or not a[k] for k in ("url", "title", "seendate"))
-            for a in articles
-        ):
-            return GdeltRead("invalid_articles")
-        try:
-            for article in articles:
+        if not isinstance(articles, list):
+            diagnostics["reason"] = (
+                "payload_not_object"
+                if not isinstance(payload, dict)
+                else "missing_articles"
+                if "articles" not in payload
+                else "articles_not_list"
+            )
+            diagnostics["articles_type"] = type(articles).__name__
+            return GdeltRead("invalid_articles", diagnostics=diagnostics)
+        diagnostics["article_count"] = len(articles)
+        for index, article in enumerate(articles):
+            invalid = {**diagnostics, "invalid_article_index": index}
+            if not isinstance(article, dict):
+                invalid["reason"] = "article_not_object"
+                return GdeltRead("invalid_articles", diagnostics=invalid)
+            for key in ("url", "title", "seendate"):
+                value = article.get(key)
+                reason = (
+                    "missing_field"
+                    if key not in article
+                    else "field_not_string"
+                    if not isinstance(value, str)
+                    else "blank_field"
+                    if not value.strip()
+                    else None
+                )
+                if reason:
+                    invalid.update(reason=reason, invalid_field=key)
+                    return GdeltRead("invalid_articles", diagnostics=invalid)
+            try:
                 datetime.strptime(article["seendate"], "%Y%m%dT%H%M%SZ")
-        except ValueError:
-            return GdeltRead("invalid_article_date")
-        return GdeltRead("success", articles)
+            except ValueError:
+                invalid.update(reason="invalid_date", invalid_field="seendate")
+                return GdeltRead("invalid_article_date", diagnostics=invalid)
+        return GdeltRead("success", articles, diagnostics=diagnostics)
     except (TimeoutError, httpx.HTTPError) as exc:
         return GdeltRead(type(exc).__name__)
 
@@ -253,6 +293,9 @@ def run_slice(
                 ingester.provider.max_records,
             )
             result["attempted"] += 1
+            # Replace the last response rather than accumulating unbounded logs
+            # in a cursor. A failed batch never becomes complete coverage.
+            state["last_response"] = response.diagnostics
             if response.status == "success":
                 if response.articles:
                     raw = pd.DataFrame([{**a, "theme": theme} for a in response.articles])
@@ -293,7 +336,12 @@ def run_slice(
                     source["next_eligible"] = state["next_eligible"]
                     save("_source", source)
             save(theme, state)
-            logger.info("GDELT checkpoint: theme=%s status=%s", theme, state["status"])
+            logger.info(
+                "GDELT checkpoint: theme=%s status=%s diagnostics=%s",
+                theme,
+                state["status"],
+                response.diagnostics,
+            )
             if response.status == "rate_limited":
                 break  # Do not sleep out a source-wide throttle ahead of assessment.
     finally:

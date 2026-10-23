@@ -783,6 +783,22 @@ nonzero. Interrupted JSONL tails remain preserved and explicitly flagged, with
 the complete prefix still usable. Costs remain unknown. The deadline bounds
 research, not a promise of useful multi-hop candidates or equivalent arm budgets.
 
+The October 23 real CLI canary on **b2422ff** verified that boundary: one event,
+12-call ceiling, no baseline, and a 120-second research deadline ended with
+**exit 124 / `shadow_wall_deadline`** after **121.067 seconds** including cleanup.
+The first traversal call returned no result. The worker was reaped, its verified
+process group was absent, no signal errors occurred, and all four diagnostic
+records were intact. No later role, publication or order followed. This closes
+CL-ek1d's deadline implementation, not CL-ynuh's useful research acceptance.
+
+This reused the October 21 engineering capture (ten preselected companies),
+not fresh prospective news or a representative model comparison. Costs remain
+unknown. No retry or paid fallback was enabled. Private artifacts are under
+`data/deployments/2026-10-23_niche_deadline/`:
+
+- `report.json` SHA256: `c24032a815d1cae310c5500c0df4af7650443c2dd40558764431c8f5e6042953`.
+- `report.json.diagnostics.jsonl` SHA256: `71e9a23ead1ad8dc9b3c801f9c82ca0516aca46e914520be43e8c9230bf71377`.
+
 The original CL-ynuh acceptance called for at least 20 captured events and a
 Kimi comparison. That API arm is no longer allowed by the subscription-only
 operator policy. A Claude baseline can support engineering evaluation, but
@@ -794,6 +810,6 @@ review, measuring:
 - gate pass rate;
 - tool calls and cost.
 
-Development produced **no live measurement**; only the code and tests exist.
+The captured-input canaries above measure failure handling, not useful live yield.
 Substring provenance plus a cheap entailment answer does not prove truth. Human
 evaluation of the eligible ideas remains necessary.

@@ -1,6 +1,6 @@
 # CURRENT OPERATIONS — what curLit is practicing right now
 
-**Research deployment preparation — October 23, 2026 (CL-esnh), not yet cut over:**
+**Verified research deployment — October 23, 2026 (CL-esnh):**
 the published source `0604f65` passed hosted CI (**4,885 tests, two skipped**) and
 [security scanning](https://github.com/jackctj117/curLit/actions/runs/39642476681).
 Streamlit 1.66.1 now permits patched Pillow 13.0.0; the October 21 upstream
@@ -21,16 +21,49 @@ and strict audit cannot identify its non-PyPI `en-core-web-sm` model. Other
 services still need their own audited environments and numerical/cutover checks
 under **CL-e1nr**; this research deployment does not fix those processes.
 
-At preflight the existing launchd pipeline was still PID **45289**, with no
-child processes. Environment, portfolio, risk and research/playbook hashes were
-captured; no policy or model-provider change is planned. Only the event pipeline
-will switch interpreter/source. The prior launch manifest and hashes are retained
-in `data/deployments/2026-10-23_research_release/`. On a cutover failure, stop the
-affected writer and investigate; the preserved old vulnerable environment is not
-an automatic safety-approved rollback. No migrations or historical repairs are
-part of this deployment.
+At **19:04:56 UTC**, launchd owner `gui/501/com.curlit.paper.event-pipeline`
+replaced PID **45289** with **69511**, after verifying the old writer was gone.
+Exactly one pipeline writer runs immutable source **0604f65** in the new audited
+environment. Environment, portfolio, risk and research/playbook hashes remained
+unchanged. FX **71293**, options **9894**, equities **9912** and digest **53066**
+retained their original start times. No migration, manual record repair, broker
+operation, trading-control change or provider change was part of this cutover.
 
-**Published development work — October 21, 2026, NOT deployed:** hardening
+The first cycle completed at **19:09:01 UTC** in **244.103 seconds**: 20 events
+processed (13 assessed, seven dismissed, zero assessment retries), 11 ordinary
+ideas persisted, four stale ideas expired, and the Telegram digest delivered.
+There were **no due niche jobs**; ordinary idea persistence is not evidence of
+new multi-hop discoveries. GDELT yielded after a rate limit in 11.942 seconds.
+Every inspected ingestion cycle that morning inserted zero rows; **CL-evzy**
+tracks the separate freshness/response-diagnostics problem. “16 deferred” means
+16 themes were not completed, not that 16 HTTP requests failed.
+
+The prior launch manifest, source/configuration hashes, startup checks and first
+cycle evidence are retained in `data/deployments/2026-10-23_research_release/`.
+Homebrew executes its framework binary, so a literal process argv comparison
+failed initially; the exact launcher, launchd Program, virtualenv prefix and
+92 mapped package-library origins independently verified the new environment.
+On failure, stop the affected writer and investigate; the old vulnerable
+environment is not an automatic safety-approved rollback.
+
+Development commit **b2422ff** adds the shadow CLI's enforced wall deadline and
+the platform runtime lock. Its [CI](https://github.com/jackctj117/curLit/actions/runs/40008407460)
+passed **4,901 unit tests, two skipped, four warnings**, 35 disposable recovery
+integration tests, lint and typecheck (255 files).
+[Security](https://github.com/jackctj117/curLit/actions/runs/40008407531) also passed.
+The deadline CLI is a manual no-order experiment tool; it does not require a
+daemon restart or activate hop-graph discovery in the production pipeline.
+
+One no-order captured-input canary on b2422ff ended **incomplete** at its
+120-second deadline (121.067 seconds including verified cleanup, exit 124).
+The first traversal returned no output; no new verified hops/tickers were
+produced. CL-ek1d is closed for enforced deadlines; graph quality remains open.
+See [canary evidence](NICHE_RESEARCH_EVIDENCE.md) for hashes and limitations.
+
+The October 21 entries below are historical: their then-blocked source fixes
+are included in the October 23 research release. Quality acceptance remains open.
+
+**Historical development checkpoint — October 21, 2026, then NOT deployed:** hardening
 commit `cfc8557` is on `origin/main`. Hosted
 [CI](https://github.com/jackctj117/curLit/actions/runs/39628490916) passed:
 **4,840 unit tests, two skipped, one warning**, plus lint, typecheck and

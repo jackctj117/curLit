@@ -224,6 +224,14 @@ def test_pipeline_still_assesses_stored_events_during_gdelt_429(
         ('{"articles":[]}', "success"),
         ('{"articles":[{}]}', "invalid_articles"),
         (
+            '{"articles":[{"url":" ","title":"News","seendate":"20260714T090000Z"}]}',
+            "invalid_articles",
+        ),
+        (
+            '{"articles":[{"url":"https://example.org","title":" ","seendate":"20260714T090000Z"}]}',
+            "invalid_articles",
+        ),
+        (
             '{"articles":[{"url":"https://example.org","title":"News","seendate":"bad"}]}',
             "invalid_article_date",
         ),
@@ -244,6 +252,105 @@ def test_bounded_http_distinguishes_empty_news_from_failed_ingestion(
         gdelt_bounded.httpx, "AsyncClient", lambda **kwargs: original(transport=transport, **kwargs)
     )
     assert asyncio.run(gdelt_bounded.fetch_once("query", START, END, 1, 50)).status == expected
+
+
+@pytest.mark.parametrize(
+    "payload,reason,field",
+    [
+        ({"error": "private marker" * 1000}, "missing_articles", None),
+        ([], "payload_not_object", None),
+        ({"articles": None}, "articles_not_list", None),
+        ({"articles": [17]}, "article_not_object", None),
+        ({"articles": [{"url": "https://example.org"}]}, "missing_field", "title"),
+        ({"articles": [{"url": 17}]}, "field_not_string", "url"),
+        ({"articles": [{"url": "\t\n\u2003"}]}, "blank_field", "url"),
+        (
+            {"articles": [{"url": "x", "title": "News", "seendate": "bad"}]},
+            "invalid_date",
+            "seendate",
+        ),
+    ],
+)
+def test_bounded_diagnostics_report_shape_not_response_content(
+    monkeypatch: pytest.MonkeyPatch, payload: object, reason: str, field: str | None
+) -> None:
+    import asyncio
+
+    import httpx
+
+    from src.data import gdelt_bounded
+
+    original = httpx.AsyncClient
+    response = httpx.Response(200, json=payload, headers={"Content-Type": "private marker" * 1000})
+    transport = httpx.MockTransport(lambda request: response)
+    monkeypatch.setattr(
+        gdelt_bounded.httpx, "AsyncClient", lambda **kwargs: original(transport=transport, **kwargs)
+    )
+    result = asyncio.run(gdelt_bounded.fetch_once("private query", START, END, 1, 50))
+    assert result.status in {"invalid_articles", "invalid_article_date"}
+    assert result.articles == []  # No partially valid batch leaks to persistence.
+    assert result.diagnostics["reason"] == reason
+    assert result.diagnostics.get("invalid_field") == field
+    assert result.diagnostics["content_type"] == "other"
+    assert result.diagnostics["response_bytes"] == len(response.content)
+    serialized = json.dumps(result.diagnostics)
+    assert len(serialized) < 400  # Fixed first-error metadata, not unbounded provider text.
+    assert "private" not in serialized and "https://" not in serialized
+
+
+@pytest.mark.parametrize("bad_field", ["url", "title"])
+def test_mixed_invalid_batch_preserves_coverage_and_persists_diagnostics(
+    bounded_ingester: GdeltIngester,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    bad_field: str,
+) -> None:
+    import httpx
+
+    from src.data import gdelt_bounded
+
+    good = _article("https://example.org/private-good", "private-good-headline")
+    bad = {**_article("https://example.org/private-bad", "private-bad-headline"), bad_field: " \t"}
+    original = httpx.AsyncClient
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(200, json={"articles": [good, bad]})
+    )
+    monkeypatch.setattr(
+        gdelt_bounded.httpx, "AsyncClient", lambda **kwargs: original(transport=transport, **kwargs)
+    )
+    prior = {
+        "covered_until": START.isoformat(),
+        "window_start": START.isoformat(),
+        "window_end": END.isoformat(),
+    }
+    with bounded_ingester.engine.begin() as conn:
+        conn.execute(
+            text("INSERT INTO gdelt_ingest_cursors(theme,payload) VALUES ('theme_a',:payload)"),
+            {"payload": json.dumps(prior)},
+        )
+    clock = _Clock()
+    with caplog.at_level("INFO", logger="src.data.gdelt_bounded"):
+        counts = gdelt_bounded.run_slice(
+            bounded_ingester,
+            START,
+            END,
+            budget_sec=1,
+            wall_clock=clock.now,
+            monotonic=clock.now,
+            sleep=clock.sleep,
+        )
+    assert counts == {"rows": 0, "attempted": 1, "completed": 0, "deferred": 2}
+    state = _cursor(bounded_ingester, "theme_a")
+    assert all(state[k] == value for k, value in prior.items())
+    assert state["status"] == "invalid_articles"
+    assert state["last_response"]["reason"] == "blank_field"
+    assert state["last_response"]["invalid_article_index"] == 1
+    assert state["last_response"]["invalid_field"] == bad_field
+    assert state["last_response"]["article_count"] == 2
+    with bounded_ingester.engine.connect() as conn:
+        assert conn.execute(text("SELECT COUNT(*) FROM geo_events")).scalar_one() == 0
+    assert "blank_field" in caplog.text
+    assert "private-good" not in caplog.text and "private-bad" not in caplog.text
 
 
 def test_bounded_http_honors_retry_after_without_waiting(monkeypatch):
